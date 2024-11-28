@@ -2,6 +2,8 @@ import SwiftUI
 import AVFoundation
 import Foundation
 import VideoToolbox
+import WebKit
+import Metal
 
 struct SettingsView: View {
     @AppStorage("HLSServer") private var hlsServer: String = ""
@@ -9,6 +11,7 @@ struct SettingsView: View {
     @AppStorage("Password") private var password: String = ""
     @AppStorage("SaveFragmentsLocally") private var saveFragmentsLocally: Bool = false
     @AppStorage("SelectedBitrate") private var selectedBitrate: Int = 1_000_000
+    @AppStorage("OverlayURL") private var overlayURL: String = ""
     @Environment(\.presentationMode) private var presentationMode
 
     var bitrates: [Int] = [1_000_000, 2_000_000, 3_000_000, 4_000_000, 5_000_000, 6_000_000]
@@ -42,6 +45,13 @@ struct SettingsView: View {
                     .pickerStyle(MenuPickerStyle())
                 }
                 
+                Section(header: Text("Overlay")) {
+                    TextField("Web Overlay URL", text: $overlayURL)
+                        .keyboardType(.URL)
+                        .autocapitalization(.none)
+                        .disableAutocorrection(true)
+                }
+
                 Section {
                     Toggle("Save fragments locally", isOn: $saveFragmentsLocally)
                 }
@@ -55,7 +65,195 @@ struct SettingsView: View {
     }
 }
 
+@Observable
+final class SharedImageState {
+    var capturedImage: CVPixelBuffer?
+    static let shared = SharedImageState()
+    
+    private init() {}
+}
 
+class ImageConverter {
+    static let shared = ImageConverter()
+    
+    private let context: CIContext
+    
+    private init() {
+        self.context = CIContext(options: [
+            .useSoftwareRenderer: false,
+            .workingColorSpace: CGColorSpace(name: CGColorSpace.itur_2020)!
+        ])
+    }
+    
+    func convertImageToPixelBuffer(ciImage: CIImage) -> CVPixelBuffer? {
+        let width = Int(ciImage.extent.width)
+        let height = Int(ciImage.extent.height)
+        
+        var pixelBuffer: CVPixelBuffer?
+        let attributes: [CFString: Any] = [
+            kCVPixelBufferCGImageCompatibilityKey: true,
+            kCVPixelBufferCGBitmapContextCompatibilityKey: true,
+            kCVPixelBufferMetalCompatibilityKey: true,
+            kCVPixelBufferPixelFormatTypeKey: kCVPixelFormatType_32BGRA,
+            kCVPixelBufferIOSurfacePropertiesKey: [:]
+        ]
+        
+        let status = CVPixelBufferCreate(
+            kCFAllocatorDefault,
+            width,
+            height,
+            kCVPixelFormatType_32BGRA,
+            attributes as CFDictionary,
+            &pixelBuffer
+        )
+        
+        
+        guard status == kCVReturnSuccess, let pixelBuffer = pixelBuffer else {
+            print("Error: Could not create CVPixelBuffer")
+            return nil
+        }
+        
+        CVPixelBufferLockBaseAddress(pixelBuffer, CVPixelBufferLockFlags(rawValue: 0))
+        
+        // Render the CIImage, preserving color information
+        context.render(
+            ciImage,
+            to: pixelBuffer,
+            bounds: CGRect(x: 0, y: 0, width: width, height: height),
+            colorSpace: CGColorSpace(name: CGColorSpace.itur_2020)
+        )
+        
+        CVPixelBufferUnlockBaseAddress(pixelBuffer, CVPixelBufferLockFlags(rawValue: 0))
+
+        return pixelBuffer
+    }
+}
+
+
+
+// Usage in WebOverlayViewController remains similar but simpler
+class WebOverlayViewController: NSObject, WKNavigationDelegate {
+    private var webView: WKWebView?
+    let urlString: String
+    let sharedState = SharedImageState.shared
+    
+    init(urlString: String) {
+        self.urlString = urlString
+        super.init()
+    }
+
+    func createWebView() -> WKWebView {
+        let config = WKWebViewConfiguration()
+        config.allowsInlineMediaPlayback = true
+        config.mediaTypesRequiringUserActionForPlayback = []
+        
+        let webView = WKWebView(frame: CGRect(x: 0, y: 0, width: 1920, height: 1080), configuration: config)
+        webView.navigationDelegate = self
+        webView.isOpaque = false
+        webView.backgroundColor = .clear
+        webView.scrollView.backgroundColor = .clear
+        
+        if let url = URL(string: urlString) {
+            webView.load(URLRequest(url: url))
+        }
+        
+        self.webView = webView
+        return webView
+    }
+    
+    // MARK: - WKNavigationDelegate
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        print("Web view finished loading")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+            self.captureWebViewImage()
+        }
+    }
+
+    func savePixelBufferAsPNG(pixelBuffer: CVPixelBuffer, to url: URL) {
+        do {
+            var cgImage: CGImage?
+            VTCreateCGImageFromCVPixelBuffer(pixelBuffer, options: nil, imageOut: &cgImage)
+            let uiImage = UIImage(cgImage: cgImage!)
+            let pngData = uiImage.pngData()! // Force-unwrap, assuming pngData will always be non-nil
+            try pngData.write(to: url)
+            print("Saved image to \(url)")
+        } catch {
+            print("Error saving image: \(error)")
+        }
+    }
+
+    
+    func captureWebViewImage() {
+        let config = WKSnapshotConfiguration()
+        config.snapshotWidth = NSNumber(value: 1920 / UIScreen.main.scale)
+        
+        webView?.takeSnapshot(with: config) { [weak self] (image, error) in
+            guard let uiImage = image else {
+                print("Error capturing snapshot: \(String(describing: error))")
+                return
+            }
+            
+            // Detailed image size logging
+            print("UIImage size: \(uiImage.size)")
+            print("UIImage scale: \(uiImage.scale)")
+            print("UIImage size in points: \(uiImage.size)")
+            print("UIImage size in pixels: \(CGSize(width: uiImage.size.width * uiImage.scale, height: uiImage.size.height * uiImage.scale))")
+                        
+            // Save the UIImage to a file for checking
+            if let documentDirectory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
+                let fileURL = documentDirectory.appendingPathComponent("capturedImage.png")
+                if let pngData = uiImage.pngData() {
+                    do {
+                        try pngData.write(to: fileURL)
+                        print("Saved UIImage to \(fileURL)")
+                    } catch {
+                        print("Error: Could not save UIImage to \(fileURL): \(error)")
+                    }
+                } else {
+                    print("Error: Could not convert UIImage to PNG data")
+                }
+            }
+            
+            // Continue with the original logic
+            if let ciImage = CIImage(image: uiImage) {
+                print("Valid image captured with size: \(uiImage.size)")
+                print("CIImage extent: \(ciImage.extent)")
+
+                DispatchQueue.main.async {
+                    if let pixelBuffer = ImageConverter.shared.convertImageToPixelBuffer(ciImage: ciImage) {
+                        self?.sharedState.capturedImage = pixelBuffer
+                        print("Pixel Buffer Width: \(CVPixelBufferGetWidth(pixelBuffer))")
+                        print("Pixel Buffer Height: \(CVPixelBufferGetHeight(pixelBuffer))")
+
+                        // Save the pixel buffer to a file for checking
+                        if let documentDirectory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
+                            let fileURL = documentDirectory.appendingPathComponent("overlayImage.png")
+                            self?.savePixelBufferAsPNG(pixelBuffer: pixelBuffer, to: fileURL)
+                        }
+                    }
+                }
+            } else {
+                print("Error: Captured image could not be converted to CIImage")
+            }
+        }
+    }
+}
+
+struct WebOverlayView: UIViewRepresentable {
+    let urlString: String
+    
+    func makeCoordinator() -> WebOverlayViewController {
+        WebOverlayViewController(urlString: urlString)
+    }
+    
+    func makeUIView(context: Context) -> WKWebView {
+        context.coordinator.createWebView()
+    }
+    
+    func updateUIView(_ webView: WKWebView, context: Context) {
+        // Handle updates if needed
+    }
+}
 
 struct ContentView: View {
     @State private var session: AVCaptureSession?
@@ -67,67 +265,79 @@ struct ContentView: View {
     @StateObject private var recordingManager: RecordingManager = RecordingManager(hlsServer: UserDefaults.standard.string(forKey: "HLSServer") ?? "")
 
     var body: some View {
-        ZStack {
-            CameraViewControllerRepresentable(session: $session, audioLevel: $audioLevel)
-                .onAppear {
-                    setupCamera()
-                }
-                .edgesIgnoringSafeArea(.all)
+        GeometryReader { geometry in
+            let height = geometry.size.height
+            let width = height * (16.0/9.0)
             
-            HStack {
-                Spacer()
-                VStack {
-                    Button(action: {
-                        showSettings = true
-                    }) {
-                        Image(systemName: "gear")
-                            .font(.system(size: 24))
-                            .foregroundColor(.white)
-                            .frame(width: 50, height: 50)
-                    }
-                    .background(Color.black.opacity(0.5))
-                    .cornerRadius(25)
-                    .sheet(isPresented: $showSettings) {
-                        SettingsView()
-                    }
-                    .padding(.top)
-
-                    Spacer()
-                    
-                    // Audio Level Meter
-                    AudioLevelMeter(audioLevel: $audioLevel)
-                        .frame(width: 30)
-                    
-                    Spacer()
-
-                    // Record Button
-                    Button(action: {
-                        isRecording.toggle()
-                        if isRecording {
-                            recordingManager.startRecording()
-                        } else {
-                            recordingManager.stopRecording {
-                                print("Recording finished")
-                                // Handle post-recording tasks here
-                            }
+            ZStack {
+                // Camera, web overlay, and controls contained within 16:9 area
+                ZStack {
+                    CameraViewControllerRepresentable(session: $session,
+                                                    audioLevel: $audioLevel)
+                        .onAppear {
+                            setupCamera()
                         }
-                    }) {
-                        Image(systemName: isRecording ? "record.circle.fill" : "record.circle")
-                            .font(.system(size: 24))
-                            .foregroundColor(isRecording ? .red : .white)
-                            .frame(width: 50, height: 50)
-                    }
-                    .background(Color.black.opacity(0.5))
-                    .cornerRadius(25)
                     
-                    Spacer()
+                    WebOverlayView(urlString: UserDefaults.standard.string(forKey: "OverlayURL") ?? "")
+                    
+                    // Controls now positioned relative to 16:9 frame
+                    HStack {
+                        Spacer()
+                        VStack {
+                            Button(action: {
+                                showSettings = true
+                            }) {
+                                Image(systemName: "gear")
+                                    .font(.system(size: 24))
+                                    .foregroundColor(.white)
+                                    .frame(width: 50, height: 50)
+                            }
+                            .background(Color.black.opacity(0.5))
+                            .cornerRadius(25)
+                            .sheet(isPresented: $showSettings) {
+                                SettingsView()
+                            }
+                            .padding(.top)
+
+                            Spacer()
+                            
+                            AudioLevelMeter(audioLevel: $audioLevel)
+                                .frame(width: 30)
+                            
+                            Spacer()
+
+                            Button(action: {
+                                isRecording.toggle()
+                                if isRecording {
+                                    recordingManager.startRecording()
+                                } else {
+                                    recordingManager.stopRecording {
+                                        print("Recording finished")
+                                    }
+                                }
+                            }) {
+                                Image(systemName: isRecording ? "record.circle.fill" : "record.circle")
+                                    .font(.system(size: 24))
+                                    .foregroundColor(isRecording ? .red : .white)
+                                    .frame(width: 50, height: 50)
+                            }
+                            .background(Color.black.opacity(0.5))
+                            .cornerRadius(25)
+                            
+                            Spacer()
+                        }
+                        .padding()
+                        .offset(x: -10)
+                    }
                 }
-                .padding()
-                .offset(x: -20) // move stack slightly left to not overlap the letterbox
+                .frame(width: width, height: height)
+                .position(x: geometry.size.width/2, y: geometry.size.height/2)
             }
         }
+        .edgesIgnoringSafeArea(.all)
     }
 
+    // MARK: setupCamera
     private func setupCamera() {
         guard let videoDevice = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back),
               let audioDevice = AVCaptureDevice.default(for: .audio) else {
@@ -435,6 +645,9 @@ extension RecordingManager: AVAssetWriterDelegate {
      }
 }
 
+
+
+
 // Manages the recording and streaming of HLS segments
 class RecordingManager: NSObject, ObservableObject, AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptureAudioDataOutputSampleBufferDelegate {
     private var assetWriter: AVAssetWriter?
@@ -459,6 +672,12 @@ class RecordingManager: NSObject, ObservableObject, AVCaptureVideoDataOutputSamp
     private let segmentCounterQueue = DispatchQueue(label: "segmentCounterQueue")
     // A set to keep track of sequences currently being uploaded
     private var uploadingSequences: Set<Int> = []
+    private let sharedState = SharedImageState.shared
+    private let device: MTLDevice
+    private let commandQueue: MTLCommandQueue
+    private let textureCache: CVMetalTextureCache
+    private let readWriteLockFlag = CVPixelBufferLockFlags(rawValue: 0)
+
     
     init(hlsServer: String) {
         print("The HLS server is: ", hlsServer)
@@ -486,6 +705,22 @@ class RecordingManager: NSObject, ObservableObject, AVCaptureVideoDataOutputSamp
         } catch {
             print("Error creating output directory: \(error)")
         }
+
+        // Create the Metal device and command queue
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let commandQueue = device.makeCommandQueue() else {
+            fatalError("Unable to create Metal device and command queue")
+        }
+        self.device = device
+        self.commandQueue = commandQueue
+
+        // Create the texture cache
+        var textureCache: CVMetalTextureCache?
+        CVMetalTextureCacheCreate(nil, nil, device, nil, &textureCache)
+        guard let textureCache = textureCache else {
+            fatalError("Unable to create texture cache")
+        }
+        self.textureCache = textureCache
         
         super.init()
         setupAssetWriter()
@@ -550,6 +785,7 @@ class RecordingManager: NSObject, ObservableObject, AVCaptureVideoDataOutputSamp
     func stopRecording(completion: @escaping () -> Void) {
         isRecording = false
         isSessionStarted = false
+        segmentCounter = 0
         completionHandler = completion
         
         // Properly handle async finish writing
@@ -564,28 +800,132 @@ class RecordingManager: NSObject, ObservableObject, AVCaptureVideoDataOutputSamp
             }
         }
     }
+
+    func addOverlayToVideo(for videoSampleBuffer: CMSampleBuffer, with overlayPixelBuffer: CVPixelBuffer) {
+        guard let videoPixelBuffer = CMSampleBufferGetImageBuffer(videoSampleBuffer) else {
+            fatalError("Unable to get pixel buffer from sample buffer")
+        }
         
+        var videoYTexture: CVMetalTexture?
+        CVMetalTextureCacheCreateTextureFromImage(nil, textureCache, videoPixelBuffer, nil, .r16Unorm,
+                                                  CVPixelBufferGetWidthOfPlane(videoPixelBuffer, 0),
+                                                  CVPixelBufferGetHeightOfPlane(videoPixelBuffer, 0), 0, &videoYTexture)
+        
+        var videoUVTexture: CVMetalTexture?
+        CVMetalTextureCacheCreateTextureFromImage(nil, textureCache, videoPixelBuffer, nil, .rg16Unorm,
+                                                  CVPixelBufferGetWidthOfPlane(videoPixelBuffer, 1),
+                                                  CVPixelBufferGetHeightOfPlane(videoPixelBuffer, 1), 1, &videoUVTexture)
+        
+        guard let videoYTexture = videoYTexture,
+              let videoUVTexture = videoUVTexture,
+              let videoYMetalTexture = CVMetalTextureGetTexture(videoYTexture),
+              let videoUVMetalTexture = CVMetalTextureGetTexture(videoUVTexture) else {
+            fatalError("Unable to create video YUV textures")
+        }
+        
+        var overlayTexture: CVMetalTexture?
+        CVMetalTextureCacheCreateTextureFromImage(nil, textureCache, overlayPixelBuffer, nil, .bgra8Unorm,
+                                                  CVPixelBufferGetWidth(overlayPixelBuffer),
+                                                  CVPixelBufferGetHeight(overlayPixelBuffer), 0, &overlayTexture)
+        
+        guard let overlayTexture = overlayTexture,
+              let overlayMetalTexture = CVMetalTextureGetTexture(overlayTexture) else {
+            fatalError("Unable to create overlay texture")
+        }
+        
+        /*
+        print("Overlay buffer size \(overlayMetalTexture.width) x \(overlayMetalTexture.height)")
+        print("Y buffer size \(videoYMetalTexture.width) x \(videoYMetalTexture.height)")
+        print("UV buffer size \(videoUVMetalTexture.width) x \(videoUVMetalTexture.height)")
+        */
+        commandQueue.insertDebugCaptureBoundary()
+
+        let commandBuffer = commandQueue.makeCommandBuffer()
+        let computeEncoder = commandBuffer?.makeComputeCommandEncoder()
+
+        
+        let pipelineState = try! device.makeComputePipelineState(function: device.makeDefaultLibrary()!.makeFunction(name: "overlayShader")!)
+        computeEncoder?.setComputePipelineState(pipelineState)
+        
+        computeEncoder?.setTexture(videoYMetalTexture, index: 0)
+        computeEncoder?.setTexture(videoUVMetalTexture, index: 1)
+        computeEncoder?.setTexture(overlayMetalTexture, index: 2)
+        
+        let width = pipelineState.threadExecutionWidth
+        let height = pipelineState.maxTotalThreadsPerThreadgroup / width
+        let threadgroupSize = MTLSize(width: width, height: height, depth: 1)
+
+        let overlayWidth = overlayMetalTexture.width  // Should be 1920
+        let overlayHeight = overlayMetalTexture.height // Should be 1080
+
+        let threadgroupCount = MTLSize(width: (overlayWidth + width - 1) / width,
+                                       height: (overlayHeight + height - 1) / height,
+                                       depth: 1)
+        
+        computeEncoder?.dispatchThreadgroups(threadgroupCount, threadsPerThreadgroup: threadgroupSize)
+        computeEncoder?.endEncoding()
+        
+        commandBuffer?.addCompletedHandler { buffer in
+            if let error = buffer.error {
+                print("Command buffer error: \(error.localizedDescription)")
+            }
+        }
+        commandBuffer?.commit()
+        commandBuffer?.waitUntilCompleted()
+
+        commandQueue.insertDebugCaptureBoundary()
+
+        CVPixelBufferLockBaseAddress(videoPixelBuffer, readWriteLockFlag)
+
+        if let yTextureBuffer = videoYMetalTexture.buffer?.contents() {
+            let yPlaneAddress = CVPixelBufferGetBaseAddressOfPlane(videoPixelBuffer, 0)!
+            memcpy(yPlaneAddress, yTextureBuffer, videoYMetalTexture.buffer!.length)
+        }
+
+        if let uvTextureBuffer = videoUVMetalTexture.buffer?.contents() {
+            let uvPlaneAddress = CVPixelBufferGetBaseAddressOfPlane(videoPixelBuffer, 1)!
+            memcpy(uvPlaneAddress, uvTextureBuffer, videoUVMetalTexture.buffer!.length)
+        }
+
+        CVPixelBufferUnlockBaseAddress(videoPixelBuffer, readWriteLockFlag)
+    }
+
+
+
+    
     // MARK: captureOutput
     func captureOutput(_ output: AVCaptureOutput,
                        didOutput sampleBuffer: CMSampleBuffer,
                        from connection: AVCaptureConnection) {
-        guard isRecording else { return }
+        guard isRecording else {
+            return
+        }
 
         if !isSessionStarted {
             let startTime = sampleBuffer.presentationTimeStamp
             assetWriter?.startSession(atSourceTime: startTime)
             isSessionStarted = true
         }
-        
-        // Write sample buffer to appropriate input
-        if output is AVCaptureVideoDataOutput,
-           let input = videoInput,
-           input.isReadyForMoreMediaData {
-            input.append(sampleBuffer)
-        } else if output is AVCaptureAudioDataOutput,
-                  let input = audioInput,
-                  input.isReadyForMoreMediaData {
-            input.append(sampleBuffer)
+
+        // Verify the sample buffer contains a video buffer
+        if output is AVCaptureVideoDataOutput {
+
+            guard let overlayImage = sharedState.capturedImage else {
+                print("There is no captured image for the overlay")
+                return
+            }
+
+            addOverlayToVideo(for: sampleBuffer, with: overlayImage)
+            
+            if let input = videoInput, input.isReadyForMoreMediaData {
+                input.append(sampleBuffer)
+            }
+            
+        } else if output is AVCaptureAudioDataOutput {
+            // Handle audio sample buffer
+            if let input = audioInput, input.isReadyForMoreMediaData {
+                input.append(sampleBuffer)
+            }
         }
     }
     
@@ -597,6 +937,7 @@ class RecordingManager: NSObject, ObservableObject, AVCaptureVideoDataOutputSamp
 
         // Inside the task block to avoid race conditions
         uploadQueue.addOperation {
+            guard self.isRecording, self.segmentBuffer.count > 0 else { return }
             let bufferedSegment = self.segmentBuffer[0]
             let sequence = bufferedSegment.sequence
             let duration = bufferedSegment.duration
