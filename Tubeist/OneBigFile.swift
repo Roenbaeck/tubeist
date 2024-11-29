@@ -5,6 +5,16 @@ import VideoToolbox
 import WebKit
 import Metal
 
+let CAPTURE_WIDTH: Int = 3840
+let CAPTURE_HEIGHT: Int = 2160
+let FRAMERATE: Int = 30
+
+/*
+let CAPTURE_WIDTH: Int = 1920
+let CAPTURE_HEIGHT: Int = 1080
+let FRAMERATE: Int = 30
+*/
+
 struct SettingsView: View {
     @AppStorage("HLSServer") private var hlsServer: String = ""
     @AppStorage("Username") private var username: String = ""
@@ -147,7 +157,7 @@ class WebOverlayViewController: NSObject, WKNavigationDelegate {
         config.allowsInlineMediaPlayback = true
         config.mediaTypesRequiringUserActionForPlayback = []
         
-        let webView = WKWebView(frame: CGRect(x: 0, y: 0, width: 1920, height: 1080), configuration: config)
+        let webView = WKWebView(frame: CGRect(x: 0, y: 0, width: CAPTURE_WIDTH, height: CAPTURE_HEIGHT), configuration: config)
         webView.navigationDelegate = self
         webView.isOpaque = false
         webView.backgroundColor = .clear
@@ -185,7 +195,7 @@ class WebOverlayViewController: NSObject, WKNavigationDelegate {
     
     func captureWebViewImage() {
         let config = WKSnapshotConfiguration()
-        config.snapshotWidth = NSNumber(value: 1920 / UIScreen.main.scale)
+        config.snapshotWidth = NSNumber(value: CAPTURE_WIDTH / Int(UIScreen.main.scale))
         
         webView?.takeSnapshot(with: config) { [weak self] (image, error) in
             guard let uiImage = image else {
@@ -350,21 +360,27 @@ struct ContentView: View {
             session.beginConfiguration()
 
             // Set session preset before adding inputs/outputs
-            session.sessionPreset = .hd1920x1080
-            // After testing I think setting the camera to HD looks better
-            // session.sessionPreset = .hd4K3840x2160
+            switch CAPTURE_WIDTH {
+            case 1280: session.sessionPreset = .hd1280x720
+            case 1920: session.sessionPreset = .hd1920x1080
+            case 3840: session.sessionPreset = .hd4K3840x2160
+            default: break
+            }
             
-            // Find the desired format for the video device
+            // videoDevice.listFormats()
+            
             guard let format = videoDevice.findFormat() else {
                 print("Desired format not found")
                 return
             }
+            
+            videoDevice.printFormatDetails(captureFormat: format)
 
             // Apply the format to the video device
             try videoDevice.lockForConfiguration()
             videoDevice.activeFormat = format
-            videoDevice.activeVideoMinFrameDuration = CMTimeMake(value: 1, timescale: 30)
-            videoDevice.activeVideoMaxFrameDuration = CMTimeMake(value: 1, timescale: 30)
+            videoDevice.activeVideoMinFrameDuration = CMTimeMake(value: 1, timescale: Int32(FRAMERATE))
+            videoDevice.activeVideoMaxFrameDuration = CMTimeMake(value: 1, timescale: Int32(FRAMERATE))
             videoDevice.activeColorSpace = .HLG_BT2020
             videoDevice.unlockForConfiguration()
 
@@ -433,6 +449,50 @@ struct ContentView: View {
         } catch {
             print("Error setting up camera: \(error)")
         }
+    }
+}
+
+// Extend AVCaptureDevice to include findFormat method
+extension AVCaptureDevice {
+    func printFormatDetails(captureFormat: AVCaptureDevice.Format) {
+        print("----------============ \(captureFormat.formatDescription.mediaSubType.rawValue) ============----------")
+        print("Supports \(captureFormat.formatDescription)")
+        print("HDR: \(captureFormat.isVideoHDRSupported)")
+        print("Frame range: \(captureFormat.videoSupportedFrameRateRanges)")
+        print("Spatial video: \(captureFormat.isSpatialVideoCaptureSupported)")
+        print("Background replacement: \(captureFormat.isBackgroundReplacementSupported)")
+        print("Binned: \(captureFormat.isVideoBinned)")
+        print("Multi-cam: \(captureFormat.isMultiCamSupported)")
+        print("FOV: \(captureFormat.videoFieldOfView)")
+        print("Color spaces: \(captureFormat.supportedColorSpaces)")
+        print("ISO: \(captureFormat.minISO) - \(captureFormat.maxISO)")
+        print("Exposure: \(captureFormat.minExposureDuration) - \(captureFormat.maxExposureDuration)")
+        print("Max zoom: \(captureFormat.videoMaxZoomFactor) (native zoom: \(captureFormat.secondaryNativeResolutionZoomFactors))")
+        print("AF: \(captureFormat.autoFocusSystem)")
+    }
+    func listFormats() {
+        for captureFormat in formats {
+            printFormatDetails(captureFormat: captureFormat)
+        }
+    }
+    func findFormat() -> AVCaptureDevice.Format? {
+        for captureFormat in formats {
+            if captureFormat.formatDescription.mediaSubType.rawValue == kCVPixelFormatType_422YpCbCr10BiPlanarVideoRange {
+                let description = captureFormat.formatDescription as CMFormatDescription
+                let dimensions = CMVideoFormatDescriptionGetDimensions(description)
+                
+                if dimensions.width == CAPTURE_WIDTH && dimensions.height == CAPTURE_HEIGHT,
+                   let frameRateRange = captureFormat.videoSupportedFrameRateRanges.first,
+                   frameRateRange.maxFrameRate >= Float64(FRAMERATE),
+                   captureFormat.isVideoHDRSupported,
+                   !captureFormat.isMultiCamSupported, // avoid this to get a different 4:2:2 with higher refresh rates
+                   captureFormat.maxISO >= 5184.0 {
+                    print("Desired format found")
+                    return captureFormat
+                }
+            }
+        }
+        return nil
     }
 }
 
@@ -577,27 +637,7 @@ class AudioLevelDelegate: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate
     }
 }
 
-// Extend AVCaptureDevice to include findFormat method
-extension AVCaptureDevice {
-    func findFormat() -> AVCaptureDevice.Format? {
-        for captureFormat in formats {
-            if captureFormat.formatDescription.mediaSubType.rawValue == kCVPixelFormatType_422YpCbCr10BiPlanarVideoRange {
-                let description = captureFormat.formatDescription as CMFormatDescription
-                let dimensions = CMVideoFormatDescriptionGetDimensions(description)
-                
-                if dimensions.width == 1920 && dimensions.height == 1080,
-                // if dimensions.width == 3840 && dimensions.height == 2160,
-                   let frameRateRange = captureFormat.videoSupportedFrameRateRanges.first,
-                   frameRateRange.maxFrameRate >= 30,
-                   captureFormat.isVideoHDRSupported {
-                    print("Desired format found")
-                    return captureFormat
-                }
-            }
-        }
-        return nil
-    }
-}
+
 
 extension RecordingManager: AVAssetWriterDelegate {
      func assetWriter(_ writer: AVAssetWriter,
@@ -677,7 +717,29 @@ class RecordingManager: NSObject, ObservableObject, AVCaptureVideoDataOutputSamp
     private let commandQueue: MTLCommandQueue
     private let textureCache: CVMetalTextureCache
     private let readWriteLockFlag = CVPixelBufferLockFlags(rawValue: 0)
-
+    lazy var pipelineState: MTLComputePipelineState? = {
+        guard let library = device.makeDefaultLibrary(),
+              let function = library.makeFunction(name: "overlayShader") else {
+            return nil
+        }
+        return try? device.makeComputePipelineState(function: function)
+    }()
+    lazy var threadgroupSize: MTLSize? = {
+        guard let pipelineState = self.pipelineState else {
+            return nil
+        }
+        let width = pipelineState.threadExecutionWidth
+        let height = pipelineState.maxTotalThreadsPerThreadgroup / width
+        return MTLSize(width: width, height: height, depth: 1)
+    }()
+    lazy var threadgroupCount: MTLSize? = {
+        guard let pipelineState = self.pipelineState else {
+            return nil
+        }
+        let width = pipelineState.threadExecutionWidth
+        let height = pipelineState.maxTotalThreadsPerThreadgroup / width
+        return MTLSize(width: (CAPTURE_WIDTH + width - 1) / width, height: (CAPTURE_HEIGHT + height - 1) / height, depth: 1)
+    }()
     
     init(hlsServer: String) {
         print("The HLS server is: ", hlsServer)
@@ -740,12 +802,12 @@ class RecordingManager: NSObject, ObservableObject, AVCaptureVideoDataOutputSamp
 
         let videoSettings: [String: Any] = [
             AVVideoCodecKey: AVVideoCodecType.hevc,
-            AVVideoWidthKey: 1920,
-            AVVideoHeightKey: 1080,
+            AVVideoWidthKey: CAPTURE_WIDTH,
+            AVVideoHeightKey: CAPTURE_HEIGHT,
             AVVideoCompressionPropertiesKey: [
                 AVVideoProfileLevelKey: kVTProfileLevel_HEVC_Main10_AutoLevel,
                 AVVideoAverageBitRateKey: selectedBitrate,
-                AVVideoMaxKeyFrameIntervalKey: 60,  // One keyframe per 2-second segment at 30fps
+                AVVideoMaxKeyFrameIntervalKey: 2 * FRAMERATE,  // One keyframe per 2-second segment
                 AVVideoAllowFrameReorderingKey: true,
                 // Leaving the following three out defaults to Rec.709
                 // YouTube needs these for HDR: https://developers.google.com/youtube/v3/live/guides/hls-ingestion
@@ -844,23 +906,21 @@ class RecordingManager: NSObject, ObservableObject, AVCaptureVideoDataOutputSamp
         let computeEncoder = commandBuffer?.makeComputeCommandEncoder()
 
         
-        let pipelineState = try! device.makeComputePipelineState(function: device.makeDefaultLibrary()!.makeFunction(name: "overlayShader")!)
+        guard let pipelineState = self.pipelineState else {
+            fatalError("Failed to create pipeline state")
+        }
         computeEncoder?.setComputePipelineState(pipelineState)
         
         computeEncoder?.setTexture(videoYMetalTexture, index: 0)
         computeEncoder?.setTexture(videoUVMetalTexture, index: 1)
         computeEncoder?.setTexture(overlayMetalTexture, index: 2)
         
-        let width = pipelineState.threadExecutionWidth
-        let height = pipelineState.maxTotalThreadsPerThreadgroup / width
-        let threadgroupSize = MTLSize(width: width, height: height, depth: 1)
-
-        let overlayWidth = overlayMetalTexture.width  // Should be 1920
-        let overlayHeight = overlayMetalTexture.height // Should be 1080
-
-        let threadgroupCount = MTLSize(width: (overlayWidth + width - 1) / width,
-                                       height: (overlayHeight + height - 1) / height,
-                                       depth: 1)
+        guard let threadgroupSize = self.threadgroupSize else {
+            fatalError("Failed to determine threadgroup size")
+        }
+        guard let threadgroupCount = self.threadgroupCount else {
+            fatalError("Failed to determine threadgroup count")
+        }
         
         computeEncoder?.dispatchThreadgroups(threadgroupCount, threadsPerThreadgroup: threadgroupSize)
         computeEncoder?.endEncoding()
