@@ -3,7 +3,6 @@ import AVFoundation
 import Foundation
 import VideoToolbox
 import WebKit
-import Metal
 
 let CAPTURE_WIDTH: Int = 3840
 let CAPTURE_HEIGHT: Int = 2160
@@ -77,68 +76,11 @@ struct SettingsView: View {
 
 @Observable
 final class SharedImageState {
-    var capturedImage: CVPixelBuffer?
+    var capturedOverlay: CIImage?
     static let shared = SharedImageState()
     
     private init() {}
 }
-
-class ImageConverter {
-    static let shared = ImageConverter()
-    
-    private let context: CIContext
-    
-    private init() {
-        self.context = CIContext(options: [
-            .useSoftwareRenderer: false,
-            .workingColorSpace: CGColorSpace(name: CGColorSpace.itur_2020)!
-        ])
-    }
-    
-    func convertImageToPixelBuffer(ciImage: CIImage) -> CVPixelBuffer? {
-        let width = Int(ciImage.extent.width)
-        let height = Int(ciImage.extent.height)
-        
-        var pixelBuffer: CVPixelBuffer?
-        let attributes: [CFString: Any] = [
-            kCVPixelBufferCGImageCompatibilityKey: true,
-            kCVPixelBufferCGBitmapContextCompatibilityKey: true,
-            kCVPixelBufferMetalCompatibilityKey: true,
-            kCVPixelBufferPixelFormatTypeKey: kCVPixelFormatType_32BGRA,
-            kCVPixelBufferIOSurfacePropertiesKey: [:]
-        ]
-        
-        let status = CVPixelBufferCreate(
-            kCFAllocatorDefault,
-            width,
-            height,
-            kCVPixelFormatType_32BGRA,
-            attributes as CFDictionary,
-            &pixelBuffer
-        )
-        
-        
-        guard status == kCVReturnSuccess, let pixelBuffer = pixelBuffer else {
-            print("Error: Could not create CVPixelBuffer")
-            return nil
-        }
-        
-        CVPixelBufferLockBaseAddress(pixelBuffer, CVPixelBufferLockFlags(rawValue: 0))
-        
-        // Render the CIImage, preserving color information
-        context.render(
-            ciImage,
-            to: pixelBuffer,
-            bounds: CGRect(x: 0, y: 0, width: width, height: height),
-            colorSpace: CGColorSpace(name: CGColorSpace.itur_2020)
-        )
-        
-        CVPixelBufferUnlockBaseAddress(pixelBuffer, CVPixelBufferLockFlags(rawValue: 0))
-
-        return pixelBuffer
-    }
-}
-
 
 
 // Usage in WebOverlayViewController remains similar but simpler
@@ -204,9 +146,8 @@ class WebOverlayViewController: NSObject, WKNavigationDelegate {
             }
             
             // Detailed image size logging
-            print("UIImage size: \(uiImage.size)")
-            print("UIImage scale: \(uiImage.scale)")
             print("UIImage size in points: \(uiImage.size)")
+            print("UIImage scale: \(uiImage.scale)")
             print("UIImage size in pixels: \(CGSize(width: uiImage.size.width * uiImage.scale, height: uiImage.size.height * uiImage.scale))")
                         
             // Save the UIImage to a file for checking
@@ -229,19 +170,8 @@ class WebOverlayViewController: NSObject, WKNavigationDelegate {
                 print("Valid image captured with size: \(uiImage.size)")
                 print("CIImage extent: \(ciImage.extent)")
 
-                DispatchQueue.main.async {
-                    if let pixelBuffer = ImageConverter.shared.convertImageToPixelBuffer(ciImage: ciImage) {
-                        self?.sharedState.capturedImage = pixelBuffer
-                        print("Pixel Buffer Width: \(CVPixelBufferGetWidth(pixelBuffer))")
-                        print("Pixel Buffer Height: \(CVPixelBufferGetHeight(pixelBuffer))")
-
-                        // Save the pixel buffer to a file for checking
-                        if let documentDirectory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
-                            let fileURL = documentDirectory.appendingPathComponent("overlayImage.png")
-                            self?.savePixelBufferAsPNG(pixelBuffer: pixelBuffer, to: fileURL)
-                        }
-                    }
-                }
+                self?.sharedState.capturedOverlay = ciImage
+                
             } else {
                 print("Error: Captured image could not be converted to CIImage")
             }
@@ -713,33 +643,13 @@ class RecordingManager: NSObject, ObservableObject, AVCaptureVideoDataOutputSamp
     // A set to keep track of sequences currently being uploaded
     private var uploadingSequences: Set<Int> = []
     private let sharedState = SharedImageState.shared
-    private let device: MTLDevice
-    private let commandQueue: MTLCommandQueue
-    private let textureCache: CVMetalTextureCache
-    private let readWriteLockFlag = CVPixelBufferLockFlags(rawValue: 0)
-    lazy var pipelineState: MTLComputePipelineState? = {
-        guard let library = device.makeDefaultLibrary(),
-              let function = library.makeFunction(name: "overlayShader") else {
-            return nil
-        }
-        return try? device.makeComputePipelineState(function: function)
-    }()
-    lazy var threadgroupSize: MTLSize? = {
-        guard let pipelineState = self.pipelineState else {
-            return nil
-        }
-        let width = pipelineState.threadExecutionWidth
-        let height = pipelineState.maxTotalThreadsPerThreadgroup / width
-        return MTLSize(width: width, height: height, depth: 1)
-    }()
-    lazy var threadgroupCount: MTLSize? = {
-        guard let pipelineState = self.pipelineState else {
-            return nil
-        }
-        let width = pipelineState.threadExecutionWidth
-        let height = pipelineState.maxTotalThreadsPerThreadgroup / width
-        return MTLSize(width: (CAPTURE_WIDTH + width - 1) / width, height: (CAPTURE_HEIGHT + height - 1) / height, depth: 1)
-    }()
+    
+    private let context: CIContext = CIContext(options: [
+        .useSoftwareRenderer: false,
+        .workingColorSpace: CGColorSpace(name: CGColorSpace.itur_2020)!
+    ])
+    private let sourceOverKernel = CIBlendKernel.sourceOver
+    
     
     init(hlsServer: String) {
         print("The HLS server is: ", hlsServer)
@@ -767,23 +677,7 @@ class RecordingManager: NSObject, ObservableObject, AVCaptureVideoDataOutputSamp
         } catch {
             print("Error creating output directory: \(error)")
         }
-
-        // Create the Metal device and command queue
-        guard let device = MTLCreateSystemDefaultDevice(),
-              let commandQueue = device.makeCommandQueue() else {
-            fatalError("Unable to create Metal device and command queue")
-        }
-        self.device = device
-        self.commandQueue = commandQueue
-
-        // Create the texture cache
-        var textureCache: CVMetalTextureCache?
-        CVMetalTextureCacheCreate(nil, nil, device, nil, &textureCache)
-        guard let textureCache = textureCache else {
-            fatalError("Unable to create texture cache")
-        }
-        self.textureCache = textureCache
-        
+                
         super.init()
         setupAssetWriter()
     }
@@ -863,95 +757,6 @@ class RecordingManager: NSObject, ObservableObject, AVCaptureVideoDataOutputSamp
         }
     }
 
-    func addOverlayToVideo(for videoSampleBuffer: CMSampleBuffer, with overlayPixelBuffer: CVPixelBuffer) {
-        guard let videoPixelBuffer = CMSampleBufferGetImageBuffer(videoSampleBuffer) else {
-            fatalError("Unable to get pixel buffer from sample buffer")
-        }
-        
-        var videoYTexture: CVMetalTexture?
-        CVMetalTextureCacheCreateTextureFromImage(nil, textureCache, videoPixelBuffer, nil, .r16Unorm,
-                                                  CVPixelBufferGetWidthOfPlane(videoPixelBuffer, 0),
-                                                  CVPixelBufferGetHeightOfPlane(videoPixelBuffer, 0), 0, &videoYTexture)
-        
-        var videoUVTexture: CVMetalTexture?
-        CVMetalTextureCacheCreateTextureFromImage(nil, textureCache, videoPixelBuffer, nil, .rg16Unorm,
-                                                  CVPixelBufferGetWidthOfPlane(videoPixelBuffer, 1),
-                                                  CVPixelBufferGetHeightOfPlane(videoPixelBuffer, 1), 1, &videoUVTexture)
-        
-        guard let videoYTexture = videoYTexture,
-              let videoUVTexture = videoUVTexture,
-              let videoYMetalTexture = CVMetalTextureGetTexture(videoYTexture),
-              let videoUVMetalTexture = CVMetalTextureGetTexture(videoUVTexture) else {
-            fatalError("Unable to create video YUV textures")
-        }
-        
-        var overlayTexture: CVMetalTexture?
-        CVMetalTextureCacheCreateTextureFromImage(nil, textureCache, overlayPixelBuffer, nil, .bgra8Unorm,
-                                                  CVPixelBufferGetWidth(overlayPixelBuffer),
-                                                  CVPixelBufferGetHeight(overlayPixelBuffer), 0, &overlayTexture)
-        
-        guard let overlayTexture = overlayTexture,
-              let overlayMetalTexture = CVMetalTextureGetTexture(overlayTexture) else {
-            fatalError("Unable to create overlay texture")
-        }
-        
-        /*
-        print("Overlay buffer size \(overlayMetalTexture.width) x \(overlayMetalTexture.height)")
-        print("Y buffer size \(videoYMetalTexture.width) x \(videoYMetalTexture.height)")
-        print("UV buffer size \(videoUVMetalTexture.width) x \(videoUVMetalTexture.height)")
-        */
-        commandQueue.insertDebugCaptureBoundary()
-
-        let commandBuffer = commandQueue.makeCommandBuffer()
-        let computeEncoder = commandBuffer?.makeComputeCommandEncoder()
-
-        
-        guard let pipelineState = self.pipelineState else {
-            fatalError("Failed to create pipeline state")
-        }
-        computeEncoder?.setComputePipelineState(pipelineState)
-        
-        computeEncoder?.setTexture(videoYMetalTexture, index: 0)
-        computeEncoder?.setTexture(videoUVMetalTexture, index: 1)
-        computeEncoder?.setTexture(overlayMetalTexture, index: 2)
-        
-        guard let threadgroupSize = self.threadgroupSize else {
-            fatalError("Failed to determine threadgroup size")
-        }
-        guard let threadgroupCount = self.threadgroupCount else {
-            fatalError("Failed to determine threadgroup count")
-        }
-        
-        computeEncoder?.dispatchThreadgroups(threadgroupCount, threadsPerThreadgroup: threadgroupSize)
-        computeEncoder?.endEncoding()
-        
-        commandBuffer?.addCompletedHandler { buffer in
-            if let error = buffer.error {
-                print("Command buffer error: \(error.localizedDescription)")
-            }
-        }
-        commandBuffer?.commit()
-        commandBuffer?.waitUntilCompleted()
-
-        commandQueue.insertDebugCaptureBoundary()
-
-        CVPixelBufferLockBaseAddress(videoPixelBuffer, readWriteLockFlag)
-
-        if let yTextureBuffer = videoYMetalTexture.buffer?.contents() {
-            let yPlaneAddress = CVPixelBufferGetBaseAddressOfPlane(videoPixelBuffer, 0)!
-            memcpy(yPlaneAddress, yTextureBuffer, videoYMetalTexture.buffer!.length)
-        }
-
-        if let uvTextureBuffer = videoUVMetalTexture.buffer?.contents() {
-            let uvPlaneAddress = CVPixelBufferGetBaseAddressOfPlane(videoPixelBuffer, 1)!
-            memcpy(uvPlaneAddress, uvTextureBuffer, videoUVMetalTexture.buffer!.length)
-        }
-
-        CVPixelBufferUnlockBaseAddress(videoPixelBuffer, readWriteLockFlag)
-    }
-
-
-
     
     // MARK: captureOutput
     func captureOutput(_ output: AVCaptureOutput,
@@ -969,14 +774,24 @@ class RecordingManager: NSObject, ObservableObject, AVCaptureVideoDataOutputSamp
 
         // Verify the sample buffer contains a video buffer
         if output is AVCaptureVideoDataOutput {
-
-            guard let overlayImage = sharedState.capturedImage else {
-                print("There is no captured image for the overlay")
-                return
-            }
-
-            addOverlayToVideo(for: sampleBuffer, with: overlayImage)
             
+            guard let videoPixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {
+                fatalError("Unable to get pixel buffer from sample buffer")
+            }
+            
+            let destination = CIRenderDestination(pixelBuffer: videoPixelBuffer)
+            destination.blendKernel = sourceOverKernel
+            destination.blendsInDestinationColorSpace = true
+            destination.alphaMode = .premultiplied
+            
+            do {
+                let task = try context.startTask(toRender: sharedState.capturedOverlay!, to: destination)
+                try task.waitUntilCompleted()
+            }
+            catch {
+                print("Error rendering overlay: \(error)")
+            }
+                        
             if let input = videoInput, input.isReadyForMoreMediaData {
                 input.append(sampleBuffer)
             }
