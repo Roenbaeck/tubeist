@@ -4,15 +4,14 @@ import Foundation
 import VideoToolbox
 import WebKit
 
-let CAPTURE_WIDTH: Int = 3840
-let CAPTURE_HEIGHT: Int = 2160
 let FRAMERATE: Int = 30
 
-/*
-let CAPTURE_WIDTH: Int = 1920
-let CAPTURE_HEIGHT: Int = 1080
-let FRAMERATE: Int = 30
-*/
+let CAPTURE_WIDTH: Int = 3840
+let CAPTURE_HEIGHT: Int = 2160
+
+let COMPRESSED_WIDTH: Int = 1920
+let COMPRESSED_HEIGHT: Int = 1080
+let SEGMENT_DURATION: Int = 2 // seconds
 
 struct SettingsView: View {
     @AppStorage("HLSServer") private var hlsServer: String = ""
@@ -74,6 +73,19 @@ struct SettingsView: View {
     }
 }
 
+func savePixelBufferAsPNG(pixelBuffer: CVPixelBuffer, to url: URL) {
+    do {
+        var cgImage: CGImage?
+        VTCreateCGImageFromCVPixelBuffer(pixelBuffer, options: nil, imageOut: &cgImage)
+        let uiImage = UIImage(cgImage: cgImage!)
+        let pngData = uiImage.pngData()! // Force-unwrap, assuming pngData will always be non-nil
+        try pngData.write(to: url)
+        print("Saved image to \(url)")
+    } catch {
+        print("Error saving image: \(error)")
+    }
+}
+
 @Observable
 final class SharedImageState {
     var capturedOverlay: CIImage?
@@ -83,8 +95,15 @@ final class SharedImageState {
 }
 
 
-// Usage in WebOverlayViewController remains similar but simpler
-class WebOverlayViewController: NSObject, WKNavigationDelegate {
+class WebOverlayViewController: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
+    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        if message.name
+            == "domChanged" {
+            // print("Capturing web view due to DOM change")
+            self.captureWebViewImage()
+        }
+    }
+    
     private var webView: WKWebView?
     let urlString: String
     let sharedState = SharedImageState.shared
@@ -96,15 +115,24 @@ class WebOverlayViewController: NSObject, WKNavigationDelegate {
 
     func createWebView() -> WKWebView {
         let config = WKWebViewConfiguration()
-        config.allowsInlineMediaPlayback = true
-        config.mediaTypesRequiringUserActionForPlayback = []
+        config.suppressesIncrementalRendering = true
+        config.websiteDataStore = WKWebsiteDataStore.nonPersistent()
         
         let webView = WKWebView(frame: CGRect(x: 0, y: 0, width: CAPTURE_WIDTH, height: CAPTURE_HEIGHT), configuration: config)
+        webView.isUserInteractionEnabled = false
         webView.navigationDelegate = self
         webView.isOpaque = false
         webView.backgroundColor = .clear
         webView.scrollView.backgroundColor = .clear
-        
+        webView.scrollView.zoomScale = 1.0
+        webView.scrollView.minimumZoomScale = 1.0
+        webView.scrollView.maximumZoomScale = 1.0
+        webView.scrollView.contentScaleFactor = 1.0
+        webView.scrollView.isScrollEnabled = false
+        webView.scrollView.pinchGestureRecognizer?.isEnabled = false
+        webView.scrollView.contentInset = UIEdgeInsets.zero
+        webView.scrollView.contentInsetAdjustmentBehavior = .never
+
         if let url = URL(string: urlString) {
             webView.load(URLRequest(url: url))
         }
@@ -116,24 +144,31 @@ class WebOverlayViewController: NSObject, WKNavigationDelegate {
     // MARK: - WKNavigationDelegate
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         print("Web view finished loading")
+        let script = """
+            (function() {
+                // Create a MutationObserver to watch for DOM changes
+                const observer = new MutationObserver(mutationsList => {
+                    // Trigger a Swift callback when a change is detected
+                    window.webkit.messageHandlers.domChanged.postMessage('DOM changed');
+                });
+
+                // Start observing the entire document
+                observer.observe(document, { subtree: true, childList: true, characterData: true });
+            })();
+        """
+
+        webView.evaluateJavaScript(script) { result, error in
+            if let error = error {
+                print("Error injecting JavaScript: \(error)")
+            }
+        }
+
+        webView.configuration.userContentController.add(self, name: "domChanged")
+
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
             self.captureWebViewImage()
         }
     }
-
-    func savePixelBufferAsPNG(pixelBuffer: CVPixelBuffer, to url: URL) {
-        do {
-            var cgImage: CGImage?
-            VTCreateCGImageFromCVPixelBuffer(pixelBuffer, options: nil, imageOut: &cgImage)
-            let uiImage = UIImage(cgImage: cgImage!)
-            let pngData = uiImage.pngData()! // Force-unwrap, assuming pngData will always be non-nil
-            try pngData.write(to: url)
-            print("Saved image to \(url)")
-        } catch {
-            print("Error saving image: \(error)")
-        }
-    }
-
     
     func captureWebViewImage() {
         let config = WKSnapshotConfiguration()
@@ -144,7 +179,7 @@ class WebOverlayViewController: NSObject, WKNavigationDelegate {
                 print("Error capturing snapshot: \(String(describing: error))")
                 return
             }
-            
+            /*
             // Detailed image size logging
             print("UIImage size in points: \(uiImage.size)")
             print("UIImage scale: \(uiImage.scale)")
@@ -164,12 +199,13 @@ class WebOverlayViewController: NSObject, WKNavigationDelegate {
                     print("Error: Could not convert UIImage to PNG data")
                 }
             }
-            
-            // Continue with the original logic
+            */
+
             if let ciImage = CIImage(image: uiImage) {
+                /*
                 print("Valid image captured with size: \(uiImage.size)")
                 print("CIImage extent: \(ciImage.extent)")
-
+                */
                 self?.sharedState.capturedOverlay = ciImage
                 
             } else {
@@ -312,6 +348,7 @@ struct ContentView: View {
             videoDevice.activeVideoMinFrameDuration = CMTimeMake(value: 1, timescale: Int32(FRAMERATE))
             videoDevice.activeVideoMaxFrameDuration = CMTimeMake(value: 1, timescale: Int32(FRAMERATE))
             videoDevice.activeColorSpace = .HLG_BT2020
+
             videoDevice.unlockForConfiguration()
 
             // Add video input to the session
@@ -353,8 +390,6 @@ struct ContentView: View {
             
             if session.canAddOutput(audioOutput) {
                 session.addOutput(audioOutput)
-                // Set up audio delegate
-                // TODO: Looks like this is overwritten by the call a few lines below for the recordingManager
                 audioOutput.setSampleBufferDelegate(self.audioDelegate, queue: DispatchQueue(label: "audioQueue"))
             } else {
                 print("Cannot add audio output")
@@ -362,8 +397,21 @@ struct ContentView: View {
             }
 
             videoOutput.setSampleBufferDelegate(recordingManager, queue: DispatchQueue(label: "recordingQueue"))
-            //audioOutput.setSampleBufferDelegate(recordingManager, queue: DispatchQueue(label: "recordingQueue"))
 
+            /*
+            // Find the video connection and enable stabilization
+            if let connection = videoOutput.connection(with: .video) {
+                if connection.isVideoStabilizationSupported {
+                    connection.preferredVideoStabilizationMode = .standard
+                    print("Video stabilization enabled: Standard")
+                } else {
+                    print("Video stabilization is not supported for this connection.")
+                }
+            } else {
+                print("Failed to get video connection.")
+            }
+             */
+            
             session.commitConfiguration()
 
             // Start the session on a background thread
@@ -654,7 +702,7 @@ class RecordingManager: NSObject, ObservableObject, AVCaptureVideoDataOutputSamp
     init(hlsServer: String) {
         print("The HLS server is: ", hlsServer)
         self.hlsServer = hlsServer
-        self.segmentDuration = CMTime(seconds: 2, preferredTimescale: 600)
+        self.segmentDuration = CMTime(seconds: Double(SEGMENT_DURATION), preferredTimescale: 600)
         
         // Initialize upload queue with concurrent operations
         self.uploadQueue = OperationQueue()
@@ -696,12 +744,12 @@ class RecordingManager: NSObject, ObservableObject, AVCaptureVideoDataOutputSamp
 
         let videoSettings: [String: Any] = [
             AVVideoCodecKey: AVVideoCodecType.hevc,
-            AVVideoWidthKey: CAPTURE_WIDTH,
-            AVVideoHeightKey: CAPTURE_HEIGHT,
+            AVVideoWidthKey: COMPRESSED_WIDTH,
+            AVVideoHeightKey: COMPRESSED_HEIGHT,
             AVVideoCompressionPropertiesKey: [
                 AVVideoProfileLevelKey: kVTProfileLevel_HEVC_Main10_AutoLevel,
                 AVVideoAverageBitRateKey: selectedBitrate,
-                AVVideoMaxKeyFrameIntervalKey: 2 * FRAMERATE,  // One keyframe per 2-second segment
+                AVVideoMaxKeyFrameIntervalKey: SEGMENT_DURATION * FRAMERATE,  // One keyframe per 2-second segment
                 AVVideoAllowFrameReorderingKey: true,
                 // Leaving the following three out defaults to Rec.709
                 // YouTube needs these for HDR: https://developers.google.com/youtube/v3/live/guides/hls-ingestion
