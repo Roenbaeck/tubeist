@@ -13,6 +13,8 @@ let COMPRESSED_WIDTH: Int = 1920
 let COMPRESSED_HEIGHT: Int = 1080
 let SEGMENT_DURATION: Int = 2 // seconds
 
+let TIMESCALE: Int = 60000 // something divisible with FRAMERATE
+
 struct SettingsView: View {
     @AppStorage("HLSServer") private var hlsServer: String = ""
     @AppStorage("Username") private var username: String = ""
@@ -22,7 +24,7 @@ struct SettingsView: View {
     @AppStorage("OverlayURL") private var overlayURL: String = ""
     @Environment(\.presentationMode) private var presentationMode
 
-    var bitrates: [Int] = [1_000_000, 2_000_000, 3_000_000, 4_000_000, 5_000_000, 6_000_000]
+    var bitrates: [Int] = [1_000_000, 2_000_000, 3_000_000, 4_000_000, 6_000_000, 10_000_000, 20_000_000]
     
     var body: some View {
         NavigationView {
@@ -345,8 +347,9 @@ struct ContentView: View {
             // Apply the format to the video device
             try videoDevice.lockForConfiguration()
             videoDevice.activeFormat = format
-            videoDevice.activeVideoMinFrameDuration = CMTimeMake(value: 1, timescale: Int32(FRAMERATE))
-            videoDevice.activeVideoMaxFrameDuration = CMTimeMake(value: 1, timescale: Int32(FRAMERATE))
+            let frameDuration = Int64(TIMESCALE / FRAMERATE)
+            videoDevice.activeVideoMinFrameDuration = CMTimeMake(value: frameDuration, timescale: Int32(TIMESCALE))
+            videoDevice.activeVideoMaxFrameDuration = CMTimeMake(value: frameDuration, timescale: Int32(TIMESCALE))
             videoDevice.activeColorSpace = .HLG_BT2020
 
             videoDevice.unlockForConfiguration()
@@ -702,7 +705,7 @@ class RecordingManager: NSObject, ObservableObject, AVCaptureVideoDataOutputSamp
     init(hlsServer: String) {
         print("The HLS server is: ", hlsServer)
         self.hlsServer = hlsServer
-        self.segmentDuration = CMTime(seconds: Double(SEGMENT_DURATION), preferredTimescale: 600)
+        self.segmentDuration = CMTime(seconds: Double(SEGMENT_DURATION), preferredTimescale: CMTimeScale(TIMESCALE))
         
         // Initialize upload queue with concurrent operations
         self.uploadQueue = OperationQueue()
@@ -732,8 +735,9 @@ class RecordingManager: NSObject, ObservableObject, AVCaptureVideoDataOutputSamp
     
     // MARK: setupAssetWriter
     func setupAssetWriter() {
-        
-        assetWriter = AVAssetWriter(contentType: .mpeg4Movie)
+        // Create a UTType for the MP4 file type.
+        guard let contentType = UTType(AVFileType.mp4.rawValue) else { return }
+        assetWriter = AVAssetWriter(contentType: contentType)
         assetWriter?.shouldOptimizeForNetworkUse = true
         assetWriter?.outputFileTypeProfile = .mpeg4AppleHLS
         assetWriter?.preferredOutputSegmentInterval = segmentDuration
@@ -749,6 +753,7 @@ class RecordingManager: NSObject, ObservableObject, AVCaptureVideoDataOutputSamp
             AVVideoCompressionPropertiesKey: [
                 AVVideoProfileLevelKey: kVTProfileLevel_HEVC_Main10_AutoLevel,
                 AVVideoAverageBitRateKey: selectedBitrate,
+                AVVideoExpectedSourceFrameRateKey: FRAMERATE,
                 AVVideoMaxKeyFrameIntervalKey: SEGMENT_DURATION * FRAMERATE,  // One keyframe per 2-second segment
                 AVVideoAllowFrameReorderingKey: true,
                 // Leaving the following three out defaults to Rec.709
