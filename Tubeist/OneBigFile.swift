@@ -347,9 +347,9 @@ struct ContentView: View {
             // Apply the format to the video device
             try videoDevice.lockForConfiguration()
             videoDevice.activeFormat = format
-            let frameDuration = Int64(TIMESCALE / FRAMERATE)
-            videoDevice.activeVideoMinFrameDuration = CMTimeMake(value: frameDuration, timescale: Int32(TIMESCALE))
-            videoDevice.activeVideoMaxFrameDuration = CMTimeMake(value: frameDuration, timescale: Int32(TIMESCALE))
+            let frameDurationParts = Int64(TIMESCALE / FRAMERATE)
+            videoDevice.activeVideoMinFrameDuration = CMTimeMake(value: frameDurationParts, timescale: Int32(TIMESCALE))
+            videoDevice.activeVideoMaxFrameDuration = CMTimeMake(value: frameDurationParts, timescale: Int32(TIMESCALE))
             videoDevice.activeColorSpace = .HLG_BT2020
 
             videoDevice.unlockForConfiguration()
@@ -705,7 +705,8 @@ class RecordingManager: NSObject, ObservableObject, AVCaptureVideoDataOutputSamp
     init(hlsServer: String) {
         print("The HLS server is: ", hlsServer)
         self.hlsServer = hlsServer
-        self.segmentDuration = CMTime(seconds: Double(SEGMENT_DURATION), preferredTimescale: CMTimeScale(TIMESCALE))
+        let segmentDurationParts = Int64(SEGMENT_DURATION * TIMESCALE)
+        self.segmentDuration = CMTimeMake(value: segmentDurationParts, timescale: Int32(TIMESCALE))
         
         // Initialize upload queue with concurrent operations
         self.uploadQueue = OperationQueue()
