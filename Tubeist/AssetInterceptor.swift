@@ -13,14 +13,7 @@ actor AssetWriterActor {
     private var assetWriter: AVAssetWriter?
     private var videoInput: AVAssetWriterInput?
     private var audioInput: AVAssetWriterInput?
-    private var _isSessionStarted = false
-    private var _isWriting = false
-
-    init() {
-        Task {
-            await self.setupAssetWriter()
-        }
-    }
+    private var _isSessionActive = false
 
     func setupAssetWriter() {
         guard let contentType = UTType(AVFileType.mp4.rawValue) else {
@@ -85,13 +78,9 @@ actor AssetWriterActor {
             print("Asset writer not configured")
             return
         }
-        Task {
-            assetWriter.startWriting()
-            _isWriting = true
-        }
+        assetWriter.startWriting()
     }
     func finishWriting() async {
-        _isWriting = false
         guard let assetWriter else {
             print("Asset writer not configured")
             return
@@ -103,39 +92,18 @@ actor AssetWriterActor {
         }
     }
 
-    func startSession(at startTime: CMTime) {
-        guard let assetWriter else {
-            print("Asset writer not configured")
-            return
-        }
-        Task {
-            assetWriter.startSession(atSourceTime: startTime)
-            _isSessionStarted = true
-        }
-    }
-    func endSession(at endTime: CMTime) {
-        guard let assetWriter else {
-            print("Asset writer not configured")
-            return
-        }
-        Task {
-            assetWriter.endSession(atSourceTime: endTime)
-            _isSessionStarted = false
-        }
-    }
-
-    func isSessionStarted() -> Bool {
-        _isSessionStarted
-    }
-
-    func isWriting() -> Bool {
-        _isWriting
-    }
-
     func appendVideoSampleBuffer(_ sampleBuffer: CMSampleBuffer) -> Bool {
         guard let videoInput = videoInput else {
             print("Video input not configured")
             return false
+        }
+        if !_isSessionActive {
+            guard let assetWriter else {
+                print("Asset writer not configured")
+                return false
+            }
+            assetWriter.startSession(atSourceTime: sampleBuffer.presentationTimeStamp)
+            _isSessionActive = true
         }
         return STREAMING_QUEUE.sync {  // Call append synchronously on the queue
             videoInput.isReadyForMoreMediaData && videoInput.append(sampleBuffer)
@@ -146,6 +114,14 @@ actor AssetWriterActor {
         guard let audioInput = audioInput else {
             print("Audio input not configured")
             return false
+        }
+        if !_isSessionActive {
+            guard let assetWriter else {
+                print("Asset writer not configured")
+                return false
+            }
+            assetWriter.startSession(atSourceTime: sampleBuffer.presentationTimeStamp)
+            _isSessionActive = true
         }
         return STREAMING_QUEUE.sync { // Call append synchronously on the queue
             audioInput.isReadyForMoreMediaData && audioInput.append(sampleBuffer)
@@ -190,13 +166,9 @@ final class AssetInterceptor: NSObject, AVAssetWriterDelegate, Sendable {
                 
         super.init()
     }
-    func setupAssetWriter() {
-        Task {
-            await self.assetWriter.setupAssetWriter()
-        }
-    }
     func startWriting() {
         Task {
+            await self.assetWriter.setupAssetWriter()
             await self.assetWriter.startWriting()
         }
     }
@@ -204,23 +176,6 @@ final class AssetInterceptor: NSObject, AVAssetWriterDelegate, Sendable {
         Task {
             await self.assetWriter.finishWriting()
         }
-    }
-    func startSession(at startTime: CMTime) {
-        Task {
-            await self.assetWriter.startSession(at: startTime)
-        }
-    }
-    func endSession(at endTime: CMTime) {
-        Task {
-            await self.assetWriter.endSession(at: endTime)
-        }
-    }
-    func isSessionStarted() async -> Bool {
-        return await self.assetWriter.isSessionStarted()
-    }
-
-    func isWriting() async -> Bool {
-        return await self.assetWriter.isWriting()
     }
 
     func appendVideoSampleBuffer(_ sampleBuffer: CMSampleBuffer) {

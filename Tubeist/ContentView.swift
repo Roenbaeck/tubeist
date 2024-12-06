@@ -10,8 +10,7 @@ import SwiftUI
 struct ContentView: View {
     @State private var isRecording = false
     @State private var showSettings = false
-    private let cameraMonitor = CameraMonitor.shared
-    private let assetInterceptor = AssetInterceptor.shared
+    private let streamer = Streamer.shared
     
     var body: some View {
         GeometryReader { geometry in
@@ -23,8 +22,8 @@ struct ContentView: View {
                 ZStack {
                     CameraMonitorView()
                     .onAppear {
-                        cameraMonitor.startCamera()
-                        print("CemaredMonitorView appeared")
+                        streamer.startCamera()
+                        print("Camera started")
                     }
                     
                     WebOverlayView()
@@ -56,15 +55,16 @@ struct ContentView: View {
                             Spacer()
                             
                             Button(action: {
-                                isRecording.toggle()
                                 if isRecording {
                                     Task {
-                                        assetInterceptor.finishWriting()
+                                        isRecording = false
+                                        streamer.endStream()
                                         print("Stopped recording")
                                     }
                                 } else {
                                     Task {
-                                        assetInterceptor.startWriting()
+                                        streamer.startStream()
+                                        isRecording = true
                                         print("Started recording")
                                     }
                                 }

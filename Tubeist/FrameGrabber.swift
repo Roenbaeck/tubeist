@@ -41,12 +41,8 @@ final class FrameGrabber: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
     func captureOutput(_ output: AVCaptureOutput,
                        didOutput sampleBuffer: CMSampleBuffer,
                        from connection: AVCaptureConnection) {
-        let presentationTimeStamp = sampleBuffer.presentationTimeStamp
         STREAMING_QUEUE.async {
             Task.detached {
-                if !(await self.assetInterceptor.isSessionStarted()) {
-                    self.assetInterceptor.startSession(at: presentationTimeStamp)
-                }
                 switch output {
                 case is AVCaptureVideoDataOutput:
                     if let overlayImage = await WebOverlayViewController.shared.getOverlayImage() {

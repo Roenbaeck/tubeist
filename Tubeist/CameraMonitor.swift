@@ -13,6 +13,7 @@ private actor CameraActor {
     private let session = AVCaptureSession()
     private let videoOutput = AVCaptureVideoDataOutput()
     private let audioOutput = AVCaptureAudioDataOutput()
+    private let frameGrabber = FrameGrabber.shared
     // Had to add this to pass previewLayer across boundary
     nonisolated(unsafe) private let previewLayer: AVCaptureVideoPreviewLayer
     
@@ -35,6 +36,8 @@ private actor CameraActor {
             case 3840: session.sessionPreset = .hd4K3840x2160
             default: break
             }
+            
+            session.automaticallyConfiguresCaptureDeviceForWideColor = true
             
             // videoDevice.listFormats()
             
@@ -73,21 +76,10 @@ private actor CameraActor {
                 return
             }
             
-            // Add video output to the session
-            if session.canAddOutput(videoOutput) {
-                session.addOutput(videoOutput)
-            } else {
-                print("Cannot add video output")
-                return
-            }
+            videoOutput.setSampleBufferDelegate(frameGrabber, queue: STREAMING_QUEUE)
+            audioOutput.setSampleBufferDelegate(frameGrabber, queue: STREAMING_QUEUE)
             
-            // Add audio output to the session
-            if session.canAddOutput(audioOutput) {
-                session.addOutput(audioOutput)
-            } else {
-                print("Cannot add audio output")
-                return
-            }
+            
             
             
             
@@ -112,18 +104,31 @@ private actor CameraActor {
         }
     }
     
-    func setAudioSampleBufferDelegate(audioDelegate: AVCaptureAudioDataOutputSampleBufferDelegate) {
-        audioOutput.setSampleBufferDelegate(audioDelegate, queue: STREAMING_QUEUE)
-    }
-    func setVideoSampleBufferDelegate(videoDelegate: AVCaptureVideoDataOutputSampleBufferDelegate) {
-        videoOutput.setSampleBufferDelegate(videoDelegate, queue: STREAMING_QUEUE)
+    func startOutput() {
+        // Add video output to the session
+        if session.canAddOutput(videoOutput) {
+            session.addOutput(videoOutput)
+        } else {
+            print("Cannot add video output")
+            return
+        }
+        
+        // Add audio output to the session
+        if session.canAddOutput(audioOutput) {
+            session.addOutput(audioOutput)
+        } else {
+            print("Cannot add audio output")
+            return
+        }
     }
     
-    // Provide actor-isolated methods to interact with the session
+    func stopOutput() {
+        session.removeOutput(videoOutput)
+        session.removeOutput(audioOutput)
+    }
+    
     func startRunning() {
-        Task {
-            self.session.startRunning()
-        }
+         session.startRunning()
     }
     
     func stopRunning() {
@@ -173,13 +178,22 @@ final class CameraMonitor: Sendable {
             await camera.startRunning()
         }
     }
-    
     func stopCamera() {
         Task {
             await camera.stopRunning()
         }
     }
-
+    func startOutput() {
+        Task {
+            await camera.startOutput()
+        }
+    }
+    func stopOutput() {
+        Task {
+            await camera.stopOutput()
+        }
+    }
+    
     func configurePreviewLayer(on viewController: UIViewController) {
         Task {
             await camera.configurePreviewLayer(on: viewController)
