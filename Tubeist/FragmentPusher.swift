@@ -42,31 +42,12 @@ private actor HLSServerActor {
     }
 }
 
-private actor UploadingSequencesActor {
-    var sequences: Set<Int> = []
-
-    func add(_ sequence: Int) {
-        sequences.insert(sequence)
-    }
-
-    func remove(_ sequence: Int) {
-        sequences.remove(sequence)
-    }
-
-    func contains(_ sequence: Int) -> Bool {
-        sequences.contains(sequence)
-    }
-    
-    var count: Int { sequences.count }
-}
-
 final class FragmentPusher: Sendable {
     public static let shared = FragmentPusher()
     private let uploadQueue: OperationQueue
     private let maxRetryAttempts = 30
     private let fragmentBuffer = FragmentBufferActor()
     private let hlsServer = HLSServerActor()
-    private let uploadingSequences = UploadingSequencesActor()
 
     init() {
         // Initialize upload queue with concurrent operations
@@ -106,8 +87,9 @@ final class FragmentPusher: Sendable {
                     
                     let sequence = bufferedfragment.sequence
                     let duration = bufferedfragment.duration
-                    let isInit = bufferedfragment.ext == "mp4"
+                    let ext = bufferedfragment.ext
                     let segment = bufferedfragment.segment
+                    let isInit = ext == "mp4"
                     let hlsServer = await hlsServer.getHLSServer()
                     
                     guard let hlsServerURL = URL(string: hlsServer) else {
@@ -115,14 +97,7 @@ final class FragmentPusher: Sendable {
                         await fragmentBuffer.insertFirst(bufferedfragment)
                         return
                     }
-                    
-                    if await uploadingSequences.contains(sequence) {
-                        print("fragment number \(sequence) is already uploading, skipping this upload.")
-                        return
-                    }
-                    
-                    await uploadingSequences.add(sequence)
-                    
+                                        
                     let request = self.createUploadRequest(
                         url: hlsServerURL,
                         segment: segment,
@@ -134,12 +109,14 @@ final class FragmentPusher: Sendable {
                     let task = URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
                         guard let self = self else { return }
                         
+                        print("Attempting [\(attempt)] to upload \(sequence).\(ext)")
+                        
                         Task {
                             if let error = error {
-                                await fragmentBuffer.insertFirst(bufferedfragment)
                                 print("Upload error: \(error.localizedDescription). Retrying...")
                                 // Optionally retry a failed upload
                                 if attempt < maxRetryAttempts {
+                                    await fragmentBuffer.insertFirst(bufferedfragment)
                                     STREAMING_QUEUE.asyncAfter(deadline: .now() + 1.0) {
                                         self.uploadFragment(attempt: attempt + 1)
                                     }
@@ -149,9 +126,9 @@ final class FragmentPusher: Sendable {
                             
                             if let httpResponse = response as? HTTPURLResponse,
                                !(200...299).contains(httpResponse.statusCode) {
-                                await fragmentBuffer.insertFirst(bufferedfragment)
                                 print("Server returned an error: \(httpResponse.statusCode). Retrying...")
                                 if attempt < maxRetryAttempts {
+                                    await fragmentBuffer.insertFirst(bufferedfragment)
                                     STREAMING_QUEUE.asyncAfter(deadline: .now() + 1.0) {
                                         self.uploadFragment(attempt: attempt + 1)
                                     }
@@ -160,13 +137,9 @@ final class FragmentPusher: Sendable {
                             }
                             
                             // Successful upload
-                            print("Successfully uploaded fragment number \(sequence) with duration \(duration)")
-                            
-                            // Remove the uploaded fragment from the set
-                            await uploadingSequences.remove(sequence)
+                            print("Successfully uploaded \(sequence).\(ext) with duration \(duration)")
                         }
                     }
-                    
                     task.resume()
                 }
             }

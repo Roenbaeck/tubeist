@@ -10,7 +10,7 @@ actor StreamingActor {
     func run() {
         _isStreaming = true
     }
-    func end() {
+    func pause() {
         _isStreaming = false
     }
     func isStreaming() -> Bool {
@@ -31,16 +31,16 @@ final class Streamer: Sendable {
     }
     func startStream() {
         Task {
-            assetInterceptor.startWriting()
+            assetInterceptor.beginIntercepting()
             cameraMonitor.startOutput();
             await streamingActor.run()
         }
     }
     func endStream() {
         Task {
-            await streamingActor.end()
+            await streamingActor.pause()
             cameraMonitor.stopOutput()
-            assetInterceptor.finishWriting()
+            assetInterceptor.endIntercepting()
             
         }
     }

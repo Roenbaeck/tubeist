@@ -29,6 +29,7 @@ actor AssetWriterActor {
         assetWriter.outputFileTypeProfile = .mpeg4AppleHLS
         assetWriter.preferredOutputSegmentInterval = FRAGMENT_CM_TIME
         assetWriter.initialSegmentStartTime = .zero
+        assetWriter.delegate = AssetInterceptor.shared
 
         let selectedBitrate = UserDefaults.standard.integer(forKey: "SelectedBitrate")
 
@@ -102,6 +103,7 @@ actor AssetWriterActor {
                 print("Asset writer not configured")
                 return false
             }
+            assetWriter.startWriting()
             assetWriter.startSession(atSourceTime: sampleBuffer.presentationTimeStamp)
             _isSessionActive = true
         }
@@ -120,6 +122,7 @@ actor AssetWriterActor {
                 print("Asset writer not configured")
                 return false
             }
+            assetWriter.startWriting()
             assetWriter.startSession(atSourceTime: sampleBuffer.presentationTimeStamp)
             _isSessionActive = true
         }
@@ -166,13 +169,12 @@ final class AssetInterceptor: NSObject, AVAssetWriterDelegate, Sendable {
                 
         super.init()
     }
-    func startWriting() {
+    func beginIntercepting() {
         Task {
             await self.assetWriter.setupAssetWriter()
-            await self.assetWriter.startWriting()
         }
     }
-    func finishWriting() {
+    func endIntercepting() {
         Task {
             await self.assetWriter.finishWriting()
         }
@@ -196,7 +198,6 @@ final class AssetInterceptor: NSObject, AVAssetWriterDelegate, Sendable {
                      didOutputSegmentData segmentData: Data,
                      segmentType: AVAssetSegmentType,
                      segmentReport: AVAssetSegmentReport?) {
-        print("A fragment has been produced")
         guard let ext = {
             switch segmentType {
             case .initialization: "mp4"
@@ -211,6 +212,7 @@ final class AssetInterceptor: NSObject, AVAssetWriterDelegate, Sendable {
         Task.detached { [self] in
             let sequenceNumber = await fragmentSequenceNumber.next()
             let fragment = Fragment(sequence: sequenceNumber, segment: segmentData, ext: ext, duration: duration)
+            print("A fragment has been produced: \(fragment.sequence).\(fragment.ext) [ \(fragment.duration) ]")
             fragmentPusher.addFragment(fragment)
             fragmentPusher.uploadFragment(attempt: 1)
             saveFragmentToFile(fragment)
