@@ -9,7 +9,12 @@ struct Fragment {
 
 private actor FragmentBufferActor {
     private var buffer: [Fragment] = []
+    private let maxBufferSize: Int
 
+    init(maxBufferSize: Int) {
+        self.maxBufferSize = maxBufferSize
+    }
+    
     func append(_ fragment: Fragment) {
         buffer.append(fragment)
     }
@@ -32,13 +37,21 @@ private actor FragmentBufferActor {
     }
 }
 
-private actor HLSServerActor {
-    private var hlsServer = UserDefaults.standard.string(forKey: "HLSServer") ?? ""
-    func getHLSServer() -> String {
-        self.hlsServer
+actor NetworkPerformanceActor: NSObject, URLSessionDelegate {
+    private var session: URLSession?
+    override init() {
+        super.init()
     }
-    func setHLSServer(_ hlsServer: String) {
-        self.hlsServer = hlsServer
+    func setSession(_ session: URLSession) {
+        self.session = session
+    }
+    func getSession() -> URLSession? {
+        session
+    }
+    func urlSession(_ session: URLSession, task: URLSessionTask, didSendBodyData bytesSent: Int64, totalBytesSent: Int64, totalBytesExpectedToSend: Int64) {
+        // Monitor upload progress
+        let progress = Double(totalBytesSent) / Double(totalBytesExpectedToSend)
+        print("Upload progress: \(progress * 100)%")
     }
 }
 
@@ -46,18 +59,22 @@ final class FragmentPusher: Sendable {
     public static let shared = FragmentPusher()
     private let uploadQueue: OperationQueue
     private let maxRetryAttempts = 30
-    private let fragmentBuffer = FragmentBufferActor()
-    private let hlsServer = HLSServerActor()
+    private let fragmentBuffer = FragmentBufferActor(maxBufferSize: 90)
+    private let networkPerformance = NetworkPerformanceActor()
 
     init() {
+        // For HTTP 1.1 persistent connections
+        let configuration = URLSessionConfiguration.default
+        configuration.httpShouldUsePipelining = true
+        // 10 second timeout
+        configuration.timeoutIntervalForRequest = 10
         // Initialize upload queue with concurrent operations
         self.uploadQueue = OperationQueue()
         self.uploadQueue.maxConcurrentOperationCount = 3
-    }
-    
-    func setHLSServer(_ hlsServer: String) {
         Task {
-            await self.hlsServer.setHLSServer(hlsServer)
+            await self.networkPerformance.setSession(
+                URLSession(configuration: configuration, delegate: networkPerformance, delegateQueue: uploadQueue)
+            )
         }
     }
     
@@ -66,7 +83,7 @@ final class FragmentPusher: Sendable {
             await fragmentBuffer.append(fragment)
         }
     }
-    
+        
     func uploadFragment(attempt: Int) {
         Task {
             if await self.fragmentBuffer.isEmpty() {
@@ -80,43 +97,31 @@ final class FragmentPusher: Sendable {
                         return // poor man's guard
                     }
                     
-                    let bufferedfragment = await fragmentBuffer.removeFirst()
-                    guard let bufferedfragment = bufferedfragment else {
-                        return
-                    }
-                    
-                    let sequence = bufferedfragment.sequence
-                    let duration = bufferedfragment.duration
-                    let ext = bufferedfragment.ext
-                    let segment = bufferedfragment.segment
-                    let isInit = ext == "mp4"
-                    let hlsServer = await hlsServer.getHLSServer()
-                    
-                    guard let hlsServerURL = URL(string: hlsServer) else {
-                        print("Invalid HLS server URL: ", hlsServer)
-                        await fragmentBuffer.insertFirst(bufferedfragment)
+                    guard let fragment = await fragmentBuffer.removeFirst() else {
                         return
                     }
                                         
-                    let request = self.createUploadRequest(
-                        url: hlsServerURL,
-                        segment: segment,
-                        duration: duration,
-                        sequence: sequence,
-                        isInit: isInit
-                    )
+                    guard let request = self.createUploadRequest(fragment) else {
+                        print("Failed to create upload request")
+                        return
+                    }
                     
-                    let task = URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+                    guard let session = await self.networkPerformance.getSession() else {
+                        print("Failed to get session")
+                        return
+                    }
+                    
+                    let task = session.dataTask(with: request) { [weak self] data, response, error in
                         guard let self = self else { return }
                         
-                        print("Attempting [\(attempt)] to upload \(sequence).\(ext)")
+                        print("Attempting [\(attempt)] to upload \(fragment.sequence).\(fragment.ext) with duration \(fragment.duration).")
                         
                         Task {
                             if let error = error {
                                 print("Upload error: \(error.localizedDescription). Retrying...")
                                 // Optionally retry a failed upload
                                 if attempt < maxRetryAttempts {
-                                    await fragmentBuffer.insertFirst(bufferedfragment)
+                                    await fragmentBuffer.insertFirst(fragment)
                                     STREAMING_QUEUE.asyncAfter(deadline: .now() + 1.0) {
                                         self.uploadFragment(attempt: attempt + 1)
                                     }
@@ -128,16 +133,13 @@ final class FragmentPusher: Sendable {
                                !(200...299).contains(httpResponse.statusCode) {
                                 print("Server returned an error: \(httpResponse.statusCode). Retrying...")
                                 if attempt < maxRetryAttempts {
-                                    await fragmentBuffer.insertFirst(bufferedfragment)
+                                    await fragmentBuffer.insertFirst(fragment)
                                     STREAMING_QUEUE.asyncAfter(deadline: .now() + 1.0) {
                                         self.uploadFragment(attempt: attempt + 1)
                                     }
                                 }
                                 return
                             }
-                            
-                            // Successful upload
-                            print("Successfully uploaded \(sequence).\(ext) with duration \(duration)")
                         }
                     }
                     task.resume()
@@ -146,8 +148,14 @@ final class FragmentPusher: Sendable {
         }
     }
 
-    private func createUploadRequest(url: URL, segment: Data, duration: Double, sequence: Int, isInit: Bool) -> URLRequest {
-        var request = URLRequest(url: url.appendingPathComponent("upload_fragment"))
+    private func createUploadRequest(_ fragment: Fragment) -> URLRequest? {
+        let url = URL(string: UserDefaults.standard.string(forKey: "HLSServer") ?? "")
+        guard let url = url else {
+            print("Invalid URL")
+            return nil
+        }
+
+        var request = URLRequest(url: url.appendingPathComponent("upload_segment"))
         request.httpMethod = "POST"
         
         // Boundary for multipart form data
@@ -169,23 +177,23 @@ final class FragmentPusher: Sendable {
         // Add `is_init` field
         body.append("--\(boundary)\r\n")
         body.append("Content-Disposition: form-data; name=\"is_init\"\r\n\r\n")
-        body.append("\(isInit ? "true" : "false")\r\n")
+        body.append("\((fragment.ext == "mp4") ? "true" : "false")\r\n")
         
         // Add `duration` field
         body.append("--\(boundary)\r\n")
         body.append("Content-Disposition: form-data; name=\"duration\"\r\n\r\n")
-        body.append("\(duration)\r\n")
+        body.append("\(fragment.duration)\r\n")
         
         // Add `sequence` field
         body.append("--\(boundary)\r\n")
         body.append("Content-Disposition: form-data; name=\"sequence\"\r\n\r\n")
-        body.append("\(sequence)\r\n")
+        body.append("\(fragment.sequence)\r\n")
         
         // Add the file
         body.append("--\(boundary)\r\n")
-        body.append("Content-Disposition: form-data; name=\"fragment\"; filename=\"fragment_\(sequence).mp4\"\r\n")
+        body.append("Content-Disposition: form-data; name=\"segment\"; filename=\"segment_\(fragment.sequence).\(fragment.ext)\"\r\n")
         body.append("Content-Type: application/mp4\r\n\r\n")
-        body.append(segment)
+        body.append(fragment.segment)
         body.append("\r\n")
         
         // End of multipart data
@@ -194,6 +202,7 @@ final class FragmentPusher: Sendable {
         request.httpBody = body
         return request
     }
+    
 }
 
 // Helper method to append data to `Data`
@@ -204,3 +213,5 @@ private extension Data {
         }
     }
 }
+
+

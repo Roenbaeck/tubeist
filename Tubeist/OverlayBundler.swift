@@ -105,6 +105,7 @@ final class WebOverlayViewController: NSObject, WKNavigationDelegate, WKScriptMe
             }
 
             self?.overlayImage = CIImage(image: uiImage)
+            print("Captured overlay with dimensions \(uiImage.size)")
         }
     }
 }
