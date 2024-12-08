@@ -13,7 +13,7 @@ final class WebOverlayViewController: NSObject, WKNavigationDelegate, WKScriptMe
     private var webView: WKWebView?
     private let urlString: String
     private var overlayImage: CIImage?
-
+    
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
         if message.name
             == "domChanged" {
@@ -23,7 +23,11 @@ final class WebOverlayViewController: NSObject, WKNavigationDelegate, WKScriptMe
     }
     
     func getOverlayImage() -> CIImage? {
-        self.overlayImage
+        guard let overlayImage = self.overlayImage else {
+            print("No overlay image captured yet")
+            return nil
+        }
+        return overlayImage
     }
     
     override init() {
@@ -86,26 +90,23 @@ final class WebOverlayViewController: NSObject, WKNavigationDelegate, WKScriptMe
         }
 
         webView.configuration.userContentController.add(self, name: "domChanged")
-
-        STREAMING_QUEUE.asyncAfter(deadline: .now() + 2) {
-            Task {
-                await self.captureWebViewImage()
-            }
-        }
     }
 
     func captureWebViewImage() {
         let config = WKSnapshotConfiguration()
         config.snapshotWidth = NSNumber(value: CAPTURE_WIDTH / Int(UIScreen.main.scale))
 
-        webView?.takeSnapshot(with: config) { [weak self] (image, error) in
+        webView?.takeSnapshot(with: config) { (image, error) in
             guard let uiImage = image else {
                 print("Error capturing snapshot: \(String(describing: error))")
                 return
             }
-
-            self?.overlayImage = CIImage(image: uiImage)
-            print("Captured overlay with dimensions \(uiImage.size)")
+            guard let ciImage = CIImage(image: uiImage) else {
+                print("Failed to convert UIImage to CIImage")
+                return
+            }
+            print("Captured overlay with dimensions \(ciImage.extent.size)")
+            self.overlayImage = ciImage
         }
     }
 }
@@ -113,7 +114,7 @@ final class WebOverlayViewController: NSObject, WKNavigationDelegate, WKScriptMe
 struct WebOverlayView: UIViewRepresentable {
     
     func makeCoordinator() -> WebOverlayViewController {
-        WebOverlayViewController()
+        WebOverlayViewController.shared
     }
     
     func makeUIView(context: Context) -> WKWebView {
