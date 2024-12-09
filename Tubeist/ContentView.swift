@@ -28,10 +28,15 @@ struct ContentView: View {
                     
                     WebOverlayView()
                     
+                    VStack {
+                        Spacer()
+                        SystemMetricsView()
+                    }
+                    
                     // Controls now positioned relative to 16:9 frame
                     HStack {
                         Spacer()
-                        VStack {
+                        VStack(alignment: .trailing) {
                             Button(action: {
                                 showSettings = true
                             }) {
@@ -44,14 +49,12 @@ struct ContentView: View {
                             .cornerRadius(25)
                             .sheet(isPresented: $showSettings) {
                                 SettingsView()
-                            }
-                            .padding(.top)
+                            }.padding()
                             
                             Spacer()
-                            /*
-                            AudioLevelMeter(audioLevel: $audioLevel)
-                                .frame(width: 30)
-                            */
+
+                            AudioLevelView()
+
                             Spacer()
                             
                             Button(action: {
@@ -76,11 +79,9 @@ struct ContentView: View {
                             }
                             .background(Color.black.opacity(0.5))
                             .cornerRadius(25)
+                            .padding()
                             
-                            Spacer()
                         }
-                        .padding()
-                        .offset(x: -10)
                     }
                 }
                 .frame(width: width, height: height)
@@ -88,5 +89,6 @@ struct ContentView: View {
             }
         }
         .edgesIgnoringSafeArea(.all)
+        .persistentSystemOverlays(.hidden)
     }
 }

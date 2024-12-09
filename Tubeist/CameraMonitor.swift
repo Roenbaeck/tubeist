@@ -66,6 +66,14 @@ private actor CameraActor {
                 print("Cannot add video input")
                 return
             }
+            // Add video output to the session
+            if session.canAddOutput(videoOutput) {
+                session.addOutput(videoOutput)
+            } else {
+                print("Cannot add video output")
+                return
+            }
+
             
             // Add audio input to the session
             let audioInput = try AVCaptureDeviceInput(device: audioDevice)
@@ -75,12 +83,17 @@ private actor CameraActor {
                 print("Cannot add audio input")
                 return
             }
+            // Add audio output to the session
+            if session.canAddOutput(audioOutput) {
+                session.addOutput(audioOutput)
+            } else {
+                print("Cannot add audio output")
+                return
+            }
+
             
-            videoOutput.setSampleBufferDelegate(frameGrabber, queue: STREAMING_QUEUE)
-            audioOutput.setSampleBufferDelegate(frameGrabber, queue: STREAMING_QUEUE)
-            
-            
-            
+
+
             
             
             
@@ -105,26 +118,13 @@ private actor CameraActor {
     }
     
     func startOutput() {
-        // Add video output to the session
-        if session.canAddOutput(videoOutput) {
-            session.addOutput(videoOutput)
-        } else {
-            print("Cannot add video output")
-            return
-        }
-        
-        // Add audio output to the session
-        if session.canAddOutput(audioOutput) {
-            session.addOutput(audioOutput)
-        } else {
-            print("Cannot add audio output")
-            return
-        }
+        videoOutput.setSampleBufferDelegate(frameGrabber, queue: STREAMING_QUEUE)
+        audioOutput.setSampleBufferDelegate(frameGrabber, queue: STREAMING_QUEUE)
     }
     
     func stopOutput() {
-        session.removeOutput(videoOutput)
-        session.removeOutput(audioOutput)
+        videoOutput.setSampleBufferDelegate(nil, queue: nil)
+        audioOutput.setSampleBufferDelegate(nil, queue: nil)
     }
     
     func startRunning() {
@@ -138,6 +138,11 @@ private actor CameraActor {
     func getSession() -> AVCaptureSession {
         session
     }
+
+    func getAudioChannels() -> [AVCaptureAudioChannel] {
+        return audioOutput.connections.first?.audioChannels ?? []
+    }
+    
     
     // Method to configure preview layer directly on the view controller
     func configurePreviewLayer(on viewController: UIViewController) {
@@ -192,6 +197,9 @@ final class CameraMonitor: Sendable {
         Task {
             await camera.stopOutput()
         }
+    }
+    func getAudioChannels() async -> [AVCaptureAudioChannel] {
+        return await camera.getAudioChannels()
     }
     
     func configurePreviewLayer(on viewController: UIViewController) {
@@ -260,3 +268,57 @@ struct CameraMonitorView: UIViewControllerRepresentable {
         cameraMonitor.configurePreviewLayer(on: uiViewController)
     }
 }
+
+struct AudioLevelView: View {
+    @State private var audioLevels: [Float] = Array(repeating: -160, count: AUDIO_BARS)
+    @State private var peakLevels: [Float] = Array(repeating: -160, count: AUDIO_BARS)
+    @State private var isRunning = true
+    private let timer = Timer.publish(every: 0.25, on: .main, in: .common).autoconnect()
+
+    // Custom normalization to make the visualization more dynamic
+    private func normalizeLevel(_ level: Float) -> CGFloat {
+        let adjustedLevel = max(0, level + 160) / 160  // Ensure non-negative
+        return CGFloat(pow(adjustedLevel, 4)) * 50  // Increased power for more sensitivity in low ranges
+    }
+
+    var body: some View {
+        VStack(alignment: .trailing, spacing: 2) {
+            ForEach(0..<AUDIO_BARS) { index in
+                HStack {
+                    // Overlapping white bar and semi-transparent black bar
+                    ZStack(alignment: .trailing) {
+                        // White background bar with cutout mask
+                        Rectangle()
+                            .fill(isRunning ? Color.white : Color.white.opacity(0.5))
+                            .frame(width: normalizeLevel(peakLevels[index]), height: 5)
+                            .mask(
+                                Rectangle()
+                                    .frame(width: normalizeLevel(audioLevels[index]), height: 5)
+                            )
+                    }
+                }
+                .animation(.easeInOut, value: audioLevels[index])
+                .onTapGesture {
+                    isRunning.toggle()
+                }
+            }
+        }
+        .onReceive(timer) { _ in
+            guard isRunning else { return }
+            
+            Task {
+                let channels = await CameraMonitor.shared.getAudioChannels()
+                if let channel = channels.first {
+                    // Rotate and add new levels
+                    audioLevels.removeFirst()
+                    audioLevels.append(channel.averagePowerLevel)
+                    
+                    peakLevels.removeFirst()
+                    peakLevels.append(channel.peakHoldLevel)
+                }
+            }
+        }
+    }
+}
+
+

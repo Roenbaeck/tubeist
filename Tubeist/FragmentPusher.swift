@@ -37,21 +37,23 @@ private actor FragmentBufferActor {
     }
 }
 
-actor NetworkPerformanceActor: NSObject, URLSessionDelegate {
+actor URLSessionActor {
     private var session: URLSession?
-    override init() {
-        super.init()
-    }
     func setSession(_ session: URLSession) {
         self.session = session
     }
     func getSession() -> URLSession? {
         session
     }
+}
+
+final class NetworkPerformanceDelegate: NSObject, URLSessionDelegate, URLSessionDataDelegate, URLSessionTaskDelegate  {
+    func urlSession(_ session: URLSession, task: URLSessionTask, didFinishCollecting metrics: URLSessionTaskMetrics) {
+        let seconds = metrics.taskInterval.duration
+        print("Task took \(seconds) seconds")
+    }
     func urlSession(_ session: URLSession, task: URLSessionTask, didSendBodyData bytesSent: Int64, totalBytesSent: Int64, totalBytesExpectedToSend: Int64) {
-        // Monitor upload progress
-        let progress = Double(totalBytesSent) / Double(totalBytesExpectedToSend)
-        print("Upload progress: \(progress * 100)%")
+        print("Sent \(bytesSent) bytes")
     }
 }
 
@@ -60,19 +62,21 @@ final class FragmentPusher: Sendable {
     private let uploadQueue: OperationQueue
     private let maxRetryAttempts = 30
     private let fragmentBuffer = FragmentBufferActor(maxBufferSize: 90)
-    private let networkPerformance = NetworkPerformanceActor()
+    private let urlSession = URLSessionActor()
+    private let networkPerformance = NetworkPerformanceDelegate()
 
     init() {
         // For HTTP 1.1 persistent connections
         let configuration = URLSessionConfiguration.default
         configuration.httpShouldUsePipelining = true
+        configuration.waitsForConnectivity = true
         // 10 second timeout
         configuration.timeoutIntervalForRequest = 10
         // Initialize upload queue with concurrent operations
         self.uploadQueue = OperationQueue()
         self.uploadQueue.maxConcurrentOperationCount = 3
         Task {
-            await self.networkPerformance.setSession(
+            await self.urlSession.setSession(
                 URLSession(configuration: configuration, delegate: networkPerformance, delegateQueue: uploadQueue)
             )
         }
@@ -106,7 +110,7 @@ final class FragmentPusher: Sendable {
                         return
                     }
                     
-                    guard let session = await self.networkPerformance.getSession() else {
+                    guard let session = await self.urlSession.getSession() else {
                         print("Failed to get session")
                         return
                     }
