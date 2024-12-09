@@ -13,6 +13,7 @@ struct SystemMetricsView: View {
     @State private var cpuUsage: Float = 0
     @State private var batteryLevel: Float = 0
     @State private var thermalLevel: String = "Low"
+    @State private var networkMbps: Int = 0
     private let timer = Timer.publish(every: 2, on: .main, in: .common).autoconnect()
     
     var body: some View {
@@ -20,6 +21,7 @@ struct SystemMetricsView: View {
             Text("CPU: \(String(format: "%.1f", cpuUsage))%")
             Text("Battery: \(String(format: "%.0f", batteryLevel))%")
             Text("Temp: \(thermalLevel)")
+            Text("UL: \(networkMbps) Mbps")
         }
         .font(.caption)
         .foregroundColor(.secondary)
@@ -32,9 +34,12 @@ struct SystemMetricsView: View {
     }
     
     private func updateSystemMetrics() {
-        self.cpuUsage = self.getCPUUsage()
-        self.batteryLevel = self.getBatteryLevel()
-        self.thermalLevel = self.getThermalLevel()
+        Task {
+            self.cpuUsage = self.getCPUUsage()
+            self.batteryLevel = self.getBatteryLevel()
+            self.thermalLevel = self.getThermalLevel()
+            self.networkMbps = await FragmentPusher.shared.calculateMbps()
+        }
     }
     
     public func getCPUUsage() -> Float {

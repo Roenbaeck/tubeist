@@ -47,13 +47,80 @@ actor URLSessionActor {
     }
 }
 
-final class NetworkPerformanceDelegate: NSObject, URLSessionDelegate, URLSessionDataDelegate, URLSessionTaskDelegate  {
-    func urlSession(_ session: URLSession, task: URLSessionTask, didFinishCollecting metrics: URLSessionTaskMetrics) {
-        let seconds = metrics.taskInterval.duration
-        print("Task took \(seconds) seconds")
+actor NetworkMetricsActor {
+    private var networkMetrics: [Int: (duration: TimeInterval?, bytesSent: Int64?)] = [:]
+    func setMetric(taskIdentifier: Int, metrics: (duration: TimeInterval?, bytesSent: Int64?)) {
+        self.networkMetrics[taskIdentifier] = metrics
     }
+    func getMetric(taskIdenfitier: Int) -> (duration: TimeInterval?, bytesSent: Int64?)? {
+        networkMetrics[taskIdenfitier]
+    }
+    func getAllMetrics() -> [Int: (duration: TimeInterval?, bytesSent: Int64?)] {
+        networkMetrics
+    }
+    func removeAllMetrics() {
+        networkMetrics.removeAll()
+    }
+}
+
+final class NetworkPerformanceDelegate: NSObject, URLSessionDelegate, URLSessionDataDelegate, URLSessionTaskDelegate {
+    private let netowrkMetrics = NetworkMetricsActor()
+    private let queue = DispatchQueue(label: "com.tubeist.NetworkPerformanceQueue", attributes: .concurrent)
+    
+    func urlSession(_ session: URLSession, task: URLSessionTask, didFinishCollecting metrics: URLSessionTaskMetrics) {
+        let taskId = task.taskIdentifier
+        let duration = metrics.taskInterval.duration
+        
+        queue.async(flags: .barrier) {
+            Task {
+                if var metrics = await self.netowrkMetrics.getMetric(taskIdenfitier: taskId) {
+                    metrics.duration = duration
+                    await self.netowrkMetrics.setMetric(taskIdentifier: taskId, metrics: metrics)
+                } else {
+                    await self.netowrkMetrics.setMetric(taskIdentifier: taskId, metrics: (duration: duration, bytesSent: nil))
+                }
+            }
+        }
+    }
+    
     func urlSession(_ session: URLSession, task: URLSessionTask, didSendBodyData bytesSent: Int64, totalBytesSent: Int64, totalBytesExpectedToSend: Int64) {
-        print("Sent \(bytesSent) bytes")
+        let taskId = task.taskIdentifier
+        
+        queue.async(flags: .barrier) {
+            Task {
+                if var metrics = await self.netowrkMetrics.getMetric(taskIdenfitier: taskId) {
+                    metrics.bytesSent = totalBytesSent
+                    await self.netowrkMetrics.setMetric(taskIdentifier: taskId, metrics: metrics)
+                } else {
+                    await self.netowrkMetrics.setMetric(taskIdentifier: taskId, metrics: (duration: nil, bytesSent: totalBytesSent))
+                }
+            }
+        }
+    }
+    
+    func calculateMbps() async -> Int {
+        let totalDuration: TimeInterval
+        let totalBitsSent: Int64
+        
+        // Use a separate Task to perform the async operations
+        (totalDuration, totalBitsSent) = await Task {
+            var duration: TimeInterval = 0
+            var bitsSent: Int64 = 0
+            let metrics = await self.netowrkMetrics.getAllMetrics()
+            for (_, metrics) in metrics {
+                if let metricDuration = metrics.duration, let metricBytesSent = metrics.bytesSent {
+                    duration += metricDuration
+                    bitsSent += metricBytesSent * 8
+                }
+            }
+            await self.netowrkMetrics.removeAllMetrics()
+            return (duration, bitsSent)
+        }.value
+        
+        guard totalDuration > 0 else { return 0 }
+        
+        let mbps = Int(Double(totalBitsSent) / (totalDuration * 1_000_000.0))
+        return mbps
     }
 }
 
@@ -80,6 +147,10 @@ final class FragmentPusher: Sendable {
                 URLSession(configuration: configuration, delegate: networkPerformance, delegateQueue: uploadQueue)
             )
         }
+    }
+    
+    func calculateMbps() async -> Int {
+        await networkPerformance.calculateMbps()
     }
     
     func addFragment(_ fragment: Fragment) {
