@@ -14,6 +14,7 @@ struct SystemMetricsView: View {
     @State private var batteryLevel: Float = 0
     @State private var thermalLevel: String = "Low"
     @State private var networkMbps: Int = 0
+    @State private var networkUtilization: Int = 0
     private let timer = Timer.publish(every: 2, on: .main, in: .common).autoconnect()
     
     var body: some View {
@@ -22,9 +23,12 @@ struct SystemMetricsView: View {
             Text("Battery: \(String(format: "%.0f", batteryLevel))%")
             Text("Temp: \(thermalLevel)")
             Text("UL: \(networkMbps) Mbps")
+            Text("(\(networkUtilization)% utilization)")
         }
-        .font(.caption)
-        .foregroundColor(.secondary)
+        .font(.callout) // You can set your base font here
+        .lineLimit(1) // Ensure text stays on a single line
+        .foregroundColor(.white)
+        .shadow(color: .black.opacity(0.8), radius: 1, x: 0, y: 0)
         .onReceive(timer) { _ in
             updateSystemMetrics()
         }
@@ -38,7 +42,7 @@ struct SystemMetricsView: View {
             self.cpuUsage = self.getCPUUsage()
             self.batteryLevel = self.getBatteryLevel()
             self.thermalLevel = self.getThermalLevel()
-            self.networkMbps = await FragmentPusher.shared.calculateMbps()
+            (self.networkMbps, self.networkUtilization) = await FragmentPusher.shared.networkPerformance()
         }
     }
     
