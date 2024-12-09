@@ -27,20 +27,27 @@ final class Streamer: Sendable {
     private let fragmentPusher = FragmentPusher.shared
     
     func startCamera() {
-        cameraMonitor.startCamera()
+        Task {
+            await cameraMonitor.startCamera()
+        }
+    }
+    func stopCamera() {
+        Task {
+            await cameraMonitor.stopCamera()
+        }
     }
     func startStream() {
         Task {
-            assetInterceptor.beginIntercepting()
-            cameraMonitor.startOutput();
+            await assetInterceptor.beginIntercepting()
+            await cameraMonitor.startOutput();
             await streamingActor.run()
         }
     }
     func endStream() {
         Task {
             await streamingActor.pause()
-            cameraMonitor.stopOutput()
-            assetInterceptor.endIntercepting()
+            await cameraMonitor.stopOutput()
+            await assetInterceptor.endIntercepting()
             
         }
     }

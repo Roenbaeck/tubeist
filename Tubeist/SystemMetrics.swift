@@ -25,10 +25,9 @@ struct SystemMetricsView: View {
             Text("UL: \(networkMbps) Mbps")
             Text("(\(networkUtilization)% utilization)")
         }
-        .font(.callout) // You can set your base font here
+        .font(.system(size: 14)) 
         .lineLimit(1) // Ensure text stays on a single line
         .foregroundColor(.white)
-        .shadow(color: .black.opacity(0.8), radius: 1, x: 0, y: 0)
         .onReceive(timer) { _ in
             updateSystemMetrics()
         }

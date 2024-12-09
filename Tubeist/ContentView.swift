@@ -30,6 +30,7 @@ struct ContentView: View {
                     
                     VStack {
                         Spacer()
+                        AudioLevelView()
                         SystemMetricsView()
                     }
                     
@@ -51,10 +52,6 @@ struct ContentView: View {
                                 SettingsView()
                             }.padding()
                             
-                            Spacer()
-
-                            AudioLevelView()
-
                             Spacer()
                             
                             Button(action: {

@@ -81,14 +81,18 @@ actor AssetWriterActor {
         }
         assetWriter.startWriting()
     }
-    func finishWriting() async {
+    func finishWriting() {
         guard let assetWriter else {
             print("Asset writer not configured")
             return
         }
-        await withCheckedContinuation { continuation in
-            assetWriter.finishWriting {
-                continuation.resume()
+        _ = STREAMING_QUEUE.sync {
+            Task {
+                await withCheckedContinuation { continuation in
+                    assetWriter.finishWriting {
+                        continuation.resume()
+                    }
+                }
             }
         }
     }
@@ -98,17 +102,17 @@ actor AssetWriterActor {
             print("Video input not configured")
             return false
         }
-        if !_isSessionActive {
-            guard let assetWriter else {
-                print("Asset writer not configured")
-                return false
+        return STREAMING_QUEUE.sync {
+            if !_isSessionActive {
+                guard let assetWriter else {
+                    print("Asset writer not configured")
+                    return false
+                }
+                assetWriter.startWriting()
+                assetWriter.startSession(atSourceTime: sampleBuffer.presentationTimeStamp)
+                _isSessionActive = true
             }
-            assetWriter.startWriting()
-            assetWriter.startSession(atSourceTime: sampleBuffer.presentationTimeStamp)
-            _isSessionActive = true
-        }
-        return STREAMING_QUEUE.sync {  // Call append synchronously on the queue
-            videoInput.isReadyForMoreMediaData && videoInput.append(sampleBuffer)
+            return videoInput.isReadyForMoreMediaData && videoInput.append(sampleBuffer)
         }
     }
 
@@ -117,17 +121,17 @@ actor AssetWriterActor {
             print("Audio input not configured")
             return false
         }
-        if !_isSessionActive {
-            guard let assetWriter else {
-                print("Asset writer not configured")
-                return false
+        return STREAMING_QUEUE.sync {
+            if !_isSessionActive {
+                guard let assetWriter else {
+                    print("Asset writer not configured")
+                    return false
+                }
+                assetWriter.startWriting()
+                assetWriter.startSession(atSourceTime: sampleBuffer.presentationTimeStamp)
+                _isSessionActive = true
             }
-            assetWriter.startWriting()
-            assetWriter.startSession(atSourceTime: sampleBuffer.presentationTimeStamp)
-            _isSessionActive = true
-        }
-        return STREAMING_QUEUE.sync { // Call append synchronously on the queue
-            audioInput.isReadyForMoreMediaData && audioInput.append(sampleBuffer)
+            return audioInput.isReadyForMoreMediaData && audioInput.append(sampleBuffer)
         }
     }
 }
@@ -169,15 +173,11 @@ final class AssetInterceptor: NSObject, AVAssetWriterDelegate, Sendable {
                 
         super.init()
     }
-    func beginIntercepting() {
-        Task {
-            await self.assetWriter.setupAssetWriter()
-        }
+    func beginIntercepting() async {
+        await self.assetWriter.setupAssetWriter()
     }
-    func endIntercepting() {
-        Task {
-            await self.assetWriter.finishWriting()
-        }
+    func endIntercepting() async {
+        await self.assetWriter.finishWriting()
     }
 
     func appendVideoSampleBuffer(_ sampleBuffer: CMSampleBuffer) {

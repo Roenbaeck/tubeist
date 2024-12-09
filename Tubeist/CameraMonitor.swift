@@ -178,25 +178,17 @@ final class CameraMonitor: Sendable {
     private let camera = CameraActor()
     
     // Methods to interact with the camera via the actor
-    func startCamera() {
-        Task {
-            await camera.startRunning()
-        }
+    func startCamera() async {
+        await camera.startRunning()
     }
-    func stopCamera() {
-        Task {
-            await camera.stopRunning()
-        }
+    func stopCamera() async {
+        await camera.stopRunning()
     }
-    func startOutput() {
-        Task {
-            await camera.startOutput()
-        }
+    func startOutput() async {
+        await camera.startOutput()
     }
-    func stopOutput() {
-        Task {
-            await camera.stopOutput()
-        }
+    func stopOutput() async {
+        await camera.stopOutput()
     }
     func getAudioChannels() async -> [AVCaptureAudioChannel] {
         return await camera.getAudioChannels()
@@ -274,26 +266,29 @@ struct AudioLevelView: View {
     @State private var peakLevels: [Float] = Array(repeating: -160, count: AUDIO_BARS)
     @State private var isRunning = true
     private let timer = Timer.publish(every: 0.25, on: .main, in: .common).autoconnect()
-
-    // Custom normalization to make the visualization more dynamic
+    
     private func normalizeLevel(_ level: Float) -> CGFloat {
-        let adjustedLevel = max(0, level + 160) / 160  // Ensure non-negative
-        return CGFloat(pow(adjustedLevel, 4)) * 50  // Increased power for more sensitivity in low ranges
-    }
+        let normalizedLevel = max(0, level + 160) / 160  // Ensure level is in the 0-1 range
 
+        // Apply the sigmoid function
+        let sigmoid = 1 / (1 + exp(-25 * (normalizedLevel - 0.95)))
+
+        return CGFloat(sigmoid) * 50 // Scale to your desired output range (0-50)
+    }
+    
     var body: some View {
-        VStack(alignment: .trailing, spacing: 2) {
-            ForEach(0..<AUDIO_BARS) { index in
-                HStack {
+        HStack(alignment: .bottom, spacing: 3) {
+            ForEach((0..<AUDIO_BARS).reversed(), id: \.self) { index in
+                VStack {
                     // Overlapping white bar and semi-transparent black bar
-                    ZStack(alignment: .trailing) {
+                    ZStack(alignment: .bottom) {
                         // White background bar with cutout mask
                         Rectangle()
                             .fill(isRunning ? Color.white : Color.white.opacity(0.5))
-                            .frame(width: normalizeLevel(peakLevels[index]), height: 5)
+                            .frame(width: 5, height: normalizeLevel(peakLevels[index]))
                             .mask(
                                 Rectangle()
-                                    .frame(width: normalizeLevel(audioLevels[index]), height: 5)
+                                    .frame(width: 5, height: normalizeLevel(audioLevels[index]))
                             )
                     }
                 }
