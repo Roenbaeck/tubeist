@@ -8,8 +8,10 @@
 import SwiftUI
 
 struct ContentView: View {
-    @State private var isRecording = false
+    @Environment(AppState.self) var appState
     @State private var showSettings = false
+    @State private var showStabilizationConfirmation = false
+    @State private var showBatterySavingConfirmation = false
     private let streamer = Streamer.shared
     
     var body: some View {
@@ -17,27 +19,21 @@ struct ContentView: View {
             let height = geometry.size.height
             let width = height * (16.0/9.0)
             
-            ZStack {
-                // Camera, web overlay, and controls contained within 16:9 area
+            HStack(spacing: 0) {
+                // 16:9 Content Area
                 ZStack {
                     CameraMonitorView()
-                    .onAppear {
-                        streamer.startCamera()
-                        print("Camera started")
-                    }
+                        .onAppear {
+                            streamer.startCamera()
+                            print("Camera started")
+                        }
                     
                     WebOverlayView()
                     
-                    VStack {
-                        Spacer()
-                        AudioLevelView()
-                        SystemMetricsView()
-                    }
-                    
-                    // Controls now positioned relative to 16:9 frame
                     HStack {
-                        Spacer()
-                        VStack(alignment: .trailing) {
+                        VStack(alignment: .leading) {
+                            Spacer()
+                            
                             Button(action: {
                                 showSettings = true
                             }) {
@@ -51,27 +47,42 @@ struct ContentView: View {
                             .sheet(isPresented: $showSettings) {
                                 SettingsView()
                             }.padding()
-                            
+                        }
+                        Spacer()
+                    }
+                    
+                    VStack {
+                        Spacer()
+                        AudioLevelView()
+                        SystemMetricsView()
+                    }
+                    .padding(.bottom, 3)
+                    
+                    // Controls now positioned relative to 16:9 frame
+                    HStack {
+                        Spacer()
+                        
+                        VStack(alignment: .trailing) {
                             Spacer()
                             
                             Button(action: {
-                                if isRecording {
+                                if appState.isStreamActive {
                                     Task {
-                                        isRecording = false
+                                        appState.isStreamActive = false
                                         streamer.endStream()
                                         print("Stopped recording")
                                     }
                                 } else {
                                     Task {
                                         streamer.startStream()
-                                        isRecording = true
+                                        appState.isStreamActive = true
                                         print("Started recording")
                                     }
                                 }
                             }) {
-                                Image(systemName: isRecording ? "record.circle.fill" : "record.circle")
+                                Image(systemName: appState.isStreamActive ? "record.circle.fill" : "record.circle")
                                     .font(.system(size: 24))
-                                    .foregroundColor(isRecording ? .red : .white)
+                                    .foregroundColor(appState.isStreamActive ? .red : .white)
                                     .frame(width: 50, height: 50)
                             }
                             .background(Color.black.opacity(0.5))
@@ -82,10 +93,61 @@ struct ContentView: View {
                     }
                 }
                 .frame(width: width, height: height)
-                .position(x: geometry.size.width/2, y: geometry.size.height/2)
+                
+                // Vertical Small Button Column
+                VStack(spacing: 10) {
+                    SmallButton(imageName: appState.isStabilizationOn ? "hand.raised.fill" : "hand.raised.slash") {
+                        showStabilizationConfirmation = true
+                    }
+                    .confirmationDialog("Change Image Stabilization?", isPresented: $showStabilizationConfirmation) {
+                        Button(appState.isStabilizationOn ? "Turn Off" : "Turn On") {
+                            appState.isStabilizationOn.toggle()
+                            // Your code to toggle stabilization
+                            print("Stabilization is \(appState.isStabilizationOn ? "on" : "off")")
+                        }
+                        Button("Cancel", role: .cancel) {} // Do nothing
+                    } message: {
+                        Text(appState.isStabilizationOn ? "Turning off image stabilization may result in shaky video." : "Turning on image stabilization may reduce battery life.")
+                    }
+                    SmallButton(imageName: appState.isBatterySavingOn ? "bolt.slash.fill" : "bolt.fill") {
+                        showBatterySavingConfirmation = true
+                    }
+                    .confirmationDialog("Change Battery Saving Mode?", isPresented: $showBatterySavingConfirmation) {
+                        Button(appState.isBatterySavingOn ? "Turn Off" : "Turn On") {
+                            appState.isBatterySavingOn.toggle()
+                            appState.isAudioLevelRunning = !appState.isBatterySavingOn
+                            print("Battery saving is \(appState.isBatterySavingOn ? "on" : "off")")
+                        }
+                        Button("Cancel", role: .cancel) {} // Do nothing
+                    } message: {
+                        Text(appState.isBatterySavingOn ? "Turning off battery saving will enable convenience features at the cost of higher battery consumption." : "Turning on battery saving will reduce everything not necessary for the streaming to a minimum.")
+                    }
+                    
+                    Spacer() // Push buttons to the top
+                }
+                .frame(width: 30 + 10 * 2) // Width based on button size and padding
+                .padding(.trailing, 10)
             }
+            .frame(width: geometry.size.width, height: geometry.size.height)
         }
         .edgesIgnoringSafeArea(.all)
         .persistentSystemOverlays(.hidden)
     }
 }
+
+// Helper View for Small Buttons
+struct SmallButton: View {
+    let imageName: String
+    let action: () -> Void
+    
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: imageName)
+                .font(.system(size: 20))
+                .foregroundColor(.white)
+                .frame(width: 30, height: 30)
+        }
+        .background(Color.black)
+    }
+}
+

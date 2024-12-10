@@ -262,9 +262,9 @@ struct CameraMonitorView: UIViewControllerRepresentable {
 }
 
 struct AudioLevelView: View {
+    @Environment(AppState.self) var appState
     @State private var audioLevels: [Float] = Array(repeating: -160, count: AUDIO_BARS)
     @State private var peakLevels: [Float] = Array(repeating: -160, count: AUDIO_BARS)
-    @State private var isRunning = true
     private let timer = Timer.publish(every: 0.25, on: .main, in: .common).autoconnect()
     
     private func normalizeLevel(_ level: Float) -> CGFloat {
@@ -284,7 +284,7 @@ struct AudioLevelView: View {
                     ZStack(alignment: .bottom) {
                         // White background bar with cutout mask
                         Rectangle()
-                            .fill(isRunning ? Color.white : Color.white.opacity(0.5))
+                            .fill(appState.isAudioLevelRunning ? Color.white : Color.white.opacity(0.5))
                             .frame(width: 5, height: normalizeLevel(peakLevels[index]))
                             .mask(
                                 Rectangle()
@@ -294,12 +294,12 @@ struct AudioLevelView: View {
                 }
                 .animation(.easeInOut, value: audioLevels[index])
                 .onTapGesture {
-                    isRunning.toggle()
+                    appState.isAudioLevelRunning.toggle()
                 }
             }
         }
         .onReceive(timer) { _ in
-            guard isRunning else { return }
+            guard appState.isAudioLevelRunning else { return }
             
             Task {
                 let channels = await CameraMonitor.shared.getAudioChannels()
