@@ -15,13 +15,37 @@ class AppState {
     var isStreamActive = false
     var isAudioLevelRunning = true
     var isStabilizationOn = true
+    var justCameFromBackground = false
+    var hadToStopStreaming = false
 }
 
 @main
 struct TubeistApp: App {
+    @State private var appState = AppState()
+    @Environment(\.scenePhase) private var scenePhase
+    
     var body: some Scene {
         WindowGroup {
-            ContentView().environment(AppState())
+            ContentView().environment(appState)
+        }
+        .onChange(of: scenePhase) { oldValue, newValue in
+            switch (oldValue, newValue) {
+            case (.inactive, .background), (.active, .background):
+                print("App is entering background")
+                Task {
+                    if await Streamer.shared.isStreaming() {
+                        print("Stopping stream due to background state")
+                        appState.hadToStopStreaming = true
+                        Streamer.shared.endStream()
+                    }
+                }
+                Streamer.shared.stopCamera()
+            case (.background, .inactive), (.background, .active):
+                print("App is coming back from background")
+                appState.justCameFromBackground = true
+                Streamer.shared.startCamera()
+            default: break
+            }
         }
     }
     init() {

@@ -38,6 +38,9 @@ final class Streamer: Sendable {
     }
     func startStream() {
         Task {
+            if await !cameraMonitor.isRunning() {
+                await cameraMonitor.startCamera()
+            }
             await assetInterceptor.beginIntercepting()
             await cameraMonitor.startOutput();
             await streamingActor.run()
@@ -48,11 +51,9 @@ final class Streamer: Sendable {
             await streamingActor.pause()
             await cameraMonitor.stopOutput()
             await assetInterceptor.endIntercepting()
-            
         }
     }
     func isStreaming() async -> Bool {
         await streamingActor.isStreaming()
     }
-
 }

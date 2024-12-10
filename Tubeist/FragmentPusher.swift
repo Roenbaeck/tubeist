@@ -203,7 +203,7 @@ final class FragmentPusher: Sendable {
                                 // Optionally retry a failed upload
                                 if attempt < maxRetryAttempts {
                                     await fragmentBuffer.insertFirst(fragment)
-                                    STREAMING_QUEUE.asyncAfter(deadline: .now() + 1.0) {
+                                    STREAMING_QUEUE_CONCURRENT.asyncAfter(deadline: .now() + 1.0) {
                                         self.uploadFragment(attempt: attempt + 1)
                                     }
                                 }
@@ -215,7 +215,7 @@ final class FragmentPusher: Sendable {
                                 print("Server returned an error: \(httpResponse.statusCode). Retrying...")
                                 if attempt < maxRetryAttempts {
                                     await fragmentBuffer.insertFirst(fragment)
-                                    STREAMING_QUEUE.asyncAfter(deadline: .now() + 1.0) {
+                                    STREAMING_QUEUE_CONCURRENT.asyncAfter(deadline: .now() + 1.0) {
                                         self.uploadFragment(attempt: attempt + 1)
                                     }
                                 }

@@ -41,21 +41,23 @@ final class FrameGrabber: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
     func captureOutput(_ output: AVCaptureOutput,
                        didOutput sampleBuffer: CMSampleBuffer,
                        from connection: AVCaptureConnection) {
-        STREAMING_QUEUE.async {
+        STREAMING_QUEUE_CONCURRENT.async {
             Task.detached {
-                switch output {
-                case is AVCaptureVideoDataOutput:
-                    if let overlayImage = await WebOverlayViewController.shared.getOverlayImage() {
-                        await self.overlayImprinter.imprint(overlay: overlayImage, onto: sampleBuffer)
+                if await Streamer.shared.isStreaming() {
+                    switch output {
+                    case is AVCaptureVideoDataOutput:
+                        if let overlayImage = await WebOverlayViewController.shared.getOverlayImage() {
+                            await self.overlayImprinter.imprint(overlay: overlayImage, onto: sampleBuffer)
+                        }
+                        else {
+                            print("Failed to imprint overlay")
+                        }
+                        self.assetInterceptor.appendVideoSampleBuffer(sampleBuffer)
+                    case is AVCaptureAudioDataOutput:
+                        self.assetInterceptor.appendAudioSampleBuffer(sampleBuffer)
+                    default:
+                        print("Unknown output type")
                     }
-                    else {
-                        print("Failed to imprint overlay")
-                    }
-                    self.assetInterceptor.appendVideoSampleBuffer(sampleBuffer)
-                case is AVCaptureAudioDataOutput:
-                    self.assetInterceptor.appendAudioSampleBuffer(sampleBuffer)
-                default:
-                    print("Unknown output type")
                 }
             }
         }

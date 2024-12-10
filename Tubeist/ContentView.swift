@@ -6,12 +6,15 @@
 //
 
 import SwiftUI
+import UserNotifications
+import Intents
 
 struct ContentView: View {
     @Environment(AppState.self) var appState
     @State private var showSettings = false
     @State private var showStabilizationConfirmation = false
     @State private var showBatterySavingConfirmation = false
+    @State private var isDNDEnabled = false
     private let streamer = Streamer.shared
     
     var body: some View {
@@ -123,7 +126,7 @@ struct ContentView: View {
                     } message: {
                         Text(appState.isBatterySavingOn ? "Turning off battery saving will enable convenience features at the cost of higher battery consumption." : "Turning on battery saving will reduce everything not necessary for the streaming to a minimum.")
                     }
-                    
+
                     Spacer() // Push buttons to the top
                 }
                 .frame(width: 30 + 10 * 2) // Width based on button size and padding
@@ -133,6 +136,19 @@ struct ContentView: View {
         }
         .edgesIgnoringSafeArea(.all)
         .persistentSystemOverlays(.hidden)
+        .onChange(of: appState.justCameFromBackground) { oldValue, newValue in
+            if newValue && appState.hadToStopStreaming {
+                let content = UNMutableNotificationContent()
+                content.title = "App resumed from background"
+                content.body = "The stream had to be stopped because the app was put into background."
+                
+                let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
+                UNUserNotificationCenter.current().add(request)
+                
+                appState.justCameFromBackground = false
+                appState.hadToStopStreaming = false
+            }
+        }
     }
 }
 

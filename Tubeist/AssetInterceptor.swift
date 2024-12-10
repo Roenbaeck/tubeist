@@ -14,6 +14,7 @@ actor AssetWriterActor {
     private var videoInput: AVAssetWriterInput?
     private var audioInput: AVAssetWriterInput?
     private var _isSessionActive = false
+    private var _isWriterActive = false
 
     func setupAssetWriter() {
         guard let contentType = UTType(AVFileType.mp4.rawValue) else {
@@ -74,64 +75,71 @@ actor AssetWriterActor {
         assetWriter.add(audioInput)
     }
 
-    func startWriting() {
-        guard let assetWriter else {
-            print("Asset writer not configured")
-            return
-        }
-        assetWriter.startWriting()
-    }
     func finishWriting() {
         guard let assetWriter else {
             print("Asset writer not configured")
             return
         }
-        _ = STREAMING_QUEUE.sync {
-            Task {
-                await withCheckedContinuation { continuation in
-                    assetWriter.finishWriting {
-                        continuation.resume()
+        if _isWriterActive {
+            _isWriterActive = false
+            _isSessionActive = false
+            _ = STREAMING_QUEUE_CONCURRENT.sync {
+                Task {
+                    await withCheckedContinuation { continuation in
+                        assetWriter.finishWriting {
+                            continuation.resume()
+                        }
                     }
                 }
             }
         }
     }
 
-    func appendVideoSampleBuffer(_ sampleBuffer: CMSampleBuffer) -> Bool {
+    func appendVideoSampleBuffer(_ sampleBuffer: CMSampleBuffer) {
         guard let videoInput = videoInput else {
             print("Video input not configured")
-            return false
+            return
         }
-        return STREAMING_QUEUE.sync {
+        STREAMING_QUEUE_SERIAL.sync {
             if !_isSessionActive {
                 guard let assetWriter else {
                     print("Asset writer not configured")
-                    return false
+                    return
                 }
-                assetWriter.startWriting()
+                if !_isWriterActive {
+                    assetWriter.startWriting()
+                    _isWriterActive = true
+                }
                 assetWriter.startSession(atSourceTime: sampleBuffer.presentationTimeStamp)
                 _isSessionActive = true
             }
-            return videoInput.isReadyForMoreMediaData && videoInput.append(sampleBuffer)
+            if _isWriterActive && videoInput.isReadyForMoreMediaData {
+                videoInput.append(sampleBuffer)
+            }
         }
     }
 
-    func appendAudioSampleBuffer(_ sampleBuffer: CMSampleBuffer) -> Bool {
+    func appendAudioSampleBuffer(_ sampleBuffer: CMSampleBuffer) {
         guard let audioInput = audioInput else {
             print("Audio input not configured")
-            return false
+            return
         }
-        return STREAMING_QUEUE.sync {
+        STREAMING_QUEUE_SERIAL.sync {
             if !_isSessionActive {
                 guard let assetWriter else {
                     print("Asset writer not configured")
-                    return false
+                    return
                 }
-                assetWriter.startWriting()
+                if !_isWriterActive {
+                    assetWriter.startWriting()
+                    _isWriterActive = true
+                }
                 assetWriter.startSession(atSourceTime: sampleBuffer.presentationTimeStamp)
                 _isSessionActive = true
             }
-            return audioInput.isReadyForMoreMediaData && audioInput.append(sampleBuffer)
+            if _isWriterActive && audioInput.isReadyForMoreMediaData {
+                audioInput.append(sampleBuffer)
+            }
         }
     }
 }
@@ -178,17 +186,18 @@ final class AssetInterceptor: NSObject, AVAssetWriterDelegate, Sendable {
     }
     func endIntercepting() async {
         await self.assetWriter.finishWriting()
+        await self.fragmentSequenceNumber.reset()
     }
 
     func appendVideoSampleBuffer(_ sampleBuffer: CMSampleBuffer) {
-        STREAMING_QUEUE.async {
+        STREAMING_QUEUE_CONCURRENT.async {
             Task {
                 await self.assetWriter.appendVideoSampleBuffer(sampleBuffer)
             }
         }
     }
     func appendAudioSampleBuffer(_ sampleBuffer: CMSampleBuffer) {
-        STREAMING_QUEUE.async {
+        STREAMING_QUEUE_CONCURRENT.async {
             Task {
                 await self.assetWriter.appendAudioSampleBuffer(sampleBuffer)
             }

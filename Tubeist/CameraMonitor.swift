@@ -119,8 +119,8 @@ private actor CameraActor {
     }
     
     func startOutput() {
-        videoOutput.setSampleBufferDelegate(frameGrabber, queue: STREAMING_QUEUE)
-        audioOutput.setSampleBufferDelegate(frameGrabber, queue: STREAMING_QUEUE)
+        videoOutput.setSampleBufferDelegate(frameGrabber, queue: STREAMING_QUEUE_CONCURRENT)
+        audioOutput.setSampleBufferDelegate(frameGrabber, queue: STREAMING_QUEUE_CONCURRENT)
     }
     
     func stopOutput() {
@@ -136,10 +136,10 @@ private actor CameraActor {
         session.stopRunning()
     }
     
-    func getSession() -> AVCaptureSession {
-        session
+    func isRunning() -> Bool {
+        session.isRunning
     }
-
+        
     func getAudioChannels() -> [AVCaptureAudioChannel] {
         return audioOutput.connections.first?.audioChannels ?? []
     }
@@ -184,6 +184,9 @@ final class CameraMonitor: Sendable {
     }
     func stopCamera() async {
         await camera.stopRunning()
+    }
+    func isRunning() async -> Bool {
+        return await camera.isRunning()
     }
     func startOutput() async {
         await camera.startOutput()
@@ -260,6 +263,7 @@ struct CameraMonitorView: UIViewControllerRepresentable {
         let cameraMonitor = CameraMonitor.shared
         cameraMonitor.configurePreviewLayer(on: uiViewController)
     }
+    
 }
 
 struct AudioLevelView: View {
