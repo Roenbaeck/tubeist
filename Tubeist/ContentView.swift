@@ -16,6 +16,7 @@ struct ContentView: View {
     @State private var showBatterySavingConfirmation = false
     @State private var isDNDEnabled = false
     private let streamer = Streamer.shared
+    private let cameraMonitor = CameraMonitor.shared
     
     var body: some View {
         GeometryReader { geometry in
@@ -29,6 +30,9 @@ struct ContentView: View {
                         .onAppear {
                             streamer.startCamera()
                             print("Camera started")
+                            Task {
+                                appState.isStabilizationOn = await cameraMonitor.getCameraStabilization()
+                            }
                         }
                     
                     WebOverlayView()
@@ -105,8 +109,9 @@ struct ContentView: View {
                     .confirmationDialog("Change Image Stabilization?", isPresented: $showStabilizationConfirmation) {
                         Button(appState.isStabilizationOn ? "Turn Off" : "Turn On") {
                             appState.isStabilizationOn.toggle()
-                            // Your code to toggle stabilization
-                            print("Stabilization is \(appState.isStabilizationOn ? "on" : "off")")
+                            Task {
+                                await cameraMonitor.setCameraStabilization(on: appState.isStabilizationOn)
+                            }
                         }
                         Button("Cancel", role: .cancel) {} // Do nothing
                     } message: {

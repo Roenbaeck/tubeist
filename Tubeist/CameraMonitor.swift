@@ -92,29 +92,30 @@ private actor CameraActor {
                 return
             }
 
-            
-
-
-            
-            
-            
-            /*
-             // Find the video connection and enable stabilization
-             if let connection = videoOutput.connection(with: .video) {
-             if connection.isVideoStabilizationSupported {
-             connection.preferredVideoStabilizationMode = .standard
-             print("Video stabilization enabled: Standard")
-             } else {
-             print("Video stabilization is not supported for this connection.")
-             }
-             } else {
-             print("Failed to get video connection.")
-             }
-             */
-            
-            
         } catch {
             print("Error setting up camera: \(error)")
+        }
+    }
+    
+    func getCameraStabilization() -> Bool {
+        return UserDefaults.standard.bool(forKey: "CameraStabilization")
+    }
+    
+    func setCameraStabilization(on stabilized: Bool) {
+        // Find the video connection and enable stabilization
+        if let connection = videoOutput.connection(with: .video) {
+            if connection.isVideoStabilizationSupported {
+                // Update the video stabilization mode on the connection.
+                connection.preferredVideoStabilizationMode = stabilized ? .standard : .off
+                print("Video stabilization \(stabilized ? "on" : "off")")
+
+                // Save the new stabilization state to UserDefaults.
+                UserDefaults.standard.set(stabilized, forKey: "CameraStabilization")
+            } else {
+                print("Video stabilization is not supported for this connection.")
+            }
+        } else {
+            print("Failed to get video connection.")
         }
     }
     
@@ -196,6 +197,12 @@ final class CameraMonitor: Sendable {
     }
     func getAudioChannels() async -> [AVCaptureAudioChannel] {
         return await camera.getAudioChannels()
+    }
+    func setCameraStabilization(on stabilized: Bool) async {
+        return await camera.setCameraStabilization(on: stabilized)
+    }
+    func getCameraStabilization() async -> Bool {
+        return await camera.getCameraStabilization()
     }
     
     func configurePreviewLayer(on viewController: UIViewController) {
