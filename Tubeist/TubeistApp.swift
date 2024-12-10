@@ -24,6 +24,10 @@ struct TubeistApp: App {
             ContentView().environment(AppState())
         }
     }
+    init() {
+        UIApplication.shared.isIdleTimerDisabled = true
+        print("Starting Tubeist")
+    }
 }
 
 

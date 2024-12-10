@@ -116,6 +116,7 @@ struct ContentView: View {
                         Button(appState.isBatterySavingOn ? "Turn Off" : "Turn On") {
                             appState.isBatterySavingOn.toggle()
                             appState.isAudioLevelRunning = !appState.isBatterySavingOn
+                            UIScreen.main.brightness = appState.isBatterySavingOn ? 0.1 : 1.0
                             print("Battery saving is \(appState.isBatterySavingOn ? "on" : "off")")
                         }
                         Button("Cancel", role: .cancel) {} // Do nothing

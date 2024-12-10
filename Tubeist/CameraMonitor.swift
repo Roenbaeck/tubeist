@@ -20,6 +20,7 @@ private actor CameraActor {
     init() {
         // Set all immutables
         previewLayer = AVCaptureVideoPreviewLayer(session: session)
+        
         // Get devices
         guard let videoDevice = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back),
               let audioDevice = AVCaptureDevice.default(for: .audio) else {
