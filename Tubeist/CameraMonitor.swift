@@ -134,7 +134,7 @@ private actor CameraActor {
         }
     }
     
-    func configureFocus(at point: CGPoint) {
+    func setFocus(at point: CGPoint) {
         guard let device = videoDevice else { return }
         
         do {
@@ -150,8 +150,19 @@ private actor CameraActor {
             print("Focus configuration error: \(error.localizedDescription)")
         }
     }
+    func setAutoFocus() {
+        guard let device = videoDevice else { return }
+        
+        do {
+            try device.lockForConfiguration()
+            device.focusMode = .continuousAutoFocus
+            device.unlockForConfiguration()
+        } catch {
+            print("Focus configuration error: \(error.localizedDescription)")
+        }
+    }
     
-    func configureExposure(at point: CGPoint) {
+    func setExposure(at point: CGPoint) {
         guard let device = videoDevice else { return }
         
         do {
@@ -159,7 +170,7 @@ private actor CameraActor {
             
             if device.isExposurePointOfInterestSupported {
                 device.exposurePointOfInterest = point
-                device.exposureMode = .continuousAutoExposure
+                device.exposureMode = .autoExpose
             }
             
             device.unlockForConfiguration()
@@ -167,7 +178,18 @@ private actor CameraActor {
             print("Exposure configuration error: \(error.localizedDescription)")
         }
     }
-    
+    func setAutoExposure() {
+        guard let device = videoDevice else { return }
+        
+        do {
+            try device.lockForConfiguration()
+            device.exposureMode = .continuousAutoExposure
+            device.unlockForConfiguration()
+        } catch {
+            print("Exposure configuration error: \(error.localizedDescription)")
+        }
+    }
+
     func startOutput() {
         videoOutput.setSampleBufferDelegate(frameGrabber, queue: STREAMING_QUEUE_CONCURRENT)
         audioOutput.setSampleBufferDelegate(frameGrabber, queue: STREAMING_QUEUE_CONCURRENT)
@@ -253,11 +275,17 @@ final class CameraMonitor: Sendable {
     func getCameraStabilization() async -> Bool {
         return await camera.getCameraStabilization()
     }
-    func configureFocus(at point: CGPoint) async {
-        await camera.configureFocus(at: point)
+    func setFocus(at point: CGPoint) async {
+        await camera.setFocus(at: point)
     }
-    func configureExposure(at point: CGPoint) async {
-        await camera.configureExposure(at: point)
+    func setAutoFocus() async {
+        await camera.setAutoFocus()
+    }
+    func setExposure(at point: CGPoint) async {
+        await camera.setExposure(at: point)
+    }
+    func setAutoExposure() async {
+        await camera.setAutoExposure()
     }
     
     func configurePreviewLayer(on viewController: UIViewController) {

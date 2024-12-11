@@ -36,7 +36,8 @@ struct ContentView: View {
     @State private var showSettings = false
     @State private var showStabilizationConfirmation = false
     @State private var showBatterySavingConfirmation = false
-    @State private var showFocusAndExposureControl = false
+    @State private var showFocusAndExposureArea = false
+    @State private var enableFocusAndExposureTap = false
     private let interactionData = InteractionData()
     private let streamer = Streamer.shared
     private let cameraMonitor = CameraMonitor.shared
@@ -144,7 +145,7 @@ struct ContentView: View {
                         .font(.system(size: 8))
                         .padding(.bottom, 3)
 
-                    SmallButton(imageName: appState.isBatterySavingOn ? "bolt.slash.fill" : "bolt.fill") {
+                    SmallButton(imageName: appState.isBatterySavingOn ? "sunrise.fill" : "sunset") {
                         showBatterySavingConfirmation = true
                     }
                     .confirmationDialog("Change Battery Saving Mode?", isPresented: $showBatterySavingConfirmation) {
@@ -164,6 +165,12 @@ struct ContentView: View {
 
                     SmallButton(imageName: appState.isExposureLocked ? "sun.max.fill" : "sun.max") {
                         appState.isExposureLocked.toggle()
+                        enableFocusAndExposureTap = appState.isExposureLocked || appState.isFocusLocked
+                        if !appState.isExposureLocked {
+                            Task {
+                                await cameraMonitor.setAutoExposure()
+                            }
+                        }
                     }
                     Text("EXPSR")
                         .font(.system(size: 8))
@@ -171,6 +178,12 @@ struct ContentView: View {
 
                     SmallButton(imageName: appState.isFocusLocked ? "viewfinder.circle.fill" : "viewfinder.circle") {
                         appState.isFocusLocked.toggle()
+                        enableFocusAndExposureTap = appState.isExposureLocked || appState.isFocusLocked
+                        if !appState.isFocusLocked {
+                            Task {
+                                await cameraMonitor.setAutoFocus()
+                            }
+                        }
                     }
                     Text("FOCUS")
                         .font(.system(size: 8))
@@ -183,48 +196,41 @@ struct ContentView: View {
             }
             .frame(width: geometry.size.width, height: geometry.size.height)
             .onTapGesture { location in
-                interactionData.location = location
-                Task {
-                    await cameraMonitor.configureFocus(at: location)
-                    await cameraMonitor.configureExposure(at: location)
-                }
-                showFocusAndExposureControl = true
-                // Schedule hide with a method that cancels and reschedules
-                interactionData.scheduleHide {
-                    showFocusAndExposureControl = false
+                if enableFocusAndExposureTap {
+                    interactionData.location = location
+                    Task {
+                        if appState.isExposureLocked { await cameraMonitor.setExposure(at: location) }
+                        if appState.isFocusLocked { await cameraMonitor.setFocus(at: location) }
+                    }
+                    showFocusAndExposureArea = true
+                    // Schedule hide with a method that cancels and reschedules
+                    interactionData.scheduleHide {
+                        showFocusAndExposureArea = false
+                    }
                 }
             }
             
-            if showFocusAndExposureControl {
+            if showFocusAndExposureArea {
                 Rectangle()
-                    .stroke(Color.white.opacity(0.2), lineWidth: 25)
+                    .stroke(Color.white.opacity(0.5), lineWidth: 25)
                     .position(interactionData.location)
                     .frame(width: 80, height: 80)
-                Text("FOCUS")
-                    .fontWeight(.black)
-                    .font(.system(size: 16))
-                    .foregroundColor(Color.white)
-                    .position(x: interactionData.location.x, y: interactionData.location.y + 40)
+                if appState.isExposureLocked {
+                    Text("EXPOSURE")
+                        .fontWeight(.black)
+                        .font(.system(size: 14))
+                        .foregroundColor(Color.white)
+                        .position(x: interactionData.location.x, y: interactionData.location.y - 40)
+                }
+                if appState.isFocusLocked {
+                    Text("FOCUS")
+                        .fontWeight(.black)
+                        .font(.system(size: 14))
+                        .foregroundColor(Color.white)
+                        .position(x: interactionData.location.x, y: interactionData.location.y + 40)
+                }
             }
                 
-                /*
-                // Exposure slider
-                Slider(
-                    value: Binding(
-                        get: {
-                            1.0
-                            // viewModel.exposureBias
-                        },
-                        set: { newValue in
-                           //  viewModel.exposureBias = newValue
-                           //  viewModel.configureExposure(bias: newValue)
-                        }
-                    ),
-                    in: -1.0...1.0
-                )
-                .accentColor(.white)
-                .frame(width: 150)
-                 */
         }
         .edgesIgnoringSafeArea(.all)
         .persistentSystemOverlays(.hidden)
