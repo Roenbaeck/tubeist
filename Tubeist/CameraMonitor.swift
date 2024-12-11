@@ -11,7 +11,11 @@ import SwiftUI
 
 private actor CameraActor {
     private let session = AVCaptureSession()
+    private let videoDevice: AVCaptureDevice?
+    private var videoInput: AVCaptureDeviceInput?
     private let videoOutput = AVCaptureVideoDataOutput()
+    private let audioDevice: AVCaptureDevice?
+    private var audioInput: AVCaptureDeviceInput?
     private let audioOutput = AVCaptureAudioDataOutput()
     private let frameGrabber = FrameGrabber.shared
     // Had to add this to pass previewLayer across boundary
@@ -22,8 +26,10 @@ private actor CameraActor {
         previewLayer = AVCaptureVideoPreviewLayer(session: session)
         
         // Get devices
-        guard let videoDevice = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back),
-              let audioDevice = AVCaptureDevice.default(for: .audio) else {
+        self.videoDevice = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back)
+        self.audioDevice = AVCaptureDevice.default(for: .audio)
+        guard let videoDevice = self.videoDevice,
+              let audioDevice = self.audioDevice else {
             print("No camera or microphone found")
             return
         }
@@ -59,8 +65,13 @@ private actor CameraActor {
             
             videoDevice.unlockForConfiguration()
             
+            self.videoInput = try AVCaptureDeviceInput(device: videoDevice)
+            guard let videoInput = self.videoInput else {
+                print("Could not create video input")
+                return
+            }
+                
             // Add video input to the session
-            let videoInput = try AVCaptureDeviceInput(device: videoDevice)
             if session.canAddInput(videoInput) {
                 session.addInput(videoInput)
             } else {
@@ -75,9 +86,13 @@ private actor CameraActor {
                 return
             }
 
-            
+            self.audioInput = try AVCaptureDeviceInput(device: audioDevice)
+            guard let audioInput = self.audioInput else {
+                print("Could not create audio input")
+                return
+            }
+
             // Add audio input to the session
-            let audioInput = try AVCaptureDeviceInput(device: audioDevice)
             if session.canAddInput(audioInput) {
                 session.addInput(audioInput)
             } else {
@@ -116,6 +131,40 @@ private actor CameraActor {
             }
         } else {
             print("Failed to get video connection.")
+        }
+    }
+    
+    func configureFocus(at point: CGPoint) {
+        guard let device = videoDevice else { return }
+        
+        do {
+            try device.lockForConfiguration()
+            
+            if device.isFocusPointOfInterestSupported {
+                device.focusPointOfInterest = point
+                device.focusMode = .autoFocus
+            }
+            
+            device.unlockForConfiguration()
+        } catch {
+            print("Focus configuration error: \(error.localizedDescription)")
+        }
+    }
+    
+    func configureExposure(at point: CGPoint) {
+        guard let device = videoDevice else { return }
+        
+        do {
+            try device.lockForConfiguration()
+            
+            if device.isExposurePointOfInterestSupported {
+                device.exposurePointOfInterest = point
+                device.exposureMode = .continuousAutoExposure
+            }
+            
+            device.unlockForConfiguration()
+        } catch {
+            print("Exposure configuration error: \(error.localizedDescription)")
         }
     }
     
@@ -203,6 +252,12 @@ final class CameraMonitor: Sendable {
     }
     func getCameraStabilization() async -> Bool {
         return await camera.getCameraStabilization()
+    }
+    func configureFocus(at point: CGPoint) async {
+        await camera.configureFocus(at: point)
+    }
+    func configureExposure(at point: CGPoint) async {
+        await camera.configureExposure(at: point)
     }
     
     func configurePreviewLayer(on viewController: UIViewController) {

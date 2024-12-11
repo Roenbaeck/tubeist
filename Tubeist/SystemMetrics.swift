@@ -15,7 +15,7 @@ struct SystemMetricsView: View {
     @State private var thermalLevel: String = "Low"
     @State private var networkMbps: Int = 0
     @State private var networkUtilization: Int = 0
-    private let timer = Timer.publish(every: 2, on: .main, in: .common).autoconnect()
+    private let timer = Timer.publish(every: 3, on: .main, in: .common).autoconnect()
     
     var body: some View {
         HStack(spacing: 10) {
@@ -25,7 +25,7 @@ struct SystemMetricsView: View {
             Text("UL: \(networkMbps) Mbps")
             Text("(\(networkUtilization)% utilization)")
         }
-        .font(.system(size: 13)) 
+        .font(.system(size: 13))
         .lineLimit(1) // Ensure text stays on a single line
         .foregroundColor(.white)
         .onReceive(timer) { _ in

@@ -9,12 +9,35 @@ import SwiftUI
 import UserNotifications
 import Intents
 
+@Observable
+class InteractionData {
+    var location = CGPoint(x: 0, y: 0)
+    private var hideWorkItem: DispatchWorkItem?
+
+    func scheduleHide(action: @escaping () -> Void) {
+        // Cancel any existing work item
+        hideWorkItem?.cancel()
+        
+        // Create a new work item
+        let workItem = DispatchWorkItem {
+            action()
+        }
+        
+        // Store the new work item
+        hideWorkItem = workItem
+        
+        // Schedule the new work item
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0, execute: workItem)
+    }
+}
+
 struct ContentView: View {
     @Environment(AppState.self) var appState
     @State private var showSettings = false
     @State private var showStabilizationConfirmation = false
     @State private var showBatterySavingConfirmation = false
-    @State private var isDNDEnabled = false
+    @State private var showFocusAndExposureControl = false
+    private let interactionData = InteractionData()
     private let streamer = Streamer.shared
     private let cameraMonitor = CameraMonitor.shared
     
@@ -102,7 +125,7 @@ struct ContentView: View {
                 .frame(width: width, height: height)
                 
                 // Vertical Small Button Column
-                VStack(spacing: 10) {
+                VStack(spacing: 2) {
                     SmallButton(imageName: appState.isStabilizationOn ? "hand.raised.fill" : "hand.raised.slash") {
                         showStabilizationConfirmation = true
                     }
@@ -117,6 +140,10 @@ struct ContentView: View {
                     } message: {
                         Text(appState.isStabilizationOn ? "Turning off image stabilization may result in shaky video." : "Turning on image stabilization may reduce battery life.")
                     }
+                    Text("STBZN")
+                        .font(.system(size: 8))
+                        .padding(.bottom, 3)
+
                     SmallButton(imageName: appState.isBatterySavingOn ? "bolt.slash.fill" : "bolt.fill") {
                         showBatterySavingConfirmation = true
                     }
@@ -131,6 +158,23 @@ struct ContentView: View {
                     } message: {
                         Text(appState.isBatterySavingOn ? "Turning off battery saving will enable convenience features at the cost of higher battery consumption." : "Turning on battery saving will reduce everything not necessary for the streaming to a minimum.")
                     }
+                    Text("PWRSV")
+                        .font(.system(size: 8))
+                        .padding(.bottom, 3)
+
+                    SmallButton(imageName: appState.isExposureLocked ? "sun.max.fill" : "sun.max") {
+                        appState.isExposureLocked.toggle()
+                    }
+                    Text("EXPSR")
+                        .font(.system(size: 8))
+                        .padding(.bottom, 3)
+
+                    SmallButton(imageName: appState.isFocusLocked ? "viewfinder.circle.fill" : "viewfinder.circle") {
+                        appState.isFocusLocked.toggle()
+                    }
+                    Text("FOCUS")
+                        .font(.system(size: 8))
+                        .padding(.bottom, 3)
 
                     Spacer() // Push buttons to the top
                 }
@@ -138,6 +182,49 @@ struct ContentView: View {
                 .padding(.trailing, 10)
             }
             .frame(width: geometry.size.width, height: geometry.size.height)
+            .onTapGesture { location in
+                interactionData.location = location
+                Task {
+                    await cameraMonitor.configureFocus(at: location)
+                    await cameraMonitor.configureExposure(at: location)
+                }
+                showFocusAndExposureControl = true
+                // Schedule hide with a method that cancels and reschedules
+                interactionData.scheduleHide {
+                    showFocusAndExposureControl = false
+                }
+            }
+            
+            if showFocusAndExposureControl {
+                Rectangle()
+                    .stroke(Color.white.opacity(0.2), lineWidth: 25)
+                    .position(interactionData.location)
+                    .frame(width: 80, height: 80)
+                Text("FOCUS")
+                    .fontWeight(.black)
+                    .font(.system(size: 16))
+                    .foregroundColor(Color.white)
+                    .position(x: interactionData.location.x, y: interactionData.location.y + 40)
+            }
+                
+                /*
+                // Exposure slider
+                Slider(
+                    value: Binding(
+                        get: {
+                            1.0
+                            // viewModel.exposureBias
+                        },
+                        set: { newValue in
+                           //  viewModel.exposureBias = newValue
+                           //  viewModel.configureExposure(bias: newValue)
+                        }
+                    ),
+                    in: -1.0...1.0
+                )
+                .accentColor(.white)
+                .frame(width: 150)
+                 */
         }
         .edgesIgnoringSafeArea(.all)
         .persistentSystemOverlays(.hidden)

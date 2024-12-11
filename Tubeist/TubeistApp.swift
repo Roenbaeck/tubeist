@@ -15,6 +15,8 @@ class AppState {
     var isStreamActive = false
     var isAudioLevelRunning = true
     var isStabilizationOn = true
+    var isFocusLocked = false
+    var isExposureLocked = false
     var justCameFromBackground = false
     var hadToStopStreaming = false
 }
