@@ -35,6 +35,9 @@ private actor FragmentBufferActor {
     func release() {
         buffer.removeAll()
     }
+    func count() -> Int {
+        buffer.count
+    }
 }
 
 actor URLSessionActor {
@@ -47,15 +50,21 @@ actor URLSessionActor {
     }
 }
 
+struct NetworkMetric {
+    var actualDuration: TimeInterval?
+    var networkDuration: TimeInterval?
+    var bytesSent: Int64?
+}
+
 actor NetworkMetricsActor {
-    private var networkMetrics: [Int: (startTime: Date?, duration: TimeInterval?, bytesSent: Int64?)] = [:]
-    func setMetric(taskIdentifier: Int, metrics: (startTime: Date?, duration: TimeInterval?, bytesSent: Int64?)) {
-        self.networkMetrics[taskIdentifier] = metrics
+    private var networkMetrics: [Int: NetworkMetric] = [:]
+    func setMetric(taskIdentifier: Int, metric: NetworkMetric) {
+        self.networkMetrics[taskIdentifier] = metric
     }
-    func getMetric(taskIdenfitier: Int) -> (startTime: Date?, duration: TimeInterval?, bytesSent: Int64?)? {
+    func getMetric(taskIdenfitier: Int) -> NetworkMetric? {
         networkMetrics[taskIdenfitier]
     }
-    func getAllMetrics() -> [Int: (startTime: Date?, duration: TimeInterval?, bytesSent: Int64?)] {
+    func getAllMetrics() -> [Int: NetworkMetric] {
         networkMetrics
     }
     func removeAllMetrics() {
@@ -68,65 +77,60 @@ final class NetworkPerformanceDelegate: NSObject, URLSessionDelegate, URLSession
     private let queue = DispatchQueue(label: "com.tubeist.NetworkPerformanceQueue", attributes: .concurrent)
     
     func urlSession(_ session: URLSession, task: URLSessionTask, didFinishCollecting metrics: URLSessionTaskMetrics) {
-        let taskId = task.taskIdentifier
-        let duration = metrics.taskInterval.duration
-        let startTime = metrics.taskInterval.start
-        
+        print("Getting taskInterval.duration from task \(task.taskIdentifier)")
         queue.async(flags: .barrier) {
             Task {
-                if var metrics = await self.netowrkMetrics.getMetric(taskIdenfitier: taskId) {
-                    metrics.duration = duration
-                    metrics.startTime = startTime
-                    await self.netowrkMetrics.setMetric(taskIdentifier: taskId, metrics: metrics)
-                } else {
-                    await self.netowrkMetrics.setMetric(taskIdentifier: taskId, metrics: (startTime: startTime, duration: duration, bytesSent: nil))
+                if var metric = await self.netowrkMetrics.getMetric(taskIdenfitier: task.taskIdentifier) {
+                    metric.networkDuration = metrics.taskInterval.duration
+                    await self.setMetric(taskIdentifier: task.taskIdentifier, metric: metric)
                 }
             }
         }
     }
     
     func urlSession(_ session: URLSession, task: URLSessionTask, didSendBodyData bytesSent: Int64, totalBytesSent: Int64, totalBytesExpectedToSend: Int64) {
-        let taskId = task.taskIdentifier
-        
+        print("Getting bytesSent from task \(task.taskIdentifier)")
         queue.async(flags: .barrier) {
             Task {
-                if var metrics = await self.netowrkMetrics.getMetric(taskIdenfitier: taskId) {
-                    metrics.bytesSent = totalBytesSent
-                    await self.netowrkMetrics.setMetric(taskIdentifier: taskId, metrics: metrics)
-                } else {
-                    await self.netowrkMetrics.setMetric(taskIdentifier: taskId, metrics: (startTime: nil, duration: nil, bytesSent: totalBytesSent))
+                if var metric = await self.netowrkMetrics.getMetric(taskIdenfitier: task.taskIdentifier) {
+                    metric.bytesSent = bytesSent
+                    await self.setMetric(taskIdentifier: task.taskIdentifier, metric: metric)
                 }
             }
         }
     }
     
+    func setMetric(taskIdentifier: Int, metric: NetworkMetric) async {
+        await netowrkMetrics.setMetric(taskIdentifier: taskIdentifier, metric: metric)
+    }
+    
     func networkPerformance() async -> (mbps: Int, utilization: Int) {
-        let totalTimePassed: TimeInterval
-        let totalDuration: TimeInterval
+        let totalActualDuration: TimeInterval
+        let totalNetworkDuration: TimeInterval
         let totalBitsSent: Int64
 
         // Use a separate Task to perform the async operations
-        (totalTimePassed, totalDuration, totalBitsSent) = await Task {
-            var timePassed: TimeInterval = 0
-            var duration: TimeInterval = 0
+        (totalActualDuration, totalNetworkDuration, totalBitsSent) = await Task {
+            var actualDuration: TimeInterval = 0
+            var networkDuration: TimeInterval = 0
             var bitsSent: Int64 = 0
             let metrics = await self.netowrkMetrics.getAllMetrics()
-            for (_, metrics) in metrics {
-                if let metricDuration = metrics.duration, let metricBytesSent = metrics.bytesSent, let metricStartTime = metrics.startTime {
-                    timePassed += Date().timeIntervalSince(metricStartTime)
-                    duration += metricDuration
+            for (_, metric) in metrics {
+                if let metricActualDuration = metric.actualDuration, let metricNetworkDuration = metric.networkDuration, let metricBytesSent = metric.bytesSent {
+                    actualDuration += metricActualDuration
+                    networkDuration += metricNetworkDuration
                     bitsSent += metricBytesSent * 8
                 }
             }
             await self.netowrkMetrics.removeAllMetrics()
-            return (timePassed, duration, bitsSent)
+            return (actualDuration, networkDuration, bitsSent)
         }.value
         
-        guard totalDuration > 0, totalTimePassed > 0 else { return (0, 0) }
+        guard totalActualDuration > 0, totalNetworkDuration > 0 else { return (0, 0) }
         
-        let mbps = Int(Double(totalBitsSent) / (totalDuration * 1_000_000.0))
-        let utilization = Int((totalDuration / totalTimePassed) * 100)
-        return (mbps,utilization)
+        let mbps = Int(Double(totalBitsSent) / (totalNetworkDuration * 1_000_000.0))
+        let utilization = Int((totalNetworkDuration / totalActualDuration) * 100)
+        return (mbps, utilization)
     }
 }
 
@@ -156,7 +160,12 @@ final class FragmentPusher: Sendable {
     }
     
     func networkPerformance() async -> (mbps: Int, utilization: Int) {
-        await networkPerformance.networkPerformance()
+        var (mbps, utilization) = await networkPerformance.networkPerformance()
+        // We are not sending fast enough, so the buffer have started to fill up
+        if await fragmentBuffer.count() > 1 {
+            utilization = 100
+        }
+        return (mbps, utilization)
     }
 
     func addFragment(_ fragment: Fragment) {
@@ -223,7 +232,16 @@ final class FragmentPusher: Sendable {
                             }
                         }
                     }
-                    task.resume()
+                    Task {
+                        let metric = NetworkMetric(
+                            actualDuration: fragment.duration,
+                            networkDuration: nil,
+                            bytesSent: nil
+                        )
+                        await networkPerformance.setMetric(taskIdentifier: task.taskIdentifier, metric: metric)
+                        print("Saved metric for \(task.taskIdentifier) with value \(metric).")
+                        task.resume()
+                    }
                 }
             }
         }

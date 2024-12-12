@@ -163,18 +163,6 @@ struct ContentView: View {
                         .font(.system(size: 8))
                         .padding(.bottom, 3)
 
-                    SmallButton(imageName: appState.isExposureLocked ? "sun.max.fill" : "sun.max") {
-                        appState.isExposureLocked.toggle()
-                        enableFocusAndExposureTap = appState.isExposureLocked || appState.isFocusLocked
-                        if !appState.isExposureLocked {
-                            Task {
-                                await cameraMonitor.setAutoExposure()
-                            }
-                        }
-                    }
-                    Text("EXPSR")
-                        .font(.system(size: 8))
-                        .padding(.bottom, 3)
 
                     SmallButton(imageName: appState.isFocusLocked ? "viewfinder.circle.fill" : "viewfinder.circle") {
                         appState.isFocusLocked.toggle()
@@ -186,6 +174,19 @@ struct ContentView: View {
                         }
                     }
                     Text("FOCUS")
+                        .font(.system(size: 8))
+                        .padding(.bottom, 3)
+
+                    SmallButton(imageName: appState.isExposureLocked ? "sun.max.fill" : "sun.max") {
+                        appState.isExposureLocked.toggle()
+                        enableFocusAndExposureTap = appState.isExposureLocked || appState.isFocusLocked
+                        if !appState.isExposureLocked {
+                            Task {
+                                await cameraMonitor.setAutoExposure()
+                            }
+                        }
+                    }
+                    Text("EXPSR")
                         .font(.system(size: 8))
                         .padding(.bottom, 3)
 

@@ -52,9 +52,9 @@ final class FrameGrabber: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
                         else {
                             print("Failed to imprint overlay")
                         }
-                        self.assetInterceptor.appendVideoSampleBuffer(sampleBuffer)
+                        await self.assetInterceptor.appendVideoSampleBuffer(sampleBuffer)
                     case is AVCaptureAudioDataOutput:
-                        self.assetInterceptor.appendAudioSampleBuffer(sampleBuffer)
+                        await self.assetInterceptor.appendAudioSampleBuffer(sampleBuffer)
                     default:
                         print("Unknown output type")
                     }

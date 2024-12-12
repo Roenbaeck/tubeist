@@ -13,136 +13,122 @@ actor AssetWriterActor {
     private var assetWriter: AVAssetWriter?
     private var videoInput: AVAssetWriterInput?
     private var audioInput: AVAssetWriterInput?
-    private var _isSessionActive = false
-    private var _isWriterActive = false
-
+    private var writingFinished = false
+    
     func setupAssetWriter() {
-        STREAMING_QUEUE_SERIAL.sync {            
-            guard let contentType = UTType(AVFileType.mp4.rawValue) else {
-                print("MP4 is not a valid type")
-                return
-            }
-            assetWriter = AVAssetWriter(contentType: contentType)
-            guard let assetWriter else {
-                print("Could not create asset writer")
-                return
-            }
-            assetWriter.shouldOptimizeForNetworkUse = true
-            assetWriter.outputFileTypeProfile = .mpeg4AppleHLS
-            assetWriter.preferredOutputSegmentInterval = FRAGMENT_CM_TIME
-            assetWriter.initialSegmentStartTime = .zero
-            assetWriter.delegate = AssetInterceptor.shared
-            
-            let selectedBitrate = UserDefaults.standard.integer(forKey: "SelectedBitrate")
-            
-            let videoSettings: [String: Any] = [
-                AVVideoCodecKey: AVVideoCodecType.hevc,
-                AVVideoWidthKey: COMPRESSED_WIDTH,
-                AVVideoHeightKey: COMPRESSED_HEIGHT,
-                AVVideoCompressionPropertiesKey: [
-                    AVVideoProfileLevelKey: kVTProfileLevel_HEVC_Main10_AutoLevel,
-                    AVVideoAverageBitRateKey: selectedBitrate,
-                    AVVideoExpectedSourceFrameRateKey: FRAMERATE,
-                    AVVideoMaxKeyFrameIntervalKey: FRAGMENT_DURATION * FRAMERATE,
-                    AVVideoAllowFrameReorderingKey: true,
-                    AVVideoColorPrimariesKey: AVVideoColorPrimaries_ITU_R_2020,
-                    AVVideoTransferFunctionKey: AVVideoTransferFunction_ITU_R_2100_HLG,
-                    AVVideoYCbCrMatrixKey: AVVideoYCbCrMatrix_ITU_R_2020
-                ]
-            ]
-            
-            videoInput = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
-            guard let videoInput else {
-                print("Could not set up video input")
-                return
-            }
-            videoInput.expectsMediaDataInRealTime = true
-            
-            let audioSettings: [String: Any] = [
-                AVFormatIDKey: kAudioFormatMPEG4AAC,
-                AVSampleRateKey: 48000,
-                AVNumberOfChannelsKey: 2,
-                AVEncoderBitRateKey: 128000
-            ]
-            
-            audioInput = AVAssetWriterInput(mediaType: .audio, outputSettings: audioSettings)
-            guard let audioInput else {
-                print("Could not set up audio input")
-                return
-            }
-            audioInput.expectsMediaDataInRealTime = true
-            
-            assetWriter.add(videoInput)
-            assetWriter.add(audioInput)
+        guard let contentType = UTType(AVFileType.mp4.rawValue) else {
+            print("MP4 is not a valid type")
+            return
         }
-    }
+        assetWriter = AVAssetWriter(contentType: contentType)
+        guard let assetWriter else {
+            print("Could not create asset writer")
+            return
+        }
+        assetWriter.shouldOptimizeForNetworkUse = true
+        assetWriter.outputFileTypeProfile = .mpeg4AppleHLS
+        assetWriter.preferredOutputSegmentInterval = FRAGMENT_CM_TIME
+        assetWriter.initialSegmentStartTime = .zero
+        assetWriter.delegate = AssetInterceptor.shared
+        
+        let selectedBitrate = UserDefaults.standard.integer(forKey: "SelectedBitrate")
+        
+        let videoSettings: [String: Any] = [
+            AVVideoCodecKey: AVVideoCodecType.hevc,
+            AVVideoWidthKey: COMPRESSED_WIDTH,
+            AVVideoHeightKey: COMPRESSED_HEIGHT,
+            AVVideoCompressionPropertiesKey: [
+                AVVideoProfileLevelKey: kVTProfileLevel_HEVC_Main10_AutoLevel,
+                AVVideoAverageBitRateKey: selectedBitrate,
+                AVVideoExpectedSourceFrameRateKey: FRAMERATE,
+                AVVideoMaxKeyFrameIntervalKey: FRAGMENT_DURATION * FRAMERATE,
+                AVVideoAllowFrameReorderingKey: true,
+                AVVideoColorPrimariesKey: AVVideoColorPrimaries_ITU_R_2020,
+                AVVideoTransferFunctionKey: AVVideoTransferFunction_ITU_R_2100_HLG,
+                AVVideoYCbCrMatrixKey: AVVideoYCbCrMatrix_ITU_R_2020
+            ]
+        ]
+        
+        videoInput = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
+        guard let videoInput else {
+            print("Could not set up video input")
+            return
+        }
+        videoInput.expectsMediaDataInRealTime = true
+        
+        let audioSettings: [String: Any] = [
+            AVFormatIDKey: kAudioFormatMPEG4AAC,
+            AVSampleRateKey: 48000,
+            AVNumberOfChannelsKey: 2,
+            AVEncoderBitRateKey: 128000
+        ]
+        
+        audioInput = AVAssetWriterInput(mediaType: .audio, outputSettings: audioSettings)
+        guard let audioInput else {
+            print("Could not set up audio input")
+            return
+        }
+        audioInput.expectsMediaDataInRealTime = true
+        
+        assetWriter.add(videoInput)
+        assetWriter.add(audioInput)
 
-    func finishWriting() {
+        writingFinished = false
+    }
+    
+     func finishWriting() async {
+         await withCheckedContinuation { continuation in
+             guard let assetWriter else {
+                 print("Asset writer not active or configured")
+                 continuation.resume() // Resume immediately if there's nothing to stop
+                 return
+             }
+             self.writingFinished = true
+             assetWriter.finishWriting {
+                 if assetWriter.status == .failed {
+                     print("Failed to finish writing: \(String(describing: assetWriter.error))")
+                 } else {
+                     print("Finished writing successfully")
+                 }
+                 continuation.resume() // Resume after `finishWriting` completes
+             }
+         }
+     }
+     
+    func appendSampleBuffer(_ sampleBuffer: CMSampleBuffer, to input: AVAssetWriterInput?, inputType: String) {
+        guard let input = input, !writingFinished else {
+            print("\(inputType) input not configured or writing has finished")
+            return
+        }
         guard let assetWriter else {
             print("Asset writer not configured")
             return
         }
-        STREAMING_QUEUE_SERIAL.sync {
-            if _isWriterActive {
-                _isWriterActive = false
-                _isSessionActive = false
-                Task {
-                    await withCheckedContinuation { continuation in
-                        assetWriter.finishWriting {
-                            continuation.resume()
-                        }
-                    }
-                }
-            }
+        // Check and handle writer state
+        if assetWriter.status == .unknown {
+            assetWriter.startWriting()
+            assetWriter.startSession(atSourceTime: sampleBuffer.presentationTimeStamp)
+        } else if assetWriter.status == .writing {
+            // Already started, continue
+        } else {
+            print("AssetWriter in unexpected state: \(assetWriter.status.rawValue)")
+            return
+        }
+
+        // Append sample buffer
+        if input.isReadyForMoreMediaData {
+            input.append(sampleBuffer)
+        } else {
+            print("\(inputType) input not ready for more media data")
         }
     }
 
     func appendVideoSampleBuffer(_ sampleBuffer: CMSampleBuffer) {
-        guard let videoInput = videoInput else {
-            print("Video input not configured")
-            return
-        }
-        STREAMING_QUEUE_SERIAL.sync {
-            if !_isSessionActive {
-                guard let assetWriter else {
-                    print("Asset writer not configured")
-                    return
-                }
-                if !_isWriterActive {
-                    assetWriter.startWriting()
-                    _isWriterActive = true
-                }
-                assetWriter.startSession(atSourceTime: sampleBuffer.presentationTimeStamp)
-                _isSessionActive = true
-            }
-            if _isWriterActive && videoInput.isReadyForMoreMediaData {
-                videoInput.append(sampleBuffer)
-            }
-        }
+        appendSampleBuffer(sampleBuffer, to: videoInput, inputType: "Video")
     }
 
     func appendAudioSampleBuffer(_ sampleBuffer: CMSampleBuffer) {
-        guard let audioInput = audioInput else {
-            print("Audio input not configured")
-            return
-        }
-        STREAMING_QUEUE_SERIAL.sync {
-            if !_isSessionActive {
-                guard let assetWriter else {
-                    print("Asset writer not configured")
-                    return
-                }
-                if !_isWriterActive {
-                    assetWriter.startWriting()
-                    _isWriterActive = true
-                }
-                assetWriter.startSession(atSourceTime: sampleBuffer.presentationTimeStamp)
-                _isSessionActive = true
-            }
-            if _isWriterActive && audioInput.isReadyForMoreMediaData {
-                audioInput.append(sampleBuffer)
-            }
-        }
+        appendSampleBuffer(sampleBuffer, to: audioInput, inputType: "Audio")
     }
 }
 
@@ -191,19 +177,11 @@ final class AssetInterceptor: NSObject, AVAssetWriterDelegate, Sendable {
         await self.fragmentSequenceNumber.reset()
     }
 
-    func appendVideoSampleBuffer(_ sampleBuffer: CMSampleBuffer) {
-        STREAMING_QUEUE_CONCURRENT.async {
-            Task {
-                await self.assetWriter.appendVideoSampleBuffer(sampleBuffer)
-            }
-        }
+    func appendVideoSampleBuffer(_ sampleBuffer: CMSampleBuffer) async {
+        await self.assetWriter.appendVideoSampleBuffer(sampleBuffer)
     }
-    func appendAudioSampleBuffer(_ sampleBuffer: CMSampleBuffer) {
-        STREAMING_QUEUE_CONCURRENT.async {
-            Task {
-                await self.assetWriter.appendAudioSampleBuffer(sampleBuffer)
-            }
-        }
+    func appendAudioSampleBuffer(_ sampleBuffer: CMSampleBuffer) async {
+        await self.assetWriter.appendAudioSampleBuffer(sampleBuffer)
     }
     func assetWriter(_ writer: AVAssetWriter,
                      didOutputSegmentData segmentData: Data,
