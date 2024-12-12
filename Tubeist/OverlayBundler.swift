@@ -15,7 +15,10 @@ final class Overlay: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     private let bundler: OverlayBundler
     private var webView: WKWebView?
     private var overlayImage: CIImage?
-
+    private var lastCaptureTime: Date = Date.distantPast
+    private var captureTimer: Timer?
+    private let minimumCaptureInterval: TimeInterval = 1.0 // at least 1 second between snapshots
+    
     init(url: URL, bundler: OverlayBundler) {
         self.url = url
         self.bundler = bundler
@@ -24,7 +27,7 @@ final class Overlay: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
         if message.name == "domChanged" {
-            self.captureWebViewImage()
+            self.captureWebViewImageOrSchedule()
         }
     }
 
@@ -90,8 +93,26 @@ final class Overlay: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
 
         webView.configuration.userContentController.add(self, name: "domChanged")
     }
-
+    
+    // Both throttling and debouncing the capture so we ensure that at least the minimum capture interval passes
+    // between snapshots, and that the last call is always executed even in a situation where several are coming
+    // in quick succession
+    private func captureWebViewImageOrSchedule() {
+        let currentTime = Date()
+        if currentTime.timeIntervalSince(lastCaptureTime) >= minimumCaptureInterval {
+            captureWebViewImage()
+        } else {
+            captureTimer?.invalidate()
+            captureTimer = Timer.scheduledTimer(withTimeInterval: minimumCaptureInterval, repeats: false) { [weak self] _ in
+                DispatchQueue.main.async {
+                    self?.captureWebViewImage()
+                }
+            }
+        }
+    }
+    
     func captureWebViewImage() {
+        lastCaptureTime = Date()
         let config = WKSnapshotConfiguration()
         config.snapshotWidth = NSNumber(value: CAPTURE_WIDTH / Int(UIScreen.main.scale))
 
