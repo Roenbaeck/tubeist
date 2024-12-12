@@ -6,13 +6,60 @@
 //
 import SwiftUI
 
+struct OverlaySetting: Identifiable, Codable, Hashable {
+    var id: String { url }
+    var url: String
+
+    init(url: String) {
+        self.url = url
+    }
+}
+
+@Observable class OverlaySettingsManager {
+    var overlays: [OverlaySetting]
+
+    init() {
+        overlays = OverlaySettingsManager.loadOverlaysFromStorage()
+    }
+
+    static func loadOverlaysFromStorage() -> [OverlaySetting] {
+        guard let overlaysData = UserDefaults.standard.data(forKey: "Overlays"),
+              let decodedOverlays = try? JSONDecoder().decode([OverlaySetting].self, from: overlaysData) else {
+            return []
+        }
+        return decodedOverlays
+    }
+
+    func saveOverlays() {
+        guard let encodedOverlays = try? JSONEncoder().encode(overlays) else {
+            return
+        }
+        UserDefaults.standard.set(encodedOverlays, forKey: "Overlays")
+    }
+
+    func addOverlay(url: String) {
+        if !overlays.contains(where: { $0.url == url }) {
+            let newOverlay = OverlaySetting(url: url)
+            overlays.append(newOverlay)
+            saveOverlays()
+        }
+    }
+
+    func deleteOverlay(at offsets: IndexSet) {
+        overlays.remove(atOffsets: offsets)
+        saveOverlays()
+    }
+}
+
 struct SettingsView: View {
     @AppStorage("HLSServer") private var hlsServer: String = ""
     @AppStorage("Username") private var username: String = ""
     @AppStorage("Password") private var password: String = ""
     @AppStorage("SaveFragmentsLocally") private var saveFragmentsLocally: Bool = false
     @AppStorage("SelectedBitrate") private var selectedBitrate: Int = 1_000_000
-    @AppStorage("OverlayURL") private var overlayURL: String = ""
+    @AppStorage("Overlays") private var overlaysData: Data = Data()
+    var overlayManager: OverlaySettingsManager
+    @State private var newOverlayURL: String = ""
     @Environment(\.presentationMode) private var presentationMode
 
     var bitrates: [Int] = [1_000_000, 2_000_000, 3_000_000, 4_000_000, 6_000_000, 10_000_000, 20_000_000]
@@ -48,13 +95,23 @@ struct SettingsView: View {
                     .pickerStyle(MenuPickerStyle())
                 }
                 
-                Section(header: Text("Overlay"), footer: Text("Optional: Add a web overlay URL for your stream.")) {
-                    TextField("Web Overlay URL", text: $overlayURL)
-                        .keyboardType(.URL)
-                        .autocapitalization(.none)
-                        .disableAutocorrection(true)
+                Section(header: Text("Overlays"), footer: Text("Add multiple web overlay URLs for your stream.")) {
+                    ForEach(overlayManager.overlays) { overlay in
+                        Text(overlay.url)
+                    }
+                    .onDelete(perform: overlayManager.deleteOverlay)
+                    
+                    HStack {
+                        TextField("New Overlay URL", text: $newOverlayURL)
+                            .keyboardType(.URL)
+                            .autocapitalization(.none)
+                            .disableAutocorrection(true)
+                        Button(action: addOverlay) {
+                            Image(systemName: "plus.circle.fill")
+                        }
+                    }
                 }
-
+                
                 Section {
                     Toggle("Save Fragments Locally", isOn: $saveFragmentsLocally)
                 }
@@ -67,4 +124,14 @@ struct SettingsView: View {
             .buttonStyle(.borderedProminent))
         }
     }
+    
+    func addOverlay() {
+        guard let url = URL(string: newOverlayURL), UIApplication.shared.canOpenURL(url) else {
+            // Handle invalid URL error
+            return
+        }
+        overlayManager.addOverlay(url: newOverlayURL)
+        newOverlayURL = ""
+    }
+
 }

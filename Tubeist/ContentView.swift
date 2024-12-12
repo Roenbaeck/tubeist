@@ -33,11 +33,13 @@ class InteractionData {
 
 struct ContentView: View {
     @Environment(AppState.self) var appState
+    @State private var overlayManager = OverlaySettingsManager()
     @State private var showSettings = false
     @State private var showStabilizationConfirmation = false
     @State private var showBatterySavingConfirmation = false
     @State private var showFocusAndExposureArea = false
     @State private var enableFocusAndExposureTap = false
+    @State private var isSettingsPresented = false
     private let interactionData = InteractionData()
     private let streamer = Streamer.shared
     private let cameraMonitor = CameraMonitor.shared
@@ -59,8 +61,10 @@ struct ContentView: View {
                             }
                         }
                     
-                    if let url = URL(string: UserDefaults.standard.string(forKey: "OverlayURL") ?? "") {
-                        OverlayBundlerView(url: url)
+                    ForEach(overlayManager.overlays) { overlay in
+                        if let url = URL(string: overlay.url) {
+                            OverlayBundlerView(url: url)
+                        }
                     }
                     
                     HStack {
@@ -78,7 +82,7 @@ struct ContentView: View {
                             .background(Color.black.opacity(0.5))
                             .cornerRadius(25)
                             .sheet(isPresented: $showSettings) {
-                                SettingsView()
+                                SettingsView(overlayManager: overlayManager)
                             }.padding()
                         }
                         Spacer()
@@ -250,6 +254,14 @@ struct ContentView: View {
                 appState.hadToStopStreaming = false
             }
         }
+    }
+
+    func loadOverlaysFromStorage() -> [OverlaySetting] {
+        guard let overlaysData = UserDefaults.standard.data(forKey: "Overlays"),
+              let decodedOverlays = try? JSONDecoder().decode([OverlaySetting].self, from: overlaysData) else {
+            return []
+        }
+        return decodedOverlays
     }
 }
 
