@@ -9,6 +9,7 @@ import Foundation
 @preconcurrency import Darwin
 
 struct SystemMetricsView: View {
+    @Environment(AppState.self) var appState
     private let processInfo = ProcessInfo()
     @State private var cpuUsage: Float = 0
     @State private var batteryLevel: Float = 0
@@ -33,6 +34,9 @@ struct SystemMetricsView: View {
         }
         .onAppear {
             updateSystemMetrics()
+        }
+        .onTapGesture {
+            appState.isAudioLevelRunning.toggle()
         }
     }
     

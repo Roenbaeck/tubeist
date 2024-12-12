@@ -59,7 +59,9 @@ struct ContentView: View {
                             }
                         }
                     
-                    WebOverlayView()
+                    if let url = URL(string: UserDefaults.standard.string(forKey: "OverlayURL") ?? "") {
+                        OverlayBundlerView(url: url)
+                    }
                     
                     HStack {
                         VStack(alignment: .leading) {

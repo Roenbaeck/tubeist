@@ -5,34 +5,27 @@
 //  Created by Lars Rönnbäck on 2024-12-04.
 //
 
-import SwiftUI
+// @preconcurrency need to avoid non-sendable CIImage when calling overlay.getOverlayImage()
+@preconcurrency import SwiftUI
 import WebKit
+// import Observation
 
-final class WebOverlayViewController: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
-    public static let shared = WebOverlayViewController()
+final class Overlay: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
+    private let url: URL
+    private let bundler: OverlayBundler
     private var webView: WKWebView?
-    private let urlString: String
     private var overlayImage: CIImage?
+
+    init(url: URL, bundler: OverlayBundler) {
+        self.url = url
+        self.bundler = bundler
+        super.init()
+    }
     
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
-        if message.name
-            == "domChanged" {
-            // print("Capturing web view due to DOM change")
+        if message.name == "domChanged" {
             self.captureWebViewImage()
         }
-    }
-    
-    func getOverlayImage() -> CIImage? {
-        guard let overlayImage = self.overlayImage else {
-            print("No overlay image captured yet")
-            return nil
-        }
-        return overlayImage
-    }
-    
-    override init() {
-        self.urlString = UserDefaults.standard.string(forKey: "OverlayURL") ?? ""
-        super.init()
     }
 
     func createWebView() -> WKWebView {
@@ -55,16 +48,22 @@ final class WebOverlayViewController: NSObject, WKNavigationDelegate, WKScriptMe
         webView.scrollView.contentInset = UIEdgeInsets.zero
         webView.scrollView.contentInsetAdjustmentBehavior = .never
 
-        if let url = URL(string: urlString) {
-            webView.load(URLRequest(url: url))
-        }
+        webView.load(URLRequest(url: url))
         
         self.webView = webView
         return webView
     }
+
+    func getOverlayImage() -> CIImage? {
+        guard let overlayImage = self.overlayImage else {
+            print("No overlay image captured yet")
+            return nil
+        }
+        return overlayImage
+    }
     
-    func getWebView() -> WKWebView {
-        return webView!
+    func getWebView() -> WKWebView? { // Make this optional
+        return webView
     }
     
     // MARK: - WKNavigationDelegate
@@ -105,22 +104,94 @@ final class WebOverlayViewController: NSObject, WKNavigationDelegate, WKScriptMe
                 print("Failed to convert UIImage to CIImage")
                 return
             }
-            print("Captured overlay with dimensions \(ciImage.extent.size)")
             self.overlayImage = ciImage
+            print("Captured overlay with dimensions \(ciImage.extent.size)")
+            Task {
+                // Combine all images every time any image is changed
+                await self.bundler.combineOverlayImages()
+            }
         }
     }
 }
 
-struct WebOverlayView: UIViewRepresentable {
-    
-    func makeCoordinator() -> WebOverlayViewController {
-        WebOverlayViewController.shared
+actor OverlayBundleActor {
+    private var overlays: [URL: Overlay] = [:]
+    func addOverlay(url: URL, overlay: Overlay) async {
+        overlays[url] = overlay
+    }
+    func removeOverlay(url: URL) {
+        overlays.removeValue(forKey: url)
+    }
+    func getOverlays() -> [Overlay] {
+        Array(overlays.values)
+    }
+}
+
+actor CombinedImageActor {
+    private var combinedOverlayImage: CIImage? = nil
+    func setImage(_ image: CIImage) {
+        combinedOverlayImage = image
+    }
+    func getImage() -> CIImage? {
+        combinedOverlayImage
+    }
+}
+
+final class OverlayBundler: Sendable {
+    public static let shared = OverlayBundler()
+    private let overlayBundle = OverlayBundleActor()
+    private let combinedImage = CombinedImageActor()
+
+    func addOverlay(url: URL, overlay: Overlay) async {
+        await overlayBundle.addOverlay(url: url, overlay: overlay)
+    }
+
+    func removeOverlay(url: URL) async {
+        await overlayBundle.removeOverlay(url: url)
+        await combineOverlayImages() // Update the combined image after removing
+    }
+
+    func combineOverlayImages() async {
+        var images: [CIImage] = []
+        for overlay in await overlayBundle.getOverlays() {
+            if let image = await overlay.getOverlayImage() {
+                images.append(image)
+            }
+        }
+        print("Combining \(images.count) images")
+
+        guard !images.isEmpty, let firstImage = images.first else {
+            print("No images to combine")
+            return
+        }
+
+        let imageComposition = images.dropFirst().reduce(firstImage) { result, image in
+            result.composited(over: image)
+        }
+
+        await combinedImage.setImage(imageComposition)
     }
     
+    func getCombinedImage() async -> CIImage? {
+        await combinedImage.getImage()
+    }
+}
+
+struct OverlayBundlerView: UIViewRepresentable {
+    var url: URL
+
+    func makeCoordinator() -> Overlay {
+        let overlay = Overlay(url: url, bundler: OverlayBundler.shared)
+        Task {
+            await OverlayBundler.shared.addOverlay(url: url, overlay: overlay)
+        }
+        return overlay
+    }
+
     func makeUIView(context: Context) -> WKWebView {
         context.coordinator.createWebView()
     }
-    
+
     func updateUIView(_ webView: WKWebView, context: Context) {
         // Handle updates if needed
     }

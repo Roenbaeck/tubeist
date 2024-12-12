@@ -77,7 +77,6 @@ final class NetworkPerformanceDelegate: NSObject, URLSessionDelegate, URLSession
     private let queue = DispatchQueue(label: "com.tubeist.NetworkPerformanceQueue", attributes: .concurrent)
     
     func urlSession(_ session: URLSession, task: URLSessionTask, didFinishCollecting metrics: URLSessionTaskMetrics) {
-        print("Getting taskInterval.duration from task \(task.taskIdentifier)")
         queue.async(flags: .barrier) {
             Task {
                 if var metric = await self.netowrkMetrics.getMetric(taskIdenfitier: task.taskIdentifier) {
@@ -89,7 +88,6 @@ final class NetworkPerformanceDelegate: NSObject, URLSessionDelegate, URLSession
     }
     
     func urlSession(_ session: URLSession, task: URLSessionTask, didSendBodyData bytesSent: Int64, totalBytesSent: Int64, totalBytesExpectedToSend: Int64) {
-        print("Getting bytesSent from task \(task.taskIdentifier)")
         queue.async(flags: .barrier) {
             Task {
                 if var metric = await self.netowrkMetrics.getMetric(taskIdenfitier: task.taskIdentifier) {
@@ -239,7 +237,6 @@ final class FragmentPusher: Sendable {
                             bytesSent: nil
                         )
                         await networkPerformance.setMetric(taskIdentifier: task.taskIdentifier, metric: metric)
-                        print("Saved metric for \(task.taskIdentifier) with value \(metric).")
                         task.resume()
                     }
                 }

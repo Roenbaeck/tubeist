@@ -219,29 +219,29 @@ private actor CameraActor {
     
     // Method to configure preview layer directly on the view controller
     func configurePreviewLayer(on viewController: UIViewController) {
-            previewLayer.videoGravity = .resizeAspect
-            
-            // Configure connection rotation
-            if let connection = previewLayer.connection {
-                if connection.isVideoRotationAngleSupported(0) {
-                    connection.videoRotationAngle = 0
-                }
+        previewLayer.videoGravity = .resizeAspect
+        
+        // Configure connection rotation
+        if let connection = previewLayer.connection {
+            if connection.isVideoRotationAngleSupported(0) {
+                connection.videoRotationAngle = 0
             }
+        }
+        
+        // Explicitly dispatch to main queue
+        DispatchQueue.main.async {
+            // Remove existing preview layers
+            viewController.view.layer.sublayers?.forEach { $0.removeFromSuperlayer() }
             
-            // Explicitly dispatch to main queue
-            DispatchQueue.main.async {
-                // Remove existing preview layers
-                viewController.view.layer.sublayers?.forEach { $0.removeFromSuperlayer() }
-                
-                // Add preview layer
-                viewController.view.layer.addSublayer(self.previewLayer)
-                
-                // Update frame
-                CATransaction.begin()
-                CATransaction.setAnimationDuration(0)
-                self.previewLayer.frame = viewController.view.bounds
-                CATransaction.commit()
-            }
+            // Add preview layer
+            viewController.view.layer.addSublayer(self.previewLayer)
+            
+            // Update frame
+            CATransaction.begin()
+            CATransaction.setAnimationDuration(0)
+            self.previewLayer.frame = viewController.view.bounds
+            CATransaction.commit()
+        }
     }
 }
 

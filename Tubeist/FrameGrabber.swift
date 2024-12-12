@@ -46,11 +46,11 @@ final class FrameGrabber: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
                 if await Streamer.shared.isStreaming() {
                     switch output {
                     case is AVCaptureVideoDataOutput:
-                        if let overlayImage = await WebOverlayViewController.shared.getOverlayImage() {
+                        if let overlayImage = await OverlayBundler.shared.getCombinedImage() {
                             await self.overlayImprinter.imprint(overlay: overlayImage, onto: sampleBuffer)
                         }
                         else {
-                            print("Failed to imprint overlay")
+                            print("No overlay available to imprint")
                         }
                         await self.assetInterceptor.appendVideoSampleBuffer(sampleBuffer)
                     case is AVCaptureAudioDataOutput:

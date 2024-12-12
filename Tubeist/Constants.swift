@@ -23,5 +23,5 @@ let STREAMING_QUEUE_CONCURRENT = DispatchQueue(label: "com.subside.StreamingQueu
 
 let FRAGMENT_CM_TIME = CMTimeMake(value: Int64(FRAGMENT_DURATION * TIMESCALE), timescale: Int32(TIMESCALE))
 
-let AUDIO_BARS = 30
+let AUDIO_BARS = 50
 
