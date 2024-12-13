@@ -198,13 +198,15 @@ final class AssetInterceptor: NSObject, AVAssetWriterDelegate, Sendable {
             return
         }
         let duration = (segmentReport?.trackReports.first?.duration.seconds ?? 2.0)
-        Task.detached { [self] in
-            let sequenceNumber = await fragmentSequenceNumber.next()
-            let fragment = Fragment(sequence: sequenceNumber, segment: segmentData, ext: ext, duration: duration)
-            print("A fragment has been produced: \(fragment.sequence).\(fragment.ext) [ \(fragment.duration) ]")
-            fragmentPusher.addFragment(fragment)
-            fragmentPusher.uploadFragment(attempt: 1)
-            saveFragmentToFile(fragment)
+        if duration >= FRAGMENT_MINIMUM_DURATION {
+            Task.detached { [self] in
+                let sequenceNumber = await fragmentSequenceNumber.next()
+                let fragment = Fragment(sequence: sequenceNumber, segment: segmentData, ext: ext, duration: duration)
+                print("A fragment has been produced: \(fragment.sequence).\(fragment.ext) [ \(fragment.duration) ]")
+                fragmentPusher.addFragment(fragment)
+                fragmentPusher.uploadFragment(attempt: 1)
+                saveFragmentToFile(fragment)
+            }
         }
     }
     func saveFragmentToFile(_ fragment: Fragment) {

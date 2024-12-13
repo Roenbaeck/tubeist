@@ -130,6 +130,9 @@ final class NetworkPerformanceDelegate: NSObject, URLSessionDelegate, URLSession
         let utilization = Int((totalNetworkDuration / totalActualDuration) * 100)
         return (mbps, utilization)
     }
+    func removeAllMetrics() async {
+        await netowrkMetrics.removeAllMetrics()
+    }
 }
 
 final class FragmentPusher: Sendable {
@@ -146,7 +149,7 @@ final class FragmentPusher: Sendable {
         configuration.httpShouldUsePipelining = true
         configuration.waitsForConnectivity = true
         // 10 second timeout
-        configuration.timeoutIntervalForRequest = 10
+        configuration.timeoutIntervalForRequest = TimeInterval(FRAGMENT_DURATION)
         // Initialize upload queue with concurrent operations
         self.uploadQueue = OperationQueue()
         self.uploadQueue.maxConcurrentOperationCount = 3
@@ -154,6 +157,27 @@ final class FragmentPusher: Sendable {
             await self.urlSession.setSession(
                 URLSession(configuration: configuration, delegate: networkPerformance, delegateQueue: uploadQueue)
             )
+        }
+    }
+    
+    func immediatePreparation() async {
+        uploadQueue.cancelAllOperations()
+        await fragmentBuffer.release()
+        await networkPerformance.removeAllMetrics()
+    }
+    
+    func gracefulShutdown() async {
+        if await !fragmentBuffer.isEmpty() {
+            if uploadQueue.operationCount == 0 {
+                self.uploadFragment(attempt: 1)
+            }
+            do {
+                try await Task.sleep(nanoseconds: UInt64(1_000_000_000 * FRAGMENT_DURATION))
+                await gracefulShutdown()
+            } catch {
+                print("Graceful shutdown was interrupted: \(error)")
+                return
+            }
         }
     }
     
@@ -230,12 +254,12 @@ final class FragmentPusher: Sendable {
                             }
                         }
                     }
+                    let metric = NetworkMetric(
+                        actualDuration: fragment.duration,
+                        networkDuration: nil,
+                        bytesSent: nil
+                    )
                     Task {
-                        let metric = NetworkMetric(
-                            actualDuration: fragment.duration,
-                            networkDuration: nil,
-                            bytesSent: nil
-                        )
                         await networkPerformance.setMetric(taskIdentifier: task.taskIdentifier, metric: metric)
                         task.resume()
                     }
