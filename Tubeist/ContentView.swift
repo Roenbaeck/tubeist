@@ -44,6 +44,7 @@ struct ContentView: View {
     @State private var totalZoom = 1.0
     @State private var minZoom = 1.0
     @State private var maxZoom = 1.0
+    @State private var opticalZoom = 1.0
     private let interactionData = InteractionData()
     private let streamer = Streamer.shared
     private let cameraMonitor = CameraMonitor.shared
@@ -86,7 +87,8 @@ struct ContentView: View {
                                 appState.isStabilizationOn = await cameraMonitor.getCameraStabilization()
                                 await cameraMonitor.setCameraStabilization(on: appState.isStabilizationOn)
                                 minZoom = await cameraMonitor.getMinZoomFactor()
-                                maxZoom = await cameraMonitor.getMaxZoomFactor()
+                                maxZoom = await min(cameraMonitor.getMaxZoomFactor(), ZOOM_LIMIT)
+                                opticalZoom = await cameraMonitor.getOpticalZoomFactor()
                             }
                         }
                     
@@ -225,6 +227,15 @@ struct ContentView: View {
                         .font(.system(size: 8))
                         .padding(.bottom, 3)
 
+                    Text(String(format: totalZoom + currentZoom > 10 ? "%.0f" : "%.1f", totalZoom + currentZoom))
+                        .font(.system(size: 20))
+                        .foregroundColor(totalZoom + currentZoom > opticalZoom ? .red : .white)
+                        .frame(width: 30, height: 30)
+                    Text("ZOOM")
+                        .font(.system(size: 8))
+                        .padding(.bottom, 3)
+
+                    
                     Spacer() // Push buttons to the top
                 }
                 .frame(width: 30 + 10 * 2) // Width based on button size and padding

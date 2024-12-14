@@ -20,7 +20,7 @@ private actor CameraActor {
     private let frameGrabber = FrameGrabber.shared
     private var minZoomFactor: CGFloat = 1.0
     private var maxZoomFactor: CGFloat = 1.0
-    private var upscaleThreshold: CGFloat = 1.0
+    private var opticalZoomFactor: CGFloat = 1.0
     // Had to add this to pass previewLayer across boundary
     nonisolated(unsafe) private let previewLayer: AVCaptureVideoPreviewLayer
     
@@ -69,7 +69,7 @@ private actor CameraActor {
             
             self.minZoomFactor = videoDevice.minAvailableVideoZoomFactor
             self.maxZoomFactor = videoDevice.maxAvailableVideoZoomFactor
-            self.upscaleThreshold = videoDevice.activeFormat.videoZoomFactorUpscaleThreshold
+            self.opticalZoomFactor = videoDevice.activeFormat.secondaryNativeResolutionZoomFactors.first ?? 1.0
             
             self.videoInput = try AVCaptureDeviceInput(device: videoDevice)
             guard let videoInput = self.videoInput else {
@@ -156,8 +156,8 @@ private actor CameraActor {
     func getMaxZoomFactor() -> CGFloat {
         maxZoomFactor
     }
-    func getUpscaleThreshold() -> CGFloat {
-        upscaleThreshold
+    func getOpticalZoomFactor() -> CGFloat {
+        opticalZoomFactor
     }
     
     func setFocus(at point: CGPoint) {
@@ -310,8 +310,8 @@ final class CameraMonitor: Sendable {
     func getMaxZoomFactor() async -> CGFloat {
         await camera.getMaxZoomFactor()
     }
-    func getUpscaleThreshold() async -> CGFloat {
-        await camera.getUpscaleThreshold()
+    func getOpticalZoomFactor() async -> CGFloat {
+        await camera.getOpticalZoomFactor()
     }
     func setFocus(at point: CGPoint) async {
         await camera.setFocus(at: point)
