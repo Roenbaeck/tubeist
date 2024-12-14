@@ -133,7 +133,8 @@ actor AssetWriterActor {
 }
 
 actor fragmentSequenceNumberActor {
-    private var fragmentSequenceNumber: Int = 0
+    // with next() first sequence is numbered 0 (ensuring correspondence with the sequence numbers in the m4s files)
+    private var fragmentSequenceNumber: Int = -1
     func next() -> Int {
         fragmentSequenceNumber += 1
         return fragmentSequenceNumber

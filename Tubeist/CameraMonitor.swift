@@ -18,6 +18,9 @@ private actor CameraActor {
     private var audioInput: AVCaptureDeviceInput?
     private let audioOutput = AVCaptureAudioDataOutput()
     private let frameGrabber = FrameGrabber.shared
+    private var minZoomFactor: CGFloat = 1.0
+    private var maxZoomFactor: CGFloat = 1.0
+    private var upscaleThreshold: CGFloat = 1.0
     // Had to add this to pass previewLayer across boundary
     nonisolated(unsafe) private let previewLayer: AVCaptureVideoPreviewLayer
     
@@ -62,8 +65,11 @@ private actor CameraActor {
             videoDevice.activeVideoMinFrameDuration = CMTimeMake(value: frameDurationParts, timescale: Int32(TIMESCALE))
             videoDevice.activeVideoMaxFrameDuration = CMTimeMake(value: frameDurationParts, timescale: Int32(TIMESCALE))
             videoDevice.activeColorSpace = .HLG_BT2020
-            
             videoDevice.unlockForConfiguration()
+            
+            self.minZoomFactor = videoDevice.minAvailableVideoZoomFactor
+            self.maxZoomFactor = videoDevice.maxAvailableVideoZoomFactor
+            self.upscaleThreshold = videoDevice.activeFormat.videoZoomFactorUpscaleThreshold
             
             self.videoInput = try AVCaptureDeviceInput(device: videoDevice)
             guard let videoInput = self.videoInput else {
@@ -132,6 +138,26 @@ private actor CameraActor {
         } else {
             print("Failed to get video connection.")
         }
+    }
+
+    func setZoomFactor(_ zoomFactor: CGFloat) {
+        guard let device = videoDevice else { return }
+        do {
+            try device.lockForConfiguration()
+            device.videoZoomFactor = max(1.0, min(zoomFactor, device.activeFormat.videoMaxZoomFactor))
+            device.unlockForConfiguration()
+        } catch {
+            print("Failed to set zoom factor: \(error)")
+        }
+    }
+    func getMinZoomFactor() -> CGFloat {
+        minZoomFactor
+    }
+    func getMaxZoomFactor() -> CGFloat {
+        maxZoomFactor
+    }
+    func getUpscaleThreshold() -> CGFloat {
+        upscaleThreshold
     }
     
     func setFocus(at point: CGPoint) {
@@ -274,6 +300,18 @@ final class CameraMonitor: Sendable {
     }
     func getCameraStabilization() async -> Bool {
         return await camera.getCameraStabilization()
+    }
+    func setZoomFactor(_ zoomFactor: CGFloat) async {
+        await camera.setZoomFactor(zoomFactor)
+    }
+    func getMinZoomFactor() async -> CGFloat {
+        await camera.getMinZoomFactor()
+    }
+    func getMaxZoomFactor() async -> CGFloat {
+        await camera.getMaxZoomFactor()
+    }
+    func getUpscaleThreshold() async -> CGFloat {
+        await camera.getUpscaleThreshold()
     }
     func setFocus(at point: CGPoint) async {
         await camera.setFocus(at: point)

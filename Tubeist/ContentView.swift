@@ -40,9 +40,34 @@ struct ContentView: View {
     @State private var showFocusAndExposureArea = false
     @State private var enableFocusAndExposureTap = false
     @State private var isSettingsPresented = false
+    @State private var currentZoom = 0.0
+    @State private var totalZoom = 1.0
+    @State private var minZoom = 1.0
+    @State private var maxZoom = 1.0
     private let interactionData = InteractionData()
     private let streamer = Streamer.shared
     private let cameraMonitor = CameraMonitor.shared
+    
+    private var magnification: some Gesture {
+        MagnifyGesture()
+            .onChanged { value in
+                currentZoom = value.magnification - 1
+                let zoomDelta = totalZoom * currentZoom
+                let safeZoom = max(minZoom, min(zoomDelta + totalZoom, maxZoom))
+                Task {
+                    await cameraMonitor.setZoomFactor(safeZoom)
+                }
+                currentZoom = safeZoom - totalZoom
+            }
+            .onEnded { value in
+                totalZoom += currentZoom
+                totalZoom = max(minZoom, min(totalZoom, maxZoom))
+                Task {
+                    await cameraMonitor.setZoomFactor(totalZoom)
+                }
+                currentZoom = 0
+            }
+    }
     
     var body: some View {
         GeometryReader { geometry in
@@ -53,11 +78,15 @@ struct ContentView: View {
                 // 16:9 Content Area
                 ZStack {
                     CameraMonitorView()
+                        .gesture(magnification)
                         .onAppear {
                             streamer.startCamera()
                             print("Camera started")
                             Task {
                                 appState.isStabilizationOn = await cameraMonitor.getCameraStabilization()
+                                await cameraMonitor.setCameraStabilization(on: appState.isStabilizationOn)
+                                minZoom = await cameraMonitor.getMinZoomFactor()
+                                maxZoom = await cameraMonitor.getMaxZoomFactor()
                             }
                         }
                     
