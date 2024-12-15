@@ -19,6 +19,11 @@ class AppState {
     var isExposureLocked = false
     var justCameFromBackground = false
     var hadToStopStreaming = false
+    var cameraMonitorId = UUID()
+    
+    func refreshCameraView() {
+        cameraMonitorId = UUID()
+    }
 }
 
 @main
@@ -40,12 +45,15 @@ struct TubeistApp: App {
                         appState.hadToStopStreaming = true
                         Streamer.shared.endStream()
                     }
+                    else {
+                        Streamer.shared.stopCamera()
+                    }
                 }
-                Streamer.shared.stopCamera()
             case (.background, .inactive), (.background, .active):
                 print("App is coming back from background")
                 appState.justCameFromBackground = true
-                Streamer.shared.startCamera()
+                // Refresh the camera view
+                appState.refreshCameraView()
             default: break
             }
         }

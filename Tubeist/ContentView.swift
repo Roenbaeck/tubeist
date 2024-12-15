@@ -38,6 +38,9 @@ struct ContentView: View {
     @State private var showStabilizationConfirmation = false
     @State private var showBatterySavingConfirmation = false
     @State private var showFocusAndExposureArea = false
+    @State private var showCameraPicker = false
+    @State private var showStabilizationPicker = false
+    @State private var showAudioMeter = false
     @State private var enableFocusAndExposureTap = false
     @State private var isSettingsPresented = false
     @State private var currentZoom = 0.0
@@ -45,6 +48,10 @@ struct ContentView: View {
     @State private var minZoom = 1.0
     @State private var maxZoom = 1.0
     @State private var opticalZoom = 1.0
+    @State private var selectedCamera = DEFAULT_CAMERA
+    @State private var selectedStabilization = "Off"
+    @State private var cameras: [String] = []
+    @State private var stabilizations: [String] = []
     private let interactionData = InteractionData()
     private let streamer = Streamer.shared
     private let cameraMonitor = CameraMonitor.shared
@@ -70,6 +77,17 @@ struct ContentView: View {
             }
     }
     
+    func setupCameraMonitor() {
+        Task {
+            print("Setting stabilization and fetching zoom limits")
+            await cameraMonitor.setCameraStabilization(to: selectedStabilization)
+            appState.isStabilizationOn = await cameraMonitor.getCameraStabilization() != "Off"
+            minZoom = await cameraMonitor.getMinZoomFactor()
+            maxZoom = await min(cameraMonitor.getMaxZoomFactor(), ZOOM_LIMIT)
+            opticalZoom = await cameraMonitor.getOpticalZoomFactor()
+        }
+    }
+    
     var body: some View {
         GeometryReader { geometry in
             let height = geometry.size.height
@@ -79,18 +97,18 @@ struct ContentView: View {
                 // 16:9 Content Area
                 ZStack {
                     CameraMonitorView()
+                        .id(appState.cameraMonitorId)
                         .gesture(magnification)
                         .onAppear {
-                            streamer.startCamera()
-                            print("Camera started")
-                            Task {
-                                appState.isStabilizationOn = await cameraMonitor.getCameraStabilization()
-                                await cameraMonitor.setCameraStabilization(on: appState.isStabilizationOn)
-                                minZoom = await cameraMonitor.getMinZoomFactor()
-                                maxZoom = await min(cameraMonitor.getMaxZoomFactor(), ZOOM_LIMIT)
-                                opticalZoom = await cameraMonitor.getOpticalZoomFactor()
-                            }
+                            print("Setting up the camera monitor in onAppear")
+                            setupCameraMonitor()
                         }
+                        /*
+                        .onChange(of: appState.cameraMonitorId) { _, _ in
+                            print("Setting up the camera monitor in onChange")
+                            setupCameraMonitor()
+                        }
+                         */
                     
                     ForEach(overlayManager.overlays) { overlay in
                         if let url = URL(string: overlay.url) {
@@ -121,10 +139,81 @@ struct ContentView: View {
                     
                     VStack {
                         Spacer()
-                        AudioLevelView()
+                        if showAudioMeter {
+                            AudioLevelView()
+                        }
                         SystemMetricsView()
                     }
                     .padding(.bottom, 3)
+
+                    VStack(spacing: 0) {
+                        if showCameraPicker {
+                            HStack(alignment: .center, spacing: 10) {
+                                Spacer()
+                                
+                                Text("Select Camera")
+                                    .font(.headline)
+                                
+                                Picker("Camera Selection", selection: $selectedCamera) {
+                                    ForEach(cameras, id: \.self) { camera in
+                                        Text(camera)
+                                            .tag(camera)
+                                    }
+                                }
+                                .pickerStyle(MenuPickerStyle())
+                                .background(
+                                    RoundedRectangle(cornerRadius: 10)
+                                        .fill(Color.black.opacity(0.5))
+                                )
+                                .onChange(of: selectedCamera) { _, newCamera in
+                                    print("Seletected camera: \(newCamera)")
+                                    Task {
+                                        UserDefaults.standard.set(newCamera, forKey: "SelectedCamera")
+                                        await cameraMonitor.stopCamera()
+                                        appState.refreshCameraView()
+                                    }
+                                }
+                            }
+                            .padding(5)
+                            .background(
+                                Rectangle()
+                                    .fill(Color.black.opacity(0.2))
+                            )
+                        }
+                        if showStabilizationPicker {
+                            HStack(alignment: .center, spacing: 10) {
+                                Spacer()
+                                
+                                Text("Select Stabilization Mode")
+                                    .font(.headline)
+                                
+                                Picker("Stabilization Selection", selection: $selectedStabilization) {
+                                    ForEach(stabilizations, id: \.self) { stabilization in
+                                        Text(stabilization)
+                                            .tag(stabilization)
+                                    }
+                                }
+                                .pickerStyle(MenuPickerStyle())
+                                .background(
+                                    RoundedRectangle(cornerRadius: 10)
+                                        .fill(Color.black.opacity(0.5))
+                                )
+                                .onChange(of: selectedStabilization) { _, newStabilization in
+                                    print("Seletected stabilization: \(newStabilization)")
+                                    Task {
+                                        UserDefaults.standard.set(newStabilization, forKey: "CameraStabilization")
+                                        await cameraMonitor.setCameraStabilization(to: newStabilization)
+                                    }
+                                }
+                            }
+                            .padding(5)
+                            .background(
+                                Rectangle()
+                                    .fill(Color.black.opacity(0.2))
+                            )
+                        }
+                        Spacer()
+                    }
                     
                     // Controls now positioned relative to 16:9 frame
                     HStack {
@@ -164,19 +253,18 @@ struct ContentView: View {
                 
                 // Vertical Small Button Column
                 VStack(spacing: 2) {
-                    SmallButton(imageName: appState.isStabilizationOn ? "hand.raised.fill" : "hand.raised.slash") {
-                        showStabilizationConfirmation = true
+                    SmallButton(imageName: "camera") {
+                        showCameraPicker.toggle()
                     }
-                    .confirmationDialog("Change Image Stabilization?", isPresented: $showStabilizationConfirmation) {
-                        Button(appState.isStabilizationOn ? "Turn Off" : "Turn On") {
-                            appState.isStabilizationOn.toggle()
-                            Task {
-                                await cameraMonitor.setCameraStabilization(on: appState.isStabilizationOn)
-                            }
+                    Text("CAMRA")
+                        .font(.system(size: 8))
+                        .padding(.bottom, 3)
+
+                    SmallButton(imageName: appState.isStabilizationOn ? "hand.raised.fill" : "hand.raised.slash") {
+                        Task {
+                            stabilizations = await cameraMonitor.getStabilizations()
+                            showStabilizationPicker.toggle()
                         }
-                        Button("Cancel", role: .cancel) {} // Do nothing
-                    } message: {
-                        Text(appState.isStabilizationOn ? "Turning off image stabilization may result in shaky video." : "Turning on image stabilization may reduce battery life.")
                     }
                     Text("STBZN")
                         .font(.system(size: 8))
@@ -227,6 +315,13 @@ struct ContentView: View {
                         .font(.system(size: 8))
                         .padding(.bottom, 3)
 
+                    SmallButton(imageName: "waveform") {
+                        showAudioMeter.toggle()
+                    }
+                    Text("AUDIO")
+                        .font(.system(size: 8))
+                        .padding(.bottom, 3)
+                    
                     Text(String(format: totalZoom + currentZoom > 10 ? "%.0f" : "%.1f", totalZoom + currentZoom))
                         .font(.system(size: 20))
                         .foregroundColor(totalZoom + currentZoom > opticalZoom ? .red : .white)
@@ -294,7 +389,15 @@ struct ContentView: View {
                 appState.hadToStopStreaming = false
             }
         }
+        .onAppear {
+            selectedCamera = UserDefaults.standard.string(forKey: "SelectedCamera") ?? DEFAULT_CAMERA
+            selectedStabilization = UserDefaults.standard.string(forKey: "CameraStabilization") ?? "Off"
+            Task {
+                cameras = await cameraMonitor.getCameras()
+            }
+        }
     }
+
 
     func loadOverlaysFromStorage() -> [OverlaySetting] {
         guard let overlaysData = UserDefaults.standard.data(forKey: "Overlays"),
@@ -320,4 +423,5 @@ struct SmallButton: View {
         .background(Color.black)
     }
 }
+
 

@@ -27,3 +27,4 @@ let FRAGMENT_CM_TIME = CMTimeMake(value: Int64(FRAGMENT_DURATION * TIMESCALE), t
 let AUDIO_BARS: Int = 50
 let ZOOM_LIMIT = 20.0
 
+let DEFAULT_CAMERA = "Back Camera" // available on most (all?) devices

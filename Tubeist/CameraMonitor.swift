@@ -24,12 +24,12 @@ private actor CameraActor {
     // Had to add this to pass previewLayer across boundary
     nonisolated(unsafe) private let previewLayer: AVCaptureVideoPreviewLayer
     
-    init() {
+    init(camera: AVCaptureDevice) {
         // Set all immutables
         previewLayer = AVCaptureVideoPreviewLayer(session: session)
         
         // Get devices
-        self.videoDevice = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back)
+        self.videoDevice = camera
         self.audioDevice = AVCaptureDevice.default(for: .audio)
         guard let videoDevice = self.videoDevice,
               let audioDevice = self.audioDevice else {
@@ -118,26 +118,53 @@ private actor CameraActor {
         }
     }
     
-    func getCameraStabilization() -> Bool {
-        return UserDefaults.standard.bool(forKey: "CameraStabilization")
+    func findSupportedStabilizationModes() -> [String: AVCaptureVideoStabilizationMode] {
+        guard let format = videoDevice?.activeFormat else { return [:] }
+        var supportedModes: [String: AVCaptureVideoStabilizationMode] = [:]
+        
+        if format.isVideoStabilizationModeSupported(.off) {
+            supportedModes["Off"] = .off
+        }
+        if format.isVideoStabilizationModeSupported(.standard) {
+            supportedModes["Standard"] = .standard
+        }
+        if format.isVideoStabilizationModeSupported(.cinematic) {
+            supportedModes["Cinematic"] = .cinematic
+        }
+        if format.isVideoStabilizationModeSupported(.cinematicExtended) {
+            supportedModes["Cinematic Extended"] = .cinematicExtended
+        }
+        if format.isVideoStabilizationModeSupported(.cinematicExtendedEnhanced) {
+            supportedModes["Cinematic Extended Enhanced"] = .cinematicExtendedEnhanced
+        }
+        if format.isVideoStabilizationModeSupported(.previewOptimized) {
+            supportedModes["Preview Optimized"] = .previewOptimized
+        }
+        if format.isVideoStabilizationModeSupported(.auto) {
+            supportedModes["Auto"] = .auto
+        }
+        return supportedModes
     }
     
-    func setCameraStabilization(on stabilized: Bool) {
+    func getCameraStabilization() -> String {
+        return UserDefaults.standard.string(forKey: "CameraStabilization") ?? "Off"
+    }
+    
+    func setCameraStabilization(to stabilization: AVCaptureVideoStabilizationMode) -> Bool {
         // Find the video connection and enable stabilization
         if let connection = videoOutput.connection(with: .video) {
             if connection.isVideoStabilizationSupported {
                 // Update the video stabilization mode on the connection.
-                connection.preferredVideoStabilizationMode = stabilized ? .standard : .off
-                print("Video stabilization \(stabilized ? "on" : "off")")
-
-                // Save the new stabilization state to UserDefaults.
-                UserDefaults.standard.set(stabilized, forKey: "CameraStabilization")
+                connection.preferredVideoStabilizationMode = stabilization
             } else {
                 print("Video stabilization is not supported for this connection.")
+                return false
             }
         } else {
             print("Failed to get video connection.")
+            return false
         }
+        return true
     }
 
     func setZoomFactor(_ zoomFactor: CGFloat) {
@@ -242,6 +269,9 @@ private actor CameraActor {
         return audioOutput.connections.first?.audioChannels ?? []
     }
     
+    func getSession() -> AVCaptureSession {
+        session
+    }
     
     // Method to configure preview layer directly on the view controller
     func configurePreviewLayer(on viewController: UIViewController) {
@@ -267,70 +297,199 @@ private actor CameraActor {
             CATransaction.setAnimationDuration(0)
             self.previewLayer.frame = viewController.view.bounds
             CATransaction.commit()
+            print("Preview layer configured")
         }
     }
 }
 
-
-final class CameraMonitor: Sendable {
-    public static let shared = CameraMonitor()
-    private let camera = CameraActor()
+private actor CameraManager {
     
-    // Methods to interact with the camera via the actor
+    private var cameraActor: CameraActor?
+    private let cameras: [String: AVCaptureDevice.DeviceType]
+    private var stabilizations: [String: AVCaptureVideoStabilizationMode] = [:]
+
+    init() {
+        var cameraDevicesByName: [String: AVCaptureDevice.DeviceType] = [:]
+        
+        let discoverySession = AVCaptureDevice.DiscoverySession(
+            deviceTypes: [
+                .builtInWideAngleCamera,
+                .builtInTelephotoCamera,
+                .builtInTripleCamera
+            ],
+            mediaType: .video,
+            position: .back
+        )
+      
+        for device in discoverySession.devices {
+            let name = device.localizedName
+            cameraDevicesByName[name] = device.deviceType
+        }
+        
+        cameras = cameraDevicesByName
+        print("Cameras: \(cameras.keys)")
+    }
+    
+    func refreshStabilizations() async {
+        stabilizations = await cameraActor?.findSupportedStabilizationModes() ?? [:]
+    }
+    func getStabilizations() -> [String] {
+        return Array(stabilizations.keys)
+    }
+    func getCameras() -> [String] {
+        return Array(cameras.keys)
+    }
+    
     func startCamera() async {
-        await camera.startRunning()
+        let camera = UserDefaults.standard.string(forKey: "SelectedCamera") ?? DEFAULT_CAMERA
+        guard let cameraType = cameras[camera] else {
+            print("Cannot find camera \(camera)")
+            return
+        }
+        guard let videoDevice = AVCaptureDevice.default(cameraType, for: .video, position: .back) else {
+            print("Could not create camera device")
+            return
+        }
+        cameraActor = CameraActor(camera: videoDevice)
+        await refreshStabilizations()
+        await cameraActor?.startRunning()
     }
     func stopCamera() async {
-        await camera.stopRunning()
+        await cameraActor?.stopRunning()
+        if let captureSession = await cameraActor?.getSession() {
+            // Remove inputs
+            for input in captureSession.inputs {
+                captureSession.removeInput(input)
+            }
+            
+            // Remove outputs
+            for output in captureSession.outputs {
+                captureSession.removeOutput(output)
+            }
+        }
+        cameraActor = nil
     }
     func isRunning() async -> Bool {
-        return await camera.isRunning()
+        return await cameraActor?.isRunning() ?? false
     }
     func startOutput() async {
-        await camera.startOutput()
+        await cameraActor?.startOutput()
     }
     func stopOutput() async {
-        await camera.stopOutput()
+        await cameraActor?.stopOutput()
     }
     func getAudioChannels() async -> [AVCaptureAudioChannel] {
-        return await camera.getAudioChannels()
+        return await cameraActor?.getAudioChannels() ?? []
     }
-    func setCameraStabilization(on stabilized: Bool) async {
-        return await camera.setCameraStabilization(on: stabilized)
+    func setCameraStabilization(to stabilization: String) async {
+        guard let stabilizationMode = stabilizations[stabilization] else {
+            return
+        }
+        if await cameraActor?.setCameraStabilization(to: stabilizationMode) ?? false {
+            print("Video stabilization \(stabilization)")
+            UserDefaults.standard.set(stabilization, forKey: "CameraStabilization")
+        }
     }
-    func getCameraStabilization() async -> Bool {
-        return await camera.getCameraStabilization()
+    func getCameraStabilization() async -> String {
+        return await cameraActor?.getCameraStabilization() ?? "Off"
     }
     func setZoomFactor(_ zoomFactor: CGFloat) async {
-        await camera.setZoomFactor(zoomFactor)
+        await cameraActor?.setZoomFactor(zoomFactor)
     }
     func getMinZoomFactor() async -> CGFloat {
-        await camera.getMinZoomFactor()
+        return await cameraActor?.getMinZoomFactor() ?? 1.0
     }
     func getMaxZoomFactor() async -> CGFloat {
-        await camera.getMaxZoomFactor()
+        return await cameraActor?.getMaxZoomFactor() ?? 1.0
     }
     func getOpticalZoomFactor() async -> CGFloat {
-        await camera.getOpticalZoomFactor()
+        return await cameraActor?.getOpticalZoomFactor() ?? 1.0
     }
     func setFocus(at point: CGPoint) async {
-        await camera.setFocus(at: point)
+        await cameraActor?.setFocus(at: point)
     }
     func setAutoFocus() async {
-        await camera.setAutoFocus()
+        await cameraActor?.setAutoFocus()
     }
     func setExposure(at point: CGPoint) async {
-        await camera.setExposure(at: point)
+        await cameraActor?.setExposure(at: point)
     }
     func setAutoExposure() async {
-        await camera.setAutoExposure()
+        await cameraActor?.setAutoExposure()
+    }
+    
+    func configurePreviewLayer(on viewController: UIViewController) async {
+        await cameraActor?.configurePreviewLayer(on: viewController)
+    }
+
+}
+
+@Observable
+final class CameraMonitor: Sendable {
+    public static let shared = CameraMonitor()
+    private let cameraManager = CameraManager()
+
+    func getStabilizations() async -> [String] {
+        return await cameraManager.getStabilizations()
+    }
+    func getCameras() async -> [String] {
+        return await cameraManager.getCameras()
+    }
+    func startCamera() async {
+        await cameraManager.startCamera()
+    }
+    func stopCamera() async {
+        await cameraManager.stopCamera()
+    }
+    func isRunning() async -> Bool {
+        return await cameraManager.isRunning()
+    }
+    func startOutput() async {
+        await cameraManager.startOutput()
+    }
+    func stopOutput() async {
+        await cameraManager.stopOutput()
+    }
+    func getAudioChannels() async -> [AVCaptureAudioChannel] {
+        return await cameraManager.getAudioChannels()
+    }
+    func setCameraStabilization(to stabilization: String) async {
+        await cameraManager.setCameraStabilization(to: stabilization)
+    }
+    func getCameraStabilization() async -> String {
+        return await cameraManager.getCameraStabilization()
+    }
+    func setZoomFactor(_ zoomFactor: CGFloat) async {
+        await cameraManager.setZoomFactor(zoomFactor)
+    }
+    func getMinZoomFactor() async -> CGFloat {
+        await cameraManager.getMinZoomFactor()
+    }
+    func getMaxZoomFactor() async -> CGFloat {
+        await cameraManager.getMaxZoomFactor()
+    }
+    func getOpticalZoomFactor() async -> CGFloat {
+        await cameraManager.getOpticalZoomFactor()
+    }
+    func setFocus(at point: CGPoint) async {
+        await cameraManager.setFocus(at: point)
+    }
+    func setAutoFocus() async {
+        await cameraManager.setAutoFocus()
+    }
+    func setExposure(at point: CGPoint) async {
+        await cameraManager.setExposure(at: point)
+    }
+    func setAutoExposure() async {
+        await cameraManager.setAutoExposure()
     }
     
     func configurePreviewLayer(on viewController: UIViewController) {
         Task {
-            await camera.configurePreviewLayer(on: viewController)
+            await cameraManager.configurePreviewLayer(on: viewController)
         }
     }
+
 }
 
 
@@ -381,6 +540,7 @@ extension AVCaptureDevice {
 
 struct CameraMonitorView: UIViewControllerRepresentable {
     func makeUIViewController(context: Context) -> UIViewController {
+        print("Called makeUIViewController")
         let viewController = UIViewController()
         // Ensure view is loaded before configurations
         viewController.loadViewIfNeeded()
@@ -388,8 +548,14 @@ struct CameraMonitorView: UIViewControllerRepresentable {
     }
     
     func updateUIViewController(_ uiViewController: UIViewController, context: Context) {
+        print("Called updateUIViewController")
         let cameraMonitor = CameraMonitor.shared
-        cameraMonitor.configurePreviewLayer(on: uiViewController)
+        Task {
+            if await !cameraMonitor.isRunning() {
+                await cameraMonitor.startCamera()
+            }
+            cameraMonitor.configurePreviewLayer(on: uiViewController)
+        }
     }
     
 }
