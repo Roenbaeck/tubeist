@@ -33,7 +33,7 @@ private actor CameraActor {
         self.audioDevice = AVCaptureDevice.default(for: .audio)
         guard let videoDevice = self.videoDevice,
               let audioDevice = self.audioDevice else {
-            LOG("No camera or microphone found")
+            LOG("No camera or microphone found", level: .error)
             return
         }
         // Configure the capture
@@ -52,7 +52,7 @@ private actor CameraActor {
             // videoDevice.listFormats()
             
             guard let format = videoDevice.findFormat() else {
-                LOG("Desired format not found")
+                LOG("Desired format not found", level: .error)
                 return
             }
             
@@ -73,7 +73,7 @@ private actor CameraActor {
             
             self.videoInput = try AVCaptureDeviceInput(device: videoDevice)
             guard let videoInput = self.videoInput else {
-                LOG("Could not create video input")
+                LOG("Could not create video input", level: .error)
                 return
             }
                 
@@ -81,20 +81,20 @@ private actor CameraActor {
             if session.canAddInput(videoInput) {
                 session.addInput(videoInput)
             } else {
-                LOG("Cannot add video input")
+                LOG("Cannot add video input", level: .error)
                 return
             }
             // Add video output to the session
             if session.canAddOutput(videoOutput) {
                 session.addOutput(videoOutput)
             } else {
-                LOG("Cannot add video output")
+                LOG("Cannot add video output", level: .error)
                 return
             }
 
             self.audioInput = try AVCaptureDeviceInput(device: audioDevice)
             guard let audioInput = self.audioInput else {
-                LOG("Could not create audio input")
+                LOG("Could not create audio input", level: .error)
                 return
             }
 
@@ -102,19 +102,19 @@ private actor CameraActor {
             if session.canAddInput(audioInput) {
                 session.addInput(audioInput)
             } else {
-                LOG("Cannot add audio input")
+                LOG("Cannot add audio input", level: .error)
                 return
             }
             // Add audio output to the session
             if session.canAddOutput(audioOutput) {
                 session.addOutput(audioOutput)
             } else {
-                LOG("Cannot add audio output")
+                LOG("Cannot add audio output", level: .error)
                 return
             }
 
         } catch {
-            LOG("Error setting up camera: \(error)")
+            LOG("Error setting up camera: \(error)", level: .error)
         }
     }
     
@@ -157,11 +157,11 @@ private actor CameraActor {
                 // Update the video stabilization mode on the connection.
                 connection.preferredVideoStabilizationMode = stabilization
             } else {
-                LOG("Video stabilization is not supported for this connection.")
+                LOG("Video stabilization is not supported for this connection.", level: .warning)
                 return false
             }
         } else {
-            LOG("Failed to get video connection.")
+            LOG("Failed to get video connection.", level: .error)
             return false
         }
         return true
@@ -174,7 +174,7 @@ private actor CameraActor {
             device.videoZoomFactor = max(1.0, min(zoomFactor, device.activeFormat.videoMaxZoomFactor))
             device.unlockForConfiguration()
         } catch {
-            LOG("Failed to set zoom factor: \(error)")
+            LOG("Failed to set zoom factor: \(error)", level: .error)
         }
     }
     func getMinZoomFactor() -> CGFloat {
@@ -200,7 +200,7 @@ private actor CameraActor {
             
             device.unlockForConfiguration()
         } catch {
-            LOG("Focus configuration error: \(error.localizedDescription)")
+            LOG("Focus configuration error: \(error.localizedDescription)", level: .error)
         }
     }
     func setAutoFocus() {
@@ -211,7 +211,7 @@ private actor CameraActor {
             device.focusMode = .continuousAutoFocus
             device.unlockForConfiguration()
         } catch {
-            LOG("Focus configuration error: \(error.localizedDescription)")
+            LOG("Focus configuration error: \(error.localizedDescription)", level: .error)
         }
     }
     
@@ -228,7 +228,7 @@ private actor CameraActor {
             
             device.unlockForConfiguration()
         } catch {
-            LOG("Exposure configuration error: \(error.localizedDescription)")
+            LOG("Exposure configuration error: \(error.localizedDescription)", level: .error)
         }
     }
     func setAutoExposure() {
@@ -239,7 +239,7 @@ private actor CameraActor {
             device.exposureMode = .continuousAutoExposure
             device.unlockForConfiguration()
         } catch {
-            LOG("Exposure configuration error: \(error.localizedDescription)")
+            LOG("Exposure configuration error: \(error.localizedDescription)", level: .error)
         }
     }
 
@@ -297,7 +297,7 @@ private actor CameraActor {
             CATransaction.setAnimationDuration(0)
             self.previewLayer.frame = viewController.view.bounds
             CATransaction.commit()
-            LOG("Preview layer configured")
+            LOG("Preview layer configured", level: .debug)
         }
     }
 }
@@ -327,7 +327,7 @@ private actor CameraManager {
         }
         
         cameras = cameraDevicesByName
-        LOG("Cameras: \(cameras.keys)")
+        LOG("Cameras: \(cameras.keys)", level: .debug)
     }
     
     func refreshStabilizations() async {
@@ -343,11 +343,11 @@ private actor CameraManager {
     func startCamera() async {
         let camera = UserDefaults.standard.string(forKey: "SelectedCamera") ?? DEFAULT_CAMERA
         guard let cameraType = cameras[camera] else {
-            LOG("Cannot find camera \(camera)")
+            LOG("Cannot find camera \(camera)", level: .error)
             return
         }
         guard let videoDevice = AVCaptureDevice.default(cameraType, for: .video, position: .back) else {
-            LOG("Could not create camera device")
+            LOG("Could not create camera device", level: .error)
             return
         }
         cameraActor = CameraActor(camera: videoDevice)
@@ -386,7 +386,7 @@ private actor CameraManager {
             return
         }
         if await cameraActor?.setCameraStabilization(to: stabilizationMode) ?? false {
-            LOG("Video stabilization \(stabilization)")
+            LOG("Video stabilization \(stabilization)", level: .debug)
             UserDefaults.standard.set(stabilization, forKey: "CameraStabilization")
         }
     }
@@ -497,20 +497,18 @@ final class CameraMonitor: Sendable {
 // Extend AVCaptureDevice to include findFormat method
 extension AVCaptureDevice {
     func printFormatDetails(captureFormat: AVCaptureDevice.Format) {
-        LOG("----------============ \(captureFormat.formatDescription.mediaSubType.rawValue) ============----------")
-        LOG("Supports \(captureFormat.formatDescription)")
-        LOG("HDR: \(captureFormat.isVideoHDRSupported)")
-        LOG("Frame range: \(captureFormat.videoSupportedFrameRateRanges)")
-        LOG("Spatial video: \(captureFormat.isSpatialVideoCaptureSupported)")
-        LOG("Background replacement: \(captureFormat.isBackgroundReplacementSupported)")
-        LOG("Binned: \(captureFormat.isVideoBinned)")
-        LOG("Multi-cam: \(captureFormat.isMultiCamSupported)")
-        LOG("FOV: \(captureFormat.videoFieldOfView)")
-        LOG("Color spaces: \(captureFormat.supportedColorSpaces)")
-        LOG("ISO: \(captureFormat.minISO) - \(captureFormat.maxISO)")
-        LOG("Exposure: \(captureFormat.minExposureDuration) - \(captureFormat.maxExposureDuration)")
-        LOG("Max zoom: \(captureFormat.videoMaxZoomFactor) (native zoom: \(captureFormat.secondaryNativeResolutionZoomFactors))")
-        LOG("AF: \(captureFormat.autoFocusSystem)")
+        LOG("FormatID: \(captureFormat.formatDescription.mediaSubType.rawValue)", level: .debug)
+        LOG("Supports \(captureFormat.formatDescription)", level: .debug)
+        LOG("HDR: \(captureFormat.isVideoHDRSupported)", level: .debug)
+        LOG("Frame range: \(captureFormat.videoSupportedFrameRateRanges)", level: .debug)
+        LOG("Spatial video: \(captureFormat.isSpatialVideoCaptureSupported)", level: .debug)
+        LOG("Background replacement: \(captureFormat.isBackgroundReplacementSupported)", level: .debug)
+        LOG("Binned: \(captureFormat.isVideoBinned)", level: .debug)
+        LOG("Multi-cam: \(captureFormat.isMultiCamSupported)", level: .debug)
+        LOG("FOV: \(captureFormat.videoFieldOfView)", level: .debug)
+        LOG("ISO: \(captureFormat.minISO) - \(captureFormat.maxISO)", level: .debug)
+        LOG("Max zoom: \(captureFormat.videoMaxZoomFactor) (native zoom: \(captureFormat.secondaryNativeResolutionZoomFactors))", level: .debug)
+        LOG("AF: \(captureFormat.autoFocusSystem)", level: .debug)
     }
     func listFormats() {
         for captureFormat in formats {
@@ -529,7 +527,7 @@ extension AVCaptureDevice {
                    captureFormat.isVideoHDRSupported,
                    !captureFormat.isMultiCamSupported, // avoid this to get a different 4:2:2 with higher refresh rates
                    captureFormat.maxISO >= 5184.0 {
-                    LOG("Desired format found")
+                    LOG("Desired format found", level: .info)
                     return captureFormat
                 }
             }
@@ -540,7 +538,6 @@ extension AVCaptureDevice {
 
 struct CameraMonitorView: UIViewControllerRepresentable {
     func makeUIViewController(context: Context) -> UIViewController {
-        LOG("Called makeUIViewController")
         let viewController = UIViewController()
         // Ensure view is loaded before configurations
         viewController.loadViewIfNeeded()
@@ -548,7 +545,6 @@ struct CameraMonitorView: UIViewControllerRepresentable {
     }
     
     func updateUIViewController(_ uiViewController: UIViewController, context: Context) {
-        LOG("Called updateUIViewController")
         let cameraMonitor = CameraMonitor.shared
         Task {
             if await !cameraMonitor.isRunning() {

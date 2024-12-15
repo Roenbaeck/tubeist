@@ -80,7 +80,7 @@ struct ContentView: View {
     
     func setupCameraMonitor() {
         Task {
-            LOG("Setting stabilization and fetching zoom limits")
+            LOG("Setting stabilization and fetching zoom limits", level: .info)
             await cameraMonitor.setCameraStabilization(to: selectedStabilization)
             appState.isStabilizationOn = await cameraMonitor.getCameraStabilization() != "Off"
             minZoom = await cameraMonitor.getMinZoomFactor()
@@ -101,15 +101,9 @@ struct ContentView: View {
                         .id(appState.cameraMonitorId)
                         .gesture(magnification)
                         .onAppear {
-                            LOG("Setting up the camera monitor in onAppear")
+                            LOG("Setting up the camera monitor", level: .debug)
                             setupCameraMonitor()
                         }
-                        /*
-                        .onChange(of: appState.cameraMonitorId) { _, _ in
-                            LOG("Setting up the camera monitor in onChange")
-                            setupCameraMonitor()
-                        }
-                         */
                     
                     ForEach(overlayManager.overlays) { overlay in
                         if let url = URL(string: overlay.url) {
@@ -171,7 +165,7 @@ struct ContentView: View {
                                         .fill(Color.black.opacity(0.5))
                                 )
                                 .onChange(of: selectedCamera) { _, newCamera in
-                                    LOG("Seletected camera: \(newCamera)")
+                                    LOG("Seletected camera: \(newCamera)", level: .debug)
                                     Task {
                                         UserDefaults.standard.set(newCamera, forKey: "SelectedCamera")
                                         await cameraMonitor.stopCamera()
@@ -204,7 +198,7 @@ struct ContentView: View {
                                         .fill(Color.black.opacity(0.5))
                                 )
                                 .onChange(of: selectedStabilization) { _, newStabilization in
-                                    LOG("Seletected stabilization: \(newStabilization)")
+                                    LOG("Seletected stabilization: \(newStabilization)", level: .debug)
                                     Task {
                                         UserDefaults.standard.set(newStabilization, forKey: "CameraStabilization")
                                         await cameraMonitor.setCameraStabilization(to: newStabilization)
@@ -232,13 +226,13 @@ struct ContentView: View {
                                     Task {
                                         appState.isStreamActive = false
                                         streamer.endStream()
-                                        LOG("Stopped recording")
+                                        LOG("Stopped recording", level: .info)
                                     }
                                 } else {
                                     Task {
                                         streamer.startStream()
                                         appState.isStreamActive = true
-                                        LOG("Started recording")
+                                        LOG("Started recording", level: .info)
                                     }
                                 }
                             }) {
@@ -283,7 +277,7 @@ struct ContentView: View {
                             appState.isBatterySavingOn.toggle()
                             appState.isAudioLevelRunning = !appState.isBatterySavingOn
                             UIScreen.main.brightness = appState.isBatterySavingOn ? 0.1 : 1.0
-                            LOG("Battery saving is \(appState.isBatterySavingOn ? "on" : "off")")
+                            LOG("Battery saving is \(appState.isBatterySavingOn ? "on" : "off")", level: .info)
                         }
                         Button("Cancel", role: .cancel) {} // Do nothing
                     } message: {

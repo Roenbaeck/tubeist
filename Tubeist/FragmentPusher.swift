@@ -175,7 +175,7 @@ final class FragmentPusher: Sendable {
                 try await Task.sleep(nanoseconds: UInt64(1_000_000_000 * FRAGMENT_DURATION))
                 await gracefulShutdown()
             } catch {
-                LOG("Graceful shutdown was interrupted: \(error)")
+                LOG("Graceful shutdown was interrupted: \(error)", level: .warning)
                 return
             }
         }
@@ -214,23 +214,23 @@ final class FragmentPusher: Sendable {
                     }
                                         
                     guard let request = self.createUploadRequest(fragment) else {
-                        LOG("Failed to create upload request")
+                        LOG("Failed to create upload request", level: .error)
                         return
                     }
                     
                     guard let session = await self.urlSession.getSession() else {
-                        LOG("Failed to get session")
+                        LOG("Failed to get session", level: .error)
                         return
                     }
                     
                     let task = session.dataTask(with: request) { [weak self] data, response, error in
                         guard let self = self else { return }
                         
-                        LOG("Attempting [\(attempt)] to upload \(fragment.sequence).\(fragment.ext) with duration \(fragment.duration).")
+                        LOG("Attempting [\(attempt)] to upload \(fragment.sequence).\(fragment.ext) with duration \(fragment.duration).", level: .debug)
                         
                         Task {
                             if let error = error {
-                                LOG("Upload error: \(error.localizedDescription). Retrying...")
+                                LOG("Upload error: \(error.localizedDescription). Retrying...", level: .error)
                                 // Optionally retry a failed upload
                                 if attempt < maxRetryAttempts {
                                     await fragmentBuffer.insertFirst(fragment)
@@ -243,7 +243,7 @@ final class FragmentPusher: Sendable {
                             
                             if let httpResponse = response as? HTTPURLResponse,
                                !(200...299).contains(httpResponse.statusCode) {
-                                LOG("Server returned an error: \(httpResponse.statusCode). Retrying...")
+                                LOG("Server returned an error: \(httpResponse.statusCode). Retrying...", level: .error)
                                 if attempt < maxRetryAttempts {
                                     await fragmentBuffer.insertFirst(fragment)
                                     STREAMING_QUEUE_CONCURRENT.asyncAfter(deadline: .now() + 1.0) {
@@ -271,7 +271,7 @@ final class FragmentPusher: Sendable {
     private func createUploadRequest(_ fragment: Fragment) -> URLRequest? {
         let url = URL(string: UserDefaults.standard.string(forKey: "HLSServer") ?? "")
         guard let url = url else {
-            LOG("Invalid URL")
+            LOG("Invalid URL", level: .error)
             return nil
         }
 

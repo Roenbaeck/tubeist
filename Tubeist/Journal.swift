@@ -96,7 +96,6 @@ final class Journal: Sendable {
     }
 }
 
-// SwiftUI View to display logs
 struct JournalView: View {
     @State private var logs: [LogEntry] = []
     
@@ -104,10 +103,18 @@ struct JournalView: View {
         List(logs) { log in
             HStack {
                 Text(log.timestamp, style: .time)
+                    .font(.system(size: 12))                
                 Text(log.message)
+                    .font(.system(size: 14))
                     .foregroundColor(log.level.color)
             }
+            .lineLimit(1)
+            .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
+            .frame(height: 20) // Force a specific height
+            .clipped()
         }
+        .listStyle(PlainListStyle())
+        .environment(\.defaultMinListRowHeight, 20) // Reduce default row height
         .onAppear {
             Task {
                 logs = await Journal.shared.getJournal()

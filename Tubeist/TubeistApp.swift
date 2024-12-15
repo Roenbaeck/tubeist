@@ -38,10 +38,10 @@ struct TubeistApp: App {
         .onChange(of: scenePhase) { oldValue, newValue in
             switch (oldValue, newValue) {
             case (.inactive, .background), (.active, .background):
-                LOG("App is entering background")
+                LOG("App is entering background", level: .debug)
                 Task {
                     if await Streamer.shared.isStreaming() {
-                        LOG("Stopping stream due to background state")
+                        LOG("Stopping stream due to background state", level: .warning)
                         appState.hadToStopStreaming = true
                         Streamer.shared.endStream()
                     }
@@ -50,7 +50,7 @@ struct TubeistApp: App {
                     }
                 }
             case (.background, .inactive), (.background, .active):
-                LOG("App is coming back from background")
+                LOG("App is coming back from background", level: .debug)
                 appState.justCameFromBackground = true
                 // Refresh the camera view
                 appState.refreshCameraView()
@@ -60,7 +60,7 @@ struct TubeistApp: App {
     }
     init() {
         UIApplication.shared.isIdleTimerDisabled = true
-        LOG("Starting Tubeist")
+        LOG("Starting Tubeist", level: .info)
     }
 }
 

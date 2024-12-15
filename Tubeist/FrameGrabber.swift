@@ -16,20 +16,21 @@ actor OverlayImprinter {
             .workingColorSpace: CGColorSpace(name: CGColorSpace.itur_2020)!
         ])
     }
-    func imLOG(overlay overlayImage: CIImage, onto sampleBuffer: CMSampleBuffer) {
-        guard let videoPixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {
-            fatalError("Unable to get pixel buffer from sample buffer")
+    func imprint(overlay overlayImage: CIImage, onto sampleBuffer: CMSampleBuffer) {
+        if let videoPixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) {
+            let destination = CIRenderDestination(pixelBuffer: videoPixelBuffer)
+            destination.blendKernel = CIBlendKernel.sourceOver
+            destination.blendsInDestinationColorSpace = true
+            destination.alphaMode = .premultiplied
+            do {
+                let task = try self.context.startTask(toRender: overlayImage, to: destination)
+                try task.waitUntilCompleted()
+            } catch {
+                LOG("Error rendering overlay: \(error)", level: .error)
+            }
         }
-        
-        let destination = CIRenderDestination(pixelBuffer: videoPixelBuffer)
-        destination.blendKernel = CIBlendKernel.sourceOver
-        destination.blendsInDestinationColorSpace = true
-        destination.alphaMode = .premultiplied
-        do {
-            let task = try self.context.startTask(toRender: overlayImage, to: destination)
-            try task.waitUntilCompleted()
-        } catch {
-            LOG("Error rendering overlay: \(error)")
+        else {
+            LOG("Unable to get pixel buffer from sample buffer", level: .error)
         }
     }
 }
@@ -69,10 +70,7 @@ final class FrameGrabber: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
                     switch output {
                     case is AVCaptureVideoDataOutput:
                         if let overlayImage = await OverlayBundler.shared.getCombinedImage() {
-                            await self.overlayImprinter.imLOG(overlay: overlayImage, onto: sampleBuffer)
-                        }
-                        else {
-                            LOG("No overlay available to imprint")
+                            await self.overlayImprinter.imprint(overlay: overlayImage, onto: sampleBuffer)
                         }
                         await self.assetInterceptor.appendVideoSampleBuffer(sampleBuffer)
                     case is AVCaptureAudioDataOutput:

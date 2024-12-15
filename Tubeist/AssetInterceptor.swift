@@ -17,12 +17,12 @@ actor AssetWriterActor {
     
     func setupAssetWriter() {
         guard let contentType = UTType(AVFileType.mp4.rawValue) else {
-            LOG("MP4 is not a valid type")
+            LOG("MP4 is not a valid type", level: .error)
             return
         }
         assetWriter = AVAssetWriter(contentType: contentType)
         guard let assetWriter else {
-            LOG("Could not create asset writer")
+            LOG("Could not create asset writer", level: .error)
             return
         }
         assetWriter.shouldOptimizeForNetworkUse = true
@@ -51,7 +51,7 @@ actor AssetWriterActor {
         
         videoInput = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
         guard let videoInput else {
-            LOG("Could not set up video input")
+            LOG("Could not set up video input", level: .error)
             return
         }
         videoInput.expectsMediaDataInRealTime = true
@@ -65,7 +65,7 @@ actor AssetWriterActor {
         
         audioInput = AVAssetWriterInput(mediaType: .audio, outputSettings: audioSettings)
         guard let audioInput else {
-            LOG("Could not set up audio input")
+            LOG("Could not set up audio input", level: .error)
             return
         }
         audioInput.expectsMediaDataInRealTime = true
@@ -79,16 +79,16 @@ actor AssetWriterActor {
      func finishWriting() async {
          await withCheckedContinuation { continuation in
              guard let assetWriter else {
-                 LOG("Asset writer not active or configured")
+                 LOG("Asset writer not active or configured", level: .error)
                  continuation.resume() // Resume immediately if there's nothing to stop
                  return
              }
              self.writingFinished = true
              assetWriter.finishWriting {
                  if assetWriter.status == .failed {
-                     LOG("Failed to finish writing: \(String(describing: assetWriter.error))")
+                     LOG("Failed to finish writing: \(String(describing: assetWriter.error))", level: .warning)
                  } else {
-                     LOG("Finished writing successfully")
+                     LOG("Finished writing successfully", level: .info)
                  }
                  continuation.resume() // Resume after `finishWriting` completes
              }
@@ -97,11 +97,11 @@ actor AssetWriterActor {
      
     func appendSampleBuffer(_ sampleBuffer: CMSampleBuffer, to input: AVAssetWriterInput?, inputType: String) {
         guard let input = input, !writingFinished else {
-            LOG("\(inputType) input not configured or writing has finished")
+            LOG("\(inputType) input not configured or writing has finished", level: .warning)
             return
         }
         guard let assetWriter else {
-            LOG("Asset writer not configured")
+            LOG("Asset writer not configured", level: .error)
             return
         }
         // Check and handle writer state
@@ -111,7 +111,7 @@ actor AssetWriterActor {
         } else if assetWriter.status == .writing {
             // Already started, continue
         } else {
-            LOG("AssetWriter in unexpected state: \(assetWriter.status.rawValue)")
+            LOG("AssetWriter in unexpected state: \(assetWriter.status.rawValue)", level: .error)
             return
         }
 
@@ -119,7 +119,7 @@ actor AssetWriterActor {
         if input.isReadyForMoreMediaData {
             input.append(sampleBuffer)
         } else {
-            LOG("\(inputType) input not ready for more media data")
+            LOG("\(inputType) input not ready for more media data", level: .warning)
         }
     }
 
@@ -149,23 +149,24 @@ final class AssetInterceptor: NSObject, AVAssetWriterDelegate, Sendable {
     private let assetWriter = AssetWriterActor()
     private let fragmentSequenceNumber = fragmentSequenceNumberActor()
     private let fragmentPusher = FragmentPusher.shared
-    private let fragmentFolderURL: URL
+    private let fragmentFolderURL: URL?
     override init() {
         let fileManager = FileManager.default
         
         // Use a shared container that's accessible in Files app
-        guard let fragmentFolderURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else {
-            fatalError("Could not access directory where fragments are stored")
+        if let fragmentFolderURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
+            self.fragmentFolderURL = fragmentFolderURL
+            // Create output directory in the shared container
+            let outputDirectory = fragmentFolderURL.appendingPathComponent("DataFiles")
+            do {
+                try fileManager.createDirectory(at: outputDirectory, withIntermediateDirectories: true, attributes: nil)
+            } catch {
+                LOG("Error creating output directory: \(error)", level: .error)
+            }
         }
-        self.fragmentFolderURL = fragmentFolderURL
-        
-        // Create output directory in the shared container
-        let outputDirectory = fragmentFolderURL.appendingPathComponent("DataFiles")
-        
-        do {
-            try fileManager.createDirectory(at: outputDirectory, withIntermediateDirectories: true, attributes: nil)
-        } catch {
-            LOG("Error creating output directory: \(error)")
+        else {
+            self.fragmentFolderURL = nil
+            LOG("Could not access directory where fragments are stored", level: .error)
         }
                 
         super.init()
@@ -195,7 +196,7 @@ final class AssetInterceptor: NSObject, AVAssetWriterDelegate, Sendable {
             @unknown default: nil
             }
         }() else {
-            LOG("Unknown segment type")
+            LOG("Unknown segment type", level: .error)
             return
         }
         let duration = (segmentReport?.trackReports.first?.duration.seconds ?? 2.0)
@@ -203,7 +204,7 @@ final class AssetInterceptor: NSObject, AVAssetWriterDelegate, Sendable {
             Task.detached { [self] in
                 let sequenceNumber = await fragmentSequenceNumber.next()
                 let fragment = Fragment(sequence: sequenceNumber, segment: segmentData, ext: ext, duration: duration)
-                LOG("A fragment has been produced: \(fragment.sequence).\(fragment.ext) [ \(fragment.duration) ]")
+                LOG("A fragment has been produced: \(fragment.sequence).\(fragment.ext) [ \(fragment.duration) ]", level: .debug)
                 fragmentPusher.addFragment(fragment)
                 fragmentPusher.uploadFragment(attempt: 1)
                 saveFragmentToFile(fragment)
@@ -213,7 +214,10 @@ final class AssetInterceptor: NSObject, AVAssetWriterDelegate, Sendable {
     func saveFragmentToFile(_ fragment: Fragment) {
         let saveFragmentsLocally = UserDefaults.standard.bool(forKey: "SaveFragmentsLocally")
         if saveFragmentsLocally {
-            let outputDirectory = fragmentFolderURL.appendingPathComponent("DataFiles")
+            guard let outputDirectory = fragmentFolderURL?.appendingPathComponent("DataFiles") else {
+                LOG("Cannot write file to local storage", level: .error)
+                return
+            }
             let sequenceNumber = fragment.sequence
             let ext = fragment.ext
             let filename = "segment_\(sequenceNumber).\(ext)"
@@ -223,9 +227,9 @@ final class AssetInterceptor: NSObject, AVAssetWriterDelegate, Sendable {
                 try segmentData.write(to: fileURL)
             }
             catch {
-                LOG("Error writing files: \(error)")
+                LOG("Error writing files: \(error)", level: .error)
             }
-            LOG("Wrote file: \(fileURL)")
+            LOG("Wrote file: \(fileURL)", level: .debug)
             
         }
     }
