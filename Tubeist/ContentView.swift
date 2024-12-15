@@ -41,6 +41,7 @@ struct ContentView: View {
     @State private var showCameraPicker = false
     @State private var showStabilizationPicker = false
     @State private var showAudioMeter = false
+    @State private var showJournal = false
     @State private var enableFocusAndExposureTap = false
     @State private var isSettingsPresented = false
     @State private var currentZoom = 0.0
@@ -79,7 +80,7 @@ struct ContentView: View {
     
     func setupCameraMonitor() {
         Task {
-            print("Setting stabilization and fetching zoom limits")
+            LOG("Setting stabilization and fetching zoom limits")
             await cameraMonitor.setCameraStabilization(to: selectedStabilization)
             appState.isStabilizationOn = await cameraMonitor.getCameraStabilization() != "Off"
             minZoom = await cameraMonitor.getMinZoomFactor()
@@ -100,12 +101,12 @@ struct ContentView: View {
                         .id(appState.cameraMonitorId)
                         .gesture(magnification)
                         .onAppear {
-                            print("Setting up the camera monitor in onAppear")
+                            LOG("Setting up the camera monitor in onAppear")
                             setupCameraMonitor()
                         }
                         /*
                         .onChange(of: appState.cameraMonitorId) { _, _ in
-                            print("Setting up the camera monitor in onChange")
+                            LOG("Setting up the camera monitor in onChange")
                             setupCameraMonitor()
                         }
                          */
@@ -114,6 +115,10 @@ struct ContentView: View {
                         if let url = URL(string: overlay.url) {
                             OverlayBundlerView(url: url)
                         }
+                    }
+                    
+                    if showJournal {
+                        JournalView()
                     }
                     
                     HStack {
@@ -166,7 +171,7 @@ struct ContentView: View {
                                         .fill(Color.black.opacity(0.5))
                                 )
                                 .onChange(of: selectedCamera) { _, newCamera in
-                                    print("Seletected camera: \(newCamera)")
+                                    LOG("Seletected camera: \(newCamera)")
                                     Task {
                                         UserDefaults.standard.set(newCamera, forKey: "SelectedCamera")
                                         await cameraMonitor.stopCamera()
@@ -199,7 +204,7 @@ struct ContentView: View {
                                         .fill(Color.black.opacity(0.5))
                                 )
                                 .onChange(of: selectedStabilization) { _, newStabilization in
-                                    print("Seletected stabilization: \(newStabilization)")
+                                    LOG("Seletected stabilization: \(newStabilization)")
                                     Task {
                                         UserDefaults.standard.set(newStabilization, forKey: "CameraStabilization")
                                         await cameraMonitor.setCameraStabilization(to: newStabilization)
@@ -227,13 +232,13 @@ struct ContentView: View {
                                     Task {
                                         appState.isStreamActive = false
                                         streamer.endStream()
-                                        print("Stopped recording")
+                                        LOG("Stopped recording")
                                     }
                                 } else {
                                     Task {
                                         streamer.startStream()
                                         appState.isStreamActive = true
-                                        print("Started recording")
+                                        LOG("Started recording")
                                     }
                                 }
                             }) {
@@ -278,7 +283,7 @@ struct ContentView: View {
                             appState.isBatterySavingOn.toggle()
                             appState.isAudioLevelRunning = !appState.isBatterySavingOn
                             UIScreen.main.brightness = appState.isBatterySavingOn ? 0.1 : 1.0
-                            print("Battery saving is \(appState.isBatterySavingOn ? "on" : "off")")
+                            LOG("Battery saving is \(appState.isBatterySavingOn ? "on" : "off")")
                         }
                         Button("Cancel", role: .cancel) {} // Do nothing
                     } message: {
@@ -330,7 +335,13 @@ struct ContentView: View {
                         .font(.system(size: 8))
                         .padding(.bottom, 3)
 
-                    
+                    SmallButton(imageName: "text.quote") {
+                        showJournal.toggle()
+                    }
+                    Text("JORNL")
+                        .font(.system(size: 8))
+                        .padding(.bottom, 3)
+
                     Spacer() // Push buttons to the top
                 }
                 .frame(width: 30 + 10 * 2) // Width based on button size and padding

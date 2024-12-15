@@ -16,7 +16,7 @@ actor OverlayImprinter {
             .workingColorSpace: CGColorSpace(name: CGColorSpace.itur_2020)!
         ])
     }
-    func imprint(overlay overlayImage: CIImage, onto sampleBuffer: CMSampleBuffer) {
+    func imLOG(overlay overlayImage: CIImage, onto sampleBuffer: CMSampleBuffer) {
         guard let videoPixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {
             fatalError("Unable to get pixel buffer from sample buffer")
         }
@@ -29,7 +29,7 @@ actor OverlayImprinter {
             let task = try self.context.startTask(toRender: overlayImage, to: destination)
             try task.waitUntilCompleted()
         } catch {
-            print("Error rendering overlay: \(error)")
+            LOG("Error rendering overlay: \(error)")
         }
     }
 }
@@ -69,16 +69,16 @@ final class FrameGrabber: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
                     switch output {
                     case is AVCaptureVideoDataOutput:
                         if let overlayImage = await OverlayBundler.shared.getCombinedImage() {
-                            await self.overlayImprinter.imprint(overlay: overlayImage, onto: sampleBuffer)
+                            await self.overlayImprinter.imLOG(overlay: overlayImage, onto: sampleBuffer)
                         }
                         else {
-                            print("No overlay available to imprint")
+                            LOG("No overlay available to imprint")
                         }
                         await self.assetInterceptor.appendVideoSampleBuffer(sampleBuffer)
                     case is AVCaptureAudioDataOutput:
                         await self.assetInterceptor.appendAudioSampleBuffer(sampleBuffer)
                     default:
-                        print("Unknown output type")
+                        LOG("Unknown output type")
                     }
                 }
             }

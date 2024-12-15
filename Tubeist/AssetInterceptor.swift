@@ -17,12 +17,12 @@ actor AssetWriterActor {
     
     func setupAssetWriter() {
         guard let contentType = UTType(AVFileType.mp4.rawValue) else {
-            print("MP4 is not a valid type")
+            LOG("MP4 is not a valid type")
             return
         }
         assetWriter = AVAssetWriter(contentType: contentType)
         guard let assetWriter else {
-            print("Could not create asset writer")
+            LOG("Could not create asset writer")
             return
         }
         assetWriter.shouldOptimizeForNetworkUse = true
@@ -51,7 +51,7 @@ actor AssetWriterActor {
         
         videoInput = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
         guard let videoInput else {
-            print("Could not set up video input")
+            LOG("Could not set up video input")
             return
         }
         videoInput.expectsMediaDataInRealTime = true
@@ -65,7 +65,7 @@ actor AssetWriterActor {
         
         audioInput = AVAssetWriterInput(mediaType: .audio, outputSettings: audioSettings)
         guard let audioInput else {
-            print("Could not set up audio input")
+            LOG("Could not set up audio input")
             return
         }
         audioInput.expectsMediaDataInRealTime = true
@@ -79,16 +79,16 @@ actor AssetWriterActor {
      func finishWriting() async {
          await withCheckedContinuation { continuation in
              guard let assetWriter else {
-                 print("Asset writer not active or configured")
+                 LOG("Asset writer not active or configured")
                  continuation.resume() // Resume immediately if there's nothing to stop
                  return
              }
              self.writingFinished = true
              assetWriter.finishWriting {
                  if assetWriter.status == .failed {
-                     print("Failed to finish writing: \(String(describing: assetWriter.error))")
+                     LOG("Failed to finish writing: \(String(describing: assetWriter.error))")
                  } else {
-                     print("Finished writing successfully")
+                     LOG("Finished writing successfully")
                  }
                  continuation.resume() // Resume after `finishWriting` completes
              }
@@ -97,11 +97,11 @@ actor AssetWriterActor {
      
     func appendSampleBuffer(_ sampleBuffer: CMSampleBuffer, to input: AVAssetWriterInput?, inputType: String) {
         guard let input = input, !writingFinished else {
-            print("\(inputType) input not configured or writing has finished")
+            LOG("\(inputType) input not configured or writing has finished")
             return
         }
         guard let assetWriter else {
-            print("Asset writer not configured")
+            LOG("Asset writer not configured")
             return
         }
         // Check and handle writer state
@@ -111,7 +111,7 @@ actor AssetWriterActor {
         } else if assetWriter.status == .writing {
             // Already started, continue
         } else {
-            print("AssetWriter in unexpected state: \(assetWriter.status.rawValue)")
+            LOG("AssetWriter in unexpected state: \(assetWriter.status.rawValue)")
             return
         }
 
@@ -119,7 +119,7 @@ actor AssetWriterActor {
         if input.isReadyForMoreMediaData {
             input.append(sampleBuffer)
         } else {
-            print("\(inputType) input not ready for more media data")
+            LOG("\(inputType) input not ready for more media data")
         }
     }
 
@@ -165,7 +165,7 @@ final class AssetInterceptor: NSObject, AVAssetWriterDelegate, Sendable {
         do {
             try fileManager.createDirectory(at: outputDirectory, withIntermediateDirectories: true, attributes: nil)
         } catch {
-            print("Error creating output directory: \(error)")
+            LOG("Error creating output directory: \(error)")
         }
                 
         super.init()
@@ -195,7 +195,7 @@ final class AssetInterceptor: NSObject, AVAssetWriterDelegate, Sendable {
             @unknown default: nil
             }
         }() else {
-            print("Unknown segment type")
+            LOG("Unknown segment type")
             return
         }
         let duration = (segmentReport?.trackReports.first?.duration.seconds ?? 2.0)
@@ -203,7 +203,7 @@ final class AssetInterceptor: NSObject, AVAssetWriterDelegate, Sendable {
             Task.detached { [self] in
                 let sequenceNumber = await fragmentSequenceNumber.next()
                 let fragment = Fragment(sequence: sequenceNumber, segment: segmentData, ext: ext, duration: duration)
-                print("A fragment has been produced: \(fragment.sequence).\(fragment.ext) [ \(fragment.duration) ]")
+                LOG("A fragment has been produced: \(fragment.sequence).\(fragment.ext) [ \(fragment.duration) ]")
                 fragmentPusher.addFragment(fragment)
                 fragmentPusher.uploadFragment(attempt: 1)
                 saveFragmentToFile(fragment)
@@ -223,9 +223,9 @@ final class AssetInterceptor: NSObject, AVAssetWriterDelegate, Sendable {
                 try segmentData.write(to: fileURL)
             }
             catch {
-                print("Error writing files: \(error)")
+                LOG("Error writing files: \(error)")
             }
-            print("Wrote file: \(fileURL)")
+            LOG("Wrote file: \(fileURL)")
             
         }
     }

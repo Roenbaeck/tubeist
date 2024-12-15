@@ -28,3 +28,8 @@ let AUDIO_BARS: Int = 50
 let ZOOM_LIMIT = 20.0
 
 let DEFAULT_CAMERA = "Back Camera" // available on most (all?) devices
+let MAX_LOG_ENTRIES = 1000
+
+func LOG(_ message: String, level: LogLevel = .info) {
+    Journal.shared.log(message, level: level)
+}

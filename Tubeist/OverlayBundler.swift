@@ -59,7 +59,7 @@ final class Overlay: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
 
     func getOverlayImage() -> CIImage? {
         guard let overlayImage = self.overlayImage else {
-            print("No overlay image captured yet")
+            LOG("No overlay image captured yet")
             return nil
         }
         return overlayImage
@@ -71,7 +71,7 @@ final class Overlay: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     
     // MARK: - WKNavigationDelegate
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        print("Web view finished loading")
+        LOG("Web view finished loading")
         let script = """
             (function() {
                 // Create a MutationObserver to watch for DOM changes
@@ -87,7 +87,7 @@ final class Overlay: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
 
         webView.evaluateJavaScript(script) { result, error in
             if let error = error {
-                print("Error injecting JavaScript: \(error)")
+                LOG("Error injecting JavaScript: \(error)")
             }
         }
 
@@ -118,15 +118,15 @@ final class Overlay: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
 
         webView?.takeSnapshot(with: config) { (image, error) in
             guard let uiImage = image else {
-                print("Error capturing snapshot: \(String(describing: error))")
+                LOG("Error capturing snapshot: \(String(describing: error))")
                 return
             }
             guard let ciImage = CIImage(image: uiImage) else {
-                print("Failed to convert UIImage to CIImage")
+                LOG("Failed to convert UIImage to CIImage")
                 return
             }
             self.overlayImage = ciImage
-            print("Captured overlay with dimensions \(ciImage.extent.size)")
+            LOG("Captured overlay with dimensions \(ciImage.extent.size)")
             Task {
                 // Combine all images every time any image is changed
                 await self.bundler.combineOverlayImages()
@@ -179,10 +179,10 @@ final class OverlayBundler: Sendable {
                 images.append(image)
             }
         }
-        print("Combining \(images.count) images")
+        LOG("Combining \(images.count) images")
 
         guard !images.isEmpty, let firstImage = images.first else {
-            print("No images to combine")
+            LOG("No images to combine")
             return
         }
 
