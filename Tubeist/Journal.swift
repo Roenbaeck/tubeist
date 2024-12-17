@@ -98,12 +98,17 @@ final class Journal: Sendable {
 
 struct JournalView: View {
     @State private var logs: [LogEntry] = []
+    private let hh_mm_ss = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm ss"
+        return formatter
+    }()
     
     var body: some View {
         List(logs) { log in
             HStack {
-                Text(log.timestamp, style: .time)
-                    .font(.system(size: 12))                
+                Text(log.timestamp, formatter: hh_mm_ss)
+                    .font(.system(size: 12))
                 Text(log.message)
                     .font(.system(size: 14))
                     .foregroundColor(log.level.color)
@@ -117,7 +122,7 @@ struct JournalView: View {
         .environment(\.defaultMinListRowHeight, 20) // Reduce default row height
         .onAppear {
             Task {
-                logs = await Journal.shared.getJournal()
+                logs = await Journal.shared.getJournal().reversed()
             }
         }
     }

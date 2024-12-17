@@ -74,6 +74,8 @@ actor AssetWriterActor {
         assetWriter.add(audioInput)
 
         writingFinished = false
+        
+        LOG("Asset writer configured successfully", level: .info)
     }
     
      func finishWriting() async {
@@ -204,7 +206,7 @@ final class AssetInterceptor: NSObject, AVAssetWriterDelegate, Sendable {
             Task.detached { [self] in
                 let sequenceNumber = await fragmentSequenceNumber.next()
                 let fragment = Fragment(sequence: sequenceNumber, segment: segmentData, ext: ext, duration: duration)
-                LOG("A fragment has been produced: \(fragment.sequence).\(fragment.ext) [ \(fragment.duration) ]", level: .debug)
+                LOG("A fragment has been produced: \(fragment.sequence).\(fragment.ext) with duration \(fragment.duration)s", level: .debug)
                 fragmentPusher.addFragment(fragment)
                 fragmentPusher.uploadFragment(attempt: 1)
                 saveFragmentToFile(fragment)

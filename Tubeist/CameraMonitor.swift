@@ -48,6 +48,7 @@ private actor CameraActor {
             }
             
             session.automaticallyConfiguresCaptureDeviceForWideColor = true
+            session.configuresApplicationAudioSessionToMixWithOthers = true
             
             // videoDevice.listFormats()
             
@@ -588,9 +589,6 @@ struct AudioLevelView: View {
                     }
                 }
                 .animation(.easeInOut, value: audioLevels[index])
-                .onTapGesture {
-                    appState.isAudioLevelRunning.toggle()
-                }
             }
         }
         .onReceive(timer) { _ in

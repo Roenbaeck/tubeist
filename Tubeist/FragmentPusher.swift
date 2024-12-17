@@ -1,52 +1,169 @@
 import Foundation
+import SystemConfiguration
 
 struct Fragment {
     let sequence: Int
     let segment: Data
     let ext: String
     let duration: Double
+    var discontinuity: Bool = false
 }
 
-private actor FragmentBufferActor {
+actor FragmentBufferActor {
     private var buffer: [Fragment] = []
+    private var attachedFragments: [Int : Fragment] = [:]  // fragments in flight
+    private var fragment2Task: [Int : Int] = [:]
+    private var task2Fragment: [Int : Int] = [:]
     private let maxBufferSize: Int
-
+    
     init(maxBufferSize: Int) {
         self.maxBufferSize = maxBufferSize
     }
     
+    func handleBounds() {
+        if buffer.count > maxBufferSize {
+            buffer.removeFirst()
+            buffer[0].discontinuity = true
+        }
+    }
+    
     func append(_ fragment: Fragment) {
+        self.handleBounds()
         buffer.append(fragment)
     }
     
-    func insertFirst(_ fragment: Fragment) {
-        buffer.insert(fragment, at: 0)
-    }
-
-    func removeFirst() -> Fragment? {
+    func withdrawFragment() -> Fragment? {
         guard !buffer.isEmpty else { return nil }
-        return buffer.removeFirst()
+        let fragment = buffer.removeFirst()
+        return fragment
+    }
+    
+    func returnFragment(_ fragment: Fragment) {
+        self.handleBounds()
+        buffer.insert(fragment, at: buffer.startIndex)
+    }
+        
+    func attachFragment(to taskId: Int, with fragment: Fragment) {
+        fragment2Task[fragment.sequence] = taskId
+        task2Fragment[taskId] = fragment.sequence
+        attachedFragments[taskId] = fragment
+    }
+    
+    func detachFragment(forSequence sequence: Int) {
+        guard let taskId = fragment2Task.removeValue(forKey: sequence),
+              let _ = task2Fragment.removeValue(forKey: taskId),
+              let fragment = attachedFragments.removeValue(forKey: taskId)
+        else {
+            LOG("Cannot detach fragment \(sequence) from its associated task", level: .error)
+            return
+        }
+        self.returnFragment(fragment)
+    }
+    
+    func detachFragment(forTask taskId: Int) {
+        guard let fragment = attachedFragments.removeValue(forKey: taskId),
+              let sequence = task2Fragment.removeValue(forKey: taskId),
+              let _ = fragment2Task.removeValue(forKey: sequence)
+        else {
+            LOG("Cannot detach task \(taskId) from its associated fragment", level: .error)
+            return
+        }
+        self.handleBounds()
+        buffer.insert(fragment, at: buffer.startIndex)
+    }
+    
+    func expelFragment(forTask taskId: Int) {
+        guard let sequence = task2Fragment.removeValue(forKey: taskId) else {
+            return
+        }
+        fragment2Task.removeValue(forKey: sequence)
+        attachedFragments.removeValue(forKey: taskId)
     }
 
+    func expelFragment(forSequence sequence: Int) {
+        guard let taskId = fragment2Task.removeValue(forKey: sequence) else {
+            return
+        }
+        task2Fragment.removeValue(forKey: taskId)
+        attachedFragments.removeValue(forKey: taskId)
+    }
+
+    func expelAllFragments() {
+        buffer.removeAll()
+        attachedFragments.removeAll()
+        task2Fragment.removeAll()
+        fragment2Task.removeAll()
+    }
+    
     func isEmpty() -> Bool {
         buffer.isEmpty
     }
     
-    func release() {
-        buffer.removeAll()
-    }
     func count() -> Int {
         buffer.count
+    }
+    
+    func countAll() -> Int {
+        buffer.count + attachedFragments.count
     }
 }
 
 actor URLSessionActor {
     private var session: URLSession?
+    private var baseURL: URL?
+    private var baseURLRequest: URLRequest?
+    init(queue: OperationQueue, delegate: URLSessionDelegate) {
+        // For HTTP 1.1 persistent connections without cookies and extra fluff
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.httpShouldUsePipelining = true
+        configuration.waitsForConnectivity = true
+        configuration.allowsCellularAccess = true
+        configuration.networkServiceType = .video
+        configuration.timeoutIntervalForRequest = TimeInterval(FRAGMENT_DURATION)
+        self.session = URLSession(configuration: configuration, delegate: delegate, delegateQueue: queue)
+        // initialize this with whatever the user has set, if anything is set
+        if let hlsServer = UserDefaults.standard.string(forKey: "HLSServer"),
+           let baseURL = URL(string: hlsServer) {
+            self.baseURL = baseURL
+            self.baseURLRequest = URLSessionActor.createBaseUploadRequest(url: baseURL)
+        }
+        else {
+            LOG("The HLS server URL is not set, invalid, or unreachable", level: .warning)
+        }
+    }
+    func setBaseURL(_ baseURLString: String) {
+        guard let baseURL = URL(string: baseURLString) else {
+            LOG("Cannot create URL from \(baseURLString)", level: .error)
+            return
+        }
+        self.baseURL = baseURL
+        self.baseURLRequest = URLSessionActor.createBaseUploadRequest(url: baseURL)
+    }
+    func getBaseURLRequest() -> URLRequest? {
+        baseURLRequest
+    }
     func setSession(_ session: URLSession) {
         self.session = session
     }
     func getSession() -> URLSession? {
         session
+    }
+    private static func createBaseUploadRequest(url: URL) -> URLRequest? {
+        var request = URLRequest(url: url.appendingPathComponent("upload_segment"))
+        request.httpMethod = "POST"
+        
+        // Add Basic Authentication header
+        let username = UserDefaults.standard.string(forKey: "Username") ?? "brute"
+        let password = UserDefaults.standard.string(forKey: "Password") ?? "force"
+        
+        let loginString = String(format: "%@:%@", username, password)
+        let loginData = loginString.data(using: .utf8)!
+        let base64LoginString = loginData.base64EncodedString()
+        
+        request.setValue("Basic \(base64LoginString)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+        
+        return request
     }
 }
 
@@ -54,6 +171,7 @@ struct NetworkMetric {
     var actualDuration: TimeInterval?
     var networkDuration: TimeInterval?
     var bytesSent: Int64?
+    var timestamp: Date
 }
 
 actor NetworkMetricsActor {
@@ -70,6 +188,12 @@ actor NetworkMetricsActor {
     func removeAllMetrics() {
         networkMetrics.removeAll()
     }
+    func removeStaleMetrics() {
+        let now = Date()
+        networkMetrics = networkMetrics.filter {
+            now.timeIntervalSince($0.value.timestamp) <= NETWORK_METRICS_SLIDING_WINDOW
+        }
+    }
 }
 
 final class NetworkPerformanceDelegate: NSObject, URLSessionDelegate, URLSessionDataDelegate, URLSessionTaskDelegate {
@@ -81,6 +205,7 @@ final class NetworkPerformanceDelegate: NSObject, URLSessionDelegate, URLSession
             Task {
                 if var metric = await self.netowrkMetrics.getMetric(taskIdenfitier: task.taskIdentifier) {
                     metric.networkDuration = metrics.taskInterval.duration
+                    metric.timestamp = metrics.taskInterval.end
                     await self.setMetric(taskIdentifier: task.taskIdentifier, metric: metric)
                 }
             }
@@ -95,6 +220,34 @@ final class NetworkPerformanceDelegate: NSObject, URLSessionDelegate, URLSession
                     await self.setMetric(taskIdentifier: task.taskIdentifier, metric: metric)
                 }
             }
+        }
+    }
+    
+    func urlSession(_ session: URLSession, taskIsWaitingForConnectivity task: URLSessionTask) {
+        LOG("Task is waiting for connectivity", level: .warning)
+        Task {
+            task.cancel()
+            await FragmentPusher.shared.getFragmentBuffer().detachFragment(forTask: task.taskIdentifier)
+        }
+    }
+    
+    func urlSession(_ session: URLSession, didBecomeInvalidWithError error: (any Error)?) {
+        if let error = error {
+            LOG("URLSession became invalid with error: \(error.localizedDescription)", level: .error)
+        }
+    }
+    
+    // this is not called?
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        if let error = error {
+            LOG("URLSession task \(task.taskIdentifier) failed with error: \(error.localizedDescription)", level: .error)
+            Task {
+                await FragmentPusher.shared.getFragmentBuffer().detachFragment(forTask: task.taskIdentifier)
+            }
+        }
+        LOG("URLSession task \(task.taskIdentifier) completed successfully", level: .debug)
+        Task {
+            await FragmentPusher.shared.getFragmentBuffer().expelFragment(forTask: task.taskIdentifier)
         }
     }
     
@@ -120,7 +273,7 @@ final class NetworkPerformanceDelegate: NSObject, URLSessionDelegate, URLSession
                     bitsSent += metricBytesSent * 8
                 }
             }
-            await self.netowrkMetrics.removeAllMetrics()
+            await self.netowrkMetrics.removeStaleMetrics()
             return (actualDuration, networkDuration, bitsSent)
         }.value
         
@@ -138,31 +291,21 @@ final class NetworkPerformanceDelegate: NSObject, URLSessionDelegate, URLSession
 final class FragmentPusher: Sendable {
     public static let shared = FragmentPusher()
     private let uploadQueue: OperationQueue
-    private let maxRetryAttempts = 30
-    private let fragmentBuffer = FragmentBufferActor(maxBufferSize: 90)
-    private let urlSession = URLSessionActor()
+    private let maxRetryAttempts = MAX_UPLOAD_RETRIES
+    private let fragmentBuffer = FragmentBufferActor(maxBufferSize: MAX_BUFFERED_FRAGMENTS)
+    private let urlSession: URLSessionActor
     private let networkPerformance = NetworkPerformanceDelegate()
 
     init() {
-        // For HTTP 1.1 persistent connections
-        let configuration = URLSessionConfiguration.default
-        configuration.httpShouldUsePipelining = true
-        configuration.waitsForConnectivity = true
-        // 10 second timeout
-        configuration.timeoutIntervalForRequest = TimeInterval(FRAGMENT_DURATION)
-        // Initialize upload queue with concurrent operations
         self.uploadQueue = OperationQueue()
-        self.uploadQueue.maxConcurrentOperationCount = 3
-        Task {
-            await self.urlSession.setSession(
-                URLSession(configuration: configuration, delegate: networkPerformance, delegateQueue: uploadQueue)
-            )
-        }
+        self.uploadQueue.maxConcurrentOperationCount = MAX_CONCURRENT_UPLOADS
+        self.urlSession = URLSessionActor(queue: uploadQueue, delegate: networkPerformance)
+        LOG("The FragmentPusher is initialized", level: .info)
     }
     
     func immediatePreparation() async {
         uploadQueue.cancelAllOperations()
-        await fragmentBuffer.release()
+        await fragmentBuffer.expelAllFragments()
         await networkPerformance.removeAllMetrics()
     }
     
@@ -180,6 +323,10 @@ final class FragmentPusher: Sendable {
             }
         }
     }
+
+    func getFragmentBuffer() -> FragmentBufferActor {
+        fragmentBuffer
+    }
     
     func networkPerformance() async -> (mbps: Int, utilization: Int) {
         var (mbps, utilization) = await networkPerformance.networkPerformance()
@@ -188,6 +335,10 @@ final class FragmentPusher: Sendable {
             utilization = 100
         }
         return (mbps, utilization)
+    }
+    
+    func fragmentBufferCount() async -> Int {
+        await fragmentBuffer.count()
     }
 
     func addFragment(_ fragment: Fragment) {
@@ -199,6 +350,7 @@ final class FragmentPusher: Sendable {
     func uploadFragment(attempt: Int) {
         Task {
             if await self.fragmentBuffer.isEmpty() {
+                LOG("Upload called on an empty buffer", level: .warning)
                 return // poor man's guard
             }
             
@@ -206,60 +358,72 @@ final class FragmentPusher: Sendable {
             self.uploadQueue.addOperation { [self] in
                 Task {
                     if await self.fragmentBuffer.isEmpty() {
+                        LOG("Upload task abandoned due to an empty buffer", level: .warning)
                         return // poor man's guard
                     }
                     
-                    guard let fragment = await fragmentBuffer.removeFirst() else {
+                    guard let fragment = await fragmentBuffer.withdrawFragment() else {
+                        LOG("Failed to remove fragment from buffer", level: .error)
                         return
                     }
-                                        
-                    guard let request = self.createUploadRequest(fragment) else {
+                    
+                    guard let request = await self.createUploadRequest(fragment) else {
                         LOG("Failed to create upload request", level: .error)
+                        await fragmentBuffer.returnFragment(fragment) // reinsert fragment for another attempt
                         return
                     }
                     
                     guard let session = await self.urlSession.getSession() else {
                         LOG("Failed to get session", level: .error)
+                        await fragmentBuffer.returnFragment(fragment) // reinsert fragment for another attempt
                         return
                     }
+                                        
+                    LOG("Preparing upload of \(fragment.sequence).\(fragment.ext)", level: .debug)
                     
-                    let task = session.dataTask(with: request) { [weak self] data, response, error in
+                    let task = session.uploadTask(with: request, from: fragment.segment) { [weak self] data, response, error in
                         guard let self = self else { return }
-                        
-                        LOG("Attempting [\(attempt)] to upload \(fragment.sequence).\(fragment.ext) with duration \(fragment.duration).", level: .debug)
-                        
+                        LOG("Attempt [\(attempt)] to upload \(fragment.sequence).\(fragment.ext) with duration \(fragment.duration)s", level: .debug)
                         Task {
                             if let error = error {
-                                LOG("Upload error: \(error.localizedDescription). Retrying...", level: .error)
-                                // Optionally retry a failed upload
+                                LOG("Upload error: \(error.localizedDescription)", level: .error)
                                 if attempt < maxRetryAttempts {
-                                    await fragmentBuffer.insertFirst(fragment)
+                                    await fragmentBuffer.detachFragment(forSequence: fragment.sequence) // fragment already attached to task here
                                     STREAMING_QUEUE_CONCURRENT.asyncAfter(deadline: .now() + 1.0) {
                                         self.uploadFragment(attempt: attempt + 1)
                                     }
                                 }
+                                else {
+                                    await fragmentBuffer.expelFragment(forSequence: fragment.sequence)
+                                }
                                 return
                             }
-                            
                             if let httpResponse = response as? HTTPURLResponse,
                                !(200...299).contains(httpResponse.statusCode) {
-                                LOG("Server returned an error: \(httpResponse.statusCode). Retrying...", level: .error)
+                                LOG("Server returned an error: \(httpResponse.statusCode)", level: .error)
                                 if attempt < maxRetryAttempts {
-                                    await fragmentBuffer.insertFirst(fragment)
+                                    await fragmentBuffer.detachFragment(forSequence: fragment.sequence) // fragment already attached to task here
                                     STREAMING_QUEUE_CONCURRENT.asyncAfter(deadline: .now() + 1.0) {
                                         self.uploadFragment(attempt: attempt + 1)
                                     }
                                 }
+                                else {
+                                    await fragmentBuffer.expelFragment(forSequence: fragment.sequence)
+                                }
                                 return
                             }
+                            // success
+                            await fragmentBuffer.expelFragment(forSequence: fragment.sequence)
                         }
                     }
                     let metric = NetworkMetric(
                         actualDuration: fragment.duration,
                         networkDuration: nil,
-                        bytesSent: nil
+                        bytesSent: nil,
+                        timestamp: Date()
                     )
                     Task {
+                        await fragmentBuffer.attachFragment(to: task.taskIdentifier, with: fragment)
                         await networkPerformance.setMetric(taskIdentifier: task.taskIdentifier, metric: metric)
                         task.resume()
                     }
@@ -267,71 +431,17 @@ final class FragmentPusher: Sendable {
             }
         }
     }
-
-    private func createUploadRequest(_ fragment: Fragment) -> URLRequest? {
-        let url = URL(string: UserDefaults.standard.string(forKey: "HLSServer") ?? "")
-        guard let url = url else {
-            LOG("Invalid URL", level: .error)
+    
+    private func createUploadRequest(_ fragment: Fragment) async -> URLRequest? {
+        guard var request = await self.urlSession.getBaseURLRequest() else {
+            LOG("Unable to get base URLRequest object for upload", level: .error)
             return nil
         }
-
-        var request = URLRequest(url: url.appendingPathComponent("upload_segment"))
-        request.httpMethod = "POST"
-        
-        // Boundary for multipart form data
-        let boundary = "Boundary-\(UUID().uuidString)"
-        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
-        
-        // Add Basic Authentication header
-        let username = UserDefaults.standard.string(forKey: "Username") ?? "brute"
-        let password = UserDefaults.standard.string(forKey: "Password") ?? "force"
-
-        let loginString = String(format: "%@:%@", username, password)
-        let loginData = loginString.data(using: .utf8)!
-        let base64LoginString = loginData.base64EncodedString()
-        request.setValue("Basic \(base64LoginString)", forHTTPHeaderField: "Authorization")
-        
-        // Create multipart form data
-        var body = Data()
-        
-        // Add `is_init` field
-        body.append("--\(boundary)\r\n")
-        body.append("Content-Disposition: form-data; name=\"is_init\"\r\n\r\n")
-        body.append("\((fragment.ext == "mp4") ? "true" : "false")\r\n")
-        
-        // Add `duration` field
-        body.append("--\(boundary)\r\n")
-        body.append("Content-Disposition: form-data; name=\"duration\"\r\n\r\n")
-        body.append("\(fragment.duration)\r\n")
-        
-        // Add `sequence` field
-        body.append("--\(boundary)\r\n")
-        body.append("Content-Disposition: form-data; name=\"sequence\"\r\n\r\n")
-        body.append("\(fragment.sequence)\r\n")
-        
-        // Add the file
-        body.append("--\(boundary)\r\n")
-        body.append("Content-Disposition: form-data; name=\"segment\"; filename=\"segment_\(fragment.sequence).\(fragment.ext)\"\r\n")
-        body.append("Content-Type: application/mp4\r\n\r\n")
-        body.append(fragment.segment)
-        body.append("\r\n")
-        
-        // End of multipart data
-        body.append("--\(boundary)--\r\n")
-        
-        request.httpBody = body
+          // Add custom headers for metadata
+        request.setValue((fragment.ext == "mp4") ? "true" : "false", forHTTPHeaderField: "Initialization")
+        request.setValue(String(fragment.duration), forHTTPHeaderField: "Duration")
+        request.setValue(String(fragment.sequence), forHTTPHeaderField: "Sequence")
+        request.setValue(fragment.discontinuity ? "true" : "false", forHTTPHeaderField: "Discontinuity")
         return request
     }
-    
 }
-
-// Helper method to append data to `Data`
-private extension Data {
-    mutating func append(_ string: String) {
-        if let data = string.data(using: .utf8) {
-            append(data)
-        }
-    }
-}
-
-

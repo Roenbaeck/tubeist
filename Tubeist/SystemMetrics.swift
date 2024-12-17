@@ -16,6 +16,7 @@ struct SystemMetricsView: View {
     @State private var thermalLevel: String = "Low"
     @State private var networkMbps: Int = 0
     @State private var networkUtilization: Int = 0
+    @State private var fragmentBufferCount: Int = 0
     private let timer = Timer.publish(every: 3, on: .main, in: .common).autoconnect()
     
     var body: some View {
@@ -23,8 +24,7 @@ struct SystemMetricsView: View {
             Text("CPU: \(String(format: "%.1f", cpuUsage))%")
             Text("Battery: \(String(format: "%.0f", batteryLevel))%")
             Text("Temp: \(thermalLevel)")
-            Text("UL: \(networkMbps) Mbps")
-            Text("(\(networkUtilization)% utilization)")
+            Text("\(networkMbps) Mbps | \(networkUtilization)% utilization | \(fragmentBufferCount) buffered")
         }
         .font(.system(size: 13))
         .lineLimit(1) // Ensure text stays on a single line
@@ -35,9 +35,6 @@ struct SystemMetricsView: View {
         .onAppear {
             updateSystemMetrics()
         }
-        .onTapGesture {
-            appState.isAudioLevelRunning.toggle()
-        }
     }
     
     private func updateSystemMetrics() {
@@ -46,6 +43,7 @@ struct SystemMetricsView: View {
             self.batteryLevel = self.getBatteryLevel()
             self.thermalLevel = self.getThermalLevel()
             (self.networkMbps, self.networkUtilization) = await FragmentPusher.shared.networkPerformance()
+            self.fragmentBufferCount = await FragmentPusher.shared.fragmentBufferCount()
         }
     }
     

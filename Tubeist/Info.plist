@@ -9,5 +9,13 @@
 	</dict>
 	<key>UIFileSharingEnabled</key>
 	<true/>
+    <key>com.apple.developer.networking.slicing.appcategory</key>
+    <array>
+        <string>streaming-9001</string>
+    </array>
+    <key>com.apple.developer.networking.slicing.trafficcategory</key>
+    <array>
+        <string>video-2</string>
+    </array>
 </dict>
 </plist>
