@@ -122,25 +122,7 @@ actor URLSessionActor {
         configuration.timeoutIntervalForRequest = TimeInterval(FRAGMENT_DURATION)
         self.session = URLSession(configuration: configuration, delegate: delegate, delegateQueue: queue)
         // initialize this with whatever the user has set, if anything is set
-        if let hlsServer = UserDefaults.standard.string(forKey: "HLSServer"),
-           let baseURL = URL(string: hlsServer) {
-            self.baseURL = baseURL
-            self.baseURLRequest = URLSessionActor.createBaseUploadRequest(url: baseURL)
-        }
-        else {
-            LOG("The HLS server URL is not set, invalid, or unreachable", level: .warning)
-        }
-    }
-    func setBaseURL(_ baseURLString: String) {
-        guard let baseURL = URL(string: baseURLString) else {
-            LOG("Cannot create URL from \(baseURLString)", level: .error)
-            return
-        }
-        self.baseURL = baseURL
-        self.baseURLRequest = URLSessionActor.createBaseUploadRequest(url: baseURL)
-    }
-    func getBaseURLRequest() -> URLRequest? {
-        baseURLRequest
+        baseURLRequest = URLSessionActor.createBaseUploadRequest()
     }
     func setSession(_ session: URLSession) {
         self.session = session
@@ -148,22 +130,38 @@ actor URLSessionActor {
     func getSession() -> URLSession? {
         session
     }
-    private static func createBaseUploadRequest(url: URL) -> URLRequest? {
-        var request = URLRequest(url: url.appendingPathComponent("upload_segment"))
-        request.httpMethod = "POST"
-        
-        // Add Basic Authentication header
-        let username = UserDefaults.standard.string(forKey: "Username") ?? "brute"
-        let password = UserDefaults.standard.string(forKey: "Password") ?? "force"
-        
-        let loginString = String(format: "%@:%@", username, password)
-        let loginData = loginString.data(using: .utf8)!
-        let base64LoginString = loginData.base64EncodedString()
-        
-        request.setValue("Basic \(base64LoginString)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
-        
-        return request
+    func getBaseURLRequest() -> URLRequest? {
+        baseURLRequest
+    }
+    func refresh() {
+        baseURLRequest = URLSessionActor.createBaseUploadRequest()
+    }
+    private static func createBaseUploadRequest() -> URLRequest? {
+        let hlsServer = UserDefaults.standard.string(forKey: "HLSServer") ?? ""
+        if let url = URL(string: hlsServer) {
+            var request = URLRequest(url: url.appendingPathComponent("upload_segment"))
+            request.httpMethod = "POST"
+            
+            // Add Basic Authentication header
+            let username = UserDefaults.standard.string(forKey: "Username") ?? "brute"
+            let password = UserDefaults.standard.string(forKey: "Password") ?? "force"
+            
+            let loginString = String(format: "%@:%@", username, password)
+            let loginData = loginString.data(using: .utf8)!
+            let base64LoginString = loginData.base64EncodedString()
+            
+            request.setValue("Basic \(base64LoginString)", forHTTPHeaderField: "Authorization")
+            request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+            
+            let streamKey = UserDefaults.standard.string(forKey: "StreamKey") ?? ""
+            request.setValue(streamKey, forHTTPHeaderField: "Stream-Key")
+            
+            return request
+        }
+        else {
+            LOG(hlsServer + " is not a valid URL", level: .error)
+            return nil
+        }
     }
 }
 
@@ -305,6 +303,7 @@ final class FragmentPusher: Sendable {
     
     func immediatePreparation() async {
         uploadQueue.cancelAllOperations()
+        await urlSession.refresh()
         await fragmentBuffer.expelAllFragments()
         await networkPerformance.removeAllMetrics()
     }
@@ -400,7 +399,11 @@ final class FragmentPusher: Sendable {
                             }
                             if let httpResponse = response as? HTTPURLResponse,
                                !(200...299).contains(httpResponse.statusCode) {
-                                LOG("Server returned an error: \(httpResponse.statusCode)", level: .error)
+                                if let data = data, let errorMessage = String(data: data, encoding: .utf8) {
+                                    LOG("Server returned an error (\(httpResponse.statusCode)): \(errorMessage)", level: .error)
+                                } else {
+                                    LOG("Server returned an error: \(httpResponse.statusCode)", level: .error)
+                                }
                                 if attempt < maxRetryAttempts {
                                     await fragmentBuffer.detachFragment(forSequence: fragment.sequence) // fragment already attached to task here
                                     STREAMING_QUEUE_CONCURRENT.asyncAfter(deadline: .now() + 1.0) {

@@ -53,6 +53,7 @@ struct OverlaySetting: Identifiable, Codable, Hashable {
 
 struct SettingsView: View {
     @AppStorage("HLSServer") private var hlsServer: String = ""
+    @AppStorage("StreamKey") private var streamKey: String = ""
     @AppStorage("Username") private var username: String = ""
     @AppStorage("Password") private var password: String = ""
     @AppStorage("SaveFragmentsLocally") private var saveFragmentsLocally: Bool = false
@@ -75,6 +76,11 @@ struct SettingsView: View {
                 }
                 
                 Section(header: Text("Authentication"), footer: Text("Provide your streaming server login details.")) {
+                    TextField("Stream Key", text: $streamKey)
+                        .keyboardType(.asciiCapable)
+                        .autocapitalization(.none)
+                        .disableAutocorrection(true)
+ 
                     TextField("Username", text: $username)
                         .autocapitalization(.none)
                         .disableAutocorrection(true)

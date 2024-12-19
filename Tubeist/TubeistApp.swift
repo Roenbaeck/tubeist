@@ -34,6 +34,12 @@ struct TubeistApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView().environment(appState)
+                .onAppear {
+                    UIApplication.shared.isIdleTimerDisabled = true
+                }
+                .onDisappear {
+                    UIApplication.shared.isIdleTimerDisabled = false
+                }
         }
         .onChange(of: scenePhase) { oldValue, newValue in
             switch (oldValue, newValue) {
