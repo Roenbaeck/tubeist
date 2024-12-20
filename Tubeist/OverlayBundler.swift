@@ -11,7 +11,6 @@ import WebKit
 // import Observation
 
 final class Overlay: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
-    private let processPool = WKProcessPool()
     private let url: URL
     private let bundler: OverlayBundler
     private var webView: WKWebView?
@@ -34,7 +33,7 @@ final class Overlay: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
 
     func createWebView() -> WKWebView {
         let config = WKWebViewConfiguration()
-        config.processPool = self.processPool
+        config.processPool = WK_PROCESS_POOL
         config.suppressesIncrementalRendering = true
         config.mediaTypesRequiringUserActionForPlayback = []
         config.allowsInlineMediaPlayback = true

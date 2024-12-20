@@ -7,6 +7,7 @@
 
 import Foundation
 import CoreMedia
+import WebKit
 
 // Generic settings
 let STREAMING_QUEUE_CONCURRENT = DispatchQueue(label: "com.subside.StreamingQueueConcurrent", qos: .userInitiated, attributes: .concurrent)
@@ -40,4 +41,8 @@ let NETWORK_METRICS_SLIDING_WINDOW: TimeInterval = 10 // seconds
 let MAX_UPLOAD_RETRIES = 30
 let MAX_CONCURRENT_UPLOADS = 3
 let MAX_BUFFERED_FRAGMENTS = 90
+
+// Web View Process Pool
+@MainActor
+let WK_PROCESS_POOL = WKProcessPool()
 
