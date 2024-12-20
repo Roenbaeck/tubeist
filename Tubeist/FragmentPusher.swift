@@ -118,7 +118,7 @@ actor URLSessionActor {
         configuration.waitsForConnectivity = true
         configuration.allowsCellularAccess = true
         configuration.networkServiceType = .video
-        configuration.multipathServiceType = .aggregate
+//        configuration.multipathServiceType = .aggregate // not working right now
         configuration.httpMaximumConnectionsPerHost = MAX_CONCURRENT_UPLOADS
         configuration.timeoutIntervalForRequest = TimeInterval(FRAGMENT_DURATION)
         self.session = URLSession(configuration: configuration, delegate: delegate, delegateQueue: queue)
@@ -142,7 +142,7 @@ actor URLSessionActor {
         if let url = URL(string: hlsServer) {
             var request = URLRequest(url: url.appendingPathComponent("upload_segment"))
             request.httpMethod = "POST"
-//            request.assumesHTTP3Capable = true
+//            request.assumesHTTP3Capable = true // too soon to use this since server side code is shaky
             
             // Add Basic Authentication header
             let username = UserDefaults.standard.string(forKey: "Username") ?? "brute"

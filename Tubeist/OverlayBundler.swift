@@ -11,6 +11,7 @@ import WebKit
 // import Observation
 
 final class Overlay: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
+    private let processPool = WKProcessPool()
     private let url: URL
     private let bundler: OverlayBundler
     private var webView: WKWebView?
@@ -33,7 +34,10 @@ final class Overlay: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
 
     func createWebView() -> WKWebView {
         let config = WKWebViewConfiguration()
+        config.processPool = self.processPool
         config.suppressesIncrementalRendering = true
+        config.mediaTypesRequiringUserActionForPlayback = []
+        config.allowsInlineMediaPlayback = true
         config.websiteDataStore = WKWebsiteDataStore.nonPersistent()
         
         let webView = WKWebView(frame: CGRect(x: 0, y: 0, width: CAPTURE_WIDTH, height: CAPTURE_HEIGHT), configuration: config)
@@ -81,6 +85,8 @@ final class Overlay: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
 
                 // Start observing the entire document
                 observer.observe(document, { subtree: true, childList: true, characterData: true });
+                // When this is supported, we should be able to mix audio from several WKWebViews
+                // navigator.audioSession.type = 'ambient';
             })();
         """
 
