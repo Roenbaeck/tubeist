@@ -115,10 +115,11 @@ actor URLSessionActor {
     init(queue: OperationQueue, delegate: URLSessionDelegate) {
         // For HTTP 1.1 persistent connections without cookies and extra fluff
         let configuration = URLSessionConfiguration.ephemeral
-        configuration.httpShouldUsePipelining = true
         configuration.waitsForConnectivity = true
         configuration.allowsCellularAccess = true
         configuration.networkServiceType = .video
+        configuration.multipathServiceType = .aggregate
+        configuration.httpMaximumConnectionsPerHost = MAX_CONCURRENT_UPLOADS
         configuration.timeoutIntervalForRequest = TimeInterval(FRAGMENT_DURATION)
         self.session = URLSession(configuration: configuration, delegate: delegate, delegateQueue: queue)
         // initialize this with whatever the user has set, if anything is set
@@ -141,6 +142,7 @@ actor URLSessionActor {
         if let url = URL(string: hlsServer) {
             var request = URLRequest(url: url.appendingPathComponent("upload_segment"))
             request.httpMethod = "POST"
+//            request.assumesHTTP3Capable = true
             
             // Add Basic Authentication header
             let username = UserDefaults.standard.string(forKey: "Username") ?? "brute"

@@ -17,5 +17,7 @@
     <array>
         <string>video-2</string>
     </array>
+    <key>com.apple.developer.networking.multipath</key>
+    <true/>
 </dict>
 </plist>
