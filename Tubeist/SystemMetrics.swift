@@ -44,6 +44,17 @@ struct SystemMetricsView: View {
             self.thermalLevel = self.getThermalLevel()
             (self.networkMbps, self.networkUtilization) = await FragmentPusher.shared.networkPerformance()
             self.fragmentBufferCount = await FragmentPusher.shared.fragmentBufferCount()
+            if await Streamer.shared.isStreaming() {
+                if (self.networkUtilization > 100 || self.fragmentBufferCount > 1) {
+                    appState.streamHealth = .degraded
+                }
+                else {
+                    appState.streamHealth = .pristine
+                }
+            }
+            else if (self.fragmentBufferCount == 0) {
+                appState.streamHealth = .silenced
+            }
         }
     }
     

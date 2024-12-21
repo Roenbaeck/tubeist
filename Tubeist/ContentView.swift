@@ -198,7 +198,7 @@ struct ContentView: View {
                     HStack {
                         Spacer()
                         
-                        VStack(alignment: .trailing) {
+                        VStack(alignment: .center, spacing: 0) {
 
                             Button(action: {
                                 showSettings = true
@@ -212,9 +212,31 @@ struct ContentView: View {
                             .cornerRadius(25)
                             .sheet(isPresented: $showSettings) {
                                 SettingsView(overlayManager: overlayManager)
-                            }.padding()
+                            }
                             
                             Spacer()
+
+                            // Computed property to determine the color based on streamHealth
+                            var streamHealthColor: Color {
+                                switch appState.streamHealth {
+                                case .silenced:
+                                    return .white.opacity(0.5)
+                                case .awaiting:
+                                    return .white
+                                case .unusable:
+                                    return .red
+                                case .degraded:
+                                    return .yellow
+                                case .pristine:
+                                    return .green
+                                }
+                            }
+                            
+                            Image(systemName: "dot.radiowaves.right")
+                                .rotationEffect(.degrees(-90)) // Rotate the symbol by 90 degrees
+                                .foregroundColor(streamHealthColor)
+                                .font(.system(size: 25)) // Adjust the size as needed
+                                .padding(.bottom, 10)
                             
                             Button(action: {
                                 if appState.isStreamActive {
@@ -238,9 +260,9 @@ struct ContentView: View {
                             }
                             .background(Color.black.opacity(0.5))
                             .cornerRadius(25)
-                            .padding()
                             
                         }
+                        .padding()
                     }
                 }
                 .frame(width: width, height: height)

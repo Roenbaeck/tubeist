@@ -13,8 +13,7 @@ actor AssetWriterActor {
     private var assetWriter: AVAssetWriter?
     private var videoInput: AVAssetWriterInput?
     private var audioInput: AVAssetWriterInput?
-    private var writingFinished = false
-    
+
     func setupAssetWriter() {
         guard let contentType = UTType(AVFileType.mp4.rawValue) else {
             LOG("MP4 is not a valid type", level: .error)
@@ -73,7 +72,12 @@ actor AssetWriterActor {
         assetWriter.add(videoInput)
         assetWriter.add(audioInput)
 
-        writingFinished = false
+        if assetWriter.startWriting() == false {
+            LOG("Error starting writing: \(assetWriter.error?.localizedDescription ?? "Unknown error")")
+            return
+        }
+        let currentTime = CMTimeMakeWithSeconds(CACurrentMediaTime(), preferredTimescale: Int32(TIMESCALE))
+        assetWriter.startSession(atSourceTime: currentTime)
         
         LOG("Asset writer configured successfully", level: .info)
     }
@@ -85,43 +89,33 @@ actor AssetWriterActor {
                  continuation.resume() // Resume immediately if there's nothing to stop
                  return
              }
-             self.writingFinished = true
+             self.videoInput?.markAsFinished()
+             self.audioInput?.markAsFinished()
              assetWriter.finishWriting {
-                 if assetWriter.status == .failed {
+                 if assetWriter.status != .completed {
                      LOG("Failed to finish writing: \(String(describing: assetWriter.error))", level: .warning)
                  } else {
                      LOG("Finished writing successfully", level: .info)
                  }
                  continuation.resume() // Resume after `finishWriting` completes
              }
+             self.assetWriter = nil
+             self.videoInput = nil
+             self.audioInput = nil
          }
      }
      
     func appendSampleBuffer(_ sampleBuffer: CMSampleBuffer, to input: AVAssetWriterInput?, inputType: String) {
-        guard let input = input, !writingFinished else {
-            LOG("\(inputType) input not configured or writing has finished", level: .warning)
+        guard let assetWriter = self.assetWriter, assetWriter.status == .writing else {
+            LOG("Cannot append \(inputType) buffer, writer not in writing state: \(self.assetWriter?.status.rawValue ?? -1)", level: .warning)
             return
         }
-        guard let assetWriter else {
-            LOG("Asset writer not configured", level: .error)
-            return
-        }
-        // Check and handle writer state
-        if assetWriter.status == .unknown {
-            assetWriter.startWriting()
-            assetWriter.startSession(atSourceTime: sampleBuffer.presentationTimeStamp)
-        } else if assetWriter.status == .writing {
-            // Already started, continue
-        } else {
-            LOG("AssetWriter in unexpected state: \(assetWriter.status.rawValue)", level: .error)
-            return
-        }
-
-        // Append sample buffer
-        if input.isReadyForMoreMediaData {
-            input.append(sampleBuffer)
-        } else {
+        guard let input = input, input.isReadyForMoreMediaData else {
             LOG("\(inputType) input not ready for more media data", level: .warning)
+            return
+        }
+        if input.append(sampleBuffer) == false {
+            LOG("Error appending video buffer", level: .error)
         }
     }
 

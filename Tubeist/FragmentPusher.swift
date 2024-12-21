@@ -199,6 +199,7 @@ actor NetworkMetricsActor {
 final class NetworkPerformanceDelegate: NSObject, URLSessionDelegate, URLSessionDataDelegate, URLSessionTaskDelegate {
     private let netowrkMetrics = NetworkMetricsActor()
     private let queue = DispatchQueue(label: "com.tubeist.NetworkPerformanceQueue", attributes: .concurrent)
+
     
     func urlSession(_ session: URLSession, task: URLSessionTask, didFinishCollecting metrics: URLSessionTaskMetrics) {
         queue.async(flags: .barrier) {
@@ -224,33 +225,18 @@ final class NetworkPerformanceDelegate: NSObject, URLSessionDelegate, URLSession
     }
     
     func urlSession(_ session: URLSession, taskIsWaitingForConnectivity task: URLSessionTask) {
-        LOG("Task is waiting for connectivity", level: .warning)
-        Task {
-            task.cancel()
-            await FragmentPusher.shared.getFragmentBuffer().detachFragment(forTask: task.taskIdentifier)
-        }
+        LOG("No network connectivity, buffering fragments and retrying", level: .warning)
+        Streamer.shared.setStreamHealth(.unusable)
+        task.cancel()
     }
     
     func urlSession(_ session: URLSession, didBecomeInvalidWithError error: (any Error)?) {
         if let error = error {
+            Streamer.shared.setStreamHealth(.unusable)
             LOG("URLSession became invalid with error: \(error.localizedDescription)", level: .error)
         }
     }
-    
-    // this is not called?
-    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-        if let error = error {
-            LOG("URLSession task \(task.taskIdentifier) failed with error: \(error.localizedDescription)", level: .error)
-            Task {
-                await FragmentPusher.shared.getFragmentBuffer().detachFragment(forTask: task.taskIdentifier)
-            }
-        }
-        LOG("URLSession task \(task.taskIdentifier) completed successfully", level: .debug)
-        Task {
-            await FragmentPusher.shared.getFragmentBuffer().expelFragment(forTask: task.taskIdentifier)
-        }
-    }
-    
+        
     func setMetric(taskIdentifier: Int, metric: NetworkMetric) async {
         await netowrkMetrics.setMetric(taskIdentifier: taskIdentifier, metric: metric)
     }

@@ -5,16 +5,37 @@
 //  Created by Lars Rönnbäck on 2024-12-06.
 //
 
+enum StreamHealth {
+    case silenced   // When stream is not running
+    case awaiting   // Health has not been determined
+    case unusable   // Stream is too bad to watch
+    case degraded   // Noticeable quality issues
+    case pristine   // Perfect viewing experience
+}
+
 actor StreamingActor {
-    private var _isStreaming: Bool = false
+    private var appState: AppState?
+    func setAppState(_ appState: AppState) {
+        self.appState = appState
+    }
     func run() {
-        _isStreaming = true
+        Task { @MainActor in
+            await appState?.isStreamActive = true
+            await appState?.streamHealth = .awaiting
+        }
     }
     func pause() {
-        _isStreaming = false
+        Task { @MainActor in
+            await appState?.isStreamActive = false
+        }
     }
-    func isStreaming() -> Bool {
-        _isStreaming
+    func setStreamHealth(_ health: StreamHealth) {
+        Task { @MainActor in
+            await appState?.streamHealth = health
+        }
+    }
+    func isStreaming() async -> Bool {
+        await appState?.isStreamActive ?? false
     }
 }
 
@@ -26,6 +47,11 @@ final class Streamer: Sendable {
     private let assetInterceptor = AssetInterceptor.shared
     private let fragmentPusher = FragmentPusher.shared
     
+    func setAppState(_ appState: AppState) {
+        Task {
+            await self.streamingActor.setAppState(appState)
+        }
+    }
     func startCamera() {
         Task {
             await cameraMonitor.startCamera()
@@ -60,4 +86,10 @@ final class Streamer: Sendable {
     func isStreaming() async -> Bool {
         await streamingActor.isStreaming()
     }
+    func setStreamHealth(_ health: StreamHealth) {
+        Task {
+            await streamingActor.setStreamHealth(health)
+        }
+    }
+
 }

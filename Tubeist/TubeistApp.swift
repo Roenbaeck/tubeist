@@ -9,8 +9,8 @@ import SwiftUI
 import Observation
 
 // these are my shared variables
-@Observable
-class AppState {
+@Observable @MainActor
+final class AppState {
     var isBatterySavingOn = false
     var isStreamActive = false
     var isAudioLevelRunning = true
@@ -19,8 +19,9 @@ class AppState {
     var isExposureLocked = false
     var justCameFromBackground = false
     var hadToStopStreaming = false
+    var streamHealth = StreamHealth.silenced
     var cameraMonitorId = UUID()
-    
+        
     func refreshCameraView() {
         cameraMonitorId = UUID()
     }
@@ -65,6 +66,7 @@ struct TubeistApp: App {
         }
     }
     init() {
+        Streamer.shared.setAppState(appState)
         UIApplication.shared.isIdleTimerDisabled = true
         LOG("Starting Tubeist", level: .info)
     }
