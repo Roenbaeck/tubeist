@@ -115,26 +115,6 @@ struct ContentView: View {
                         JournalView()
                     }
                     
-                    HStack {
-                        VStack(alignment: .leading) {
-                            Spacer()
-                            
-                            Button(action: {
-                                showSettings = true
-                            }) {
-                                Image(systemName: "gear")
-                                    .font(.system(size: 24))
-                                    .foregroundColor(.white)
-                                    .frame(width: 50, height: 50)
-                            }
-                            .background(Color.black.opacity(0.5))
-                            .cornerRadius(25)
-                            .sheet(isPresented: $showSettings) {
-                                SettingsView(overlayManager: overlayManager)
-                            }.padding()
-                        }
-                        Spacer()
-                    }
                     
                     VStack {
                         Spacer()
@@ -219,6 +199,21 @@ struct ContentView: View {
                         Spacer()
                         
                         VStack(alignment: .trailing) {
+
+                            Button(action: {
+                                showSettings = true
+                            }) {
+                                Image(systemName: "gear")
+                                    .font(.system(size: 24))
+                                    .foregroundColor(.white)
+                                    .frame(width: 50, height: 50)
+                            }
+                            .background(Color.black.opacity(0.5))
+                            .cornerRadius(25)
+                            .sheet(isPresented: $showSettings) {
+                                SettingsView(overlayManager: overlayManager)
+                            }.padding()
+                            
                             Spacer()
                             
                             Button(action: {
@@ -252,6 +247,9 @@ struct ContentView: View {
                 
                 // Vertical Small Button Column
                 VStack(spacing: 2) {
+
+                    Spacer()
+                    
                     SmallButton(imageName: "camera") {
                         showCameraPicker.toggle()
                     }
@@ -336,10 +334,10 @@ struct ContentView: View {
                         .font(.system(size: 8))
                         .padding(.bottom, 3)
 
-                    Spacer() // Push buttons to the top
+                    Spacer()
                 }
-                .frame(width: 30 + 10 * 2) // Width based on button size and padding
-                .padding(.trailing, 10)
+                .frame(width: 30) // Width based on button size and padding
+                .padding(.leading, 10)
             }
             .frame(width: geometry.size.width, height: geometry.size.height)
             .onTapGesture { location in

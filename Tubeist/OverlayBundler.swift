@@ -74,6 +74,8 @@ final class Overlay: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     // MARK: - WKNavigationDelegate
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         LOG("Web view finished loading", level: .info)
+        captureWebViewImageOrSchedule()
+
         let script = """
             (function() {
                 // Create a MutationObserver to watch for DOM changes
