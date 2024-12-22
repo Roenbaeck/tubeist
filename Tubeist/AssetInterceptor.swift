@@ -80,7 +80,7 @@ actor AssetWriterActor {
             LOG("Error starting writing: \(assetWriter.error?.localizedDescription ?? "Unknown error")")
             return
         }
-        let currentTime = CMTime(seconds: Date().timeIntervalSinceReferenceDate, preferredTimescale: Int32(TIMESCALE))
+        let currentTime = CMTime(seconds: Date().timeIntervalSince1970, preferredTimescale: Int32(TIMESCALE))
         assetWriter.startSession(atSourceTime: currentTime)
         
         LOG("Asset writer configured successfully (at source time: \(currentTime.value) | \(currentTime.timescale))", level: .info)

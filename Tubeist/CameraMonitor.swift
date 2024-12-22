@@ -38,13 +38,8 @@ private actor CameraActor {
         }
         // Configure the capture
         do {
-            
-            session.sessionPreset = .inputPriority
-            session.automaticallyConfiguresCaptureDeviceForWideColor = true
-            session.configuresApplicationAudioSessionToMixWithOthers = true
-            
+                        
             // videoDevice.listFormats()
-            
             guard let format = videoDevice.findFormat() else {
                 LOG("Desired format not found", level: .error)
                 return
@@ -64,6 +59,8 @@ private actor CameraActor {
             self.minZoomFactor = videoDevice.minAvailableVideoZoomFactor
             self.maxZoomFactor = videoDevice.maxAvailableVideoZoomFactor
             self.opticalZoomFactor = videoDevice.activeFormat.secondaryNativeResolutionZoomFactors.first ?? 1.0
+            
+            videoOutput.alwaysDiscardsLateVideoFrames = true
             
             self.videoInput = try AVCaptureDeviceInput(device: videoDevice)
             guard let videoInput = self.videoInput else {
@@ -106,6 +103,17 @@ private actor CameraActor {
                 LOG("Cannot add audio output", level: .error)
                 return
             }
+
+            // need to be called after inputs and outputs have been added
+            // session.sessionPreset = .inputPriority
+            switch CAPTURE_WIDTH {
+            case 1280: session.sessionPreset = .hd1280x720
+            case 1920: session.sessionPreset = .hd1920x1080
+            case 3840: session.sessionPreset = .hd4K3840x2160
+            default: break
+            }
+            session.automaticallyConfiguresCaptureDeviceForWideColor = true
+            session.configuresApplicationAudioSessionToMixWithOthers = true
 
         } catch {
             LOG("Error setting up camera: \(error)", level: .error)
