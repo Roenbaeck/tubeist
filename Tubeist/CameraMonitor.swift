@@ -38,30 +38,13 @@ private actor CameraActor {
         }
         // Configure the capture
         do {
-                        
-            // videoDevice.listFormats()
-            guard let format = videoDevice.findFormat() else {
-                LOG("Desired format not found", level: .error)
-                return
-            }
-            
-            videoDevice.printFormatDetails(captureFormat: format)
-            
-            // Apply the format to the video device
-            try videoDevice.lockForConfiguration()
-            videoDevice.activeFormat = format
-            let frameDurationParts = Int64(TIMESCALE / FRAMERATE)
-            videoDevice.activeVideoMinFrameDuration = CMTimeMake(value: frameDurationParts, timescale: Int32(TIMESCALE))
-            videoDevice.activeVideoMaxFrameDuration = CMTimeMake(value: frameDurationParts, timescale: Int32(TIMESCALE))
-            videoDevice.activeColorSpace = .HLG_BT2020
-            videoDevice.unlockForConfiguration()
-            
-            self.minZoomFactor = videoDevice.minAvailableVideoZoomFactor
-            self.maxZoomFactor = videoDevice.maxAvailableVideoZoomFactor
-            self.opticalZoomFactor = videoDevice.activeFormat.secondaryNativeResolutionZoomFactors.first ?? 1.0
-            
-            videoOutput.alwaysDiscardsLateVideoFrames = true
-            
+            // configure session by adding inputs and outputs first
+            session.beginConfiguration()
+            // that's the only way I was able to get .inputPriority working
+            session.sessionPreset = .inputPriority
+            session.automaticallyConfiguresCaptureDeviceForWideColor = true
+            session.configuresApplicationAudioSessionToMixWithOthers = true
+
             self.videoInput = try AVCaptureDeviceInput(device: videoDevice)
             guard let videoInput = self.videoInput else {
                 LOG("Could not create video input", level: .error)
@@ -104,16 +87,29 @@ private actor CameraActor {
                 return
             }
 
-            // need to be called after inputs and outputs have been added
-            // session.sessionPreset = .inputPriority
-            switch CAPTURE_WIDTH {
-            case 1280: session.sessionPreset = .hd1280x720
-            case 1920: session.sessionPreset = .hd1920x1080
-            case 3840: session.sessionPreset = .hd4K3840x2160
-            default: break
+            session.commitConfiguration()
+            // only after the configuarion is commited, the following can be changed
+
+            // videoDevice.listFormats()
+            guard let format = videoDevice.findFormat() else {
+                LOG("Desired format not found", level: .error)
+                return
             }
-            session.automaticallyConfiguresCaptureDeviceForWideColor = true
-            session.configuresApplicationAudioSessionToMixWithOthers = true
+            
+            videoDevice.printFormatDetails(captureFormat: format)
+            
+            // Apply the format to the video device
+            try videoDevice.lockForConfiguration()
+            videoDevice.activeFormat = format
+            let frameDurationParts = Int64(TIMESCALE / FRAMERATE)
+            videoDevice.activeVideoMinFrameDuration = CMTimeMake(value: frameDurationParts, timescale: Int32(TIMESCALE))
+            videoDevice.activeVideoMaxFrameDuration = CMTimeMake(value: frameDurationParts, timescale: Int32(TIMESCALE))
+            videoDevice.activeColorSpace = .HLG_BT2020
+            videoDevice.unlockForConfiguration()
+            
+            self.minZoomFactor = videoDevice.minAvailableVideoZoomFactor
+            self.maxZoomFactor = videoDevice.maxAvailableVideoZoomFactor
+            self.opticalZoomFactor = videoDevice.activeFormat.secondaryNativeResolutionZoomFactors.first ?? 1.0
 
         } catch {
             LOG("Error setting up camera: \(error)", level: .error)
