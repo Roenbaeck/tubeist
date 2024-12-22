@@ -39,14 +39,7 @@ private actor CameraActor {
         // Configure the capture
         do {
             
-            // Set session preset before adding inputs/outputs
-            switch CAPTURE_WIDTH {
-            case 1280: session.sessionPreset = .hd1280x720
-            case 1920: session.sessionPreset = .hd1920x1080
-            case 3840: session.sessionPreset = .hd4K3840x2160
-            default: break
-            }
-            
+            session.sessionPreset = .inputPriority
             session.automaticallyConfiguresCaptureDeviceForWideColor = true
             session.configuresApplicationAudioSessionToMixWithOthers = true
             

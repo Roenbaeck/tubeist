@@ -7,6 +7,7 @@
 
 import SwiftUI
 import Observation
+import AVFoundation
 
 // these are my shared variables
 @Observable @MainActor
@@ -66,9 +67,18 @@ struct TubeistApp: App {
         }
     }
     init() {
+        LOG("Starting Tubeist", level: .info)
         Streamer.shared.setAppState(appState)
         UIApplication.shared.isIdleTimerDisabled = true
-        LOG("Starting Tubeist", level: .info)
+        do {
+            try AVAudioSession.sharedInstance().setCategory(
+                .playAndRecord,
+                mode: .videoRecording,
+                options: [.mixWithOthers, .overrideMutedMicrophoneInterruption])
+        }
+        catch {
+            LOG("Could not set up the app audio session: \(error.localizedDescription)", level: .error)
+        }
     }
 }
 

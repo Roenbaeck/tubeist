@@ -36,15 +36,18 @@ actor AssetWriterActor {
             AVVideoCodecKey: AVVideoCodecType.hevc,
             AVVideoWidthKey: COMPRESSED_WIDTH,
             AVVideoHeightKey: COMPRESSED_HEIGHT,
+            AVVideoColorPropertiesKey: [
+                AVVideoColorPrimariesKey: AVVideoColorPrimaries_ITU_R_2020,
+                AVVideoTransferFunctionKey: AVVideoTransferFunction_ITU_R_2100_HLG,
+                AVVideoYCbCrMatrixKey: AVVideoYCbCrMatrix_ITU_R_2020
+            ],
             AVVideoCompressionPropertiesKey: [
                 AVVideoProfileLevelKey: kVTProfileLevel_HEVC_Main10_AutoLevel,
                 AVVideoAverageBitRateKey: selectedBitrate,
                 AVVideoExpectedSourceFrameRateKey: FRAMERATE,
                 AVVideoMaxKeyFrameIntervalKey: FRAGMENT_DURATION * FRAMERATE,
                 AVVideoAllowFrameReorderingKey: true,
-                AVVideoColorPrimariesKey: AVVideoColorPrimaries_ITU_R_2020,
-                AVVideoTransferFunctionKey: AVVideoTransferFunction_ITU_R_2100_HLG,
-                AVVideoYCbCrMatrixKey: AVVideoYCbCrMatrix_ITU_R_2020
+                kVTCompressionPropertyKey_HDRMetadataInsertionMode: kVTHDRMetadataInsertionMode_Auto
             ]
         ]
         
@@ -57,9 +60,10 @@ actor AssetWriterActor {
         
         let audioSettings: [String: Any] = [
             AVFormatIDKey: kAudioFormatMPEG4AAC,
-            AVSampleRateKey: 48000,
+            AVSampleRateKey: 44100,
             AVNumberOfChannelsKey: 2,
-            AVEncoderBitRateKey: 128000
+            AVEncoderBitRatePerChannelKey: 48000,
+            AVEncoderBitRateStrategyKey: AVAudioBitRateStrategy_Variable
         ]
         
         audioInput = AVAssetWriterInput(mediaType: .audio, outputSettings: audioSettings)
