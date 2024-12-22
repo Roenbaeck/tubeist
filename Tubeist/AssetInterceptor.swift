@@ -139,6 +139,9 @@ actor fragmentSequenceNumberActor {
         fragmentSequenceNumber += 1
         return fragmentSequenceNumber
     }
+    func last() -> Int {
+        return fragmentSequenceNumber
+    }
     func reset() {
         fragmentSequenceNumber = 0
     }
@@ -189,22 +192,22 @@ final class AssetInterceptor: NSObject, AVAssetWriterDelegate, Sendable {
                      didOutputSegmentData segmentData: Data,
                      segmentType: AVAssetSegmentType,
                      segmentReport: AVAssetSegmentReport?) {
-        guard let ext = {
+        guard var fragmentType: Fragment.SegmentType = {
             switch segmentType {
-            case .initialization: "mp4"
-            case .separable: "m4s"
+            case .initialization: .initialization
+            case .separable: writer.status == .writing ? .separable : .finalization
             @unknown default: nil
             }
         }() else {
             LOG("Unknown segment type", level: .error)
             return
         }
-        let duration = (segmentReport?.trackReports.first?.duration.seconds ?? 2.0)
-        if duration >= FRAGMENT_MINIMUM_DURATION {
+        let duration = segmentReport?.trackReports.first?.duration.seconds ?? 0
+        if segmentType == .initialization || duration >= FRAGMENT_MINIMUM_DURATION {
             Task.detached { [self] in
                 let sequenceNumber = await fragmentSequenceNumber.next()
-                let fragment = Fragment(sequence: sequenceNumber, segment: segmentData, ext: ext, duration: duration)
-                LOG("A fragment has been produced: \(fragment.sequence).\(fragment.ext) with duration \(fragment.duration)s", level: .debug)
+                let fragment = Fragment(sequence: sequenceNumber, segment: segmentData, duration: duration, type: fragmentType)
+                LOG("Produced \(fragment)", level: .debug)
                 fragmentPusher.addFragment(fragment)
                 fragmentPusher.uploadFragment(attempt: 1)
                 saveFragmentToFile(fragment)
@@ -219,7 +222,7 @@ final class AssetInterceptor: NSObject, AVAssetWriterDelegate, Sendable {
                 return
             }
             let sequenceNumber = fragment.sequence
-            let ext = fragment.ext
+            let ext = fragment.type == .initialization ? "mp4" : "m4s"
             let filename = "segment_\(sequenceNumber).\(ext)"
             let fileURL = outputDirectory.appendingPathComponent(filename)
             let segmentData = fragment.segment

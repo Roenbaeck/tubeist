@@ -1,12 +1,37 @@
 import Foundation
 import SystemConfiguration
 
-struct Fragment {
+struct Fragment: CustomStringConvertible {
     let sequence: Int
     let segment: Data
-    let ext: String
     let duration: Double
     var discontinuity: Bool = false
+    var type: SegmentType = .separable
+
+    enum SegmentType {
+        case initialization
+        case separable
+        case finalization
+    }
+
+    func segmentType() -> String {
+        return switch type {
+        case .separable:      "Separable"
+        case .initialization: "Initialization"
+        case .finalization:   "Finalization"    // Need better logic to determine this
+        }
+    }
+    
+    var description: String {
+        return """
+        Fragment:
+        - Sequence: \(sequence)
+        - Segment: \(segment.count) bytes
+        - Duration: \(duration)s
+        - Discontinuity: \(discontinuity)
+        - Type: \(segmentType())
+        """
+    }
 }
 
 actor FragmentBufferActor {
@@ -366,11 +391,11 @@ final class FragmentPusher: Sendable {
                         return
                     }
                                         
-                    LOG("Preparing upload of \(fragment.sequence).\(fragment.ext)", level: .debug)
+                    LOG("Preparing upload of fragment \(fragment.sequence)", level: .debug)
                     
                     let task = session.uploadTask(with: request, from: fragment.segment) { [weak self] data, response, error in
                         guard let self = self else { return }
-                        LOG("Attempt [\(attempt)] to upload \(fragment.sequence).\(fragment.ext) with duration \(fragment.duration)s", level: .debug)
+                        LOG("[Upload attempt \(attempt)] \(fragment.segmentType()) fragment \(fragment.sequence) - duration \(fragment.duration)s", level: .debug)
                         Task {
                             if let error = error {
                                 LOG("Upload error: \(error.localizedDescription)", level: .error)
@@ -428,8 +453,8 @@ final class FragmentPusher: Sendable {
             LOG("Unable to get base URLRequest object for upload", level: .error)
             return nil
         }
-          // Add custom headers for metadata
-        request.setValue((fragment.ext == "mp4") ? "true" : "false", forHTTPHeaderField: "Initialization")
+        // Add custom headers for metadata
+        request.setValue(fragment.segmentType(), forHTTPHeaderField: "Segment-Type")
         request.setValue(String(fragment.duration), forHTTPHeaderField: "Duration")
         request.setValue(String(fragment.sequence), forHTTPHeaderField: "Sequence")
         request.setValue(fragment.discontinuity ? "true" : "false", forHTTPHeaderField: "Discontinuity")
