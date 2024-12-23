@@ -213,6 +213,13 @@ struct ContentView: View {
                             .sheet(isPresented: $showSettings) {
                                 SettingsView(overlayManager: overlayManager)
                             }
+                            .padding(.bottom, 10)
+                            
+                            let zoom = totalZoom + currentZoom
+                            
+                            Text(String(format: zoom == 1 || zoom > 10 ? "%.0f" : "%.1f", zoom) + "x")
+                                .font(.system(size: 16))
+                                .foregroundColor(zoom > opticalZoom ? .yellow : zoom > 1 ? .white : .white.opacity(0.5))
                             
                             Spacer()
 
@@ -341,14 +348,6 @@ struct ContentView: View {
                         .font(.system(size: 8))
                         .padding(.bottom, 3)
                     
-                    Text(String(format: totalZoom + currentZoom > 10 ? "%.0f" : "%.1f", totalZoom + currentZoom))
-                        .font(.system(size: 20))
-                        .foregroundColor(totalZoom + currentZoom > opticalZoom ? .red : .white)
-                        .frame(width: 30, height: 30)
-                    Text("ZOOM")
-                        .font(.system(size: 8))
-                        .padding(.bottom, 3)
-
                     SmallButton(imageName: "text.quote") {
                         showJournal.toggle()
                     }
