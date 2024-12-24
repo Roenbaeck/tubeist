@@ -40,7 +40,6 @@ struct ContentView: View {
     @State private var showFocusAndExposureArea = false
     @State private var showCameraPicker = false
     @State private var showStabilizationPicker = false
-    @State private var showAudioMeter = false
     @State private var showJournal = false
     @State private var enableFocusAndExposureTap = false
     @State private var isSettingsPresented = false
@@ -78,11 +77,10 @@ struct ContentView: View {
             }
     }
     
-    func setupCameraMonitor() {
+    func getCameraProperties() {
         Task {
-            LOG("Setting stabilization and fetching zoom limits", level: .info)
-            await cameraMonitor.setCameraStabilization(to: selectedStabilization)
-            appState.isStabilizationOn = await cameraMonitor.getCameraStabilization() != "Off"
+            selectedStabilization = await cameraMonitor.getCameraStabilization()
+            appState.isStabilizationOn = selectedStabilization != "Off"
             minZoom = await cameraMonitor.getMinZoomFactor()
             maxZoom = await min(cameraMonitor.getMaxZoomFactor(), ZOOM_LIMIT)
             opticalZoom = await cameraMonitor.getOpticalZoomFactor()
@@ -101,8 +99,7 @@ struct ContentView: View {
                         .id(appState.cameraMonitorId)
                         .gesture(magnification)
                         .onAppear {
-                            LOG("Setting up the camera monitor", level: .debug)
-                            setupCameraMonitor()
+                            getCameraProperties()
                         }
                     
                     ForEach(overlayManager.overlays) { overlay in
@@ -118,21 +115,20 @@ struct ContentView: View {
                     
                     VStack {
                         Spacer()
-                        if showAudioMeter {
-                            AudioLevelView()
-                        }
                         SystemMetricsView()
+                        CoreGraphicsAudioMeter(width: width, height: AUDIO_METER_HEIGHT)
+                                    .frame(width: width, height: AUDIO_METER_HEIGHT)
                     }
                     .padding(.bottom, 3)
 
                     VStack(spacing: 0) {
+                        Spacer()
+
                         if showCameraPicker {
                             HStack(alignment: .center, spacing: 10) {
                                 Spacer()
                                 
                                 Text("Select Camera")
-                                    .font(.headline)
-                                
                                 Picker("Camera Selection", selection: $selectedCamera) {
                                     ForEach(cameras, id: \.self) { camera in
                                         Text(camera)
@@ -164,8 +160,6 @@ struct ContentView: View {
                                 Spacer()
                                 
                                 Text("Select Stabilization Mode")
-                                    .font(.headline)
-                                
                                 Picker("Stabilization Selection", selection: $selectedStabilization) {
                                     ForEach(stabilizations, id: \.self) { stabilization in
                                         Text(stabilization)
@@ -180,8 +174,8 @@ struct ContentView: View {
                                 .onChange(of: selectedStabilization) { _, newStabilization in
                                     LOG("Seletected stabilization: \(newStabilization)", level: .debug)
                                     Task {
-                                        UserDefaults.standard.set(newStabilization, forKey: "CameraStabilization")
                                         await cameraMonitor.setCameraStabilization(to: newStabilization)
+                                        appState.isStabilizationOn = newStabilization != "Off"
                                     }
                                 }
                             }
@@ -191,6 +185,7 @@ struct ContentView: View {
                                     .fill(Color.black.opacity(0.2))
                             )
                         }
+                        
                         Spacer()
                     }
                     
@@ -218,7 +213,8 @@ struct ContentView: View {
                             let zoom = totalZoom + currentZoom
                             
                             Text(String(format: zoom == 1 || zoom > 10 ? "%.0f" : "%.1f", zoom) + "x")
-                                .font(.system(size: 16))
+                                .font(.system(size: 17))
+                                .fontWeight(.semibold)
                                 .foregroundColor(zoom > opticalZoom ? .yellow : zoom > 1 ? .white : .white.opacity(0.5))
                             
                             Spacer()
@@ -278,23 +274,6 @@ struct ContentView: View {
                 VStack(spacing: 2) {
 
                     Spacer()
-                    
-                    SmallButton(imageName: "camera") {
-                        showCameraPicker.toggle()
-                    }
-                    Text("CAMRA")
-                        .font(.system(size: 8))
-                        .padding(.bottom, 3)
-
-                    SmallButton(imageName: appState.isStabilizationOn ? "hand.raised.fill" : "hand.raised.slash") {
-                        Task {
-                            stabilizations = await cameraMonitor.getStabilizations()
-                            showStabilizationPicker.toggle()
-                        }
-                    }
-                    Text("STBZN")
-                        .font(.system(size: 8))
-                        .padding(.bottom, 3)
 
                     SmallButton(imageName: appState.isBatterySavingOn ? "sunrise.fill" : "sunset") {
                         showBatterySavingConfirmation = true
@@ -313,7 +292,29 @@ struct ContentView: View {
                     Text("PWRSV")
                         .font(.system(size: 8))
                         .padding(.bottom, 3)
+                    
+                    SmallButton(imageName: "camera") {
+                        showCameraPicker.toggle()
+                        if showCameraPicker && showStabilizationPicker {
+                            showStabilizationPicker = false
+                        }
+                    }
+                    Text("CAMRA")
+                        .font(.system(size: 8))
+                        .padding(.bottom, 3)
 
+                    SmallButton(imageName: appState.isStabilizationOn ? "hand.raised.fill" : "hand.raised.slash") {
+                        Task {
+                            stabilizations = await cameraMonitor.getStabilizations()
+                            showStabilizationPicker.toggle()
+                            if showStabilizationPicker && showCameraPicker {
+                                showCameraPicker = false
+                            }
+                        }
+                    }
+                    Text("STBZN")
+                        .font(.system(size: 8))
+                        .padding(.bottom, 3)
 
                     SmallButton(imageName: appState.isFocusLocked ? "viewfinder.circle.fill" : "viewfinder.circle") {
                         appState.isFocusLocked.toggle()
@@ -341,13 +342,25 @@ struct ContentView: View {
                         .font(.system(size: 8))
                         .padding(.bottom, 3)
 
-                    SmallButton(imageName: "waveform") {
-                        showAudioMeter.toggle()
+                    SmallButton(imageName: appState.isWhiteBalanceLocked ? "square.and.arrow.down.fill" : "square.and.arrow.down") {
+                        appState.isWhiteBalanceLocked.toggle()
+                        if appState.isWhiteBalanceLocked {
+                            Task {
+                                await cameraMonitor.lockWhiteBalance()
+                            }
+                        }
+                        else {
+                            Task {
+                                await cameraMonitor.setAutoWhiteBalance()
+                            }
+                        }
+                        
+                         
                     }
-                    Text("AUDIO")
+                    Text("WHITE")
                         .font(.system(size: 8))
                         .padding(.bottom, 3)
-                    
+
                     SmallButton(imageName: "text.quote") {
                         showJournal.toggle()
                     }

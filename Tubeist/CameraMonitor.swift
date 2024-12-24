@@ -143,11 +143,7 @@ private actor CameraActor {
         }
         return supportedModes
     }
-    
-    func getCameraStabilization() -> String {
-        return UserDefaults.standard.string(forKey: "CameraStabilization") ?? "Off"
-    }
-    
+        
     func setCameraStabilization(to stabilization: AVCaptureVideoStabilizationMode) -> Bool {
         // Find the video connection and enable stabilization
         if let connection = videoOutput.connection(with: .video) {
@@ -241,6 +237,29 @@ private actor CameraActor {
         }
     }
 
+    func lockWhiteBalance() {
+        guard let device = videoDevice else { return }
+        
+        do {
+            try device.lockForConfiguration()
+            device.whiteBalanceMode = .locked
+            device.unlockForConfiguration()
+        } catch {
+            LOG("White balance configuration error: \(error.localizedDescription)", level: .error)
+        }
+    }
+    func setAutoWhiteBalance() {
+        guard let device = videoDevice else { return }
+
+        do {
+            try device.lockForConfiguration()
+            device.whiteBalanceMode = .continuousAutoWhiteBalance
+            device.unlockForConfiguration()
+        } catch {
+            LOG("White balance configuration error: \(error.localizedDescription)", level: .error)
+        }
+    }
+
     func startOutput() {
         videoOutput.setSampleBufferDelegate(frameGrabber, queue: STREAMING_QUEUE_CONCURRENT)
         audioOutput.setSampleBufferDelegate(frameGrabber, queue: STREAMING_QUEUE_CONCURRENT)
@@ -328,9 +347,6 @@ private actor CameraManager {
         LOG("Cameras: \(cameras.keys)", level: .debug)
     }
     
-    func refreshStabilizations() async {
-        stabilizations = await cameraActor?.findSupportedStabilizationModes() ?? [:]
-    }
     func getStabilizations() -> [String] {
         return Array(stabilizations.keys)
     }
@@ -349,7 +365,10 @@ private actor CameraManager {
             return
         }
         cameraActor = CameraActor(camera: videoDevice)
-        await refreshStabilizations()
+        stabilizations = await cameraActor?.findSupportedStabilizationModes() ?? [:]
+        let selectedStabilization = getCameraStabilization()
+        LOG("Stabilization is going to be set to \(selectedStabilization)", level: .debug)
+        await setCameraStabilization(to: selectedStabilization)
         await cameraActor?.startRunning()
     }
     func stopCamera() async {
@@ -384,12 +403,12 @@ private actor CameraManager {
             return
         }
         if await cameraActor?.setCameraStabilization(to: stabilizationMode) ?? false {
-            LOG("Video stabilization \(stabilization)", level: .debug)
             UserDefaults.standard.set(stabilization, forKey: "CameraStabilization")
+            LOG("Video stabilization set to \(stabilization)", level: .debug)
         }
     }
-    func getCameraStabilization() async -> String {
-        return await cameraActor?.getCameraStabilization() ?? "Off"
+    func getCameraStabilization() -> String {
+        return UserDefaults.standard.string(forKey: "CameraStabilization") ?? "Off"
     }
     func setZoomFactor(_ zoomFactor: CGFloat) async {
         await cameraActor?.setZoomFactor(zoomFactor)
@@ -414,6 +433,12 @@ private actor CameraManager {
     }
     func setAutoExposure() async {
         await cameraActor?.setAutoExposure()
+    }
+    func lockWhiteBalance() async {
+        await cameraActor?.lockWhiteBalance()
+    }
+    func setAutoWhiteBalance() async {
+        await cameraActor?.setAutoWhiteBalance()
     }
     
     func configurePreviewLayer(on viewController: UIViewController) async {
@@ -480,6 +505,12 @@ final class CameraMonitor: Sendable {
     }
     func setAutoExposure() async {
         await cameraManager.setAutoExposure()
+    }
+    func lockWhiteBalance() async {
+        await cameraManager.lockWhiteBalance()
+    }
+    func setAutoWhiteBalance() async {
+        await cameraManager.setAutoWhiteBalance()
     }
     
     func configurePreviewLayer(on viewController: UIViewController) {
@@ -554,55 +585,119 @@ struct CameraMonitorView: UIViewControllerRepresentable {
     
 }
 
-struct AudioLevelView: View {
+struct CoreGraphicsAudioMeter: UIViewRepresentable {
     @Environment(AppState.self) var appState
-    @State private var audioLevels: [Float] = Array(repeating: -160, count: AUDIO_BARS)
-    @State private var peakLevels: [Float] = Array(repeating: -160, count: AUDIO_BARS)
-    private let timer = Timer.publish(every: 0.25, on: .main, in: .common).autoconnect()
-    
-    private func normalizeLevel(_ level: Float) -> CGFloat {
-        let normalizedLevel = max(0, level + 160) / 160  // Ensure level is in the 0-1 range
+    var width: CGFloat
+    var height: CGFloat
 
-        // Apply the sigmoid function
-        let sigmoid = 1 / (1 + exp(-25 * (normalizedLevel - 0.95)))
-
-        return CGFloat(sigmoid) * 50 // Scale to your desired output range (0-50)
+    func makeUIView(context: Context) -> MeterView {
+        let meterView = MeterView(width: width, height: height)
+        return meterView
     }
     
-    var body: some View {
-        HStack(alignment: .bottom, spacing: 3) {
-            ForEach((0..<AUDIO_BARS).reversed(), id: \.self) { index in
-                VStack {
-                    // Overlapping white bar and semi-transparent black bar
-                    ZStack(alignment: .bottom) {
-                        // White background bar with cutout mask
-                        Rectangle()
-                            .fill(appState.isAudioLevelRunning ? Color.white : Color.white.opacity(0.5))
-                            .frame(width: 5, height: normalizeLevel(peakLevels[index]))
-                            .mask(
-                                Rectangle()
-                                    .frame(width: 5, height: normalizeLevel(audioLevels[index]))
-                            )
-                    }
-                }
-                .animation(.easeInOut, value: audioLevels[index])
+    func updateUIView(_ uiView: MeterView, context: Context) {
+        if appState.isAudioLevelRunning {
+            uiView.startTimer()
+        } else {
+            uiView.stopTimer()
+        }
+        uiView.setNeedsDisplay() // Trigger redraw
+    }
+}
+
+class MeterView: UIView {
+    var width: CGFloat
+    var height: CGFloat
+    private var leftAverageLevel: Float = 0 { didSet { setNeedsDisplay() } }
+    private var leftPeakLevel: Float = 0 { didSet { setNeedsDisplay() } }
+    private var rightAverageLevel: Float = 0 { didSet { setNeedsDisplay() } }
+    private var rightPeakLevel: Float = 0 { didSet { setNeedsDisplay() } }
+    private var timer: Timer?
+
+    init(width: CGFloat, height: CGFloat) {
+        self.width = width
+        self.height = height
+        super.init(frame: .zero)
+        self.backgroundColor = UIColor.black.withAlphaComponent(0)
+        startTimer()
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+    
+    func startTimer() {
+        guard let timer = self.timer else {
+            self.timer = Timer.scheduledTimer(timeInterval: 0.04, target: self, selector: #selector(updateLevels), userInfo: nil, repeats: true)
+            return
+        }
+        if !timer.isValid {
+            self.timer = Timer.scheduledTimer(timeInterval: 0.04, target: self, selector: #selector(updateLevels), userInfo: nil, repeats: true)
+        }
+    }
+    
+    func stopTimer() {
+        timer?.invalidate()
+        timer = nil
+    }
+
+    @objc private func updateLevels() {
+        Task { @MainActor in // Ensure UI updates on main thread
+            let channels = await CameraMonitor.shared.getAudioChannels()
+            if channels.count == 2 {
+                leftAverageLevel = channels[0].averagePowerLevel
+                leftPeakLevel = channels[0].peakHoldLevel
+                rightAverageLevel = channels[1].averagePowerLevel
+                rightPeakLevel = channels[1].peakHoldLevel
+            } else if channels.count == 1 {
+                leftAverageLevel = channels[0].averagePowerLevel
+                leftPeakLevel = channels[0].peakHoldLevel
+                rightAverageLevel = channels[0].averagePowerLevel
+                rightPeakLevel = channels[0].peakHoldLevel
             }
         }
-        .onReceive(timer) { _ in
-            guard appState.isAudioLevelRunning else { return }
-            
-            Task {
-                let channels = await CameraMonitor.shared.getAudioChannels()
-                if let channel = channels.first {
-                    // Rotate and add new levels
-                    audioLevels.removeFirst()
-                    audioLevels.append(channel.averagePowerLevel)
-                    
-                    peakLevels.removeFirst()
-                    peakLevels.append(channel.peakHoldLevel)
-                }
-            }
-        }
+    }
+
+    // Normalization function (adjust scaling as desired)
+    private func normalizeLevel(_ level: Float) -> CGFloat {
+        let normalizedLevel = max(0, level + 160) / 160  // Ensure level is in the 0-1 range
+        let sigmoid = 1 / (1 + exp(-10 * (normalizedLevel - 0.95)))
+        return CGFloat(sigmoid)
+    }
+
+    override func draw(_ rect: CGRect) {
+        guard let context = UIGraphicsGetCurrentContext() else { return }
+
+        let meterHeight = rect.height
+        let halfWidth = rect.width / 2
+
+        // Left Channel
+        let leftPeakWidth = normalizeLevel(leftPeakLevel) * halfWidth
+        let leftAverageWidth = normalizeLevel(leftAverageLevel) * halfWidth
+
+        // Yellow (Peak) - Draw from right to left
+        context.setFillColor(UIColor.green.withAlphaComponent(0.3).cgColor)
+        context.fill(CGRect(x: halfWidth - leftPeakWidth, y: 0, width: leftPeakWidth, height: meterHeight))
+
+        // Green (Average) - Draw from right to left
+        context.setFillColor(UIColor.green.cgColor)
+        context.fill(CGRect(x: halfWidth - leftAverageWidth, y: 0, width: leftAverageWidth, height: meterHeight))
+
+        // Right Channel
+        let rightPeakWidth = normalizeLevel(rightPeakLevel) * halfWidth
+        let rightAverageWidth = normalizeLevel(rightAverageLevel) * halfWidth
+
+        // Yellow (Peak) - Draw from left to right
+        context.setFillColor(UIColor.green.withAlphaComponent(0.3).cgColor)
+        context.fill(CGRect(x: halfWidth, y: 0, width: rightPeakWidth, height: meterHeight))
+
+        // Green (Average) - Draw from left to right
+        context.setFillColor(UIColor.green.cgColor)
+        context.fill(CGRect(x: halfWidth, y: 0, width: rightAverageWidth, height: meterHeight))
+
+        // Middle Line
+        context.setFillColor(UIColor.black.cgColor)
+        context.fill(CGRect(x: halfWidth - 1, y: 0, width: 2, height: meterHeight))
     }
 }
 

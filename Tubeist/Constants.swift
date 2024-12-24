@@ -28,7 +28,7 @@ let TIMESCALE: Int = 60000 // something divisible with FRAMERATE
 let FRAGMENT_CM_TIME = CMTimeMake(value: Int64(FRAGMENT_DURATION * TIMESCALE), timescale: Int32(TIMESCALE))
 
 // AudioMeter settings
-let AUDIO_BARS: Int = 50
+let AUDIO_METER_HEIGHT: CGFloat = 3
 
 // Journal settings
 let MAX_LOG_ENTRIES = 1000

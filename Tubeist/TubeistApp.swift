@@ -18,6 +18,7 @@ final class AppState {
     var isStabilizationOn = true
     var isFocusLocked = false
     var isExposureLocked = false
+    var isWhiteBalanceLocked = false
     var justCameFromBackground = false
     var hadToStopStreaming = false
     var streamHealth = StreamHealth.silenced
