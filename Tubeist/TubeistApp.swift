@@ -59,10 +59,12 @@ struct TubeistApp: App {
                     }
                 }
             case (.background, .inactive), (.background, .active):
-                LOG("App is coming back from background", level: .debug)
-                appState.justCameFromBackground = true
-                // Refresh the camera view
-                appState.refreshCameraView()
+                if !appState.justCameFromBackground {
+                    appState.justCameFromBackground = true
+                    LOG("App is coming back from background", level: .debug)
+                    // Refresh the camera view
+                    appState.refreshCameraView()
+                }
             default: break
             }
         }

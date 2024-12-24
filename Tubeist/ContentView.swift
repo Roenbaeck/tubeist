@@ -112,12 +112,12 @@ struct ContentView: View {
                         JournalView()
                     }
                     
-                    
                     VStack {
                         Spacer()
                         SystemMetricsView()
+                            .offset(y: 3)
                         CoreGraphicsAudioMeter(width: width, height: AUDIO_METER_HEIGHT)
-                                    .frame(width: width, height: AUDIO_METER_HEIGHT)
+                            .frame(width: width, height: AUDIO_METER_HEIGHT)
                     }
                     .padding(.bottom, 3)
 
@@ -422,8 +422,10 @@ struct ContentView: View {
                 let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
                 UNUserNotificationCenter.current().add(request)
                 
-                appState.justCameFromBackground = false
                 appState.hadToStopStreaming = false
+            }
+            if newValue {
+                appState.justCameFromBackground = false
             }
         }
         .onAppear {
