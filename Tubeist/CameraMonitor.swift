@@ -214,11 +214,12 @@ private actor CameraActor {
         
         do {
             try device.lockForConfiguration()
-            
             if device.isExposurePointOfInterestSupported {
                 device.exposurePointOfInterest = point
                 device.exposureMode = .autoExpose
             }
+            device.exposureMode = .custom
+            device.setExposureModeCustom(duration: AVCaptureDevice.currentExposureDuration, iso: AVCaptureDevice.currentISO)
             
             device.unlockForConfiguration()
         } catch {

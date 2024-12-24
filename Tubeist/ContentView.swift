@@ -119,7 +119,6 @@ struct ContentView: View {
                         CoreGraphicsAudioMeter(width: width, height: AUDIO_METER_HEIGHT)
                             .frame(width: width, height: AUDIO_METER_HEIGHT)
                     }
-                    .padding(.bottom, 3)
 
                     VStack(spacing: 0) {
                         Spacer()
