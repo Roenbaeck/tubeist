@@ -13,6 +13,7 @@ struct Preset: Codable, Equatable, Identifiable, Hashable {
     let height: Int
     let frameRate: Int
     let keyframeInterval: Int
+    let audioChannels: Int
     let audioBitrate: Int
     let videoBitrate: Int
 
@@ -22,25 +23,26 @@ struct Preset: Codable, Equatable, Identifiable, Hashable {
         case height
         case frameRate = "frame_rate"
         case keyframeInterval = "keyframe_interval"
+        case audioChannels = "audio_channels"
         case audioBitrate = "audio_bitrate"
         case videoBitrate = "video_bitrate"
     }
 }
 
 let movingCameraPresets: [Preset] = [
-    Preset(name: "480p",  width: 640,  height: 480,  frameRate: 30, keyframeInterval: 1, audioBitrate: 96,  videoBitrate: 1400),
-    Preset(name: "720p",  width: 1280, height: 720,  frameRate: 30, keyframeInterval: 1, audioBitrate: 96,  videoBitrate: 2900),
-    Preset(name: "1080p", width: 1920, height: 1080, frameRate: 30, keyframeInterval: 1, audioBitrate: 96,  videoBitrate: 5900),
-    Preset(name: "1440p", width: 2560, height: 1440, frameRate: 30, keyframeInterval: 1, audioBitrate: 128, videoBitrate: 9800),
-    Preset(name: "4K",    width: 3840, height: 2160, frameRate: 30, keyframeInterval: 1, audioBitrate: 128, videoBitrate: 14800)
+    Preset(name: "480p",  width: 640,  height: 480,  frameRate: 30, keyframeInterval: 1, audioChannels: 1, audioBitrate: 48_000, videoBitrate: 1_450_000),
+    Preset(name: "720p",  width: 1280, height: 720,  frameRate: 30, keyframeInterval: 1, audioChannels: 1, audioBitrate: 48_000, videoBitrate: 2_950_000),
+    Preset(name: "1080p", width: 1920, height: 1080, frameRate: 30, keyframeInterval: 1, audioChannels: 2, audioBitrate: 48_000, videoBitrate: 5_900_000),
+    Preset(name: "1440p", width: 2560, height: 1440, frameRate: 30, keyframeInterval: 1, audioChannels: 2, audioBitrate: 64_000, videoBitrate: 9_800_000),
+    Preset(name: "4K",    width: 3840, height: 2160, frameRate: 30, keyframeInterval: 1, audioChannels: 2, audioBitrate: 64_000, videoBitrate: 14_800_000)
 ]
 
 let stationaryCameraPresets: [Preset] = [
-    Preset(name: "480p",  width: 640,  height: 480,  frameRate: 30, keyframeInterval: 2, audioBitrate: 96,  videoBitrate: 900),
-    Preset(name: "720p",  width: 1280, height: 720,  frameRate: 30, keyframeInterval: 2, audioBitrate: 96,  videoBitrate: 1900),
-    Preset(name: "1080p", width: 1920, height: 1080, frameRate: 30, keyframeInterval: 2, audioBitrate: 96,  videoBitrate: 3900),
-    Preset(name: "1440p", width: 2560, height: 1440, frameRate: 30, keyframeInterval: 2, audioBitrate: 128, videoBitrate: 6800),
-    Preset(name: "4K",    width: 3840, height: 2160, frameRate: 30, keyframeInterval: 2, audioBitrate: 128, videoBitrate: 9800)
+    Preset(name: "480p",  width: 640,  height: 480,  frameRate: 30, keyframeInterval: 2, audioChannels: 1, audioBitrate: 48_000, videoBitrate: 950_000),
+    Preset(name: "720p",  width: 1280, height: 720,  frameRate: 30, keyframeInterval: 2, audioChannels: 1, audioBitrate: 48_000, videoBitrate: 1_950_000),
+    Preset(name: "1080p", width: 1920, height: 1080, frameRate: 30, keyframeInterval: 2, audioChannels: 2, audioBitrate: 48_000, videoBitrate: 3_900_000),
+    Preset(name: "1440p", width: 2560, height: 1440, frameRate: 30, keyframeInterval: 2, audioChannels: 2, audioBitrate: 64_000, videoBitrate: 6_800_000),
+    Preset(name: "4K",    width: 3840, height: 2160, frameRate: 30, keyframeInterval: 2, audioChannels: 2, audioBitrate: 64_000, videoBitrate: 9_800_000)
 ]
 
 struct OverlaySetting: Identifiable, Codable, Hashable {
@@ -139,11 +141,11 @@ struct SettingsView: View {
                     .pickerStyle(.segmented)
                 }
                 Section(header: Text("Bandwidth"), footer: Text("Measured upload bandwidth in kbit/s (click 'Show More Info' on https://fast.com for example).")) {
-                    Text("Measured upload bandwidth: \(measuredBandwidth) kbps")
+                    Text("Measured upload bandwidth: \(String(format: "%.1f", Double(measuredBandwidth) / 1_000_000.0)) Mbps")
                     Slider(value: Binding(
                         get: { Double(measuredBandwidth) },
                         set: { measuredBandwidth = Int($0) }
-                    ), in: 1000...15000, step: 500)
+                    ), in: 1_000_000...15_000_000, step: 500_000)
                     
                     Picker("People sharing the bandwidth", selection: $networkSharing) {
                         Text("Many (cellular or public WiFi)").tag("many")
@@ -227,4 +229,16 @@ struct SettingsView: View {
         newOverlayURL = ""
     }
 
+}
+
+final class Settings: Sendable {
+    static func getSelectedPreset() -> Preset? {
+        var selectedPreset: Preset?
+        if let selectedPresetData = UserDefaults.standard.data(forKey: "SelectedPreset") {
+            if let preset = try? JSONDecoder().decode(Preset.self, from: selectedPresetData) {
+                selectedPreset = preset
+            }
+        }
+        return selectedPreset
+    }
 }

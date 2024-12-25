@@ -30,12 +30,19 @@ actor AssetWriterActor {
         assetWriter.initialSegmentStartTime = .zero
         assetWriter.delegate = AssetInterceptor.shared
         
-        let selectedBitrate = UserDefaults.standard.integer(forKey: "SelectedBitrate")
+        let selectedPreset = Settings.getSelectedPreset()
+        LOG("Selected preset: \(String(describing: selectedPreset))", level: .debug)
+        let selectedVideoBitrate = selectedPreset?.videoBitrate ?? DEFAULT_VIDEO_BITRATE
+        let selectedAudioBitrate = selectedPreset?.audioBitrate ?? DEFAULT_AUDIO_BITRATE
+        let selectedAudioChannels = selectedPreset?.audioChannels ?? DEFAULT_AUDIO_CHANNELS
+        let selectedWidth = selectedPreset?.width ?? DEFAULT_COMPRESSED_WIDTH
+        let selectedHeight = selectedPreset?.height ?? DEFAULT_COMPRESSED_HEIGHT
+        let selectedKeyframeInterval = selectedPreset?.keyframeInterval ?? DEFAULT_KEYFRAME_INTERVAL
         
         let videoSettings: [String: Any] = [
             AVVideoCodecKey: AVVideoCodecType.hevc,
-            AVVideoWidthKey: COMPRESSED_WIDTH,
-            AVVideoHeightKey: COMPRESSED_HEIGHT,
+            AVVideoWidthKey: selectedWidth,
+            AVVideoHeightKey: selectedHeight,
             AVVideoColorPropertiesKey: [
                 AVVideoColorPrimariesKey: AVVideoColorPrimaries_ITU_R_2020,
                 AVVideoTransferFunctionKey: AVVideoTransferFunction_ITU_R_2100_HLG,
@@ -43,9 +50,9 @@ actor AssetWriterActor {
             ],
             AVVideoCompressionPropertiesKey: [
                 AVVideoProfileLevelKey: kVTProfileLevel_HEVC_Main10_AutoLevel,
-                AVVideoAverageBitRateKey: selectedBitrate,
+                AVVideoAverageBitRateKey: selectedVideoBitrate,
                 AVVideoExpectedSourceFrameRateKey: FRAMERATE,
-                AVVideoMaxKeyFrameIntervalKey: FRAGMENT_DURATION * FRAMERATE,
+                AVVideoMaxKeyFrameIntervalKey: selectedKeyframeInterval * FRAMERATE,
                 AVVideoAllowFrameReorderingKey: true,
                 kVTCompressionPropertyKey_HDRMetadataInsertionMode: kVTHDRMetadataInsertionMode_Auto
             ]
@@ -61,8 +68,8 @@ actor AssetWriterActor {
         let audioSettings: [String: Any] = [
             AVFormatIDKey: kAudioFormatMPEG4AAC,
             AVSampleRateKey: 44100,
-            AVNumberOfChannelsKey: 2,
-            AVEncoderBitRatePerChannelKey: 48000,
+            AVNumberOfChannelsKey: selectedAudioChannels,
+            AVEncoderBitRatePerChannelKey: selectedAudioBitrate,
             AVEncoderBitRateStrategyKey: AVAudioBitRateStrategy_Variable
         ]
         
