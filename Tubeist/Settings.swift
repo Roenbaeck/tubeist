@@ -6,6 +6,33 @@
 //
 import SwiftUI
 
+struct Preset: Codable, Equatable, Identifiable, Hashable {
+    var id: String { name }
+    let name: String
+    let width: Int
+    let height: Int
+    let frameRate: Int
+    let keyframe_interval: Int
+    let audio_bitrate: Int
+    let video_bitrate: Int
+}
+
+let movingCameraPresets: [Preset] = [
+    Preset(name: "480p",  width: 640,  height: 480,  frameRate: 30, keyframe_interval: 1, audio_bitrate: 96,  video_bitrate: 1400),
+    Preset(name: "720p",  width: 1280, height: 720,  frameRate: 30, keyframe_interval: 1, audio_bitrate: 96,  video_bitrate: 2900),
+    Preset(name: "1080p", width: 1920, height: 1080, frameRate: 30, keyframe_interval: 1, audio_bitrate: 96,  video_bitrate: 5900),
+    Preset(name: "1440p", width: 2560, height: 1440, frameRate: 30, keyframe_interval: 1, audio_bitrate: 128, video_bitrate: 9800),
+    Preset(name: "4K",    width: 3840, height: 2160, frameRate: 30, keyframe_interval: 1, audio_bitrate: 128, video_bitrate: 14800)
+]
+
+let stationaryCameraPresets: [Preset] = [
+    Preset(name: "480p",  width: 640,  height: 480,  frameRate: 30, keyframe_interval: 2, audio_bitrate: 96,  video_bitrate: 900),
+    Preset(name: "720p",  width: 1280, height: 720,  frameRate: 30, keyframe_interval: 2, audio_bitrate: 96,  video_bitrate: 1900),
+    Preset(name: "1080p", width: 1920, height: 1080, frameRate: 30, keyframe_interval: 2, audio_bitrate: 96,  video_bitrate: 3900),
+    Preset(name: "1440p", width: 2560, height: 1440, frameRate: 30, keyframe_interval: 2, audio_bitrate: 128, video_bitrate: 6800),
+    Preset(name: "4K",    width: 3840, height: 2160, frameRate: 30, keyframe_interval: 2, audio_bitrate: 128, video_bitrate: 9800)
+]
+
 struct OverlaySetting: Identifiable, Codable, Hashable {
     var id: String { url }
     var url: String
@@ -52,18 +79,26 @@ struct OverlaySetting: Identifiable, Codable, Hashable {
 }
 
 struct SettingsView: View {
+    var overlayManager: OverlaySettingsManager
+    @Environment(\.presentationMode) private var presentationMode
     @AppStorage("HLSServer") private var hlsServer: String = ""
     @AppStorage("StreamKey") private var streamKey: String = ""
     @AppStorage("Username") private var username: String = ""
     @AppStorage("Password") private var password: String = ""
     @AppStorage("SaveFragmentsLocally") private var saveFragmentsLocally: Bool = false
-    @AppStorage("SelectedBitrate") private var selectedBitrate: Int = 1_000_000
+    @AppStorage("MeasuredBandwidth") private var measuredBandwidth: Int = 1000 // in kbit/s
+    @AppStorage("NetworkSharing") private var networkSharing: String = "many"
+    @AppStorage("CameraPosition") private var cameraPosition: String = "stationary"
+    @AppStorage("SelectedPreset") private var selectedPresetData: Data = Data()
     @AppStorage("Overlays") private var overlaysData: Data = Data()
-    var overlayManager: OverlaySettingsManager
     @State private var newOverlayURL: String = ""
-    @Environment(\.presentationMode) private var presentationMode
+    @State private var selectedPreset: Preset? = nil
 
-    var bitrates: [Int] = [1_000_000, 2_000_000, 3_000_000, 4_000_000, 6_000_000, 10_000_000, 20_000_000]
+    init(overlayManager: OverlaySettingsManager) {
+        self.overlayManager = overlayManager
+        
+
+    }
     
     var body: some View {
         NavigationView {
@@ -92,14 +127,62 @@ struct SettingsView: View {
                         .textContentType(.password)
                 }
                 
-                Section(header: Text("Bitrate"), footer: Text("Choose the desired bitrate for video streaming.")) {
-                    Picker("Select Bitrate", selection: $selectedBitrate) {
-                        ForEach(bitrates, id: \.self) { bitrate in
-                            Text("\(bitrate / 1_000_000) Mbps").tag(bitrate)
+                Section(header: Text("Camera"), footer: Text("Select if the camera will be moving around or remain stationary.")) {
+                    Picker("Camera Position", selection: $cameraPosition) {
+                        Text("Stationary").tag("stationary")
+                        Text("Moving").tag("moving")
+                    }
+                    .pickerStyle(.segmented)
+                }
+                Section(header: Text("Bandwidth"), footer: Text("Measured bandwidth in kbit/s (from using a speed test app).")) {
+                    Text("Measured Bandwidth: \(measuredBandwidth) kbps")
+                    Slider(value: Binding(
+                        get: { Double(measuredBandwidth) },
+                        set: { measuredBandwidth = Int($0) }
+                    ), in: 1000...15000, step: 500)
+                    
+                    Picker("People sharing the bandwidth", selection: $networkSharing) {
+                        Text("Many (cellular or public WiFi)").tag("many")
+                        Text("Few (dedicated WiFi or Ethernet dongle)").tag("few")
+                    }
+                }
+                
+                let availablePresets = cameraPosition == "moving" ? movingCameraPresets : stationaryCameraPresets
+                var maximumBitrate: Int {
+                    let networkFactor = networkSharing == "many" ? 0.5 : 0.8
+                    return Int(Double(measuredBandwidth) * networkFactor)
+                }
+                
+                Picker("Stream Preset", selection: $selectedPreset) {
+                    ForEach(availablePresets) { preset in
+                        let presetColor: Color = preset.video_bitrate + preset.audio_bitrate > maximumBitrate ? .red : .primary
+                        Text(preset.name)
+                            .foregroundColor(presetColor)
+                            .tag(Optional(preset))
+                    }
+                }
+                .pickerStyle(.inline)
+                .onChange(of: selectedPreset) { oldValue, newValue in
+                    if let selectedPreset = newValue {
+                        if let encoded = try? JSONEncoder().encode(selectedPreset) {
+                            selectedPresetData = encoded
                         }
                     }
-                    .pickerStyle(MenuPickerStyle())
                 }
+                .onAppear {
+                    if let preset = try? JSONDecoder().decode(Preset.self, from: selectedPresetData) {
+                        selectedPreset = preset
+                    } else {
+                        selectedPreset = nil
+                    }
+                }
+
+                Section {
+                    EmptyView()
+                } footer: {
+                    Text("Depending on your selections above, some presets may be determined to result in a poor streaming experience. These are colored red, and should be used with caution.")
+                }
+                .offset(y: -30)
                 
                 Section(header: Text("Overlays"), footer: Text("Add multiple web overlay URLs for your stream.")) {
                     ForEach(overlayManager.overlays) { overlay in
