@@ -12,25 +12,35 @@ struct Preset: Codable, Equatable, Identifiable, Hashable {
     let width: Int
     let height: Int
     let frameRate: Int
-    let keyframe_interval: Int
-    let audio_bitrate: Int
-    let video_bitrate: Int
+    let keyframeInterval: Int
+    let audioBitrate: Int
+    let videoBitrate: Int
+
+    enum CodingKeys: String, CodingKey {
+        case name
+        case width
+        case height
+        case frameRate = "frame_rate"
+        case keyframeInterval = "keyframe_interval"
+        case audioBitrate = "audio_bitrate"
+        case videoBitrate = "video_bitrate"
+    }
 }
 
 let movingCameraPresets: [Preset] = [
-    Preset(name: "480p",  width: 640,  height: 480,  frameRate: 30, keyframe_interval: 1, audio_bitrate: 96,  video_bitrate: 1400),
-    Preset(name: "720p",  width: 1280, height: 720,  frameRate: 30, keyframe_interval: 1, audio_bitrate: 96,  video_bitrate: 2900),
-    Preset(name: "1080p", width: 1920, height: 1080, frameRate: 30, keyframe_interval: 1, audio_bitrate: 96,  video_bitrate: 5900),
-    Preset(name: "1440p", width: 2560, height: 1440, frameRate: 30, keyframe_interval: 1, audio_bitrate: 128, video_bitrate: 9800),
-    Preset(name: "4K",    width: 3840, height: 2160, frameRate: 30, keyframe_interval: 1, audio_bitrate: 128, video_bitrate: 14800)
+    Preset(name: "480p",  width: 640,  height: 480,  frameRate: 30, keyframeInterval: 1, audioBitrate: 96,  videoBitrate: 1400),
+    Preset(name: "720p",  width: 1280, height: 720,  frameRate: 30, keyframeInterval: 1, audioBitrate: 96,  videoBitrate: 2900),
+    Preset(name: "1080p", width: 1920, height: 1080, frameRate: 30, keyframeInterval: 1, audioBitrate: 96,  videoBitrate: 5900),
+    Preset(name: "1440p", width: 2560, height: 1440, frameRate: 30, keyframeInterval: 1, audioBitrate: 128, videoBitrate: 9800),
+    Preset(name: "4K",    width: 3840, height: 2160, frameRate: 30, keyframeInterval: 1, audioBitrate: 128, videoBitrate: 14800)
 ]
 
 let stationaryCameraPresets: [Preset] = [
-    Preset(name: "480p",  width: 640,  height: 480,  frameRate: 30, keyframe_interval: 2, audio_bitrate: 96,  video_bitrate: 900),
-    Preset(name: "720p",  width: 1280, height: 720,  frameRate: 30, keyframe_interval: 2, audio_bitrate: 96,  video_bitrate: 1900),
-    Preset(name: "1080p", width: 1920, height: 1080, frameRate: 30, keyframe_interval: 2, audio_bitrate: 96,  video_bitrate: 3900),
-    Preset(name: "1440p", width: 2560, height: 1440, frameRate: 30, keyframe_interval: 2, audio_bitrate: 128, video_bitrate: 6800),
-    Preset(name: "4K",    width: 3840, height: 2160, frameRate: 30, keyframe_interval: 2, audio_bitrate: 128, video_bitrate: 9800)
+    Preset(name: "480p",  width: 640,  height: 480,  frameRate: 30, keyframeInterval: 2, audioBitrate: 96,  videoBitrate: 900),
+    Preset(name: "720p",  width: 1280, height: 720,  frameRate: 30, keyframeInterval: 2, audioBitrate: 96,  videoBitrate: 1900),
+    Preset(name: "1080p", width: 1920, height: 1080, frameRate: 30, keyframeInterval: 2, audioBitrate: 96,  videoBitrate: 3900),
+    Preset(name: "1440p", width: 2560, height: 1440, frameRate: 30, keyframeInterval: 2, audioBitrate: 128, videoBitrate: 6800),
+    Preset(name: "4K",    width: 3840, height: 2160, frameRate: 30, keyframeInterval: 2, audioBitrate: 128, videoBitrate: 9800)
 ]
 
 struct OverlaySetting: Identifiable, Codable, Hashable {
@@ -94,12 +104,6 @@ struct SettingsView: View {
     @State private var newOverlayURL: String = ""
     @State private var selectedPreset: Preset? = nil
 
-    init(overlayManager: OverlaySettingsManager) {
-        self.overlayManager = overlayManager
-        
-
-    }
-    
     var body: some View {
         NavigationView {
             Form {
@@ -127,15 +131,15 @@ struct SettingsView: View {
                         .textContentType(.password)
                 }
                 
-                Section(header: Text("Camera"), footer: Text("Select if the camera will be moving around or remain stationary.")) {
+                Section(header: Text("Camera"), footer: Text("Select if the camera will be moving around with altering scenery or remain stationary aimed at a single scene.")) {
                     Picker("Camera Position", selection: $cameraPosition) {
                         Text("Stationary").tag("stationary")
                         Text("Moving").tag("moving")
                     }
                     .pickerStyle(.segmented)
                 }
-                Section(header: Text("Bandwidth"), footer: Text("Measured bandwidth in kbit/s (from using a speed test app).")) {
-                    Text("Measured Bandwidth: \(measuredBandwidth) kbps")
+                Section(header: Text("Bandwidth"), footer: Text("Measured upload bandwidth in kbit/s (click 'Show More Info' on https://fast.com for example).")) {
+                    Text("Measured upload bandwidth: \(measuredBandwidth) kbps")
                     Slider(value: Binding(
                         get: { Double(measuredBandwidth) },
                         set: { measuredBandwidth = Int($0) }
@@ -155,7 +159,7 @@ struct SettingsView: View {
                 
                 Picker("Stream Preset", selection: $selectedPreset) {
                     ForEach(availablePresets) { preset in
-                        let presetColor: Color = preset.video_bitrate + preset.audio_bitrate > maximumBitrate ? .red : .primary
+                        let presetColor: Color = preset.videoBitrate + preset.audioBitrate > maximumBitrate ? .red : .primary
                         Text(preset.name)
                             .foregroundColor(presetColor)
                             .tag(Optional(preset))
@@ -180,7 +184,7 @@ struct SettingsView: View {
                 Section {
                     EmptyView()
                 } footer: {
-                    Text("Depending on your selections above, some presets may be determined to result in a poor streaming experience. These are colored red, and should be used with caution.")
+                    Text("Depending on your selections above, some presets may be determined to result in a poor streaming experience. These are colored red, and should not be used unless your network conditions change.")
                 }
                 .offset(y: -30)
                 
