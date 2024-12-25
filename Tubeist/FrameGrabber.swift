@@ -9,7 +9,7 @@
 @preconcurrency import CoreImage
 
 actor OverlayImprinter {
-    nonisolated(unsafe) private let context: CIContext // CIContext is now a property of the actor
+    nonisolated(unsafe) private let context: CIContext 
     init() {
         context = CIContext(options: [
             .useSoftwareRenderer: false,

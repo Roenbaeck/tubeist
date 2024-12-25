@@ -299,6 +299,43 @@ final class NetworkPerformanceDelegate: NSObject, URLSessionDelegate, URLSession
     }
 }
 
+actor PendingRetryActor {
+    private struct PendingRetry {
+        let id = UUID()
+        let continuation: CheckedContinuation<Void, Never>
+    }
+    
+    private var pendingRetries: [PendingRetry] = []
+    private var shouldResetAttempt = false
+    
+    func wait(seconds: Double) async -> Bool {
+        await withCheckedContinuation { continuation in
+            let retry = PendingRetry(continuation: continuation)
+            pendingRetries.append(retry)
+            STREAMING_QUEUE_CONCURRENT.asyncAfter(deadline: .now() + seconds) {
+                Task { await self.resume(id: retry.id) }
+            }
+        }
+        let shouldReset = shouldResetAttempt // may be set by resumeAll
+        shouldResetAttempt = false
+        return shouldReset
+    }
+    
+    func resume(id: UUID) {
+        if let index = pendingRetries.firstIndex(where: { $0.id == id }) {
+            let retry = pendingRetries.remove(at: index)
+            retry.continuation.resume()
+        }
+    }
+    
+    func resumeAll() {
+        shouldResetAttempt = true
+        let retries = pendingRetries
+        pendingRetries.removeAll()
+        retries.forEach { $0.continuation.resume() }
+    }
+}
+
 final class FragmentPusher: Sendable {
     public static let shared = FragmentPusher()
     private let uploadQueue: OperationQueue
@@ -306,6 +343,7 @@ final class FragmentPusher: Sendable {
     private let fragmentBuffer = FragmentBufferActor(maxBufferSize: MAX_BUFFERED_FRAGMENTS)
     private let urlSession: URLSessionActor
     private let networkPerformance = NetworkPerformanceDelegate()
+    private let pendingRetry = PendingRetryActor()
 
     init() {
         self.uploadQueue = OperationQueue()
@@ -400,10 +438,9 @@ final class FragmentPusher: Sendable {
                             if let error = error {
                                 LOG("Upload error: \(error.localizedDescription)", level: .error)
                                 if attempt < maxRetryAttempts {
-                                    await fragmentBuffer.detachFragment(forSequence: fragment.sequence) // fragment already attached to task here
-                                    STREAMING_QUEUE_CONCURRENT.asyncAfter(deadline: .now() + 1.0) {
-                                        self.uploadFragment(attempt: attempt + 1)
-                                    }
+                                    await fragmentBuffer.detachFragment(forSequence: fragment.sequence)  // fragment already attached to task here
+                                    let resetAttempt = await pendingRetry.wait(seconds: Double(attempt)) // linear backoff
+                                    self.uploadFragment(attempt: resetAttempt ? 1 : attempt + 1)
                                 }
                                 else {
                                     await fragmentBuffer.expelFragment(forSequence: fragment.sequence)
@@ -418,10 +455,9 @@ final class FragmentPusher: Sendable {
                                     LOG("Server returned an error: \(httpResponse.statusCode)", level: .error)
                                 }
                                 if attempt < maxRetryAttempts {
-                                    await fragmentBuffer.detachFragment(forSequence: fragment.sequence) // fragment already attached to task here
-                                    STREAMING_QUEUE_CONCURRENT.asyncAfter(deadline: .now() + 1.0) {
-                                        self.uploadFragment(attempt: attempt + 1)
-                                    }
+                                    await fragmentBuffer.detachFragment(forSequence: fragment.sequence)  // fragment already attached to task here
+                                    let resetAttempt = await pendingRetry.wait(seconds: Double(attempt)) // linear backoff
+                                    self.uploadFragment(attempt: resetAttempt ? 1 : attempt + 1)
                                 }
                                 else {
                                     await fragmentBuffer.expelFragment(forSequence: fragment.sequence)
@@ -429,6 +465,7 @@ final class FragmentPusher: Sendable {
                                 return
                             }
                             // success
+                            await pendingRetry.resumeAll() // wake up all pending retries on success
                             await fragmentBuffer.expelFragment(forSequence: fragment.sequence)
                         }
                     }
