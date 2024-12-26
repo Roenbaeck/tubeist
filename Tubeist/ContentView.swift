@@ -193,11 +193,13 @@ struct ContentView: View {
                         VStack(alignment: .center, spacing: 0) {
 
                             Button(action: {
-                                showSettings = true
+                                if(!appState.isStreamActive) {
+                                    showSettings = true
+                                }
                             }) {
                                 Image(systemName: "gear")
                                     .font(.system(size: 24))
-                                    .foregroundColor(.white)
+                                    .foregroundColor(appState.isStreamActive ? .yellow.opacity(0.5) : .white)
                                     .frame(width: 50, height: 50)
                             }
                             .background(Color.black.opacity(0.5))
@@ -290,12 +292,15 @@ struct ContentView: View {
                         .font(.system(size: 8))
                         .padding(.bottom, 3)
                     
-                    SmallButton(imageName: "camera") {
-                        showCameraPicker.toggle()
-                        if showCameraPicker && showStabilizationPicker {
-                            showStabilizationPicker = false
+                    SmallButton(imageName: "camera", foregroundColor: appState.isStreamActive ? .yellow : .white) {
+                        if(!appState.isStreamActive) {
+                            showCameraPicker.toggle()
+                            if showCameraPicker && showStabilizationPicker {
+                                showStabilizationPicker = false
+                            }
                         }
                     }
+                    
                     Text("CAMRA")
                         .font(.system(size: 8))
                         .padding(.bottom, 3)
@@ -313,7 +318,8 @@ struct ContentView: View {
                         .font(.system(size: 8))
                         .padding(.bottom, 3)
 
-                    SmallButton(imageName: appState.isFocusLocked ? "viewfinder.circle.fill" : "viewfinder.circle") {
+                    SmallButton(imageName: appState.isFocusLocked ? "viewfinder.circle.fill" : "viewfinder.circle",
+                                foregroundColor: appState.isFocusLocked ? .yellow : .white) {
                         appState.isFocusLocked.toggle()
                         enableFocusAndExposureTap = appState.isExposureLocked || appState.isFocusLocked
                         if !appState.isFocusLocked {
@@ -326,7 +332,8 @@ struct ContentView: View {
                         .font(.system(size: 8))
                         .padding(.bottom, 3)
 
-                    SmallButton(imageName: appState.isExposureLocked ? "sun.max.fill" : "sun.max") {
+                    SmallButton(imageName: appState.isExposureLocked ? "sun.max.fill" : "sun.max",
+                                foregroundColor: appState.isExposureLocked ? .yellow : .white) {
                         appState.isExposureLocked.toggle()
                         enableFocusAndExposureTap = appState.isExposureLocked || appState.isFocusLocked
                         if !appState.isExposureLocked {
@@ -339,7 +346,8 @@ struct ContentView: View {
                         .font(.system(size: 8))
                         .padding(.bottom, 3)
 
-                    SmallButton(imageName: appState.isWhiteBalanceLocked ? "square.and.arrow.down.fill" : "square.and.arrow.down") {
+                    SmallButton(imageName: appState.isWhiteBalanceLocked ? "square.and.arrow.down.fill" : "square.and.arrow.down",
+                                foregroundColor: appState.isWhiteBalanceLocked ? .yellow : .white) {
                         appState.isWhiteBalanceLocked.toggle()
                         if appState.isWhiteBalanceLocked {
                             Task {
@@ -447,16 +455,23 @@ struct ContentView: View {
 struct SmallButton: View {
     let imageName: String
     let action: () -> Void
+    let foregroundColor: Color?  // New optional parameter
     
+    // Initialize with an optional color parameter that defaults to nil
+    init(imageName: String, foregroundColor: Color? = nil, action: @escaping () -> Void) {
+        self.imageName = imageName
+        self.foregroundColor = foregroundColor
+        self.action = action
+    }
+
     var body: some View {
         Button(action: action) {
             Image(systemName: imageName)
                 .font(.system(size: 20))
-                .foregroundColor(.white)
+                .foregroundColor(foregroundColor ?? .white)  // Use provided color or default to white
                 .frame(width: 30, height: 30)
         }
         .background(Color.black)
     }
 }
-
 
