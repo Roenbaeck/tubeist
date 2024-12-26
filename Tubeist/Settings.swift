@@ -106,6 +106,23 @@ struct SettingsView: View {
     @State private var newOverlayURL: String = ""
     @State private var selectedPreset: Preset? = nil
 
+    private struct Resolution: Hashable {
+        let width: Int
+        let height: Int
+        init(_ width: Int, _ height: Int) {
+            self.width = width
+            self.height = height
+        }
+    }
+    
+    // State variables for custom preset settings
+    @State private var customResolution: Resolution = Resolution(1920, 1080)
+    @State private var customFrameRate: Int = 30
+    @State private var customKeyframeInterval: Int = 2
+    @State private var customAudioChannels: Int = 2
+    @State private var customAudioBitrate: Int = 48_000
+    @State private var customVideoBitrate: Int = 4_000_000
+    
     var body: some View {
         NavigationView {
             Form {
@@ -133,62 +150,117 @@ struct SettingsView: View {
                         .textContentType(.password)
                 }
                 
-                Section(header: Text("Camera"), footer: Text("Select if the camera will be moving around with altering scenery or remain stationary aimed at a single scene.")) {
+                Section(header: Text("Camera"), footer: Text("Select if the camera will be moving around with altering scenery or remain stationary aimed at a single scene. If you do not want to get suggested presets and instead configure settings in detail, select 'Custom' here.")) {
                     Picker("Camera Position", selection: $cameraPosition) {
                         Text("Stationary").tag("stationary")
                         Text("Moving").tag("moving")
+                        Text("Custom").tag("custom")
                     }
                     .pickerStyle(.segmented)
                 }
-                Section(header: Text("Bandwidth"), footer: Text("Measured upload bandwidth in kbit/s (click 'Show More Info' on https://fast.com for example).")) {
-                    Text("Measured upload bandwidth: \(String(format: "%.1f", Double(measuredBandwidth) / 1_000_000.0)) Mbps")
-                    Slider(value: Binding(
-                        get: { Double(measuredBandwidth) },
-                        set: { measuredBandwidth = Int($0) }
-                    ), in: 1_000_000...15_000_000, step: 500_000)
+                
+                // Figure out "sane" presets given some additional information, unless the user wants a custom mode
+                if cameraPosition != "custom" {
+                    Section(header: Text("Bandwidth"), footer: Text("Measured upload bandwidth in kbit/s (click 'Show More Info' on https://fast.com for example).")) {
+                        Text("Measured upload bandwidth: \(String(format: "%.1f", Double(measuredBandwidth) / 1_000_000.0)) Mbps")
+                            .font(.callout)
+                        Slider(value: Binding(
+                            get: { Double(measuredBandwidth) },
+                            set: { measuredBandwidth = Int($0) }
+                        ), in: 1_000_000...15_000_000, step: 500_000)
+                        
+                        Picker("People sharing the bandwidth", selection: $networkSharing) {
+                            Text("Many (cellular or public WiFi)").tag("many")
+                            Text("Few (dedicated WiFi or Ethernet dongle)").tag("few")
+                        }
+                    }
                     
-                    Picker("People sharing the bandwidth", selection: $networkSharing) {
-                        Text("Many (cellular or public WiFi)").tag("many")
-                        Text("Few (dedicated WiFi or Ethernet dongle)").tag("few")
+                    let availablePresets = cameraPosition == "moving" ? movingCameraPresets : stationaryCameraPresets
+                    var maximumBitrate: Int {
+                        let networkFactor = networkSharing == "many" ? 0.5 : 0.8
+                        return Int(Double(measuredBandwidth) * networkFactor)
                     }
-                }
-                
-                let availablePresets = cameraPosition == "moving" ? movingCameraPresets : stationaryCameraPresets
-                var maximumBitrate: Int {
-                    let networkFactor = networkSharing == "many" ? 0.5 : 0.8
-                    return Int(Double(measuredBandwidth) * networkFactor)
-                }
-                
-                Picker("Stream Preset", selection: $selectedPreset) {
-                    ForEach(availablePresets) { preset in
-                        let presetColor: Color = preset.videoBitrate + preset.audioBitrate > maximumBitrate ? .red : .primary
-                        Text(preset.name)
-                            .foregroundColor(presetColor)
-                            .tag(Optional(preset))
+                    
+                    Picker("Stream Preset", selection: $selectedPreset) {
+                        ForEach(availablePresets) { preset in
+                            let presetColor: Color = preset.videoBitrate + preset.audioBitrate > maximumBitrate ? .red : .primary
+                            Text(preset.name)
+                                .foregroundColor(presetColor)
+                                .tag(Optional(preset))
+                        }
                     }
+                    .pickerStyle(.inline)
+                    .onChange(of: selectedPreset) { oldValue, newValue in
+                        if let selectedPreset = newValue {
+                            if let encoded = try? JSONEncoder().encode(selectedPreset) {
+                                selectedPresetData = encoded
+                            }
+                        }
+                    }
+                    
+                    Section {
+                        EmptyView()
+                    } footer: {
+                        Text("Depending on your selections above, some presets may be determined to result in a poor streaming experience. These are colored red, and should not be used unless your network conditions change.")
+                    }
+                    .offset(y: -30)
                 }
-                .pickerStyle(.inline)
-                .onChange(of: selectedPreset) { oldValue, newValue in
-                    if let selectedPreset = newValue {
-                        if let encoded = try? JSONEncoder().encode(selectedPreset) {
-                            selectedPresetData = encoded
+                else {
+                    // Allow custom settings here for every part of a Preset, except its name, which should be "Custom"
+                    Section(header: Text("Custom Settings")) {
+                        Picker("Stream resolution", selection: $customResolution) {
+                            Text("640x480").tag(Resolution(640, 480))
+                            Text("1280x720").tag(Resolution(1280, 720))
+                            Text("1920x1080").tag(Resolution(1920, 1080))
+                            Text("2560x1440").tag(Resolution(2560, 1440))
+                            Text("3840x2160").tag(Resolution(3840, 2160))
+                        }
+                        .pickerStyle(.segmented)
+                        
+                        Picker("Key frame interval", selection: $customKeyframeInterval) {
+                            Text("Every second").tag(1)
+                            Text("Every two seconds").tag(2)
+                        }
+                        .pickerStyle(.segmented)
+
+                        Picker("Audio channels", selection: $customAudioChannels) {
+                            Text("Mono").tag(1)
+                            Text("Stereo").tag(2)
+                        }
+                        .pickerStyle(.segmented)
+
+                        Text("Frame rate: \(customFrameRate) FPS")
+                            .font(.callout)
+                        Slider(value: Binding(
+                            get: { Double(customFrameRate) },
+                            set: { customFrameRate = Int($0) }
+                        ), in: 1...60, step: 1)
+
+                        Text("Audio bitrate per channel: \(customAudioBitrate / 1000) kbps")
+                            .font(.callout)
+                        Slider(value: Binding(
+                            get: { Double(customAudioBitrate) },
+                            set: { customAudioBitrate = Int($0) }
+                        ), in: 8_000...72_000, step: 8_000)
+
+                        Text("Video bitrate \(String(format: "%.1f", Double(customVideoBitrate) / 1_000_000.0)) Mbps")
+                            .font(.callout)
+                        Slider(value: Binding(
+                            get: { Double(customVideoBitrate) },
+                            set: { customVideoBitrate = Int($0) }
+                        ), in: 500_000...50_000_000, step: 500_000)
+                    }
+                    .onAppear {
+                        if let preset = selectedPreset, preset.name == "Custom" {
+                            customResolution = Resolution(preset.width, preset.height)
+                            customFrameRate = preset.frameRate
+                            customKeyframeInterval = preset.keyframeInterval
+                            customAudioChannels = preset.audioChannels
+                            customAudioBitrate = preset.audioBitrate
+                            customVideoBitrate = preset.videoBitrate
                         }
                     }
                 }
-                .onAppear {
-                    if let preset = try? JSONDecoder().decode(Preset.self, from: selectedPresetData) {
-                        selectedPreset = preset
-                    } else {
-                        selectedPreset = nil
-                    }
-                }
-
-                Section {
-                    EmptyView()
-                } footer: {
-                    Text("Depending on your selections above, some presets may be determined to result in a poor streaming experience. These are colored red, and should not be used unless your network conditions change.")
-                }
-                .offset(y: -30)
                 
                 Section(header: Text("Overlays"), footer: Text("Add multiple web overlay URLs for your stream.")) {
                     ForEach(overlayManager.overlays) { overlay in
@@ -214,9 +286,37 @@ struct SettingsView: View {
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
             .navigationBarItems(trailing: Button("Save") {
+                if cameraPosition == "custom" {
+                    LOG("Saving custom settings", level: .debug)
+                    saveCustomPreset()
+                }
                 presentationMode.wrappedValue.dismiss()
             }
             .buttonStyle(.borderedProminent))
+            .onAppear {
+                if let preset = try? JSONDecoder().decode(Preset.self, from: selectedPresetData) {
+                    selectedPreset = preset
+                } else {
+                    selectedPreset = nil
+                }
+            }
+        }
+    }
+
+    func saveCustomPreset() {
+        let customPreset = Preset(
+            name: "Custom",
+            width: customResolution.width,
+            height: customResolution.height,
+            frameRate: customFrameRate,
+            keyframeInterval: customKeyframeInterval,
+            audioChannels: customAudioChannels,
+            audioBitrate: customAudioBitrate,
+            videoBitrate: customVideoBitrate
+        )
+
+        if let encoded = try? JSONEncoder().encode(customPreset) {
+            selectedPresetData = encoded
         }
     }
     
