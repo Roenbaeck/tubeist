@@ -224,15 +224,15 @@ struct SettingsView: View {
                         .pickerStyle(.segmented)
                         
                         Picker("Key frame interval", selection: $customKeyframeInterval) {
-                            Text("Two every second").tag(0.5)
-                            Text("Every second").tag(1.0)
-                            Text("Every two seconds").tag(2.0)
+                            Text("Two key frames per second").tag(0.5)
+                            Text("One key frame per second").tag(1.0)
+                            Text("One key frame per two seconds").tag(2.0)
                         }
                         .pickerStyle(.segmented)
 
                         Picker("Audio channels", selection: $customAudioChannels) {
-                            Text("Mono").tag(1)
-                            Text("Stereo").tag(2)
+                            Text("Mono audio channel").tag(1)
+                            Text("Stereo audio channels").tag(2)
                         }
                         .pickerStyle(.segmented)
 
