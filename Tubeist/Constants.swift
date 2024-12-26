@@ -15,7 +15,7 @@ let STREAMING_QUEUE_CONCURRENT = DispatchQueue(label: "com.subside.StreamingQueu
 // CameraMonitor settings
 let DEFAULT_CAMERA = "Back Camera" // available on most (all?) devices
 let ZOOM_LIMIT = 20.0
-let FRAMERATE: Int = 30
+let DEFAULT_FRAMERATE: Int = 30
 let CAPTURE_WIDTH: Int = 3840
 let CAPTURE_HEIGHT: Int = 2160
 
@@ -25,7 +25,7 @@ let DEFAULT_COMPRESSED_HEIGHT: Int = 1080
 let DEFAULT_VIDEO_BITRATE: Int = 4_000_000
 let DEFAULT_AUDIO_BITRATE: Int = 48_000
 let DEFAULT_AUDIO_CHANNELS: Int = 2
-let DEFAULT_KEYFRAME_INTERVAL: Int = 2
+let DEFAULT_KEYFRAME_INTERVAL: Double = 2.0 // seconds
 let FRAGMENT_DURATION: Int = 2 // seconds
 let FRAGMENT_MINIMUM_DURATION: Double = 0.010 // at least 10ms (to ignore very short fragments at the end of the stream)
 let TIMESCALE: Int = 60000 // something divisible with FRAMERATE

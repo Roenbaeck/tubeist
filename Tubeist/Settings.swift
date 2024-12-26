@@ -12,7 +12,7 @@ struct Preset: Codable, Equatable, Identifiable, Hashable {
     let width: Int
     let height: Int
     let frameRate: Int
-    let keyframeInterval: Int
+    let keyframeInterval: Double
     let audioChannels: Int
     let audioBitrate: Int
     let videoBitrate: Int
@@ -30,19 +30,19 @@ struct Preset: Codable, Equatable, Identifiable, Hashable {
 }
 
 let movingCameraPresets: [Preset] = [
-    Preset(name: "480p",  width: 640,  height: 480,  frameRate: 30, keyframeInterval: 1, audioChannels: 1, audioBitrate: 48_000, videoBitrate: 1_450_000),
-    Preset(name: "720p",  width: 1280, height: 720,  frameRate: 30, keyframeInterval: 1, audioChannels: 1, audioBitrate: 48_000, videoBitrate: 2_950_000),
-    Preset(name: "1080p", width: 1920, height: 1080, frameRate: 30, keyframeInterval: 1, audioChannels: 2, audioBitrate: 48_000, videoBitrate: 5_900_000),
-    Preset(name: "1440p", width: 2560, height: 1440, frameRate: 30, keyframeInterval: 1, audioChannels: 2, audioBitrate: 64_000, videoBitrate: 9_800_000),
-    Preset(name: "4K",    width: 3840, height: 2160, frameRate: 30, keyframeInterval: 1, audioChannels: 2, audioBitrate: 64_000, videoBitrate: 14_800_000)
+    Preset(name: "480p",  width: 854,  height: 480,  frameRate: 30, keyframeInterval: 1.0, audioChannels: 1, audioBitrate: 48_000,  videoBitrate: 1_450_000),
+    Preset(name: "720p",  width: 1280, height: 720,  frameRate: 30, keyframeInterval: 1.0, audioChannels: 1, audioBitrate: 64_000,  videoBitrate: 2_900_000),
+    Preset(name: "1080p", width: 1920, height: 1080, frameRate: 30, keyframeInterval: 1.0, audioChannels: 2, audioBitrate: 96_000,  videoBitrate: 5_800_000),
+    Preset(name: "1440p", width: 2560, height: 1440, frameRate: 30, keyframeInterval: 1.0, audioChannels: 2, audioBitrate: 128_000, videoBitrate: 9_700_000),
+    Preset(name: "4K",    width: 3840, height: 2160, frameRate: 30, keyframeInterval: 1.0, audioChannels: 2, audioBitrate: 128_000, videoBitrate: 15_700_000)
 ]
 
 let stationaryCameraPresets: [Preset] = [
-    Preset(name: "480p",  width: 640,  height: 480,  frameRate: 30, keyframeInterval: 2, audioChannels: 1, audioBitrate: 48_000, videoBitrate: 950_000),
-    Preset(name: "720p",  width: 1280, height: 720,  frameRate: 30, keyframeInterval: 2, audioChannels: 1, audioBitrate: 48_000, videoBitrate: 1_950_000),
-    Preset(name: "1080p", width: 1920, height: 1080, frameRate: 30, keyframeInterval: 2, audioChannels: 2, audioBitrate: 48_000, videoBitrate: 3_900_000),
-    Preset(name: "1440p", width: 2560, height: 1440, frameRate: 30, keyframeInterval: 2, audioChannels: 2, audioBitrate: 64_000, videoBitrate: 6_800_000),
-    Preset(name: "4K",    width: 3840, height: 2160, frameRate: 30, keyframeInterval: 2, audioChannels: 2, audioBitrate: 64_000, videoBitrate: 9_800_000)
+    Preset(name: "480p",  width: 854,  height: 480,  frameRate: 30, keyframeInterval: 2.0, audioChannels: 1, audioBitrate: 48_000,  videoBitrate: 950_000),
+    Preset(name: "720p",  width: 1280, height: 720,  frameRate: 30, keyframeInterval: 2.0, audioChannels: 1, audioBitrate: 64_000,  videoBitrate: 1_900_000),
+    Preset(name: "1080p", width: 1920, height: 1080, frameRate: 30, keyframeInterval: 2.0, audioChannels: 2, audioBitrate: 96_000,  videoBitrate: 3_900_000),
+    Preset(name: "1440p", width: 2560, height: 1440, frameRate: 30, keyframeInterval: 2.0, audioChannels: 2, audioBitrate: 128_000, videoBitrate: 6_700_000),
+    Preset(name: "4K",    width: 3840, height: 2160, frameRate: 30, keyframeInterval: 2.0, audioChannels: 2, audioBitrate: 128_000, videoBitrate: 9_700_000)
 ]
 
 struct OverlaySetting: Identifiable, Codable, Hashable {
@@ -92,6 +92,8 @@ struct OverlaySetting: Identifiable, Codable, Hashable {
 
 struct SettingsView: View {
     var overlayManager: OverlaySettingsManager
+    private let streamer = Streamer.shared
+    @Environment(AppState.self) var appState
     @Environment(\.presentationMode) private var presentationMode
     @AppStorage("HLSServer") private var hlsServer: String = ""
     @AppStorage("StreamKey") private var streamKey: String = ""
@@ -105,7 +107,7 @@ struct SettingsView: View {
     @AppStorage("Overlays") private var overlaysData: Data = Data()
     @State private var newOverlayURL: String = ""
     @State private var selectedPreset: Preset? = nil
-
+    
     private struct Resolution: Hashable {
         let width: Int
         let height: Int
@@ -116,12 +118,12 @@ struct SettingsView: View {
     }
     
     // State variables for custom preset settings
-    @State private var customResolution: Resolution = Resolution(1920, 1080)
-    @State private var customFrameRate: Int = 30
-    @State private var customKeyframeInterval: Int = 2
-    @State private var customAudioChannels: Int = 2
-    @State private var customAudioBitrate: Int = 48_000
-    @State private var customVideoBitrate: Int = 4_000_000
+    @State private var customResolution: Resolution = Resolution(DEFAULT_COMPRESSED_WIDTH, DEFAULT_COMPRESSED_HEIGHT)
+    @State private var customFrameRate: Int = DEFAULT_FRAMERATE
+    @State private var customKeyframeInterval: Double = DEFAULT_KEYFRAME_INTERVAL
+    @State private var customAudioChannels: Int = DEFAULT_AUDIO_CHANNELS
+    @State private var customAudioBitrate: Int = DEFAULT_AUDIO_BITRATE
+    @State private var customVideoBitrate: Int = DEFAULT_VIDEO_BITRATE
     
     var body: some View {
         NavigationView {
@@ -167,7 +169,7 @@ struct SettingsView: View {
                         Slider(value: Binding(
                             get: { Double(measuredBandwidth) },
                             set: { measuredBandwidth = Int($0) }
-                        ), in: 1_000_000...15_000_000, step: 500_000)
+                        ), in: 1_000_000...50_000_000, step: 500_000)
                         
                         Picker("People sharing the bandwidth", selection: $networkSharing) {
                             Text("Many (cellular or public WiFi)").tag("many")
@@ -175,7 +177,10 @@ struct SettingsView: View {
                         }
                     }
                     
-                    let availablePresets = cameraPosition == "moving" ? movingCameraPresets : stationaryCameraPresets
+                    // computed properties
+                    var availablePresets: [Preset] {
+                        cameraPosition == "moving" ? movingCameraPresets : stationaryCameraPresets
+                    }
                     var maximumBitrate: Int {
                         let networkFactor = networkSharing == "many" ? 0.5 : 0.8
                         return Int(Double(measuredBandwidth) * networkFactor)
@@ -183,7 +188,8 @@ struct SettingsView: View {
                     
                     Picker("Stream Preset", selection: $selectedPreset) {
                         ForEach(availablePresets) { preset in
-                            let presetColor: Color = preset.videoBitrate + preset.audioBitrate > maximumBitrate ? .red : .primary
+                            let unstreamable = (preset.videoBitrate + preset.audioChannels * preset.audioBitrate) > maximumBitrate
+                            let presetColor: Color = unstreamable ? .red : .primary
                             Text(preset.name)
                                 .foregroundColor(presetColor)
                                 .tag(Optional(preset))
@@ -209,7 +215,7 @@ struct SettingsView: View {
                     // Allow custom settings here for every part of a Preset, except its name, which should be "Custom"
                     Section(header: Text("Custom Settings")) {
                         Picker("Stream resolution", selection: $customResolution) {
-                            Text("640x480").tag(Resolution(640, 480))
+                            Text("854x480").tag(Resolution(854, 480))
                             Text("1280x720").tag(Resolution(1280, 720))
                             Text("1920x1080").tag(Resolution(1920, 1080))
                             Text("2560x1440").tag(Resolution(2560, 1440))
@@ -218,8 +224,9 @@ struct SettingsView: View {
                         .pickerStyle(.segmented)
                         
                         Picker("Key frame interval", selection: $customKeyframeInterval) {
-                            Text("Every second").tag(1)
-                            Text("Every two seconds").tag(2)
+                            Text("Two every second").tag(0.5)
+                            Text("Every second").tag(1.0)
+                            Text("Every two seconds").tag(2.0)
                         }
                         .pickerStyle(.segmented)
 
@@ -234,14 +241,14 @@ struct SettingsView: View {
                         Slider(value: Binding(
                             get: { Double(customFrameRate) },
                             set: { customFrameRate = Int($0) }
-                        ), in: 1...60, step: 1)
+                        ), in: 5...60, step: 1)
 
                         Text("Audio bitrate per channel: \(customAudioBitrate / 1000) kbps")
                             .font(.callout)
                         Slider(value: Binding(
                             get: { Double(customAudioBitrate) },
                             set: { customAudioBitrate = Int($0) }
-                        ), in: 8_000...72_000, step: 8_000)
+                        ), in: 32_000...128_000, step: 8_000)
 
                         Text("Video bitrate \(String(format: "%.1f", Double(customVideoBitrate) / 1_000_000.0)) Mbps")
                             .font(.callout)
@@ -291,6 +298,7 @@ struct SettingsView: View {
                     saveCustomPreset()
                 }
                 presentationMode.wrappedValue.dismiss()
+                streamer.cycleCamera()
             }
             .buttonStyle(.borderedProminent))
             .onAppear {

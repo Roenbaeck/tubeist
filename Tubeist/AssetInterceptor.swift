@@ -31,13 +31,16 @@ actor AssetWriterActor {
         assetWriter.delegate = AssetInterceptor.shared
         
         let selectedPreset = Settings.getSelectedPreset()
-        LOG("Selected preset: \(String(describing: selectedPreset))", level: .debug)
         let selectedVideoBitrate = selectedPreset?.videoBitrate ?? DEFAULT_VIDEO_BITRATE
         let selectedAudioBitrate = selectedPreset?.audioBitrate ?? DEFAULT_AUDIO_BITRATE
         let selectedAudioChannels = selectedPreset?.audioChannels ?? DEFAULT_AUDIO_CHANNELS
         let selectedWidth = selectedPreset?.width ?? DEFAULT_COMPRESSED_WIDTH
         let selectedHeight = selectedPreset?.height ?? DEFAULT_COMPRESSED_HEIGHT
         let selectedKeyframeInterval = selectedPreset?.keyframeInterval ?? DEFAULT_KEYFRAME_INTERVAL
+        let selectedFrameRate = selectedPreset?.frameRate ?? DEFAULT_FRAMERATE
+        let frameIntervalKey = Int(ceil(selectedKeyframeInterval * Double(selectedFrameRate)))
+        
+        LOG("[video bitrate]: \(selectedVideoBitrate) [audio bitrate]: \(selectedAudioBitrate) [audio channels]: \(selectedAudioChannels) [width]: \(selectedWidth) [height]: \(selectedHeight) [frame rate]: \(selectedFrameRate) [key frame every frames]: \(frameIntervalKey)", level: .debug)
         
         let videoSettings: [String: Any] = [
             AVVideoCodecKey: AVVideoCodecType.hevc,
@@ -51,8 +54,8 @@ actor AssetWriterActor {
             AVVideoCompressionPropertiesKey: [
                 AVVideoProfileLevelKey: kVTProfileLevel_HEVC_Main10_AutoLevel,
                 AVVideoAverageBitRateKey: selectedVideoBitrate,
-                AVVideoExpectedSourceFrameRateKey: FRAMERATE,
-                AVVideoMaxKeyFrameIntervalKey: selectedKeyframeInterval * FRAMERATE,
+                AVVideoExpectedSourceFrameRateKey: selectedFrameRate,
+                AVVideoMaxKeyFrameIntervalKey: frameIntervalKey,
                 AVVideoAllowFrameReorderingKey: true,
                 kVTCompressionPropertyKey_HDRMetadataInsertionMode: kVTHDRMetadataInsertionMode_Auto
             ]
@@ -199,7 +202,7 @@ final class AssetInterceptor: NSObject, AVAssetWriterDelegate, Sendable {
                      didOutputSegmentData segmentData: Data,
                      segmentType: AVAssetSegmentType,
                      segmentReport: AVAssetSegmentReport?) {
-        guard var fragmentType: Fragment.SegmentType = {
+        guard let fragmentType: Fragment.SegmentType = {
             switch segmentType {
             case .initialization: .initialization
             case .separable: writer.status == .writing ? .separable : .finalization

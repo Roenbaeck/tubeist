@@ -37,6 +37,11 @@ actor StreamingActor {
     func isStreaming() async -> Bool {
         await appState?.isStreamActive ?? false
     }
+    func refreshCameraView() {
+        Task { @MainActor in
+            await appState?.refreshCameraView()
+        }
+    }
 }
 
 final class Streamer: Sendable {
@@ -52,6 +57,13 @@ final class Streamer: Sendable {
             await self.streamingActor.setAppState(appState)
         }
     }
+    func cycleCamera() {
+        Task {
+            await cameraMonitor.stopCamera()
+            await cameraMonitor.startCamera()
+            await streamingActor.refreshCameraView()
+        }
+    }
     func startCamera() {
         Task {
             await cameraMonitor.startCamera()
@@ -64,9 +76,6 @@ final class Streamer: Sendable {
     }
     func startStream() {
         Task {
-            if await !cameraMonitor.isRunning() {
-                await cameraMonitor.startCamera()
-            }
             await fragmentPusher.immediatePreparation()
             await assetInterceptor.beginIntercepting()
             await frameGrabber.commenceGrabbing()

@@ -18,6 +18,7 @@ private actor CameraActor {
     private var audioInput: AVCaptureDeviceInput?
     private let audioOutput = AVCaptureAudioDataOutput()
     private let frameGrabber = FrameGrabber.shared
+    private var frameRate: Int
     private var minZoomFactor: CGFloat = 1.0
     private var maxZoomFactor: CGFloat = 1.0
     private var opticalZoomFactor: CGFloat = 1.0
@@ -27,10 +28,15 @@ private actor CameraActor {
     init(camera: AVCaptureDevice) {
         // Set all immutables
         previewLayer = AVCaptureVideoPreviewLayer(session: session)
+
+        // Fetch frame rate from settings
+        let selectedPreset = Settings.getSelectedPreset()
+        self.frameRate = selectedPreset?.frameRate ?? DEFAULT_FRAMERATE
         
         // Get devices
         self.videoDevice = camera
         self.audioDevice = AVCaptureDevice.default(for: .audio)
+
         guard let videoDevice = self.videoDevice,
               let audioDevice = self.audioDevice else {
             LOG("No camera or microphone found", level: .error)
@@ -101,7 +107,7 @@ private actor CameraActor {
             // Apply the format to the video device
             try videoDevice.lockForConfiguration()
             videoDevice.activeFormat = format
-            let frameDurationParts = Int64(TIMESCALE / FRAMERATE)
+            let frameDurationParts = Int64(TIMESCALE / self.frameRate)
             videoDevice.activeVideoMinFrameDuration = CMTimeMake(value: frameDurationParts, timescale: Int32(TIMESCALE))
             videoDevice.activeVideoMaxFrameDuration = CMTimeMake(value: frameDurationParts, timescale: Int32(TIMESCALE))
             videoDevice.activeColorSpace = .HLG_BT2020
@@ -142,6 +148,10 @@ private actor CameraActor {
             supportedModes["Auto"] = .auto
         }
         return supportedModes
+    }
+    
+    func getCameraFrameRate() -> Int {
+        return self.frameRate
     }
         
     func setCameraStabilization(to stabilization: AVCaptureVideoStabilizationMode) -> Bool {
@@ -272,11 +282,17 @@ private actor CameraActor {
     }
     
     func startRunning() {
-         session.startRunning()
+        if !session.isRunning {
+            LOG("Starting camera session", level: .debug)
+            session.startRunning()
+        }
     }
     
     func stopRunning() {
-        session.stopRunning()
+        if session.isRunning {
+            LOG("Stopping camera session", level: .debug)
+            session.stopRunning()
+        }
     }
     
     func isRunning() -> Bool {
@@ -290,19 +306,16 @@ private actor CameraActor {
     func getSession() -> AVCaptureSession {
         session
     }
-    
-    // Method to configure preview layer directly on the view controller
+
     func configurePreviewLayer(on viewController: UIViewController) {
         previewLayer.videoGravity = .resizeAspect
         
-        // Configure connection rotation
         if let connection = previewLayer.connection {
             if connection.isVideoRotationAngleSupported(0) {
                 connection.videoRotationAngle = 0
             }
         }
         
-        // Explicitly dispatch to main queue
         DispatchQueue.main.async {
             // Remove existing preview layers
             viewController.view.layer.sublayers?.forEach { $0.removeFromSuperlayer() }
@@ -310,12 +323,16 @@ private actor CameraActor {
             // Add preview layer
             viewController.view.layer.addSublayer(self.previewLayer)
             
-            // Update frame
+            // Calculate the frame based on 16:9 ratio
+            let height = viewController.view.bounds.height
+            let width = height * (16.0/9.0)
+            let x: CGFloat = 0
+            let y: CGFloat = 0 
+            
             CATransaction.begin()
             CATransaction.setAnimationDuration(0)
-            self.previewLayer.frame = viewController.view.bounds
+            self.previewLayer.frame = CGRect(x: x, y: y, width: width, height: height)
             CATransaction.commit()
-            LOG("Preview layer configured", level: .debug)
         }
     }
 }
@@ -365,27 +382,32 @@ private actor CameraManager {
             LOG("Could not create camera device", level: .error)
             return
         }
-        cameraActor = CameraActor(camera: videoDevice)
-        stabilizations = await cameraActor?.findSupportedStabilizationModes() ?? [:]
+        self.cameraActor = CameraActor(camera: videoDevice)
+        guard let cameraActor = self.cameraActor else {
+            LOG("Could not create camera actor", level: .error)
+            return
+        }
+        self.stabilizations = await cameraActor.findSupportedStabilizationModes()
         let selectedStabilization = getCameraStabilization()
-        LOG("Stabilization is going to be set to \(selectedStabilization)", level: .debug)
         await setCameraStabilization(to: selectedStabilization)
-        await cameraActor?.startRunning()
+        await cameraActor.startRunning()
     }
     func stopCamera() async {
-        await cameraActor?.stopRunning()
-        if let captureSession = await cameraActor?.getSession() {
-            // Remove inputs
-            for input in captureSession.inputs {
-                captureSession.removeInput(input)
-            }
-            
-            // Remove outputs
-            for output in captureSession.outputs {
-                captureSession.removeOutput(output)
-            }
+        guard let cameraActor = self.cameraActor else {
+            LOG("Camera actor unavailable", level: .warning)
+            return
         }
-        cameraActor = nil
+        await cameraActor.stopRunning()
+        let captureSession = await cameraActor.getSession()
+        // Remove inputs
+        for input in captureSession.inputs {
+            captureSession.removeInput(input)
+        }
+        // Remove outputs
+        for output in captureSession.outputs {
+            captureSession.removeOutput(output)
+        }
+        self.cameraActor = nil
     }
     func isRunning() async -> Bool {
         return await cameraActor?.isRunning() ?? false
@@ -441,9 +463,11 @@ private actor CameraManager {
     func setAutoWhiteBalance() async {
         await cameraActor?.setAutoWhiteBalance()
     }
-    
     func configurePreviewLayer(on viewController: UIViewController) async {
         await cameraActor?.configurePreviewLayer(on: viewController)
+    }
+    func getCameraFrameRate() async -> Int {
+        await cameraActor?.getCameraFrameRate() ?? DEFAULT_FRAMERATE
     }
 
 }
@@ -513,7 +537,9 @@ final class CameraMonitor: Sendable {
     func setAutoWhiteBalance() async {
         await cameraManager.setAutoWhiteBalance()
     }
-    
+    func getCameraFrameRate() async -> Int {
+        await cameraManager.getCameraFrameRate()
+    }
     func configurePreviewLayer(on viewController: UIViewController) {
         Task {
             await cameraManager.configurePreviewLayer(on: viewController)
@@ -550,10 +576,9 @@ extension AVCaptureDevice {
             if captureFormat.formatDescription.mediaSubType.rawValue == kCVPixelFormatType_422YpCbCr10BiPlanarVideoRange {
                 let description = captureFormat.formatDescription as CMFormatDescription
                 let dimensions = CMVideoFormatDescriptionGetDimensions(description)
-                
                 if dimensions.width == CAPTURE_WIDTH && dimensions.height == CAPTURE_HEIGHT,
                    let frameRateRange = captureFormat.videoSupportedFrameRateRanges.first,
-                   frameRateRange.maxFrameRate >= Float64(FRAMERATE),
+                   frameRateRange.maxFrameRate >= 60,
                    captureFormat.isVideoHDRSupported,
                    !captureFormat.isMultiCamSupported, // avoid this to get a different 4:2:2 with higher refresh rates
                    captureFormat.maxISO >= 5184.0 {
@@ -567,6 +592,7 @@ extension AVCaptureDevice {
 }
 
 struct CameraMonitorView: UIViewControllerRepresentable {
+    private let cameraMonitor = CameraMonitor.shared
     func makeUIViewController(context: Context) -> UIViewController {
         let viewController = UIViewController()
         // Ensure view is loaded before configurations
@@ -575,13 +601,7 @@ struct CameraMonitorView: UIViewControllerRepresentable {
     }
     
     func updateUIViewController(_ uiViewController: UIViewController, context: Context) {
-        let cameraMonitor = CameraMonitor.shared
-        Task {
-            if await !cameraMonitor.isRunning() {
-                await cameraMonitor.startCamera()
-            }
-            cameraMonitor.configurePreviewLayer(on: uiViewController)
-        }
+        cameraMonitor.configurePreviewLayer(on: uiViewController)
     }
     
 }

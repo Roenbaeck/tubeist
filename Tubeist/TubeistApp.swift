@@ -31,6 +31,7 @@ final class AppState {
 
 @main
 struct TubeistApp: App {
+    private let streamer = Streamer.shared
     @State private var appState = AppState()
     @Environment(\.scenePhase) private var scenePhase
     
@@ -49,20 +50,19 @@ struct TubeistApp: App {
             case (.inactive, .background), (.active, .background):
                 LOG("App is entering background", level: .debug)
                 Task {
-                    if await Streamer.shared.isStreaming() {
+                    if await streamer.isStreaming() {
                         LOG("Stopping stream due to background state", level: .warning)
                         appState.hadToStopStreaming = true
-                        Streamer.shared.endStream()
+                        streamer.endStream()
                     }
-                    else {
-                        Streamer.shared.stopCamera()
-                    }
+                    streamer.stopCamera()
                 }
             case (.background, .inactive), (.background, .active):
                 if !appState.justCameFromBackground {
                     appState.justCameFromBackground = true
                     LOG("App is coming back from background", level: .debug)
                     // Refresh the camera view
+                    streamer.startCamera()
                     appState.refreshCameraView()
                 }
             default: break
@@ -71,7 +71,8 @@ struct TubeistApp: App {
     }
     init() {
         LOG("Starting Tubeist", level: .info)
-        Streamer.shared.setAppState(appState)
+        streamer.setAppState(appState)
+        streamer.startCamera()
         UIApplication.shared.isIdleTimerDisabled = true
         do {
             try AVAudioSession.sharedInstance().setCategory(

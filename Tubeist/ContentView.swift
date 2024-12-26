@@ -98,6 +98,7 @@ struct ContentView: View {
                     CameraMonitorView()
                         .id(appState.cameraMonitorId)
                         .gesture(magnification)
+                        .frame(width: width, height: height)
                         .onAppear {
                             getCameraProperties()
                         }
@@ -141,11 +142,8 @@ struct ContentView: View {
                                 )
                                 .onChange(of: selectedCamera) { _, newCamera in
                                     LOG("Seletected camera: \(newCamera)", level: .debug)
-                                    Task {
-                                        UserDefaults.standard.set(newCamera, forKey: "SelectedCamera")
-                                        await cameraMonitor.stopCamera()
-                                        appState.refreshCameraView()
-                                    }
+                                    UserDefaults.standard.set(newCamera, forKey: "SelectedCamera")
+                                    streamer.cycleCamera()
                                 }
                             }
                             .padding(5)
@@ -435,7 +433,6 @@ struct ContentView: View {
             }
         }
     }
-
 
     func loadOverlaysFromStorage() -> [OverlaySetting] {
         guard let overlaysData = UserDefaults.standard.data(forKey: "Overlays"),
