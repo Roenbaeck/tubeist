@@ -365,7 +365,7 @@ final class FragmentPusher: Sendable {
                 self.uploadFragment(attempt: 1)
             }
             do {
-                try await Task.sleep(nanoseconds: UInt64(1_000_000_000 * FRAGMENT_DURATION))
+                try await Task.sleep(for: .seconds(FRAGMENT_DURATION))
                 await gracefulShutdown()
             } catch {
                 LOG("Graceful shutdown was interrupted: \(error)", level: .warning)

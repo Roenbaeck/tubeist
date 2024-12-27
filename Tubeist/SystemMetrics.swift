@@ -17,8 +17,8 @@ struct SystemMetricsView: View {
     @State private var networkMbps: Int = 0
     @State private var networkUtilization: Int = 0
     @State private var fragmentBufferCount: Int = 0
-    private let timer = Timer.publish(every: 3, on: .main, in: .common).autoconnect()
-    
+    @State private var updateSystemMetricsTask: Task<Void, Never>?
+        
     var body: some View {
         HStack(spacing: 10) {
             Text("CPU: \(String(format: "%.1f", cpuUsage))%")
@@ -29,32 +29,50 @@ struct SystemMetricsView: View {
         .font(.system(size: 13))
         .lineLimit(1) // Ensure text stays on a single line
         .foregroundColor(.white)
-        .onReceive(timer) { _ in
-            updateSystemMetrics()
-        }
         .onAppear {
-            updateSystemMetrics()
+            updateSystemMetricsTask = Task(priority: .utility) {
+                while !Task.isCancelled {
+                    await updateSystemMetrics()
+                    try? await Task.sleep(for: .seconds(3))
+                }
+            }
+        }
+        .onDisappear {
+            updateSystemMetricsTask?.cancel()
         }
     }
     
-    private func updateSystemMetrics() {
-        Task {
-            self.cpuUsage = self.getCPUUsage()
-            self.batteryLevel = self.getBatteryLevel()
-            self.thermalLevel = self.getThermalLevel()
-            (self.networkMbps, self.networkUtilization) = await FragmentPusher.shared.networkPerformance()
-            self.fragmentBufferCount = await FragmentPusher.shared.fragmentBufferCount()
+    private func updateSystemMetrics() async {
+        let cpuUsage = getCPUUsage()
+        let batteryLevel = getBatteryLevel()
+        let thermalLevel = getThermalLevel()
+        let (networkMbps, networkUtilization) = await FragmentPusher.shared.networkPerformance()
+        let fragmentBufferCount = await FragmentPusher.shared.fragmentBufferCount()
+        let streamHealth: StreamHealth = await {
             if await Streamer.shared.isStreaming() {
-                if (self.networkUtilization > 100 || self.fragmentBufferCount > 1) {
-                    appState.streamHealth = .degraded
+                if (networkUtilization > 100 || fragmentBufferCount > 1) {
+                    return .degraded
                 }
                 else {
-                    appState.streamHealth = .pristine
+                    return .pristine
                 }
             }
-            else if (self.fragmentBufferCount == 0) {
-                appState.streamHealth = .silenced
+            else if (fragmentBufferCount == 0) {
+                return .silenced
             }
+            else {
+                return appState.streamHealth
+            }
+        }()
+        
+        await MainActor.run {
+            self.cpuUsage = cpuUsage
+            self.batteryLevel = batteryLevel
+            self.thermalLevel = thermalLevel
+            self.networkMbps = networkMbps
+            self.networkUtilization = networkUtilization
+            self.fragmentBufferCount = fragmentBufferCount
+            self.appState.streamHealth = streamHealth
         }
     }
     

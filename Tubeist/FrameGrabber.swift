@@ -9,7 +9,7 @@
 @preconcurrency import CoreImage
 
 actor OverlayImprinter {
-    nonisolated(unsafe) private let context: CIContext 
+    nonisolated(unsafe) private let context: CIContext
     init() {
         context = CIContext(options: [
             .useSoftwareRenderer: false,
@@ -71,12 +71,16 @@ final class FrameGrabber: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
                         if let overlayImage = await OverlayBundler.shared.getCombinedImage() {
                             await self.overlayImprinter.imprint(overlay: overlayImage, onto: sampleBuffer)
                         }
-                        await AssetInterceptor.shared.appendVideoSampleBuffer(sampleBuffer)
-                        if await Streamer.shared.getViewport() == .output {
+                        if await Streamer.shared.isStreaming() {
+                            await AssetInterceptor.shared.appendVideoSampleBuffer(sampleBuffer)
+                        }
+                        if await Streamer.shared.getMonitor() == .output {
                             OutputMonitor.shared.enqueue(sampleBuffer)
                         }
                     case is AVCaptureAudioDataOutput:
-                        await AssetInterceptor.shared.appendAudioSampleBuffer(sampleBuffer)
+                        if await Streamer.shared.isStreaming() {
+                            await AssetInterceptor.shared.appendAudioSampleBuffer(sampleBuffer)
+                        }
                     default:
                         LOG("Unknown output type")
                     }

@@ -10,7 +10,7 @@ import Observation
 import AVFoundation
 
 // different views for the iPhone display
-enum Viewport {
+enum Monitor {
     case camera
     case output
 }
@@ -18,7 +18,7 @@ enum Viewport {
 // these are my shared variables
 @Observable @MainActor
 final class AppState {
-    var viewport: Viewport = .camera
+    var activeMonitor: Monitor = .camera
     var isBatterySavingOn = false
     var isStreamActive = false
     var isAudioLevelRunning = true

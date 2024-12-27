@@ -34,8 +34,16 @@ actor StreamingActor {
             await appState?.streamHealth = health
         }
     }
-    func getViewport() async -> Viewport {
-        await appState?.viewport ?? .camera
+    func getStreamHealth() async -> StreamHealth {
+        await appState?.streamHealth ?? .awaiting
+    }
+    func setMonitor(_ monitor: Monitor) async {
+        Task { @MainActor in
+            await appState?.activeMonitor = monitor
+        }
+    }
+    func getMonitor() async -> Monitor {
+        await appState?.activeMonitor ?? .camera
     }
     func isStreaming() async -> Bool {
         await appState?.isStreamActive ?? false
@@ -77,16 +85,20 @@ final class Streamer: Sendable {
         Task {
             await FragmentPusher.shared.immediatePreparation()
             await AssetInterceptor.shared.beginIntercepting()
-            await FrameGrabber.shared.commenceGrabbing()
-            await CameraMonitor.shared.startOutput();
+            if await streamingActor.getMonitor() == .camera {
+                await FrameGrabber.shared.commenceGrabbing()
+                await CameraMonitor.shared.startOutput()
+            }
             await streamingActor.run()
         }
     }
     func endStream() {
         Task {
             await streamingActor.pause()
-            await CameraMonitor.shared.stopOutput()
-            await FrameGrabber.shared.terminateGrabbing()
+            if await streamingActor.getMonitor() == .camera {
+                await CameraMonitor.shared.stopOutput()
+                await FrameGrabber.shared.terminateGrabbing()
+            }
             await AssetInterceptor.shared.endIntercepting()
             await FragmentPusher.shared.gracefulShutdown()
         }
@@ -99,7 +111,24 @@ final class Streamer: Sendable {
             await streamingActor.setStreamHealth(health)
         }
     }
-    func getViewport() async -> Viewport {
-        await streamingActor.getViewport()
+    func getStreamHealth() async -> StreamHealth {
+        await streamingActor.getStreamHealth()
+    }
+    func setMonitor(_ monitor: Monitor) {
+        Task {
+            if monitor == .output {
+                await FrameGrabber.shared.commenceGrabbing()
+                await CameraMonitor.shared.startOutput()
+                await streamingActor.setMonitor(monitor)
+            }
+            else if monitor == .camera {
+                await CameraMonitor.shared.stopOutput()
+                await FrameGrabber.shared.terminateGrabbing()
+                await streamingActor.setMonitor(monitor)
+            }
+        }
+    }
+    func getMonitor() async -> Monitor {
+        await streamingActor.getMonitor()
     }
 }

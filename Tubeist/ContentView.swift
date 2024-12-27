@@ -93,24 +93,22 @@ struct ContentView: View {
             HStack(spacing: 0) {
                 // 16:9 Content Area
                 ZStack {
-                    if appState.viewport == .camera {
-                        CameraMonitorView()
-                            .id(appState.cameraMonitorId)
-                            .gesture(magnification)
-                            .frame(width: width, height: height)
-                            .onAppear {
-                                getCameraProperties()
-                            }
-                    }
-                    else if appState.viewport == .output {
-                        OutputMonitorView()
-                    }
+                    CameraMonitorView()
+                        .id(appState.cameraMonitorId)
+                        .gesture(magnification)
+                        .frame(width: width, height: height)
+                        .onAppear {
+                            getCameraProperties()
+                        }
                     
                     ForEach(overlayManager.overlays) { overlay in
                         if let url = URL(string: overlay.url) {
                             OverlayBundlerView(url: url)
-                                .opacity(appState.viewport == .camera ? 1 : 0)
                         }
+                    }
+
+                    if appState.activeMonitor == .output {
+                        OutputMonitorView()
                     }
                     
                     if showJournal {
@@ -119,8 +117,10 @@ struct ContentView: View {
                     
                     VStack {
                         Spacer()
-                        SystemMetricsView()
-                            .offset(y: 3)
+                        if !showJournal {
+                            SystemMetricsView()
+                                .offset(y: 3)
+                        }
                         CoreGraphicsAudioMeter(width: width, height: AUDIO_METER_HEIGHT)
                             .frame(width: width, height: AUDIO_METER_HEIGHT)
                     }
@@ -247,15 +247,12 @@ struct ContentView: View {
                             Button(action: {
                                 if appState.isStreamActive {
                                     Task {
-                                        appState.isStreamActive = false
-                                        appState.viewport = .camera
                                         Streamer.shared.endStream()
                                         LOG("Stopped recording", level: .info)
                                     }
                                 } else {
                                     Task {
                                         Streamer.shared.startStream()
-                                        appState.isStreamActive = true
                                         LOG("Started recording", level: .info)
                                     }
                                 }
@@ -372,18 +369,15 @@ struct ContentView: View {
                         .padding(.bottom, 3)
 
 
-                    SmallButton(imageName: appState.viewport == .camera ? "rectangle.on.rectangle" : "rectangle.on.rectangle.fill",
-                                foregroundColor: appState.isStreamActive ? .white : .white.opacity(0.3)) {
-                        if appState.isStreamActive {
-                            appState.viewport = appState.viewport == .camera ? .output : .camera
-                        }
+                    SmallButton(imageName: appState.activeMonitor == .camera ? "rectangle.on.rectangle" : "rectangle.on.rectangle.fill") {
+                        Streamer.shared.setMonitor(appState.activeMonitor == .camera ? .output : .camera)
                     }
-                    Text(appState.viewport == .camera ? "INPUT" : "OUTPT")
+                    Text(appState.activeMonitor == .camera ? "BFORE" : "AFTER")
                         .font(.system(size: 8))
                         .padding(.bottom, 3)
                     
 
-                    SmallButton(imageName: "text.quote") {
+                    SmallButton(imageName: "text.quote", foregroundColor: showJournal ? .yellow : .white) {
                         showJournal.toggle()
                     }
                     Text("JORNL")
