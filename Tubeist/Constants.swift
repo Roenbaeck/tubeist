@@ -6,6 +6,7 @@
 //
 
 import Foundation
+import AVFoundation
 import CoreMedia
 import WebKit
 
@@ -18,6 +19,10 @@ let ZOOM_LIMIT = 20.0
 let DEFAULT_FRAMERATE: Int = 30
 let CAPTURE_WIDTH: Int = 3840
 let CAPTURE_HEIGHT: Int = 2160
+
+// Color settings
+let CG_COLOR_SPACE: CGColorSpace = CGColorSpace(name: CGColorSpace.itur_2100_HLG)!
+let AV_COLOR_SPACE: AVCaptureColorSpace = .HLG_BT2020
 
 // AssetInterceptor settings
 let DEFAULT_COMPRESSED_WIDTH: Int = 1920

@@ -8,13 +8,32 @@
 // @preconcurrency need to avoid non-sendable CIImage when calling overlay.getOverlayImage()
 @preconcurrency import SwiftUI
 import WebKit
-// import Observation
+
+extension UIImage {
+    static func composite(images: [UIImage]) -> UIImage? {
+        guard let firstImage = images.first else { return nil }
+        let size = firstImage.size
+        
+        let format = UIGraphicsImageRendererFormat()
+        format.opaque = false // Preserve transparency if needed
+        format.preferredRange = .extended // Wide color range
+        
+        let renderer = UIGraphicsImageRenderer(size: size, format: format)
+
+        let composedImage = renderer.image { context in
+            for image in images.reversed() { // Draw from back to front
+                image.draw(in: CGRect(origin: .zero, size: size))
+            }
+        }
+        return composedImage
+    }
+}
 
 final class Overlay: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     private let url: URL
     private let bundler: OverlayBundler
     private var webView: WKWebView?
-    private var overlayImage: CIImage?
+    private var overlayImage: UIImage?
     private var lastCaptureTime: Date = Date.distantPast
     private var captureTimer: Timer?
     private let minimumCaptureInterval: TimeInterval = 1.0 // at least 1 second between snapshots
@@ -60,7 +79,7 @@ final class Overlay: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         return webView
     }
 
-    func getOverlayImage() -> CIImage? {
+    func getOverlayImage() -> UIImage? {
         guard let overlayImage = self.overlayImage else {
             return nil
         }
@@ -119,6 +138,7 @@ final class Overlay: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     
     func captureWebViewImage() {
         lastCaptureTime = Date()
+
         let config = WKSnapshotConfiguration()
         config.snapshotWidth = NSNumber(value: CAPTURE_WIDTH / Int(UIScreen.main.scale))
 
@@ -127,12 +147,9 @@ final class Overlay: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
                 LOG("Error capturing snapshot: \(String(describing: error))", level: .error)
                 return
             }
-            guard let ciImage = CIImage(image: uiImage) else {
-                LOG("Failed to convert UIImage to CIImage", level: .error)
-                return
-            }
-            self.overlayImage = ciImage
-            LOG("Captured overlay with dimensions \(ciImage.extent.size)", level: .debug)
+            self.overlayImage = uiImage
+            let colorSpace = uiImage.cgImage?.colorSpace?.name as String?
+            LOG("Captured overlay with size \(uiImage.size), scale \(uiImage.scale), and color space: \(colorSpace ?? "unknown")", level: .debug)
             Task {
                 // Combine all images every time any image is changed
                 await self.bundler.combineOverlayImages()
@@ -156,7 +173,7 @@ actor OverlayBundleActor {
 
 actor CombinedImageActor {
     private var combinedOverlayImage: CIImage? = nil
-    func setImage(_ image: CIImage) {
+    func setImage(_ image: CIImage?) {
         combinedOverlayImage = image
     }
     func getImage() -> CIImage? {
@@ -179,7 +196,7 @@ final class OverlayBundler: Sendable {
     }
 
     func combineOverlayImages() async {
-        var images: [CIImage] = []
+        var images: [UIImage] = []
         for overlay in await overlayBundle.getOverlays() {
             if let image = await overlay.getOverlayImage() {
                 images.append(image)
@@ -187,16 +204,14 @@ final class OverlayBundler: Sendable {
         }
         LOG("Combining \(images.count) images", level: .debug)
 
-        guard !images.isEmpty, let firstImage = images.first else {
-            LOG("No images to combine")
+        guard let imageComposition = UIImage.composite(images: images),
+              let ciImage_sRGB = CIImage(image: imageComposition),
+              let ciImage = ciImage_sRGB.matchedFromWorkingSpace(to: CG_COLOR_SPACE) else {
+            LOG("Images could not be combined", level: .error)
             return
         }
-
-        let imageComposition = images.dropFirst().reduce(firstImage) { result, image in
-            result.composited(over: image)
-        }
-
-        await combinedImage.setImage(imageComposition)
+        
+        await combinedImage.setImage(ciImage)
     }
     
     func getCombinedImage() async -> CIImage? {

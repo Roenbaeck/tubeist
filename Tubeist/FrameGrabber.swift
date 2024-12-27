@@ -13,7 +13,7 @@ actor OverlayImprinter {
     init() {
         context = CIContext(options: [
             .useSoftwareRenderer: false,
-            .workingColorSpace: CGColorSpace(name: CGColorSpace.itur_2020)!
+            .workingColorSpace: CG_COLOR_SPACE
         ])
     }
     func imprint(overlay overlayImage: CIImage, onto sampleBuffer: CMSampleBuffer) {

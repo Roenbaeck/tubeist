@@ -109,7 +109,7 @@ private actor CameraActor {
             let frameDurationParts = Int64(TIMESCALE / self.frameRate)
             videoDevice.activeVideoMinFrameDuration = CMTimeMake(value: frameDurationParts, timescale: Int32(TIMESCALE))
             videoDevice.activeVideoMaxFrameDuration = CMTimeMake(value: frameDurationParts, timescale: Int32(TIMESCALE))
-            videoDevice.activeColorSpace = .HLG_BT2020
+            videoDevice.activeColorSpace = AV_COLOR_SPACE
             videoDevice.unlockForConfiguration()
             
             self.minZoomFactor = videoDevice.minAvailableVideoZoomFactor
