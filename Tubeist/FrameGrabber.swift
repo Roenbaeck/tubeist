@@ -50,7 +50,6 @@ actor FrameGrabbingActor {
 
 final class FrameGrabber: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptureAudioDataOutputSampleBufferDelegate, Sendable {
     public static let shared = FrameGrabber()
-    private let assetInterceptor = AssetInterceptor.shared
     private let overlayImprinter = OverlayImprinter()
     private let frameGrabbing = FrameGrabbingActor()
 
@@ -72,9 +71,12 @@ final class FrameGrabber: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
                         if let overlayImage = await OverlayBundler.shared.getCombinedImage() {
                             await self.overlayImprinter.imprint(overlay: overlayImage, onto: sampleBuffer)
                         }
-                        await self.assetInterceptor.appendVideoSampleBuffer(sampleBuffer)
+                        await AssetInterceptor.shared.appendVideoSampleBuffer(sampleBuffer)
+                        if await Streamer.shared.getViewport() == .output {
+                            OutputMonitor.shared.enqueue(sampleBuffer)
+                        }
                     case is AVCaptureAudioDataOutput:
-                        await self.assetInterceptor.appendAudioSampleBuffer(sampleBuffer)
+                        await AssetInterceptor.shared.appendAudioSampleBuffer(sampleBuffer)
                     default:
                         LOG("Unknown output type")
                     }

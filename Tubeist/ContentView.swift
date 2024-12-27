@@ -53,8 +53,6 @@ struct ContentView: View {
     @State private var cameras: [String] = []
     @State private var stabilizations: [String] = []
     private let interactionData = InteractionData()
-    private let streamer = Streamer.shared
-    private let cameraMonitor = CameraMonitor.shared
     
     private var magnification: some Gesture {
         MagnifyGesture()
@@ -63,7 +61,7 @@ struct ContentView: View {
                 let zoomDelta = totalZoom * currentZoom
                 let safeZoom = max(minZoom, min(zoomDelta + totalZoom, maxZoom))
                 Task {
-                    await cameraMonitor.setZoomFactor(safeZoom)
+                    await CameraMonitor.shared.setZoomFactor(safeZoom)
                 }
                 currentZoom = safeZoom - totalZoom
             }
@@ -71,7 +69,7 @@ struct ContentView: View {
                 totalZoom += currentZoom
                 totalZoom = max(minZoom, min(totalZoom, maxZoom))
                 Task {
-                    await cameraMonitor.setZoomFactor(totalZoom)
+                    await CameraMonitor.shared.setZoomFactor(totalZoom)
                 }
                 currentZoom = 0
             }
@@ -79,11 +77,11 @@ struct ContentView: View {
     
     func getCameraProperties() {
         Task {
-            selectedStabilization = await cameraMonitor.getCameraStabilization()
+            selectedStabilization = await CameraMonitor.shared.getCameraStabilization()
             appState.isStabilizationOn = selectedStabilization != "Off"
-            minZoom = await cameraMonitor.getMinZoomFactor()
-            maxZoom = await min(cameraMonitor.getMaxZoomFactor(), ZOOM_LIMIT)
-            opticalZoom = await cameraMonitor.getOpticalZoomFactor()
+            minZoom = await CameraMonitor.shared.getMinZoomFactor()
+            maxZoom = await min(CameraMonitor.shared.getMaxZoomFactor(), ZOOM_LIMIT)
+            opticalZoom = await CameraMonitor.shared.getOpticalZoomFactor()
         }
     }
     
@@ -95,17 +93,23 @@ struct ContentView: View {
             HStack(spacing: 0) {
                 // 16:9 Content Area
                 ZStack {
-                    CameraMonitorView()
-                        .id(appState.cameraMonitorId)
-                        .gesture(magnification)
-                        .frame(width: width, height: height)
-                        .onAppear {
-                            getCameraProperties()
-                        }
+                    if appState.viewport == .camera {
+                        CameraMonitorView()
+                            .id(appState.cameraMonitorId)
+                            .gesture(magnification)
+                            .frame(width: width, height: height)
+                            .onAppear {
+                                getCameraProperties()
+                            }
+                    }
+                    else if appState.viewport == .output {
+                        OutputMonitorView()
+                    }
                     
                     ForEach(overlayManager.overlays) { overlay in
                         if let url = URL(string: overlay.url) {
                             OverlayBundlerView(url: url)
+                                .opacity(appState.viewport == .camera ? 1 : 0)
                         }
                     }
                     
@@ -143,7 +147,7 @@ struct ContentView: View {
                                 .onChange(of: selectedCamera) { _, newCamera in
                                     LOG("Seletected camera: \(newCamera)", level: .debug)
                                     UserDefaults.standard.set(newCamera, forKey: "SelectedCamera")
-                                    streamer.cycleCamera()
+                                    Streamer.shared.cycleCamera()
                                 }
                             }
                             .padding(5)
@@ -171,7 +175,7 @@ struct ContentView: View {
                                 .onChange(of: selectedStabilization) { _, newStabilization in
                                     LOG("Seletected stabilization: \(newStabilization)", level: .debug)
                                     Task {
-                                        await cameraMonitor.setCameraStabilization(to: newStabilization)
+                                        await CameraMonitor.shared.setCameraStabilization(to: newStabilization)
                                         appState.isStabilizationOn = newStabilization != "Off"
                                     }
                                 }
@@ -244,12 +248,13 @@ struct ContentView: View {
                                 if appState.isStreamActive {
                                     Task {
                                         appState.isStreamActive = false
-                                        streamer.endStream()
+                                        appState.viewport = .camera
+                                        Streamer.shared.endStream()
                                         LOG("Stopped recording", level: .info)
                                     }
                                 } else {
                                     Task {
-                                        streamer.startStream()
+                                        Streamer.shared.startStream()
                                         appState.isStreamActive = true
                                         LOG("Started recording", level: .info)
                                     }
@@ -307,7 +312,7 @@ struct ContentView: View {
 
                     SmallButton(imageName: appState.isStabilizationOn ? "hand.raised.fill" : "hand.raised.slash") {
                         Task {
-                            stabilizations = await cameraMonitor.getStabilizations()
+                            stabilizations = await CameraMonitor.shared.getStabilizations()
                             showStabilizationPicker.toggle()
                             if showStabilizationPicker && showCameraPicker {
                                 showCameraPicker = false
@@ -324,7 +329,7 @@ struct ContentView: View {
                         enableFocusAndExposureTap = appState.isExposureLocked || appState.isFocusLocked
                         if !appState.isFocusLocked {
                             Task {
-                                await cameraMonitor.setAutoFocus()
+                                await CameraMonitor.shared.setAutoFocus()
                             }
                         }
                     }
@@ -338,7 +343,7 @@ struct ContentView: View {
                         enableFocusAndExposureTap = appState.isExposureLocked || appState.isFocusLocked
                         if !appState.isExposureLocked {
                             Task {
-                                await cameraMonitor.setAutoExposure()
+                                await CameraMonitor.shared.setAutoExposure()
                             }
                         }
                     }
@@ -351,12 +356,12 @@ struct ContentView: View {
                         appState.isWhiteBalanceLocked.toggle()
                         if appState.isWhiteBalanceLocked {
                             Task {
-                                await cameraMonitor.lockWhiteBalance()
+                                await CameraMonitor.shared.lockWhiteBalance()
                             }
                         }
                         else {
                             Task {
-                                await cameraMonitor.setAutoWhiteBalance()
+                                await CameraMonitor.shared.setAutoWhiteBalance()
                             }
                         }
                         
@@ -365,6 +370,18 @@ struct ContentView: View {
                     Text("WHITE")
                         .font(.system(size: 8))
                         .padding(.bottom, 3)
+
+
+                    SmallButton(imageName: appState.viewport == .camera ? "rectangle.on.rectangle" : "rectangle.on.rectangle.fill",
+                                foregroundColor: appState.isStreamActive ? .white : .white.opacity(0.3)) {
+                        if appState.isStreamActive {
+                            appState.viewport = appState.viewport == .camera ? .output : .camera
+                        }
+                    }
+                    Text(appState.viewport == .camera ? "INPUT" : "OUTPT")
+                        .font(.system(size: 8))
+                        .padding(.bottom, 3)
+                    
 
                     SmallButton(imageName: "text.quote") {
                         showJournal.toggle()
@@ -383,8 +400,8 @@ struct ContentView: View {
                 if enableFocusAndExposureTap {
                     interactionData.location = location
                     Task {
-                        if appState.isExposureLocked { await cameraMonitor.setExposure(at: location) }
-                        if appState.isFocusLocked { await cameraMonitor.setFocus(at: location) }
+                        if appState.isExposureLocked { await CameraMonitor.shared.setExposure(at: location) }
+                        if appState.isFocusLocked { await CameraMonitor.shared.setFocus(at: location) }
                     }
                     showFocusAndExposureArea = true
                     // Schedule hide with a method that cancels and reschedules
@@ -437,7 +454,7 @@ struct ContentView: View {
             selectedCamera = UserDefaults.standard.string(forKey: "SelectedCamera") ?? DEFAULT_CAMERA
             selectedStabilization = UserDefaults.standard.string(forKey: "CameraStabilization") ?? "Off"
             Task {
-                cameras = await cameraMonitor.getCameras()
+                cameras = await CameraMonitor.shared.getCameras()
             }
         }
     }

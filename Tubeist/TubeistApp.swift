@@ -9,9 +9,16 @@ import SwiftUI
 import Observation
 import AVFoundation
 
+// different views for the iPhone display
+enum Viewport {
+    case camera
+    case output
+}
+
 // these are my shared variables
 @Observable @MainActor
 final class AppState {
+    var viewport: Viewport = .camera
     var isBatterySavingOn = false
     var isStreamActive = false
     var isAudioLevelRunning = true
@@ -23,7 +30,7 @@ final class AppState {
     var hadToStopStreaming = false
     var streamHealth = StreamHealth.silenced
     var cameraMonitorId = UUID()
-        
+    
     func refreshCameraView() {
         cameraMonitorId = UUID()
     }
@@ -31,7 +38,6 @@ final class AppState {
 
 @main
 struct TubeistApp: App {
-    private let streamer = Streamer.shared
     @State private var appState = AppState()
     @Environment(\.scenePhase) private var scenePhase
     
@@ -50,19 +56,19 @@ struct TubeistApp: App {
             case (.inactive, .background), (.active, .background):
                 LOG("App is entering background", level: .debug)
                 Task {
-                    if await streamer.isStreaming() {
+                    if await Streamer.shared.isStreaming() {
                         LOG("Stopping stream due to background state", level: .warning)
                         appState.hadToStopStreaming = true
-                        streamer.endStream()
+                        Streamer.shared.endStream()
                     }
-                    streamer.stopCamera()
+                    Streamer.shared.stopCamera()
                 }
             case (.background, .inactive), (.background, .active):
                 if !appState.justCameFromBackground {
                     appState.justCameFromBackground = true
                     LOG("App is coming back from background", level: .debug)
                     // Refresh the camera view
-                    streamer.startCamera()
+                    Streamer.shared.startCamera()
                     appState.refreshCameraView()
                 }
             default: break
@@ -71,8 +77,8 @@ struct TubeistApp: App {
     }
     init() {
         LOG("Starting Tubeist", level: .info)
-        streamer.setAppState(appState)
-        streamer.startCamera()
+        Streamer.shared.setAppState(appState)
+        Streamer.shared.startCamera()
         UIApplication.shared.isIdleTimerDisabled = true
         do {
             try AVAudioSession.sharedInstance().setCategory(

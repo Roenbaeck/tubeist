@@ -92,7 +92,6 @@ struct OverlaySetting: Identifiable, Codable, Hashable {
 
 struct SettingsView: View {
     var overlayManager: OverlaySettingsManager
-    private let streamer = Streamer.shared
     @Environment(AppState.self) var appState
     @Environment(\.presentationMode) private var presentationMode
     @AppStorage("HLSServer") private var hlsServer: String = ""
@@ -298,7 +297,7 @@ struct SettingsView: View {
                     saveCustomPreset()
                 }
                 presentationMode.wrappedValue.dismiss()
-                streamer.cycleCamera()
+                Streamer.shared.cycleCamera()
             }
             .buttonStyle(.borderedProminent))
             .onAppear {

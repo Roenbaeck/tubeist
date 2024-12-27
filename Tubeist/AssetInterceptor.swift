@@ -161,7 +161,6 @@ final class AssetInterceptor: NSObject, AVAssetWriterDelegate, Sendable {
     public static let shared = AssetInterceptor()
     private let assetWriter = AssetWriterActor()
     private let fragmentSequenceNumber = fragmentSequenceNumberActor()
-    private let fragmentPusher = FragmentPusher.shared
     private let fragmentFolderURL: URL?
     override init() {
         let fileManager = FileManager.default
@@ -218,8 +217,8 @@ final class AssetInterceptor: NSObject, AVAssetWriterDelegate, Sendable {
                 let sequenceNumber = await fragmentSequenceNumber.next()
                 let fragment = Fragment(sequence: sequenceNumber, segment: segmentData, duration: duration, type: fragmentType)
                 LOG("Produced \(fragment)", level: .debug)
-                fragmentPusher.addFragment(fragment)
-                fragmentPusher.uploadFragment(attempt: 1)
+                FragmentPusher.shared.addFragment(fragment)
+                FragmentPusher.shared.uploadFragment(attempt: 1)
                 saveFragmentToFile(fragment)
             }
         }

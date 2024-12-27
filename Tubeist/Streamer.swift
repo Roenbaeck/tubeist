@@ -34,6 +34,9 @@ actor StreamingActor {
             await appState?.streamHealth = health
         }
     }
+    func getViewport() async -> Viewport {
+        await appState?.viewport ?? .camera
+    }
     func isStreaming() async -> Bool {
         await appState?.isStreamActive ?? false
     }
@@ -47,10 +50,6 @@ actor StreamingActor {
 final class Streamer: Sendable {
     public static let shared = Streamer()
     private let streamingActor = StreamingActor()
-    private let cameraMonitor = CameraMonitor.shared
-    private let frameGrabber = FrameGrabber.shared
-    private let assetInterceptor = AssetInterceptor.shared
-    private let fragmentPusher = FragmentPusher.shared
     
     func setAppState(_ appState: AppState) {
         Task {
@@ -59,37 +58,37 @@ final class Streamer: Sendable {
     }
     func cycleCamera() {
         Task {
-            await cameraMonitor.stopCamera()
-            await cameraMonitor.startCamera()
+            await CameraMonitor.shared.stopCamera()
+            await CameraMonitor.shared.startCamera()
             await streamingActor.refreshCameraView()
         }
     }
     func startCamera() {
         Task {
-            await cameraMonitor.startCamera()
+            await CameraMonitor.shared.startCamera()
         }
     }
     func stopCamera() {
         Task {
-            await cameraMonitor.stopCamera()
+            await CameraMonitor.shared.stopCamera()
         }
     }
     func startStream() {
         Task {
-            await fragmentPusher.immediatePreparation()
-            await assetInterceptor.beginIntercepting()
-            await frameGrabber.commenceGrabbing()
-            await cameraMonitor.startOutput();
+            await FragmentPusher.shared.immediatePreparation()
+            await AssetInterceptor.shared.beginIntercepting()
+            await FrameGrabber.shared.commenceGrabbing()
+            await CameraMonitor.shared.startOutput();
             await streamingActor.run()
         }
     }
     func endStream() {
         Task {
             await streamingActor.pause()
-            await cameraMonitor.stopOutput()
-            await frameGrabber.terminateGrabbing()
-            await assetInterceptor.endIntercepting()
-            await fragmentPusher.gracefulShutdown()
+            await CameraMonitor.shared.stopOutput()
+            await FrameGrabber.shared.terminateGrabbing()
+            await AssetInterceptor.shared.endIntercepting()
+            await FragmentPusher.shared.gracefulShutdown()
         }
     }
     func isStreaming() async -> Bool {
@@ -100,5 +99,7 @@ final class Streamer: Sendable {
             await streamingActor.setStreamHealth(health)
         }
     }
-
+    func getViewport() async -> Viewport {
+        await streamingActor.getViewport()
+    }
 }

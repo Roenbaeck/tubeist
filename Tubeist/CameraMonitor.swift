@@ -17,7 +17,6 @@ private actor CameraActor {
     private let audioDevice: AVCaptureDevice?
     private var audioInput: AVCaptureDeviceInput?
     private let audioOutput = AVCaptureAudioDataOutput()
-    private let frameGrabber = FrameGrabber.shared
     private var frameRate: Int
     private var minZoomFactor: CGFloat = 1.0
     private var maxZoomFactor: CGFloat = 1.0
@@ -272,8 +271,8 @@ private actor CameraActor {
     }
 
     func startOutput() {
-        videoOutput.setSampleBufferDelegate(frameGrabber, queue: STREAMING_QUEUE_CONCURRENT)
-        audioOutput.setSampleBufferDelegate(frameGrabber, queue: STREAMING_QUEUE_CONCURRENT)
+        videoOutput.setSampleBufferDelegate(FrameGrabber.shared, queue: STREAMING_QUEUE_CONCURRENT)
+        audioOutput.setSampleBufferDelegate(FrameGrabber.shared, queue: STREAMING_QUEUE_CONCURRENT)
     }
     
     func stopOutput() {
@@ -592,7 +591,6 @@ extension AVCaptureDevice {
 }
 
 struct CameraMonitorView: UIViewControllerRepresentable {
-    private let cameraMonitor = CameraMonitor.shared
     func makeUIViewController(context: Context) -> UIViewController {
         let viewController = UIViewController()
         // Ensure view is loaded before configurations
@@ -601,7 +599,7 @@ struct CameraMonitorView: UIViewControllerRepresentable {
     }
     
     func updateUIViewController(_ uiViewController: UIViewController, context: Context) {
-        cameraMonitor.configurePreviewLayer(on: uiViewController)
+        CameraMonitor.shared.configurePreviewLayer(on: uiViewController)
     }
     
 }
