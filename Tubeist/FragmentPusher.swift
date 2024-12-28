@@ -163,15 +163,15 @@ actor URLSessionActor {
         baseURLRequest = URLSessionActor.createBaseUploadRequest()
     }
     private static func createBaseUploadRequest() -> URLRequest? {
-        let hlsServer = UserDefaults.standard.string(forKey: "HLSServer") ?? ""
+        let hlsServer = Settings.hlsServer ?? ""
         if let url = URL(string: hlsServer) {
             var request = URLRequest(url: url.appendingPathComponent("upload_segment"))
             request.httpMethod = "POST"
 //            request.assumesHTTP3Capable = true // too soon to use this since server side code is shaky
             
             // Add Basic Authentication header
-            let username = UserDefaults.standard.string(forKey: "Username") ?? "brute"
-            let password = UserDefaults.standard.string(forKey: "Password") ?? "force"
+            let username = Settings.hlsUsername ?? "brute"
+            let password = Settings.hlsPassword ?? "force"
             
             let loginString = String(format: "%@:%@", username, password)
             let loginData = loginString.data(using: .utf8)!
@@ -180,10 +180,10 @@ actor URLSessionActor {
             request.setValue("Basic \(base64LoginString)", forHTTPHeaderField: "Authorization")
             request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
 
-            let target = UserDefaults.standard.string(forKey: "Target") ?? DEFAULT_TARGET
+            let target = Settings.target
             request.setValue(target, forHTTPHeaderField: "Target")
             
-            let streamKey = UserDefaults.standard.string(forKey: "StreamKey") ?? ""
+            let streamKey = Settings.streamKey ?? ""
             request.setValue(streamKey, forHTTPHeaderField: "Stream-Key")
             
             return request

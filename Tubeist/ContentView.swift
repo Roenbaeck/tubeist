@@ -146,7 +146,7 @@ struct ContentView: View {
                                 )
                                 .onChange(of: selectedCamera) { _, newCamera in
                                     LOG("Seletected camera: \(newCamera)", level: .debug)
-                                    UserDefaults.standard.set(newCamera, forKey: "SelectedCamera")
+                                    Settings.selectedCamera = newCamera
                                     Streamer.shared.cycleCamera()
                                 }
                             }
@@ -369,7 +369,8 @@ struct ContentView: View {
                         .padding(.bottom, 3)
 
 
-                    SmallButton(imageName: appState.activeMonitor == .camera ? "rectangle.on.rectangle" : "rectangle.on.rectangle.fill") {
+                    SmallButton(imageName: appState.activeMonitor == .camera ? "rectangle.on.rectangle" : "rectangle.on.rectangle.fill",
+                                foregroundColor: appState.activeMonitor == .output ? .yellow : .white) {
                         Streamer.shared.setMonitor(appState.activeMonitor == .camera ? .output : .camera)
                     }
                     Text(appState.activeMonitor == .camera ? "BFORE" : "AFTER")
@@ -445,8 +446,8 @@ struct ContentView: View {
             }
         }
         .onAppear {
-            selectedCamera = UserDefaults.standard.string(forKey: "SelectedCamera") ?? DEFAULT_CAMERA
-            selectedStabilization = UserDefaults.standard.string(forKey: "CameraStabilization") ?? "Off"
+            selectedCamera = Settings.selectedCamera
+            selectedStabilization = Settings.cameraStabilization ?? "Off"
             Task {
                 cameras = await CameraMonitor.shared.getCameras()
             }
@@ -454,7 +455,7 @@ struct ContentView: View {
     }
 
     func loadOverlaysFromStorage() -> [OverlaySetting] {
-        guard let overlaysData = UserDefaults.standard.data(forKey: "Overlays"),
+        guard let overlaysData = Settings.overlaysData,
               let decodedOverlays = try? JSONDecoder().decode([OverlaySetting].self, from: overlaysData) else {
             return []
         }

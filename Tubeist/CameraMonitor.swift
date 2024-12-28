@@ -370,7 +370,7 @@ private actor CameraManager {
     }
     
     func startCamera() async {
-        let camera = UserDefaults.standard.string(forKey: "SelectedCamera") ?? DEFAULT_CAMERA
+        let camera = Settings.selectedCamera
         guard let cameraType = cameras[camera] else {
             LOG("Cannot find camera \(camera)", level: .error)
             return
@@ -423,12 +423,12 @@ private actor CameraManager {
             return
         }
         if await cameraActor?.setCameraStabilization(to: stabilizationMode) ?? false {
-            UserDefaults.standard.set(stabilization, forKey: "CameraStabilization")
+            Settings.cameraStabilization = stabilization
             LOG("Video stabilization set to \(stabilization)", level: .debug)
         }
     }
     func getCameraStabilization() -> String {
-        return UserDefaults.standard.string(forKey: "CameraStabilization") ?? "Off"
+        return Settings.cameraStabilization ?? "Off"
     }
     func setZoomFactor(_ zoomFactor: CGFloat) async {
         await cameraActor?.setZoomFactor(zoomFactor)

@@ -224,7 +224,7 @@ final class AssetInterceptor: NSObject, AVAssetWriterDelegate, Sendable {
         }
     }
     func saveFragmentToFile(_ fragment: Fragment) {
-        let saveFragmentsLocally = UserDefaults.standard.bool(forKey: "SaveFragmentsLocally")
+        let saveFragmentsLocally = Settings.saveFragmentsLocally
         if saveFragmentsLocally {
             guard let outputDirectory = fragmentFolderURL?.appendingPathComponent("DataFiles") else {
                 LOG("Cannot write file to local storage", level: .error)

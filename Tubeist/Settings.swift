@@ -71,7 +71,7 @@ struct OverlaySetting: Identifiable, Codable, Hashable {
     }
 
     static func loadOverlaysFromStorage() -> [OverlaySetting] {
-        guard let overlaysData = UserDefaults.standard.data(forKey: "Overlays"),
+        guard let overlaysData = Settings.overlaysData,
               let decodedOverlays = try? JSONDecoder().decode([OverlaySetting].self, from: overlaysData) else {
             return []
         }
@@ -82,7 +82,7 @@ struct OverlaySetting: Identifiable, Codable, Hashable {
         guard let encodedOverlays = try? JSONEncoder().encode(overlays) else {
             return
         }
-        UserDefaults.standard.set(encodedOverlays, forKey: "Overlays")
+        Settings.overlaysData = encodedOverlays
     }
 
     func addOverlay(url: String) {
@@ -104,10 +104,10 @@ struct SettingsView: View {
     @Environment(AppState.self) var appState
     @Environment(\.presentationMode) private var presentationMode
     @AppStorage("HLSServer") private var hlsServer: String = ""
+    @AppStorage("Username") private var hlsUsername: String = ""
+    @AppStorage("Password") private var hlsPassword: String = ""
     @AppStorage("Target") private var target: String = DEFAULT_TARGET
     @AppStorage("StreamKey") private var streamKey: String = ""
-    @AppStorage("Username") private var username: String = ""
-    @AppStorage("Password") private var password: String = ""
     @AppStorage("SaveFragmentsLocally") private var saveFragmentsLocally: Bool = false
     @AppStorage("InputSyncsWithOutput") private var inputSyncsWithOutput: Bool = false
     @AppStorage("MeasuredBandwidth") private var measuredBandwidth: Int = 1000 // in kbit/s
@@ -138,12 +138,12 @@ struct SettingsView: View {
                         .autocapitalization(.none)
                         .disableAutocorrection(true)
 
-                    TextField("Username", text: $username)
+                    TextField("Username", text: $hlsUsername)
                         .autocapitalization(.none)
                         .disableAutocorrection(true)
                         .textContentType(.username)
                     
-                    SecureField("Password", text: $password)
+                    SecureField("Password", text: $hlsPassword)
                         .autocapitalization(.none)
                         .disableAutocorrection(true)
                         .textContentType(.password)
@@ -392,6 +392,83 @@ final class Settings: Sendable {
         return selectedPreset
     }
     static var isInputSyncedWithOutput: Bool {
-        UserDefaults.standard.bool(forKey: "InputSyncsWithOutput")
+        get {
+            UserDefaults.standard.bool(forKey: "InputSyncsWithOutput")
+        }
+        set {
+            UserDefaults.standard.set(newValue, forKey: "InputSyncsWithOutput")
+        }
+    }
+    static var saveFragmentsLocally: Bool {
+        get {
+            UserDefaults.standard.bool(forKey: "SaveFragmentsLocally")
+        }
+        set {
+            UserDefaults.standard.set(newValue, forKey: "SaveFragmentsLocally")
+        }
+    }
+    static var selectedCamera: String {
+        get {
+            UserDefaults.standard.string(forKey: "SelectedCamera") ?? DEFAULT_CAMERA
+        }
+        set {
+            UserDefaults.standard.set(newValue, forKey: "SelectedCamera")
+        }
+    }
+    static var hlsServer: String? {
+        get {
+            UserDefaults.standard.string(forKey: "HLSServer")
+        }
+        set {
+            UserDefaults.standard.set(newValue, forKey: "HLSServer")
+        }
+    }
+    static var hlsUsername: String? {
+        get {
+            UserDefaults.standard.string(forKey: "Username")
+        }
+        set {
+            UserDefaults.standard.set(newValue, forKey: "Username")
+        }
+    }
+    static var hlsPassword: String? {
+        get {
+            UserDefaults.standard.string(forKey: "Password")
+        }
+        set {
+            UserDefaults.standard.set(newValue, forKey: "Password")
+        }
+    }
+    static var target: String {
+        get {
+            UserDefaults.standard.string(forKey: "Target") ?? DEFAULT_TARGET
+        }
+        set {
+            UserDefaults.standard.set(newValue, forKey: "Target")
+        }
+    }
+    static var streamKey: String? {
+        get {
+            UserDefaults.standard.string(forKey: "StreamKey")
+        }
+        set {
+            UserDefaults.standard.set(newValue, forKey: "StreamKey")
+        }
+    }
+    static var cameraStabilization: String? {
+        get {
+            UserDefaults.standard.string(forKey: "CameraStabilization")
+        }
+        set {
+            UserDefaults.standard.set(newValue, forKey: "CameraStabilization")
+        }
+    }
+    static var overlaysData: Data? {
+        get {
+            UserDefaults.standard.data(forKey: "Overlays")
+        }
+        set {
+            UserDefaults.standard.set(newValue, forKey: "Overlays")
+        }
     }
 }
