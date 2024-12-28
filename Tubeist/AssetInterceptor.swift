@@ -30,7 +30,7 @@ actor AssetWriterActor {
         assetWriter.initialSegmentStartTime = .zero
         assetWriter.delegate = AssetInterceptor.shared
         
-        let selectedPreset = Settings.getSelectedPreset()
+        let selectedPreset = Settings.selectedPreset
         let selectedVideoBitrate = selectedPreset?.videoBitrate ?? DEFAULT_VIDEO_BITRATE
         let selectedAudioBitrate = selectedPreset?.audioBitrate ?? DEFAULT_AUDIO_BITRATE
         let selectedAudioChannels = selectedPreset?.audioChannels ?? DEFAULT_AUDIO_CHANNELS
@@ -38,7 +38,7 @@ actor AssetWriterActor {
         let selectedHeight = selectedPreset?.height ?? DEFAULT_COMPRESSED_HEIGHT
         let selectedKeyframeInterval = selectedPreset?.keyframeInterval ?? DEFAULT_KEYFRAME_INTERVAL
         let selectedFrameRate = selectedPreset?.frameRate ?? DEFAULT_FRAMERATE
-        let frameIntervalKey = Int(ceil(selectedKeyframeInterval * Double(selectedFrameRate)))
+        let frameIntervalKey = Int(ceil(selectedKeyframeInterval * selectedFrameRate))
         
         LOG("[video bitrate]: \(selectedVideoBitrate) [audio bitrate]: \(selectedAudioBitrate) [audio channels]: \(selectedAudioChannels) [width]: \(selectedWidth) [height]: \(selectedHeight) [frame rate]: \(selectedFrameRate) [key frame every frames]: \(frameIntervalKey)", level: .debug)
         

@@ -17,7 +17,7 @@ private actor CameraActor {
     private let audioDevice: AVCaptureDevice?
     private var audioInput: AVCaptureDeviceInput?
     private let audioOutput = AVCaptureAudioDataOutput()
-    private var frameRate: Int
+    private var frameRate: Double
     private var minZoomFactor: CGFloat = 1.0
     private var maxZoomFactor: CGFloat = 1.0
     private var opticalZoomFactor: CGFloat = 1.0
@@ -29,8 +29,7 @@ private actor CameraActor {
         previewLayer = AVCaptureVideoPreviewLayer(session: session)
 
         // Fetch frame rate from settings
-        let selectedPreset = Settings.getSelectedPreset()
-        self.frameRate = selectedPreset?.frameRate ?? DEFAULT_FRAMERATE
+        self.frameRate = Settings.selectedPreset?.frameRate ?? DEFAULT_FRAMERATE
         
         // Get devices
         self.videoDevice = camera
@@ -100,13 +99,12 @@ private actor CameraActor {
                 LOG("Desired format not found", level: .error)
                 return
             }
-            
-            videoDevice.printFormatDetails(captureFormat: format)
+            LOG("Found format:\n\(String(describing: format))")
             
             // Apply the format to the video device
             try videoDevice.lockForConfiguration()
             videoDevice.activeFormat = format
-            let frameDurationParts = Int64(TIMESCALE / self.frameRate)
+            let frameDurationParts = Int64(Double(TIMESCALE) / self.frameRate)
             videoDevice.activeVideoMinFrameDuration = CMTimeMake(value: frameDurationParts, timescale: Int32(TIMESCALE))
             videoDevice.activeVideoMaxFrameDuration = CMTimeMake(value: frameDurationParts, timescale: Int32(TIMESCALE))
             videoDevice.activeColorSpace = AV_COLOR_SPACE
@@ -149,7 +147,7 @@ private actor CameraActor {
         return supportedModes
     }
     
-    func getCameraFrameRate() -> Int {
+    func getCameraFrameRate() -> Double {
         return self.frameRate
     }
         
@@ -465,7 +463,7 @@ private actor CameraManager {
     func configurePreviewLayer(on viewController: UIViewController) async {
         await cameraActor?.configurePreviewLayer(on: viewController)
     }
-    func getCameraFrameRate() async -> Int {
+    func getCameraFrameRate() async -> Double {
         await cameraActor?.getCameraFrameRate() ?? DEFAULT_FRAMERATE
     }
 
@@ -536,7 +534,7 @@ final class CameraMonitor: Sendable {
     func setAutoWhiteBalance() async {
         await cameraManager.setAutoWhiteBalance()
     }
-    func getCameraFrameRate() async -> Int {
+    func getCameraFrameRate() async -> Double {
         await cameraManager.getCameraFrameRate()
     }
     func configurePreviewLayer(on viewController: UIViewController) {
@@ -544,47 +542,107 @@ final class CameraMonitor: Sendable {
             await cameraManager.configurePreviewLayer(on: viewController)
         }
     }
-
+    var frameRateLookup: [Resolution : Double] {
+        var lookup: [Resolution : Double] = [:]
+        guard let device = AVCaptureDevice.default(for: .video) else {
+            return lookup
+        }
+        for format in device.formats {
+            if format.isVideoHDRSupported {
+                let dimensions = format.formatDescription.dimensions
+                if dimensions.width * 9 == dimensions.height * 16 {
+                    let resolution = Resolution(Int(dimensions.width), Int(dimensions.height))
+                    for range in format.videoSupportedFrameRateRanges {
+                        if range.maxFrameRate > lookup[resolution] ?? 0 {
+                            lookup[resolution] = range.maxFrameRate
+                        }
+                    }
+                }
+            }
+        }
+        return lookup
+    }
 }
 
 
+struct CaptureFormatCandidate {
+    let width: Int
+    let height: Int
+    let frameRate: Double
+    let format: AVCaptureDevice.Format
+}
 
 // Extend AVCaptureDevice to include findFormat method
 extension AVCaptureDevice {
-    func printFormatDetails(captureFormat: AVCaptureDevice.Format) {
-        LOG("FormatID: \(captureFormat.formatDescription.mediaSubType.rawValue)", level: .debug)
-        LOG("Supports \(captureFormat.formatDescription)", level: .debug)
-        LOG("HDR: \(captureFormat.isVideoHDRSupported)", level: .debug)
-        LOG("Frame range: \(captureFormat.videoSupportedFrameRateRanges)", level: .debug)
-        LOG("Spatial video: \(captureFormat.isSpatialVideoCaptureSupported)", level: .debug)
-        LOG("Background replacement: \(captureFormat.isBackgroundReplacementSupported)", level: .debug)
-        LOG("Binned: \(captureFormat.isVideoBinned)", level: .debug)
-        LOG("Multi-cam: \(captureFormat.isMultiCamSupported)", level: .debug)
-        LOG("FOV: \(captureFormat.videoFieldOfView)", level: .debug)
-        LOG("ISO: \(captureFormat.minISO) - \(captureFormat.maxISO)", level: .debug)
-        LOG("Max zoom: \(captureFormat.videoMaxZoomFactor) (native zoom: \(captureFormat.secondaryNativeResolutionZoomFactors))", level: .debug)
-        LOG("AF: \(captureFormat.autoFocusSystem)", level: .debug)
-    }
-    func listFormats() {
-        for captureFormat in formats {
-            printFormatDetails(captureFormat: captureFormat)
-        }
-    }
     func findFormat() -> AVCaptureDevice.Format? {
+        let width = (Settings.isInputSyncedWithOutput ? Settings.selectedPreset?.width : DEFAULT_CAPTURE_WIDTH) ?? DEFAULT_CAPTURE_WIDTH
+        let height = (Settings.isInputSyncedWithOutput ? Settings.selectedPreset?.height : DEFAULT_CAPTURE_HEIGHT) ?? DEFAULT_CAPTURE_HEIGHT
+        let frameRate = Settings.selectedPreset?.frameRate ?? DEFAULT_FRAMERATE
+        LOG("Searching for best capture format with resolution \(width)x\(height) and \(frameRate) FPS.")
+        var candidates: [CaptureFormatCandidate] = []
         for captureFormat in formats {
+            // Prefer 'x422' for HDR capture, since 4:2:2 gives the best possible color fidelity on current phones
             if captureFormat.formatDescription.mediaSubType.rawValue == kCVPixelFormatType_422YpCbCr10BiPlanarVideoRange {
                 let description = captureFormat.formatDescription as CMFormatDescription
                 let dimensions = CMVideoFormatDescriptionGetDimensions(description)
-                if dimensions.width == CAPTURE_WIDTH && dimensions.height == CAPTURE_HEIGHT,
+                if dimensions.width >= width && dimensions.height >= height,
+                   dimensions.width * 9 == dimensions.height * 16,
                    let frameRateRange = captureFormat.videoSupportedFrameRateRanges.first,
-                   frameRateRange.maxFrameRate >= 60,
-                   captureFormat.isVideoHDRSupported,
-                   !captureFormat.isMultiCamSupported, // avoid this to get a different 4:2:2 with higher refresh rates
-                   captureFormat.maxISO >= 5184.0 {
-                    LOG("Desired format found", level: .info)
-                    return captureFormat
+                   frameRateRange.maxFrameRate >= frameRate,
+                   captureFormat.isVideoHDRSupported {
+                    candidates.append(
+                        CaptureFormatCandidate(
+                            width: Int(dimensions.width),
+                            height: Int(dimensions.height),
+                            frameRate: frameRateRange.maxFrameRate,
+                            format: captureFormat
+                        )
+                    )
                 }
             }
+        }
+        if !candidates.isEmpty {
+            LOG("Found \(candidates.count) 'x422' candidates")
+            candidates.sort {
+                if $0.width != $1.width {
+                    return $0.width < $1.width          // Sort by width primarily
+                } else {
+                    return $0.frameRate < $1.frameRate  // Sort by frameRate secondarily if widths are equal
+                }
+            }
+            return candidates.first?.format
+        }
+        for captureFormat in formats {
+            // Fall back to 'x420' for HDR capture, which has less fidelity due to 4:2:0 chroma subsampling
+            if captureFormat.formatDescription.mediaSubType.rawValue == kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange {
+                let description = captureFormat.formatDescription as CMFormatDescription
+                let dimensions = CMVideoFormatDescriptionGetDimensions(description)
+                if dimensions.width >= width && dimensions.height >= height,
+                   dimensions.width * 9 == dimensions.height * 16,
+                   let frameRateRange = captureFormat.videoSupportedFrameRateRanges.first,
+                   frameRateRange.maxFrameRate >= frameRate,
+                   captureFormat.isVideoHDRSupported {
+                    candidates.append(
+                        CaptureFormatCandidate(
+                            width: Int(dimensions.width),
+                            height: Int(dimensions.height),
+                            frameRate: frameRateRange.maxFrameRate,
+                            format: captureFormat
+                        )
+                    )
+                }
+            }
+        }
+        if !candidates.isEmpty {
+            LOG("Found \(candidates.count) 'x420' candidates")
+            candidates.sort {
+                if $0.width != $1.width {
+                    return $0.width < $1.width          // Sort by width primarily
+                } else {
+                    return $0.frameRate < $1.frameRate  // Sort by frameRate secondarily if widths are equal
+                }
+            }
+            return candidates.first?.format
         }
         return nil
     }

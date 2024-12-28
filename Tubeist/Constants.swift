@@ -16,12 +16,12 @@ let STREAMING_QUEUE_CONCURRENT = DispatchQueue(label: "com.subside.StreamingQueu
 // CameraMonitor settings
 let DEFAULT_CAMERA = "Back Camera" // available on most (all?) devices
 let ZOOM_LIMIT = 20.0
-let DEFAULT_FRAMERATE: Int = 30
-let CAPTURE_WIDTH: Int = 3840
-let CAPTURE_HEIGHT: Int = 2160
+let DEFAULT_FRAMERATE: Double = 60
+let DEFAULT_CAPTURE_WIDTH: Int = 3840
+let DEFAULT_CAPTURE_HEIGHT: Int = 2160
 
 // Color settings
-let CG_COLOR_SPACE: CGColorSpace = CGColorSpace(name: CGColorSpace.itur_2100_HLG)!
+let CG_COLOR_SPACE: CGColorSpace = .init(name: CGColorSpace.itur_2100_HLG)!
 let AV_COLOR_SPACE: AVCaptureColorSpace = .HLG_BT2020
 
 // AssetInterceptor settings
@@ -46,6 +46,7 @@ func LOG(_ message: String, level: LogLevel = .info) {
 }
 
 // FragmentPusher settings
+let DEFAULT_TARGET = "youtube"
 let NETWORK_METRICS_SLIDING_WINDOW: TimeInterval = 10 // seconds
 let MAX_UPLOAD_RETRIES = 30
 let MAX_CONCURRENT_UPLOADS = 3

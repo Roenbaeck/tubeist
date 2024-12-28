@@ -11,7 +11,7 @@ struct Preset: Codable, Equatable, Identifiable, Hashable {
     let name: String
     let width: Int
     let height: Int
-    let frameRate: Int
+    let frameRate: Double
     let keyframeInterval: Double
     let audioChannels: Int
     let audioBitrate: Int
@@ -30,7 +30,7 @@ struct Preset: Codable, Equatable, Identifiable, Hashable {
 }
 
 let movingCameraPresets: [Preset] = [
-    Preset(name: "480p",  width: 854,  height: 480,  frameRate: 30, keyframeInterval: 1.0, audioChannels: 1, audioBitrate: 48_000,  videoBitrate: 1_450_000),
+    Preset(name: "540p",  width: 960,  height: 540,  frameRate: 30, keyframeInterval: 1.0, audioChannels: 1, audioBitrate: 48_000,  videoBitrate: 1_450_000),
     Preset(name: "720p",  width: 1280, height: 720,  frameRate: 30, keyframeInterval: 1.0, audioChannels: 1, audioBitrate: 64_000,  videoBitrate: 2_900_000),
     Preset(name: "1080p", width: 1920, height: 1080, frameRate: 30, keyframeInterval: 1.0, audioChannels: 2, audioBitrate: 96_000,  videoBitrate: 5_800_000),
     Preset(name: "1440p", width: 2560, height: 1440, frameRate: 30, keyframeInterval: 1.0, audioChannels: 2, audioBitrate: 128_000, videoBitrate: 9_700_000),
@@ -38,12 +38,21 @@ let movingCameraPresets: [Preset] = [
 ]
 
 let stationaryCameraPresets: [Preset] = [
-    Preset(name: "480p",  width: 854,  height: 480,  frameRate: 30, keyframeInterval: 2.0, audioChannels: 1, audioBitrate: 48_000,  videoBitrate: 950_000),
+    Preset(name: "540p",  width: 960,  height: 540,  frameRate: 30, keyframeInterval: 2.0, audioChannels: 1, audioBitrate: 48_000,  videoBitrate: 950_000),
     Preset(name: "720p",  width: 1280, height: 720,  frameRate: 30, keyframeInterval: 2.0, audioChannels: 1, audioBitrate: 64_000,  videoBitrate: 1_900_000),
     Preset(name: "1080p", width: 1920, height: 1080, frameRate: 30, keyframeInterval: 2.0, audioChannels: 2, audioBitrate: 96_000,  videoBitrate: 3_900_000),
     Preset(name: "1440p", width: 2560, height: 1440, frameRate: 30, keyframeInterval: 2.0, audioChannels: 2, audioBitrate: 128_000, videoBitrate: 6_700_000),
     Preset(name: "4K",    width: 3840, height: 2160, frameRate: 30, keyframeInterval: 2.0, audioChannels: 2, audioBitrate: 128_000, videoBitrate: 9_700_000)
 ]
+
+struct Resolution: Hashable {
+    let width: Int
+    let height: Int
+    init(_ width: Int, _ height: Int) {
+        self.width = width
+        self.height = height
+    }
+}
 
 struct OverlaySetting: Identifiable, Codable, Hashable {
     var id: String { url }
@@ -95,10 +104,12 @@ struct SettingsView: View {
     @Environment(AppState.self) var appState
     @Environment(\.presentationMode) private var presentationMode
     @AppStorage("HLSServer") private var hlsServer: String = ""
+    @AppStorage("Target") private var target: String = DEFAULT_TARGET
     @AppStorage("StreamKey") private var streamKey: String = ""
     @AppStorage("Username") private var username: String = ""
     @AppStorage("Password") private var password: String = ""
     @AppStorage("SaveFragmentsLocally") private var saveFragmentsLocally: Bool = false
+    @AppStorage("InputSyncsWithOutput") private var inputSyncsWithOutput: Bool = false
     @AppStorage("MeasuredBandwidth") private var measuredBandwidth: Int = 1000 // in kbit/s
     @AppStorage("NetworkSharing") private var networkSharing: String = "many"
     @AppStorage("CameraPosition") private var cameraPosition: String = "stationary"
@@ -107,39 +118,26 @@ struct SettingsView: View {
     @State private var newOverlayURL: String = ""
     @State private var selectedPreset: Preset? = nil
     
-    private struct Resolution: Hashable {
-        let width: Int
-        let height: Int
-        init(_ width: Int, _ height: Int) {
-            self.width = width
-            self.height = height
-        }
-    }
-    
     // State variables for custom preset settings
     @State private var customResolution: Resolution = Resolution(DEFAULT_COMPRESSED_WIDTH, DEFAULT_COMPRESSED_HEIGHT)
-    @State private var customFrameRate: Int = DEFAULT_FRAMERATE
+    @State private var customFrameRate: Double = DEFAULT_FRAMERATE
     @State private var customKeyframeInterval: Double = DEFAULT_KEYFRAME_INTERVAL
     @State private var customAudioChannels: Int = DEFAULT_AUDIO_CHANNELS
     @State private var customAudioBitrate: Int = DEFAULT_AUDIO_BITRATE
     @State private var customVideoBitrate: Int = DEFAULT_VIDEO_BITRATE
     
+    private let frameRateLookup = CameraMonitor.shared.frameRateLookup
+    private let sliderLabelWidth: CGFloat = 30 // Adjust this value as needed
+    
     var body: some View {
         NavigationView {
             Form {
-                Section(header: Text("HLS Server"), footer: Text("Enter the URI of the HLS streaming server.")) {
+                Section(header: Text("HLS Server and Credentials"), footer: Text("Enter the URI of the HLS relay server and corresponding login details. The server can be downloaded from https://github.com/Roenbaeck/hls-relay.")) {
                     TextField("HLS Server URI", text: $hlsServer)
                         .keyboardType(.URL)
                         .autocapitalization(.none)
                         .disableAutocorrection(true)
-                }
-                
-                Section(header: Text("Authentication"), footer: Text("Provide your streaming server login details.")) {
-                    TextField("Stream Key", text: $streamKey)
-                        .keyboardType(.asciiCapable)
-                        .autocapitalization(.none)
-                        .disableAutocorrection(true)
- 
+
                     TextField("Username", text: $username)
                         .autocapitalization(.none)
                         .disableAutocorrection(true)
@@ -149,6 +147,17 @@ struct SettingsView: View {
                         .autocapitalization(.none)
                         .disableAutocorrection(true)
                         .textContentType(.password)
+                }
+                
+                Section(header: Text("Target Platform"), footer: Text("Select the target platform and provide its related stream details.")) {
+                    Picker("Target Platform", selection: $target) {
+                        Text("YouTube").tag("youtube")
+                    }
+                    .pickerStyle(.segmented)
+                    TextField("Stream Key", text: $streamKey)
+                        .keyboardType(.asciiCapable)
+                        .autocapitalization(.none)
+                        .disableAutocorrection(true)
                 }
                 
                 Section(header: Text("Camera"), footer: Text("Select if the camera will be moving around with altering scenery or remain stationary aimed at a single scene. If you do not want to get suggested presets and instead configure settings in detail, select 'Custom' here.")) {
@@ -185,42 +194,45 @@ struct SettingsView: View {
                         return Int(Double(measuredBandwidth) * networkFactor)
                     }
                     
-                    Picker("Stream Preset", selection: $selectedPreset) {
-                        ForEach(availablePresets) { preset in
-                            let unstreamable = (preset.videoBitrate + preset.audioChannels * preset.audioBitrate) > maximumBitrate
-                            let presetColor: Color = unstreamable ? .red : .primary
-                            Text(preset.name)
-                                .foregroundColor(presetColor)
-                                .tag(Optional(preset))
+                    Section(header: Text("PRESET"), footer: Text("Depending on your selections above, some presets may be determined to result in a poor streaming experience. These are colored red, and should not be used unless your network conditions change.")) {
+                        Picker(selection: $selectedPreset) {
+                            ForEach(availablePresets) { preset in
+                                let unstreamable = (preset.videoBitrate + preset.audioChannels * preset.audioBitrate) > maximumBitrate
+                                let presetColor: Color = unstreamable ? .red : .primary
+                                Text(preset.name)
+                                    .foregroundColor(presetColor)
+                                    .tag(Optional(preset))
+                            }
+                        } label: {
+                            // this is the way to trick an inline picker not to show an extra option with the label of the picker
                         }
-                    }
-                    .pickerStyle(.inline)
-                    .onChange(of: selectedPreset) { oldValue, newValue in
-                        if let selectedPreset = newValue {
-                            if let encoded = try? JSONEncoder().encode(selectedPreset) {
-                                selectedPresetData = encoded
+                        .pickerStyle(.inline)
+                        .onChange(of: selectedPreset) { oldValue, newValue in
+                            if let selectedPreset = newValue {
+                                if let encoded = try? JSONEncoder().encode(selectedPreset) {
+                                    selectedPresetData = encoded
+                                }
                             }
                         }
                     }
-                    
-                    Section {
-                        EmptyView()
-                    } footer: {
-                        Text("Depending on your selections above, some presets may be determined to result in a poor streaming experience. These are colored red, and should not be used unless your network conditions change.")
-                    }
-                    .offset(y: -30)
                 }
                 else {
                     // Allow custom settings here for every part of a Preset, except its name, which should be "Custom"
                     Section(header: Text("Custom Settings")) {
                         Picker("Stream resolution", selection: $customResolution) {
-                            Text("854x480").tag(Resolution(854, 480))
+                            Text("960x540").tag(Resolution(960, 540))
                             Text("1280x720").tag(Resolution(1280, 720))
                             Text("1920x1080").tag(Resolution(1920, 1080))
                             Text("2560x1440").tag(Resolution(2560, 1440))
                             Text("3840x2160").tag(Resolution(3840, 2160))
                         }
                         .pickerStyle(.segmented)
+                        .onChange(of: customResolution) { oldValue, newValue in
+                            let maxFrameRate = frameRateLookup[customResolution] ?? DEFAULT_FRAMERATE
+                            if customFrameRate > maxFrameRate {
+                                customFrameRate = maxFrameRate
+                            }
+                        }
                         
                         Picker("Key frame interval", selection: $customKeyframeInterval) {
                             Text("Two key frames per second").tag(0.5)
@@ -234,13 +246,33 @@ struct SettingsView: View {
                             Text("Stereo audio channels").tag(2)
                         }
                         .pickerStyle(.segmented)
-
-                        Text("Frame rate: \(customFrameRate) FPS")
+                        
+                        Text("Frame rate: \(String(format: "%.2f", customFrameRate)) FPS")
                             .font(.callout)
                         Slider(value: Binding(
-                            get: { Double(customFrameRate) },
-                            set: { customFrameRate = Int($0) }
-                        ), in: 5...60, step: 1)
+                            get: { customFrameRate },
+                            set: { customFrameRate = $0 + (customFrameRate - trunc(customFrameRate)) }
+                        ), in: 5...(frameRateLookup[customResolution] ?? DEFAULT_FRAMERATE), step: 1) {
+                            Text("Whole part of frame rate")
+                        } minimumValueLabel: {
+                            Text("5")
+                                .frame(width: sliderLabelWidth, alignment: .trailing)
+                        } maximumValueLabel: {
+                            Text("\(Int(frameRateLookup[customResolution] ?? DEFAULT_FRAMERATE))")
+                                .frame(width: sliderLabelWidth, alignment: .leading)
+                        }
+                        Slider(value: Binding(
+                            get: { customFrameRate - trunc(customFrameRate) },
+                            set: { customFrameRate = trunc(customFrameRate) + $0 }
+                        ), in: 0...0.99, step: 0.01) {
+                            Text("Decimal part of frame rate")
+                        } minimumValueLabel: {
+                            Text(".00")
+                                .frame(width: sliderLabelWidth, alignment: .trailing)
+                        } maximumValueLabel: {
+                            Text(".99")
+                                .frame(width: sliderLabelWidth, alignment: .leading)
+                        }
 
                         Text("Audio bitrate per channel: \(customAudioBitrate / 1000) kbps")
                             .font(.callout)
@@ -265,6 +297,17 @@ struct SettingsView: View {
                             customAudioBitrate = preset.audioBitrate
                             customVideoBitrate = preset.videoBitrate
                         }
+                    }
+                }
+
+                Section {
+                    Toggle("Input resolution syncs with output resolution", isOn: $inputSyncsWithOutput)
+                } footer: {
+                    if inputSyncsWithOutput {
+                        Text("Input resolution is synchronized with the output resolution. Camera video frames will be produced in the same resolution as the selected output. This yields the least CPU usage at the cost of a slight loss in color fidelity.")
+                    }
+                    else {
+                        Text("Input resolution is always 4K regardless of output resolution. Camera video frames will be downsampled to the output resolution if it is lower than 4K. This yields the best possible color fidelity at the cost of higher CPU usage.")
                     }
                 }
                 
@@ -339,7 +382,7 @@ struct SettingsView: View {
 }
 
 final class Settings: Sendable {
-    static func getSelectedPreset() -> Preset? {
+    static var selectedPreset: Preset? {
         var selectedPreset: Preset?
         if let selectedPresetData = UserDefaults.standard.data(forKey: "SelectedPreset") {
             if let preset = try? JSONDecoder().decode(Preset.self, from: selectedPresetData) {
@@ -347,5 +390,8 @@ final class Settings: Sendable {
             }
         }
         return selectedPreset
+    }
+    static var isInputSyncedWithOutput: Bool {
+        UserDefaults.standard.bool(forKey: "InputSyncsWithOutput")
     }
 }

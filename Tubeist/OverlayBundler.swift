@@ -32,6 +32,7 @@ extension UIImage {
 final class Overlay: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     private let url: URL
     private let bundler: OverlayBundler
+    private var snapshotWidth: Int = DEFAULT_CAPTURE_WIDTH
     private var webView: WKWebView?
     private var overlayImage: UIImage?
     private var lastCaptureTime: Date = Date.distantPast
@@ -50,7 +51,7 @@ final class Overlay: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         }
     }
 
-    func createWebView() -> WKWebView {
+    func createWebView(width: Int, height: Int) -> WKWebView {
         let config = WKWebViewConfiguration()
         config.processPool = WK_PROCESS_POOL
         config.suppressesIncrementalRendering = true
@@ -58,7 +59,7 @@ final class Overlay: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         config.allowsInlineMediaPlayback = true
         config.websiteDataStore = WKWebsiteDataStore.nonPersistent()
         
-        let webView = WKWebView(frame: CGRect(x: 0, y: 0, width: CAPTURE_WIDTH, height: CAPTURE_HEIGHT), configuration: config)
+        let webView = WKWebView(frame: CGRect(x: 0, y: 0, width: width, height: height), configuration: config)
         webView.isUserInteractionEnabled = false
         webView.navigationDelegate = self
         webView.isOpaque = false
@@ -75,6 +76,7 @@ final class Overlay: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
 
         webView.load(URLRequest(url: url))
         
+        self.snapshotWidth = width
         self.webView = webView
         return webView
     }
@@ -140,7 +142,7 @@ final class Overlay: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         lastCaptureTime = Date()
 
         let config = WKSnapshotConfiguration()
-        config.snapshotWidth = NSNumber(value: CAPTURE_WIDTH / Int(UIScreen.main.scale))
+        config.snapshotWidth = NSNumber(value: self.snapshotWidth / Int(UIScreen.main.scale))
 
         webView?.takeSnapshot(with: config) { (image, error) in
             guard let uiImage = image else {
@@ -232,7 +234,10 @@ struct OverlayBundlerView: UIViewRepresentable {
     }
 
     func makeUIView(context: Context) -> WKWebView {
-        context.coordinator.createWebView()
+        if Settings.isInputSyncedWithOutput, let preset = Settings.selectedPreset {
+            return context.coordinator.createWebView(width: preset.width, height: preset.height)
+        }
+        return context.coordinator.createWebView(width: DEFAULT_CAPTURE_WIDTH, height: DEFAULT_CAPTURE_HEIGHT)
     }
 
     func updateUIView(_ webView: WKWebView, context: Context) {

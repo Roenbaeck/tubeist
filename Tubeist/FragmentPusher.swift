@@ -179,6 +179,9 @@ actor URLSessionActor {
             
             request.setValue("Basic \(base64LoginString)", forHTTPHeaderField: "Authorization")
             request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+
+            let target = UserDefaults.standard.string(forKey: "Target") ?? DEFAULT_TARGET
+            request.setValue(target, forHTTPHeaderField: "Target")
             
             let streamKey = UserDefaults.standard.string(forKey: "StreamKey") ?? ""
             request.setValue(streamKey, forHTTPHeaderField: "Stream-Key")
