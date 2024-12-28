@@ -205,12 +205,13 @@ final class OverlayBundler: Sendable {
         LOG("Combining \(images.count) images", level: .debug)
 
         guard let imageComposition = UIImage.composite(images: images),
-              let ciImage_sRGB = CIImage(image: imageComposition),
-              let ciImage = ciImage_sRGB.matchedFromWorkingSpace(to: CG_COLOR_SPACE) else {
+              let ciImage = CIImage(image: imageComposition, options: [.expandToHDR: true, .colorSpace: CG_COLOR_SPACE])
+        else {
             LOG("Images could not be combined", level: .error)
             return
         }
-        
+        let colorSpace = ciImage.colorSpace?.name as String?
+        LOG("Combined overlay has color space: \(colorSpace ?? "unknown")", level: .debug)
         await combinedImage.setImage(ciImage)
     }
     
