@@ -11,6 +11,7 @@ import SwiftUI
 import AVKit
 
 private actor CameraActor {
+    private let cameraControlQueue = DispatchQueue(label: "com.subside.CameraControlQueue")
     private let session = AVCaptureSession()
     private let videoDevice: AVCaptureDevice?
     private var videoInput: AVCaptureDeviceInput?
@@ -131,7 +132,7 @@ private actor CameraActor {
     
     func addCameraControls() {
         guard let videoDevice else { return }
-        let systemZoomSlider = AVCaptureSystemZoomSlider(device: videoDevice) { zoomFactor in
+        let zoomSlider = AVCaptureSystemZoomSlider(device: videoDevice) { zoomFactor in
             let displayZoom = videoDevice.displayVideoZoomFactorMultiplier * zoomFactor
             Task {
                 await self.setZoomFactor(displayZoom)
@@ -139,11 +140,19 @@ private actor CameraActor {
                 await self.currentZoom?.wrappedValue = 0
             }
         }
-        if session.canAddControl(systemZoomSlider) {
+        if session.canAddControl(zoomSlider) {
             LOG("Adding system zoom slider camera control", level: .debug)
-            session.addControl(systemZoomSlider)
+            session.addControl(zoomSlider)
         }
-        session.setControlsDelegate(CameraMonitor.shared, queue: .main)
+        let exposureBiasSlider = AVCaptureSystemExposureBiasSlider(device: videoDevice) { exposureBias in
+            // LOG("Setting exposure via slider: \(exposureBias)", level: .debug)
+        }
+        if session.canAddControl(exposureBiasSlider) {
+            LOG("Adding system exposure bias slider camera control", level: .debug)
+            session.addControl(exposureBiasSlider)
+        }
+
+        session.setControlsDelegate(CameraMonitor.shared, queue: cameraControlQueue)
     }
     
     func findSupportedStabilizationModes() -> [String: AVCaptureVideoStabilizationMode] {
@@ -511,19 +520,19 @@ final class CameraMonitor: NSObject, Sendable, AVCaptureSessionControlsDelegate 
     }
 
     func sessionControlsDidBecomeActive(_ session: AVCaptureSession) {
-        // no-op
+        return
     }
     
     func sessionControlsWillEnterFullscreenAppearance(_ session: AVCaptureSession) {
-        // no-op
+        return
     }
     
     func sessionControlsWillExitFullscreenAppearance(_ session: AVCaptureSession) {
-        // no-op
+        return
     }
     
     func sessionControlsDidBecomeInactive(_ session: AVCaptureSession) {
-        // no-op
+        return
     }
 
     func getStabilizations() async -> [String] {
