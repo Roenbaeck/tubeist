@@ -37,11 +37,6 @@ actor StreamingActor {
     func getStreamHealth() async -> StreamHealth {
         await appState?.streamHealth ?? .awaiting
     }
-    func setMonitor(_ monitor: Monitor) async {
-        Task { @MainActor in
-            await appState?.activeMonitor = monitor
-        }
-    }
     func getMonitor() async -> Monitor {
         await appState?.activeMonitor ?? .camera
     }
@@ -64,44 +59,34 @@ final class Streamer: Sendable {
             await self.streamingActor.setAppState(appState)
         }
     }
-    func cycleCamera() {
-        Task {
-            await CameraMonitor.shared.stopCamera()
-            await CameraMonitor.shared.startCamera()
-            await streamingActor.refreshCameraView()
-        }
+    func cycleCamera() async {
+        await CameraMonitor.shared.stopCamera()
+        await CameraMonitor.shared.startCamera()
+        await streamingActor.refreshCameraView()
     }
-    func startCamera() {
-        Task {
-            await CameraMonitor.shared.startCamera()
-        }
+    func startCamera() async {
+        await CameraMonitor.shared.startCamera()
     }
-    func stopCamera() {
-        Task {
-            await CameraMonitor.shared.stopCamera()
-        }
+    func stopCamera() async {
+        await CameraMonitor.shared.stopCamera()
     }
-    func startStream() {
-        Task {
-            await FragmentPusher.shared.immediatePreparation()
-            await AssetInterceptor.shared.beginIntercepting()
-            if await streamingActor.getMonitor() == .camera {
-                await FrameGrabber.shared.commenceGrabbing()
-                await CameraMonitor.shared.startOutput()
-            }
-            await streamingActor.run()
+    func startStream() async {
+        await FragmentPusher.shared.immediatePreparation()
+        await AssetInterceptor.shared.beginIntercepting()
+        if await streamingActor.getMonitor() == .camera {
+            await FrameGrabber.shared.commenceGrabbing()
+            await CameraMonitor.shared.startOutput()
         }
+        await streamingActor.run()
     }
-    func endStream() {
-        Task {
-            await streamingActor.pause()
-            if await streamingActor.getMonitor() == .camera {
-                await CameraMonitor.shared.stopOutput()
-                await FrameGrabber.shared.terminateGrabbing()
-            }
-            await AssetInterceptor.shared.endIntercepting()
-            await FragmentPusher.shared.gracefulShutdown()
+    func endStream() async {
+        await streamingActor.pause()
+        if await streamingActor.getMonitor() == .camera {
+            await CameraMonitor.shared.stopOutput()
+            await FrameGrabber.shared.terminateGrabbing()
         }
+        await AssetInterceptor.shared.endIntercepting()
+        await FragmentPusher.shared.gracefulShutdown()
     }
     func isStreaming() async -> Bool {
         await streamingActor.isStreaming()
@@ -114,17 +99,17 @@ final class Streamer: Sendable {
     func getStreamHealth() async -> StreamHealth {
         await streamingActor.getStreamHealth()
     }
-    func setMonitor(_ monitor: Monitor) {
-        Task {
-            if monitor == .output, await !isStreaming() {
-                await FrameGrabber.shared.commenceGrabbing()
-                await CameraMonitor.shared.startOutput()
-            }
-            else if monitor == .camera, await !isStreaming() {
-                await CameraMonitor.shared.stopOutput()
-                await FrameGrabber.shared.terminateGrabbing()
-            }
-            await streamingActor.setMonitor(monitor)
+    func setMonitor(_ monitor: Monitor) async {
+        LOG("Setting monitor to \(monitor)", level: .debug)
+        if monitor == .output, await !isStreaming() {
+            LOG("Starting half the streaming pipeline", level: .debug)
+            await FrameGrabber.shared.commenceGrabbing()
+            await CameraMonitor.shared.startOutput()
+        }
+        else if monitor == .camera, await !isStreaming() {
+            LOG("Stopping half the streaming pipeline", level: .debug)
+            await CameraMonitor.shared.stopOutput()
+            await FrameGrabber.shared.terminateGrabbing()
         }
     }
     func getMonitor() async -> Monitor {

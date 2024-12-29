@@ -12,6 +12,7 @@ import WebKit
 
 // Generic settings
 let STREAMING_QUEUE_CONCURRENT = DispatchQueue(label: "com.subside.StreamingQueueConcurrent", qos: .userInitiated, attributes: .concurrent)
+let DEFAULT_MONITOR: Monitor = .camera
 
 // CameraMonitor settings
 let DEFAULT_CAMERA = "Back Camera" // available on most (all?) devices

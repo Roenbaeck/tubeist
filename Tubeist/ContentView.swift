@@ -98,7 +98,16 @@ struct ContentView: View {
                         .gesture(magnification)
                         .frame(width: width, height: height)
                         .onAppear {
-                            getCameraProperties()
+                            Task {
+                                await Streamer.shared.startCamera()
+                                appState.refreshCameraView()
+                                getCameraProperties()
+                            }
+                        }
+                        .onDisappear {
+                            Task {
+                                await Streamer.shared.stopCamera()
+                            }
                         }
 
                     ForEach(overlayManager.overlays) { overlay in
@@ -151,7 +160,9 @@ struct ContentView: View {
                                 .onChange(of: selectedCamera) { _, newCamera in
                                     LOG("Seletected camera: \(newCamera)", level: .debug)
                                     Settings.selectedCamera = newCamera
-                                    Streamer.shared.cycleCamera()
+                                    Task {
+                                        await Streamer.shared.cycleCamera()
+                                    }
                                 }
                             }
                             .padding(5)
@@ -251,12 +262,12 @@ struct ContentView: View {
                             Button(action: {
                                 if appState.isStreamActive {
                                     Task {
-                                        Streamer.shared.endStream()
+                                        await Streamer.shared.endStream()
                                         LOG("Stopped recording", level: .info)
                                     }
                                 } else {
                                     Task {
-                                        Streamer.shared.startStream()
+                                        await Streamer.shared.startStream()
                                         LOG("Started recording", level: .info)
                                     }
                                 }
@@ -372,15 +383,15 @@ struct ContentView: View {
                         .font(.system(size: 8))
                         .padding(.bottom, 3)
 
-
-                    SmallButton(imageName: appState.activeMonitor == .camera ? "rectangle.on.rectangle" : "rectangle.on.rectangle.fill",
-                                foregroundColor: appState.activeMonitor == .output ? .yellow : .white) {
-                        Streamer.shared.setMonitor(appState.activeMonitor == .camera ? .output : .camera)
+                    SmallButton(imageName: appState.areOverlaysHidden ? "rectangle.on.rectangle" : "rectangle.on.rectangle.fill",
+                                foregroundColor: appState.areOverlaysHidden ? .yellow : .white) {
+                        appState.areOverlaysHidden.toggle()
+                        Settings.hideOverlays = appState.areOverlaysHidden
+                        OverlayBundler.shared.refreshCombinedImage()
                     }
-                    Text(appState.activeMonitor == .camera ? "BFORE" : "AFTER")
+                    Text(appState.areOverlaysHidden ? "HIDDN" : "OVRLY")
                         .font(.system(size: 8))
                         .padding(.bottom, 3)
-                    
 
                     SmallButton(imageName: "text.quote", foregroundColor: showJournal ? .yellow : .white) {
                         showJournal.toggle()

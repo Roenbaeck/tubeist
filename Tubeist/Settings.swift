@@ -115,9 +115,9 @@ struct SettingsView: View {
     @AppStorage("CameraPosition") private var cameraPosition: String = "stationary"
     @AppStorage("SelectedPreset") private var selectedPresetData: Data = Data()
     @AppStorage("Overlays") private var overlaysData: Data = Data()
-    @AppStorage("HideOverlays") private var hideOverlays: Bool = false
     @State private var newOverlayURL: String = ""
     @State private var selectedPreset: Preset? = nil
+    @State private var activeMonitor: Monitor = DEFAULT_MONITOR
     
     // State variables for custom preset settings
     @State private var customResolution: Resolution = Resolution(DEFAULT_COMPRESSED_WIDTH, DEFAULT_COMPRESSED_HEIGHT)
@@ -315,7 +315,7 @@ struct SettingsView: View {
                     }
                 }
                 
-                Section(header: Text("Overlays"), footer: Text("Add multiple web overlay URLs for your stream.")) {
+                Section(header: Text("Overlays"), footer: Text("Add multiple web overlay URLs that will be imprinted onto the video frames. Overlays are updated on content changes and at most once per second. Audio is captured from the last playing overlay if audio from multiple overlays overlap.")) {
                     ForEach(overlayManager.overlays) { overlay in
                         Text(overlay.url)
                     }
@@ -331,22 +331,24 @@ struct SettingsView: View {
                         }
                     }
                 }
-                Section {
-                    Toggle("Hide overlays", isOn: $hideOverlays)
-                }
-                .onChange(of: hideOverlays) { oldValue, newValue in
-                    appState.areOverlaysHidden = newValue
-                    if appState.areOverlaysHidden {
-                        OverlayBundler.shared.refreshCombinedImage()
+
+                Section(header: Text("Active Monitor"), footer: Text("Viewing the captured frames will start half of the rendering pipeline and introduce a lag between what is displayed and what is happning in reality. Use this if you want to confirm that the processed video frames look as expected.")) {
+                    Picker("Select the active monitor", selection: $activeMonitor) {
+                        Text("Camera preview layer").tag(Monitor.camera)
+                        Text("Captured frames with imprinted overlays").tag(Monitor.output)
+                    }
+                    .pickerStyle(.segmented)
+                    .onChange(of: activeMonitor) { oldValue, newValue in
+                        appState.activeMonitor = newValue
                     }
                 }
-                
-                /*
+                       
+#if DEBUG
                 // Intended for internal use and testing
-                Section {
+                Section(header: Text("Internal testing features"), footer: Text("These settings are not part of the final app and only appear in debug mode.")) {
                     Toggle("Save Fragments Locally", isOn: $saveFragmentsLocally)
                 }
-                 */
+#endif
             }
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
@@ -356,11 +358,15 @@ struct SettingsView: View {
                     saveCustomPreset()
                 }
                 presentationMode.wrappedValue.dismiss()
-                Streamer.shared.cycleCamera()
-                OverlayBundler.shared.refreshCombinedImage()
+                Task {
+                    await Streamer.shared.cycleCamera()
+                    await Streamer.shared.setMonitor(activeMonitor)
+                    OverlayBundler.shared.refreshCombinedImage()
+                }
             }
             .buttonStyle(.borderedProminent))
             .onAppear {
+                activeMonitor = appState.activeMonitor
                 if let preset = try? JSONDecoder().decode(Preset.self, from: selectedPresetData) {
                     selectedPreset = preset
                 } else {

@@ -60,26 +60,29 @@ struct TubeistApp: App {
                     if await Streamer.shared.isStreaming() {
                         LOG("Stopping stream due to background state", level: .warning)
                         appState.hadToStopStreaming = true
-                        Streamer.shared.endStream()
+                        await Streamer.shared.endStream()
                     }
-                    Streamer.shared.stopCamera()
+                    await Streamer.shared.stopCamera()
                 }
             case (.background, .inactive), (.background, .active):
                 if !appState.justCameFromBackground {
                     appState.justCameFromBackground = true
                     LOG("App is coming back from background", level: .debug)
-                    // Refresh the camera view
-                    Streamer.shared.startCamera()
-                    appState.refreshCameraView()
+                    Task {
+                        // Refresh the camera view
+                        await Streamer.shared.startCamera()
+                        appState.refreshCameraView()
+                    }
                 }
             default: break
             }
         }
     }
+    
+    
     init() {
         LOG("Starting Tubeist", level: .info)
         Streamer.shared.setAppState(appState)
-        Streamer.shared.startCamera()
         UIApplication.shared.isIdleTimerDisabled = true
         do {
             try AVAudioSession.sharedInstance().setCategory(
