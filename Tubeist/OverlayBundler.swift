@@ -213,9 +213,11 @@ final class OverlayBundler: Sendable {
         await overlayBundle.addOverlay(url: url, overlay: overlay)
     }
 
-    func removeOverlay(url: URL) async {
-        await overlayBundle.removeOverlay(url: url)
-        await combineOverlayImages() // Update the combined image after removing
+    func removeOverlay(url: URL) {
+        Task {
+            await overlayBundle.removeOverlay(url: url)
+            await combineOverlayImages() // Update the combined image after removing
+        }
     }
     
     func removeAllOverlays() {
@@ -235,23 +237,29 @@ final class OverlayBundler: Sendable {
     }
     
     func combineOverlayImages() async {
-        var images: [UIImage] = []
-        for overlay in await overlayBundle.getOverlays() {
-            if let image = await overlay.getOverlayImage() {
-                images.append(image)
-            }
+        if Settings.hideOverlays {
+            LOG("Overlays are hidden so no images will be combined", level: .debug)
+            await combinedImage.setImage(nil)
         }
-        LOG("Combining \(images.count) images", level: .debug)
-
-        guard let imageComposition = UIImage.composite(images: images),
-              let ciImage = CIImage(image: imageComposition, options: [.expandToHDR: true, .colorSpace: CG_COLOR_SPACE])
         else {
-            LOG("Images could not be combined", level: .error)
-            return
+            var images: [UIImage] = []
+            for overlay in await overlayBundle.getOverlays() {
+                if let image = await overlay.getOverlayImage() {
+                    images.append(image)
+                }
+            }
+            LOG("Combining \(images.count) images", level: .debug)
+            
+            guard let imageComposition = UIImage.composite(images: images),
+                  let ciImage = CIImage(image: imageComposition, options: [.expandToHDR: true, .colorSpace: CG_COLOR_SPACE])
+            else {
+                LOG("Images could not be combined", level: .error)
+                return
+            }
+            let colorSpace = ciImage.colorSpace?.name as String?
+            LOG("Combined overlay has color space: \(colorSpace ?? "unknown")", level: .debug)
+            await combinedImage.setImage(ciImage)
         }
-        let colorSpace = ciImage.colorSpace?.name as String?
-        LOG("Combined overlay has color space: \(colorSpace ?? "unknown")", level: .debug)
-        await combinedImage.setImage(ciImage)
     }
     
     func getCombinedImage() async -> CIImage? {
@@ -259,7 +267,7 @@ final class OverlayBundler: Sendable {
     }
 }
 
-struct OverlayBundlerView: UIViewRepresentable {
+struct OverlayView: UIViewRepresentable {
     var url: URL
 
     func makeCoordinator() -> Overlay {

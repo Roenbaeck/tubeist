@@ -101,11 +101,13 @@ struct ContentView: View {
                             getCameraProperties()
                         }
 
-                    if !appState.areOverlaysHidden {
-                        ForEach(overlayManager.overlays) { overlay in
-                            if let url = URL(string: overlay.url) {
-                                OverlayBundlerView(url: url)
-                            }
+                    ForEach(overlayManager.overlays) { overlay in
+                        if let url = URL(string: overlay.url) {
+                            OverlayView(url: url)
+                                .opacity(appState.areOverlaysHidden ? 0 : 1)
+                                .onDisappear {
+                                    OverlayBundler.shared.removeOverlay(url: url)
+                                }
                         }
                     }
 

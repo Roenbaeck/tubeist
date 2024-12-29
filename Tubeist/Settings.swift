@@ -335,15 +335,18 @@ struct SettingsView: View {
                     Toggle("Hide overlays", isOn: $hideOverlays)
                 }
                 .onChange(of: hideOverlays) { oldValue, newValue in
-                    if newValue {
-                        OverlayBundler.shared.removeAllOverlays()
-                    }
                     appState.areOverlaysHidden = newValue
+                    if appState.areOverlaysHidden {
+                        OverlayBundler.shared.refreshCombinedImage()
+                    }
                 }
-
+                
+                /*
+                // Intended for internal use and testing
                 Section {
                     Toggle("Save Fragments Locally", isOn: $saveFragmentsLocally)
                 }
+                 */
             }
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
