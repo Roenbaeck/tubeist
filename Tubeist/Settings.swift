@@ -126,8 +126,10 @@ struct SettingsView: View {
     @State private var customAudioBitrate: Int = DEFAULT_AUDIO_BITRATE
     @State private var customVideoBitrate: Int = DEFAULT_VIDEO_BITRATE
     
-    private let frameRateLookup = CameraMonitor.shared.frameRateLookup
-    private let sliderLabelWidth: CGFloat = 30 // Adjust this value as needed
+    private let sliderLabelWidth: CGFloat = 30
+    private var maxFrameRate: Double {
+        CameraMonitor.shared.frameRateLookup[customResolution] ?? DEFAULT_FRAMERATE
+    }
     
     var body: some View {
         NavigationView {
@@ -228,7 +230,6 @@ struct SettingsView: View {
                         }
                         .pickerStyle(.segmented)
                         .onChange(of: customResolution) { oldValue, newValue in
-                            let maxFrameRate = frameRateLookup[customResolution] ?? DEFAULT_FRAMERATE
                             if customFrameRate > maxFrameRate {
                                 customFrameRate = maxFrameRate
                             }
@@ -250,15 +251,15 @@ struct SettingsView: View {
                         Text("Frame rate: \(String(format: "%.2f", customFrameRate)) FPS")
                             .font(.callout)
                         Slider(value: Binding(
-                            get: { customFrameRate },
-                            set: { customFrameRate = $0 + (customFrameRate - trunc(customFrameRate)) }
-                        ), in: 5...(frameRateLookup[customResolution] ?? DEFAULT_FRAMERATE), step: 1) {
+                            get: { trunc(customFrameRate) },
+                            set: { customFrameRate = min(maxFrameRate, $0 + (customFrameRate - trunc(customFrameRate))) }
+                        ), in: 5...maxFrameRate, step: 1) {
                             Text("Whole part of frame rate")
                         } minimumValueLabel: {
                             Text("5")
                                 .frame(width: sliderLabelWidth, alignment: .trailing)
                         } maximumValueLabel: {
-                            Text("\(Int(frameRateLookup[customResolution] ?? DEFAULT_FRAMERATE))")
+                            Text("\(Int(maxFrameRate))")
                                 .frame(width: sliderLabelWidth, alignment: .leading)
                         }
                         Slider(value: Binding(
@@ -273,6 +274,8 @@ struct SettingsView: View {
                             Text(".99")
                                 .frame(width: sliderLabelWidth, alignment: .leading)
                         }
+                        .disabled(trunc(customFrameRate) == maxFrameRate)
+                        .opacity(trunc(customFrameRate) == maxFrameRate ? 0.5 : 1.0)
 
                         Text("Audio bitrate per channel: \(customAudioBitrate / 1000) kbps")
                             .font(.callout)
