@@ -45,6 +45,21 @@ final class Overlay: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         super.init()
     }
     
+    deinit {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            LOG("Deinitializing Overlay for \(self.url)")
+
+            self.captureTimer?.invalidate()
+            self.captureTimer = nil
+
+            self.webView?.navigationDelegate = nil
+            self.webView?.configuration.userContentController.removeScriptMessageHandler(forName: "domChanged")
+            self.webView?.stopLoading()
+            self.webView = nil
+        }
+    }
+    
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
         if message.name == "domChanged" {
             self.captureWebViewImageOrSchedule()
@@ -124,7 +139,7 @@ final class Overlay: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     // Both throttling and debouncing the capture so we ensure that at least the minimum capture interval passes
     // between snapshots, and that the last call is always executed even in a situation where several are coming
     // in quick succession
-    private func captureWebViewImageOrSchedule() {
+    func captureWebViewImageOrSchedule() {
         let currentTime = Date()
         if currentTime.timeIntervalSince(lastCaptureTime) >= minimumCaptureInterval {
             captureWebViewImage()
@@ -138,7 +153,7 @@ final class Overlay: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         }
     }
     
-    func captureWebViewImage() {
+    private func captureWebViewImage() {
         lastCaptureTime = Date()
 
         let config = WKSnapshotConfiguration()
@@ -171,6 +186,9 @@ actor OverlayBundleActor {
     func getOverlays() -> [Overlay] {
         Array(overlays.values)
     }
+    func removeAllOverlays() {
+        overlays.removeAll()
+    }
 }
 
 actor CombinedImageActor {
@@ -180,6 +198,9 @@ actor CombinedImageActor {
     }
     func getImage() -> CIImage? {
         combinedOverlayImage
+    }
+    func deleteImage() {
+        combinedOverlayImage = nil
     }
 }
 
@@ -196,7 +217,23 @@ final class OverlayBundler: Sendable {
         await overlayBundle.removeOverlay(url: url)
         await combineOverlayImages() // Update the combined image after removing
     }
-
+    
+    func removeAllOverlays() {
+        Task {
+            await overlayBundle.removeAllOverlays()
+            await combinedImage.deleteImage()
+        }
+    }
+    
+    func refreshCombinedImage() {
+        Task {
+            let overlays = await overlayBundle.getOverlays()
+            for overlay in overlays {
+                await overlay.captureWebViewImageOrSchedule()
+            }
+        }
+    }
+    
     func combineOverlayImages() async {
         var images: [UIImage] = []
         for overlay in await overlayBundle.getOverlays() {

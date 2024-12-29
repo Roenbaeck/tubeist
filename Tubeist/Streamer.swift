@@ -116,16 +116,15 @@ final class Streamer: Sendable {
     }
     func setMonitor(_ monitor: Monitor) {
         Task {
-            if monitor == .output {
+            if monitor == .output, await !isStreaming() {
                 await FrameGrabber.shared.commenceGrabbing()
                 await CameraMonitor.shared.startOutput()
-                await streamingActor.setMonitor(monitor)
             }
-            else if monitor == .camera {
+            else if monitor == .camera, await !isStreaming() {
                 await CameraMonitor.shared.stopOutput()
                 await FrameGrabber.shared.terminateGrabbing()
-                await streamingActor.setMonitor(monitor)
             }
+            await streamingActor.setMonitor(monitor)
         }
     }
     func getMonitor() async -> Monitor {

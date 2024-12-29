@@ -100,10 +100,12 @@ struct ContentView: View {
                         .onAppear {
                             getCameraProperties()
                         }
-                    
-                    ForEach(overlayManager.overlays) { overlay in
-                        if let url = URL(string: overlay.url) {
-                            OverlayBundlerView(url: url)
+
+                    if !appState.areOverlaysHidden {
+                        ForEach(overlayManager.overlays) { overlay in
+                            if let url = URL(string: overlay.url) {
+                                OverlayBundlerView(url: url)
+                            }
                         }
                     }
 

@@ -115,6 +115,7 @@ struct SettingsView: View {
     @AppStorage("CameraPosition") private var cameraPosition: String = "stationary"
     @AppStorage("SelectedPreset") private var selectedPresetData: Data = Data()
     @AppStorage("Overlays") private var overlaysData: Data = Data()
+    @AppStorage("HideOverlays") private var hideOverlays: Bool = false
     @State private var newOverlayURL: String = ""
     @State private var selectedPreset: Preset? = nil
     
@@ -330,7 +331,16 @@ struct SettingsView: View {
                         }
                     }
                 }
-                
+                Section {
+                    Toggle("Hide overlays", isOn: $hideOverlays)
+                }
+                .onChange(of: hideOverlays) { oldValue, newValue in
+                    if newValue {
+                        OverlayBundler.shared.removeAllOverlays()
+                    }
+                    appState.areOverlaysHidden = newValue
+                }
+
                 Section {
                     Toggle("Save Fragments Locally", isOn: $saveFragmentsLocally)
                 }
@@ -344,6 +354,7 @@ struct SettingsView: View {
                 }
                 presentationMode.wrappedValue.dismiss()
                 Streamer.shared.cycleCamera()
+                OverlayBundler.shared.refreshCombinedImage()
             }
             .buttonStyle(.borderedProminent))
             .onAppear {
@@ -464,6 +475,14 @@ final class Settings: Sendable {
         }
         set {
             UserDefaults.standard.set(newValue, forKey: "CameraStabilization")
+        }
+    }
+    static var hideOverlays: Bool {
+        get {
+            UserDefaults.standard.bool(forKey: "HideOverlays")
+        }
+        set {
+            UserDefaults.standard.set(newValue, forKey: "HideOverlays")
         }
     }
     static var overlaysData: Data? {

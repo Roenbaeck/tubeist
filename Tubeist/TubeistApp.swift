@@ -26,6 +26,7 @@ final class AppState {
     var isFocusLocked = false
     var isExposureLocked = false
     var isWhiteBalanceLocked = false
+    var areOverlaysHidden = Settings.hideOverlays
     var justCameFromBackground = false
     var hadToStopStreaming = false
     var streamHealth = StreamHealth.silenced
