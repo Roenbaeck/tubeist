@@ -130,17 +130,22 @@ struct ContentView: View {
                     if appState.activeMonitor == .output {
                         OutputMonitorView()
                     }
-                    
+                                        
                     if showJournal {
                         JournalView()
                     }
                     
                     VStack {
                         Spacer()
-                        if !showJournal {
-                            SystemMetricsView()
-                                .offset(y: 3)
+                        if appState.isBatterySavingOn {
+                            Text("BATTERY SAVING MODE")
+                                .font(.system(size: 30))
+                                .foregroundColor(Color.yellow)
+                                .fontWeight(.black)
                         }
+                        SystemMetricsView()
+                            .offset(y: 3)
+                            .opacity(showJournal ? 0 : 1)
                         CoreGraphicsAudioMeter(width: width, height: AUDIO_METER_HEIGHT)
                             .frame(width: width, height: AUDIO_METER_HEIGHT)
                     }
