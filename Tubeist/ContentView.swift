@@ -75,13 +75,17 @@ struct ContentView: View {
             }
     }
     
-    func getCameraProperties() {
+    func updateCameraProperties() {
         Task {
+            // Passing Binding<variable> is fine as long as we know what we are doing
+            await CameraMonitor.shared.bind(totalZoom: $totalZoom, currentZoom: $currentZoom)
             selectedStabilization = await CameraMonitor.shared.getCameraStabilization()
             appState.isStabilizationOn = selectedStabilization != "Off"
             minZoom = await CameraMonitor.shared.getMinZoomFactor()
             maxZoom = await min(CameraMonitor.shared.getMaxZoomFactor(), ZOOM_LIMIT)
             opticalZoom = await CameraMonitor.shared.getOpticalZoomFactor()
+            let safeZoom = max(minZoom, min(totalZoom, maxZoom))
+            await CameraMonitor.shared.setZoomFactor(safeZoom)
         }
     }
     
@@ -101,13 +105,16 @@ struct ContentView: View {
                             Task {
                                 await Streamer.shared.startCamera()
                                 appState.refreshCameraView()
-                                getCameraProperties()
+                                updateCameraProperties()
                             }
                         }
                         .onDisappear {
                             Task {
                                 await Streamer.shared.stopCamera()
                             }
+                        }
+                        .onChange(of: appState.cameraMonitorId) {
+                            updateCameraProperties()
                         }
 
                     ForEach(overlayManager.overlays) { overlay in
@@ -230,7 +237,7 @@ struct ContentView: View {
                             
                             let zoom = totalZoom + currentZoom
                             
-                            Text(String(format: zoom == 1 || zoom > 10 ? "%.0f" : "%.1f", zoom) + "x")
+                            Text(String(format: zoom == 1 || zoom > 10 ? "%.0f" : "%.1f", zoom) + "×")
                                 .font(.system(size: 17))
                                 .fontWeight(.semibold)
                                 .foregroundColor(zoom > opticalZoom ? .yellow : zoom > 1 ? .white : .white.opacity(0.5))
@@ -297,9 +304,6 @@ struct ContentView: View {
                     .confirmationDialog("Change Battery Saving Mode?", isPresented: $showBatterySavingConfirmation) {
                         Button(appState.isBatterySavingOn ? "Turn Off" : "Turn On") {
                             appState.isBatterySavingOn.toggle()
-                            appState.isAudioLevelRunning = !appState.isBatterySavingOn
-                            UIScreen.main.brightness = appState.isBatterySavingOn ? 0.1 : 1.0
-                            LOG("Battery saving is \(appState.isBatterySavingOn ? "on" : "off")", level: .info)
                         }
                         Button("Cancel", role: .cancel) {} // Do nothing
                     } message: {
@@ -445,6 +449,11 @@ struct ContentView: View {
         }
         .edgesIgnoringSafeArea(.all)
         .persistentSystemOverlays(.hidden)
+        .onChange(of: appState.isBatterySavingOn) { oldValue, newValue in
+            appState.isAudioLevelRunning = !appState.isBatterySavingOn
+            UIScreen.main.brightness = appState.isBatterySavingOn ? 0.1 : 1.0
+            LOG("Battery saving is \(appState.isBatterySavingOn ? "on" : "off")", level: .info)
+        }
         .onChange(of: appState.justCameFromBackground) { oldValue, newValue in
             if newValue && appState.hadToStopStreaming {
                 let content = UNMutableNotificationContent()

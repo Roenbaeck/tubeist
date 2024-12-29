@@ -22,6 +22,10 @@ private actor CameraActor {
     private var minZoomFactor: CGFloat = 1.0
     private var maxZoomFactor: CGFloat = 1.0
     private var opticalZoomFactor: CGFloat = 1.0
+    
+    private var totalZoom: Binding<Double>?
+    private var currentZoom: Binding<Double>?
+    
     // Had to add this to pass previewLayer across boundary
     nonisolated(unsafe) private let previewLayer: AVCaptureVideoPreviewLayer
     
@@ -35,7 +39,7 @@ private actor CameraActor {
         // Get devices
         self.videoDevice = camera
         self.audioDevice = AVCaptureDevice.default(for: .audio)
-
+        
         guard let videoDevice = self.videoDevice,
               let audioDevice = self.audioDevice else {
             LOG("No camera or microphone found", level: .error)
@@ -55,7 +59,7 @@ private actor CameraActor {
                 LOG("Could not create video input", level: .error)
                 return
             }
-                
+            
             // Add video input to the session
             if session.canAddInput(videoInput) {
                 session.addInput(videoInput)
@@ -118,6 +122,28 @@ private actor CameraActor {
         } catch {
             LOG("Error setting up camera: \(error)", level: .error)
         }
+    }
+
+    func bind(totalZoom: Binding<Double>, currentZoom: Binding<Double>) {
+        self.totalZoom = totalZoom
+        self.currentZoom = currentZoom
+    }
+    
+    func addCameraControls() {
+        guard let videoDevice else { return }
+        let systemZoomSlider = AVCaptureSystemZoomSlider(device: videoDevice) { zoomFactor in
+            let displayZoom = videoDevice.displayVideoZoomFactorMultiplier * zoomFactor
+            Task {
+                await self.setZoomFactor(displayZoom)
+                await self.totalZoom?.wrappedValue = displayZoom
+                await self.currentZoom?.wrappedValue = 0
+            }
+        }
+        if session.canAddControl(systemZoomSlider) {
+            LOG("Adding system zoom slider camera control", level: .debug)
+            session.addControl(systemZoomSlider)
+        }
+        session.setControlsDelegate(CameraMonitor.shared, queue: .main)
     }
     
     func findSupportedStabilizationModes() -> [String: AVCaptureVideoStabilizationMode] {
@@ -362,6 +388,10 @@ private actor CameraManager {
         cameras = cameraDevicesByName
         LOG("Cameras: \(cameras.keys)", level: .debug)
     }
+
+    func bind(totalZoom: Binding<Double>, currentZoom: Binding<Double>) async {
+        await cameraActor?.bind(totalZoom: totalZoom, currentZoom: currentZoom)
+    }
     
     func getStabilizations() -> [String] {
         return Array(stabilizations.keys)
@@ -385,6 +415,7 @@ private actor CameraManager {
             LOG("Could not create camera actor", level: .error)
             return
         }
+        await cameraActor.addCameraControls()
         self.stabilizations = await cameraActor.findSupportedStabilizationModes()
         let selectedStabilization = getCameraStabilization()
         await setCameraStabilization(to: selectedStabilization)
@@ -471,9 +502,29 @@ private actor CameraManager {
 }
 
 @Observable
-final class CameraMonitor: Sendable {
+final class CameraMonitor: NSObject, Sendable, AVCaptureSessionControlsDelegate {
     public static let shared = CameraMonitor()
     private let cameraManager = CameraManager()
+        
+    func bind(totalZoom: Binding<Double>, currentZoom: Binding<Double>) async {
+        await cameraManager.bind(totalZoom: totalZoom, currentZoom: currentZoom)
+    }
+
+    func sessionControlsDidBecomeActive(_ session: AVCaptureSession) {
+        // no-op
+    }
+    
+    func sessionControlsWillEnterFullscreenAppearance(_ session: AVCaptureSession) {
+        // no-op
+    }
+    
+    func sessionControlsWillExitFullscreenAppearance(_ session: AVCaptureSession) {
+        // no-op
+    }
+    
+    func sessionControlsDidBecomeInactive(_ session: AVCaptureSession) {
+        // no-op
+    }
 
     func getStabilizations() async -> [String] {
         return await cameraManager.getStabilizations()
@@ -657,7 +708,9 @@ struct CameraMonitorView: UIViewControllerRepresentable {
         @MainActor func configureHardwareInteraction(for viewController: UIViewController) {
             let interaction = AVCaptureEventInteraction { event in
                 if event.phase == .ended {
-                    LOG("User pressed the camera button", level: .debug)
+                    Task {
+                        await Streamer.shared.toggleBatterySaving()
+                    }
                 }
             }
             viewController.view.addInteraction(interaction)

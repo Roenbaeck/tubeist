@@ -43,6 +43,11 @@ actor StreamingActor {
     func isStreaming() async -> Bool {
         await appState?.isStreamActive ?? false
     }
+    func toggleBatterySaving() {
+        Task { @MainActor in
+            await appState?.isBatterySavingOn.toggle()
+        }
+    }
     func refreshCameraView() {
         Task { @MainActor in
             await appState?.refreshCameraView()
@@ -99,6 +104,10 @@ final class Streamer: Sendable {
     func getStreamHealth() async -> StreamHealth {
         await streamingActor.getStreamHealth()
     }
+    func toggleBatterySaving() async {
+        await streamingActor.toggleBatterySaving()
+    }
+    
     func setMonitor(_ monitor: Monitor) async {
         LOG("Setting monitor to \(monitor)", level: .debug)
         if monitor == .output, await !isStreaming() {
