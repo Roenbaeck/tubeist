@@ -131,28 +131,30 @@ private actor CameraActor {
     }
     
     func addCameraControls() {
-        guard let videoDevice else { return }
-        let zoomSlider = AVCaptureSystemZoomSlider(device: videoDevice) { zoomFactor in
-            let displayZoom = videoDevice.displayVideoZoomFactorMultiplier * zoomFactor
-            Task {
-                await self.setZoomFactor(displayZoom)
-                await self.totalZoom?.wrappedValue = displayZoom
-                await self.currentZoom?.wrappedValue = 0
+        if session.supportsControls {
+            guard let videoDevice else { return }
+            let zoomSlider = AVCaptureSystemZoomSlider(device: videoDevice) { zoomFactor in
+                let displayZoom = videoDevice.displayVideoZoomFactorMultiplier * zoomFactor
+                Task {
+                    await self.setZoomFactor(displayZoom)
+                    await self.totalZoom?.wrappedValue = displayZoom
+                    await self.currentZoom?.wrappedValue = 0
+                }
             }
+            if session.canAddControl(zoomSlider) {
+                LOG("Adding system zoom slider camera control", level: .debug)
+                session.addControl(zoomSlider)
+            }
+            let exposureBiasSlider = AVCaptureSystemExposureBiasSlider(device: videoDevice) { exposureBias in
+                // LOG("Setting exposure via slider: \(exposureBias)", level: .debug)
+            }
+            if session.canAddControl(exposureBiasSlider) {
+                LOG("Adding system exposure bias slider camera control", level: .debug)
+                session.addControl(exposureBiasSlider)
+            }
+            
+            session.setControlsDelegate(CameraMonitor.shared, queue: cameraControlQueue)
         }
-        if session.canAddControl(zoomSlider) {
-            LOG("Adding system zoom slider camera control", level: .debug)
-            session.addControl(zoomSlider)
-        }
-        let exposureBiasSlider = AVCaptureSystemExposureBiasSlider(device: videoDevice) { exposureBias in
-            // LOG("Setting exposure via slider: \(exposureBias)", level: .debug)
-        }
-        if session.canAddControl(exposureBiasSlider) {
-            LOG("Adding system exposure bias slider camera control", level: .debug)
-            session.addControl(exposureBiasSlider)
-        }
-
-        session.setControlsDelegate(CameraMonitor.shared, queue: cameraControlQueue)
     }
     
     func findSupportedStabilizationModes() -> [String: AVCaptureVideoStabilizationMode] {
