@@ -6,7 +6,7 @@ Tubeist is an iPhone streaming app that streams fMP4 over HLS written in Swift 6
 ![IMG_1727](https://github.com/user-attachments/assets/7d7c5c97-024c-466d-9281-8a8acfd095a5)
 
 ## Usage
-Please note that in its current state the app is barely usable, has to be compiled and installed by yourself, and relies on a server capable of ingesting fMP4 / HLS. There is a very rudimentary one-time stream server that can be used for testing available here: https://github.com/Roenbaeck/hls-relay
+Please note that in its current state the app may still have bugs, but it is becoming usable. It currently has to be compiled and installed by yourself and relies on a server capable of ingesting fMP4 / HLS. There is a rudimentary stream server that can be used for testing available here: https://github.com/Roenbaeck/hls-relay.
 
 ## TestFlight
 A TestFlight version is on its way. Link will be made available here soon.
