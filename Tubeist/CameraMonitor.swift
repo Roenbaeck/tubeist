@@ -8,6 +8,7 @@
 // @preconcurrency needed to pass previewLayer across boundary
 @preconcurrency import AVFoundation
 import SwiftUI
+import AVKit
 
 private actor CameraActor {
     private let session = AVCaptureSession()
@@ -649,17 +650,38 @@ extension AVCaptureDevice {
 }
 
 struct CameraMonitorView: UIViewControllerRepresentable {
+    // Add a Coordinator to handle the event interaction
+    class Coordinator: NSObject {
+        var eventInteraction: AVCaptureEventInteraction?
+        
+        @MainActor func configureHardwareInteraction(for viewController: UIViewController) {
+            let interaction = AVCaptureEventInteraction { event in
+                if event.phase == .ended {
+                    LOG("User pressed the camera button", level: .debug)
+                }
+            }
+            viewController.view.addInteraction(interaction)
+            eventInteraction = interaction
+        }
+    }
+    
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+    
     func makeUIViewController(context: Context) -> UIViewController {
         let viewController = UIViewController()
-        // Ensure view is loaded before configurations
         viewController.loadViewIfNeeded()
+        
+        // Configure the hardware interaction through the coordinator
+        context.coordinator.configureHardwareInteraction(for: viewController)
+        
         return viewController
     }
     
     func updateUIViewController(_ uiViewController: UIViewController, context: Context) {
         CameraMonitor.shared.configurePreviewLayer(on: uiViewController)
     }
-    
 }
 
 struct CoreGraphicsAudioMeter: UIViewRepresentable {
