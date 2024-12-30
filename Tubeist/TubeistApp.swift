@@ -82,6 +82,7 @@ struct TubeistApp: App {
     
     init() {
         LOG("Starting Tubeist", level: .info)
+        LOG("Using \(REFERENCE_TIMEPOINT) as reference time for streams", level: .debug)
         Streamer.shared.setAppState(appState)
         UIApplication.shared.isIdleTimerDisabled = true
         do {

@@ -24,12 +24,6 @@ actor AssetWriterActor {
             LOG("Could not create asset writer", level: .error)
             return
         }
-        assetWriter.shouldOptimizeForNetworkUse = true
-        assetWriter.outputFileTypeProfile = .mpeg4AppleHLS
-        assetWriter.preferredOutputSegmentInterval = FRAGMENT_CM_TIME
-        assetWriter.initialSegmentStartTime = .zero
-        assetWriter.delegate = AssetInterceptor.shared
-        
         let selectedPreset = Settings.selectedPreset
         let selectedVideoBitrate = selectedPreset?.videoBitrate ?? DEFAULT_VIDEO_BITRATE
         let selectedAudioBitrate = selectedPreset?.audioBitrate ?? DEFAULT_AUDIO_BITRATE
@@ -39,8 +33,15 @@ actor AssetWriterActor {
         let selectedKeyframeInterval = selectedPreset?.keyframeInterval ?? DEFAULT_KEYFRAME_INTERVAL
         let selectedFrameRate = selectedPreset?.frameRate ?? DEFAULT_FRAMERATE
         let frameIntervalKey = Int(ceil(selectedKeyframeInterval * selectedFrameRate))
+        let adjustedFragmentDuration = selectedFrameRate / trunc(selectedFrameRate / FRAGMENT_DURATION)
         
         LOG("[video bitrate]: \(selectedVideoBitrate) [audio bitrate]: \(selectedAudioBitrate) [audio channels]: \(selectedAudioChannels) [width]: \(selectedWidth) [height]: \(selectedHeight) [frame rate]: \(selectedFrameRate) [key frame every frames]: \(frameIntervalKey)", level: .debug)
+        
+        assetWriter.shouldOptimizeForNetworkUse = true
+        assetWriter.outputFileTypeProfile = .mpeg4AppleHLS
+        assetWriter.preferredOutputSegmentInterval = CMTime(seconds: adjustedFragmentDuration, preferredTimescale: CMTimeScale(selectedFrameRate))
+        assetWriter.initialSegmentStartTime = .zero
+        assetWriter.delegate = AssetInterceptor.shared
         
         let videoSettings: [String: Any] = [
             AVVideoCodecKey: AVVideoCodecType.hevc,
@@ -90,7 +91,7 @@ actor AssetWriterActor {
             LOG("Error starting writing: \(assetWriter.error?.localizedDescription ?? "Unknown error")")
             return
         }
-        let currentTime = CMTime(seconds: Date().timeIntervalSince1970, preferredTimescale: Int32(TIMESCALE))
+        let currentTime = CMTime(seconds: Date().timeIntervalSince(REFERENCE_TIMEPOINT), preferredTimescale: CMTimeScale(selectedFrameRate))
         assetWriter.startSession(atSourceTime: currentTime)
         
         LOG("Asset writer configured successfully (at source time: \(currentTime.value) | \(currentTime.timescale))", level: .info)

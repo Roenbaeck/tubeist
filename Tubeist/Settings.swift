@@ -127,7 +127,6 @@ struct SettingsView: View {
     @State private var customAudioBitrate: Int = DEFAULT_AUDIO_BITRATE
     @State private var customVideoBitrate: Int = DEFAULT_VIDEO_BITRATE
     
-    private let sliderLabelWidth: CGFloat = 30
     private var maxFrameRate: Double {
         CameraMonitor.shared.frameRateLookup[customResolution] ?? DEFAULT_FRAMERATE
     }
@@ -249,34 +248,18 @@ struct SettingsView: View {
                         }
                         .pickerStyle(.segmented)
                         
-                        Text("Frame rate: \(String(format: "%.2f", customFrameRate)) FPS")
+                        Text("Frame rate: \(String(format: "%.0f", customFrameRate)) FPS")
                             .font(.callout)
                         Slider(value: Binding(
                             get: { trunc(customFrameRate) },
                             set: { customFrameRate = min(maxFrameRate, $0 + (customFrameRate - trunc(customFrameRate))) }
-                        ), in: 5...maxFrameRate, step: 1) {
+                        ), in: 2...maxFrameRate, step: 1) {
                             Text("Whole part of frame rate")
                         } minimumValueLabel: {
-                            Text("5")
-                                .frame(width: sliderLabelWidth, alignment: .trailing)
+                            Text("2")
                         } maximumValueLabel: {
                             Text("\(Int(maxFrameRate))")
-                                .frame(width: sliderLabelWidth, alignment: .leading)
                         }
-                        Slider(value: Binding(
-                            get: { customFrameRate - trunc(customFrameRate) },
-                            set: { customFrameRate = trunc(customFrameRate) + $0 }
-                        ), in: 0...0.99, step: 0.01) {
-                            Text("Decimal part of frame rate")
-                        } minimumValueLabel: {
-                            Text(".00")
-                                .frame(width: sliderLabelWidth, alignment: .trailing)
-                        } maximumValueLabel: {
-                            Text(".99")
-                                .frame(width: sliderLabelWidth, alignment: .leading)
-                        }
-                        .disabled(trunc(customFrameRate) == maxFrameRate)
-                        .opacity(trunc(customFrameRate) == maxFrameRate ? 0.5 : 1.0)
 
                         Text("Audio bitrate per channel: \(customAudioBitrate / 1000) kbps")
                             .font(.callout)
@@ -357,12 +340,12 @@ struct SettingsView: View {
                     LOG("Saving custom settings", level: .debug)
                     saveCustomPreset()
                 }
-                presentationMode.wrappedValue.dismiss()
                 Task {
                     await Streamer.shared.cycleCamera()
                     await Streamer.shared.setMonitor(activeMonitor)
                     OverlayBundler.shared.refreshCombinedImage()
                 }
+                presentationMode.wrappedValue.dismiss()
             }
             .buttonStyle(.borderedProminent))
             .onAppear {

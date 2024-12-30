@@ -23,6 +23,7 @@ private actor CameraActor {
     private var minZoomFactor: CGFloat = 1.0
     private var maxZoomFactor: CGFloat = 1.0
     private var opticalZoomFactor: CGFloat = 1.0
+    private var resolution: Resolution?
     
     private var totalZoom: Binding<Double>?
     private var currentZoom: Binding<Double>?
@@ -110,15 +111,18 @@ private actor CameraActor {
             // Apply the format to the video device
             try videoDevice.lockForConfiguration()
             videoDevice.activeFormat = format
-            let frameDurationParts = Int64(Double(TIMESCALE) / self.frameRate)
-            videoDevice.activeVideoMinFrameDuration = CMTimeMake(value: frameDurationParts, timescale: Int32(TIMESCALE))
-            videoDevice.activeVideoMaxFrameDuration = CMTimeMake(value: frameDurationParts, timescale: Int32(TIMESCALE))
+            videoDevice.activeVideoMinFrameDuration = CMTime(value: 1, timescale: CMTimeScale(self.frameRate))
+            videoDevice.activeVideoMaxFrameDuration = CMTime(value: 1, timescale: CMTimeScale(self.frameRate))
             videoDevice.activeColorSpace = AV_COLOR_SPACE
             videoDevice.unlockForConfiguration()
             
             self.minZoomFactor = videoDevice.minAvailableVideoZoomFactor
             self.maxZoomFactor = videoDevice.maxAvailableVideoZoomFactor
             self.opticalZoomFactor = videoDevice.activeFormat.secondaryNativeResolutionZoomFactors.first ?? 1.0
+            self.resolution = Resolution(
+                Int(videoDevice.activeFormat.formatDescription.dimensions.width),
+                Int(videoDevice.activeFormat.formatDescription.dimensions.height)
+            )
 
         } catch {
             LOG("Error setting up camera: \(error)", level: .error)
@@ -333,7 +337,11 @@ private actor CameraActor {
     func isRunning() -> Bool {
         session.isRunning
     }
-        
+    
+    func getResolution() -> Resolution? {
+        resolution
+    }
+    
     func getAudioChannels() -> [AVCaptureAudioChannel] {
         return audioOutput.connections.first?.audioChannels ?? []
     }
@@ -509,7 +517,9 @@ private actor CameraManager {
     func getCameraFrameRate() async -> Double {
         await cameraActor?.getCameraFrameRate() ?? DEFAULT_FRAMERATE
     }
-
+    func getResolution() async -> Resolution? {
+        await cameraActor?.getResolution()
+    }
 }
 
 @Observable
@@ -599,6 +609,9 @@ final class CameraMonitor: NSObject, Sendable, AVCaptureSessionControlsDelegate 
     }
     func getCameraFrameRate() async -> Double {
         await cameraManager.getCameraFrameRate()
+    }
+    func getResolution() async -> Resolution? {
+        await cameraManager.getResolution()
     }
     func configurePreviewLayer(on viewController: UIViewController) {
         Task {
@@ -712,34 +725,9 @@ extension AVCaptureDevice {
 }
 
 struct CameraMonitorView: UIViewControllerRepresentable {
-    // Add a Coordinator to handle the event interaction
-    class Coordinator: NSObject {
-        var eventInteraction: AVCaptureEventInteraction?
-        
-        @MainActor func configureHardwareInteraction(for viewController: UIViewController) {
-            let interaction = AVCaptureEventInteraction { event in
-                if event.phase == .ended {
-                    Task {
-                        await Streamer.shared.toggleBatterySaving()
-                    }
-                }
-            }
-            viewController.view.addInteraction(interaction)
-            eventInteraction = interaction
-        }
-    }
-    
-    func makeCoordinator() -> Coordinator {
-        Coordinator()
-    }
-    
     func makeUIViewController(context: Context) -> UIViewController {
         let viewController = UIViewController()
         viewController.loadViewIfNeeded()
-        
-        // Configure the hardware interaction through the coordinator
-        context.coordinator.configureHardwareInteraction(for: viewController)
-        
         return viewController
     }
     

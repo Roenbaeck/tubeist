@@ -32,7 +32,6 @@ extension UIImage {
 final class Overlay: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     private let url: URL
     private let bundler: OverlayBundler
-    private var snapshotWidth: Int = DEFAULT_CAPTURE_WIDTH
     private var webView: WKWebView?
     private var overlayImage: UIImage?
     private var lastCaptureTime: Date = Date.distantPast
@@ -91,7 +90,6 @@ final class Overlay: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
 
         webView.load(URLRequest(url: url))
         
-        self.snapshotWidth = width
         self.webView = webView
         return webView
     }
@@ -155,21 +153,27 @@ final class Overlay: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     
     private func captureWebViewImage() {
         lastCaptureTime = Date()
-
-        let config = WKSnapshotConfiguration()
-        config.snapshotWidth = NSNumber(value: self.snapshotWidth / Int(UIScreen.main.scale))
-
-        webView?.takeSnapshot(with: config) { (image, error) in
-            guard let uiImage = image else {
-                LOG("Error capturing snapshot: \(String(describing: error))", level: .error)
+        Task {
+            guard let width = await CameraMonitor.shared.getResolution()?.width else {
+                LOG("Cannot get width from the camera input", level: .error)
                 return
             }
-            self.overlayImage = uiImage
-            let colorSpace = uiImage.cgImage?.colorSpace?.name as String?
-            LOG("Captured overlay with size \(uiImage.size), scale \(uiImage.scale), and color space: \(colorSpace ?? "unknown")", level: .debug)
-            Task {
-                // Combine all images every time any image is changed
-                await self.bundler.combineOverlayImages()
+            
+            let config = WKSnapshotConfiguration()
+            config.snapshotWidth = NSNumber(value: width / Int(UIScreen.main.scale))
+            
+            webView?.takeSnapshot(with: config) { (image, error) in
+                guard let uiImage = image else {
+                    LOG("Error capturing snapshot: \(String(describing: error))", level: .error)
+                    return
+                }
+                self.overlayImage = uiImage
+                let colorSpace = uiImage.cgImage?.colorSpace?.name as String?
+                LOG("Captured overlay with size \(uiImage.size), scale \(uiImage.scale), and color space: \(colorSpace ?? "unknown")", level: .debug)
+                Task {
+                    // Combine all images every time any image is changed
+                    await self.bundler.combineOverlayImages()
+                }
             }
         }
     }

@@ -116,6 +116,13 @@ struct ContentView: View {
                         .onChange(of: appState.cameraMonitorId) {
                             updateCameraProperties()
                         }
+                        .onCameraCaptureEvent() { event in
+                            if event.phase == .ended {
+                                Task {
+                                    await Streamer.shared.toggleBatterySaving()
+                                }
+                            }
+                        }
 
                     ForEach(overlayManager.overlays) { overlay in
                         if let url = URL(string: overlay.url) {
