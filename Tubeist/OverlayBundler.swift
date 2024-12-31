@@ -29,6 +29,126 @@ extension UIImage {
     }
 }
 
+extension UIImage {
+    func roughBoundingBox(scaledWidth: Int) -> CGRect? {
+        guard let cgImage = self.cgImage else { return nil }
+
+        // Calculate scaling factor
+        let originalWidth = cgImage.width
+        let originalHeight = cgImage.height
+        let scaleFactor = Double(scaledWidth) / Double(originalWidth)
+        let scaledHeight = Int(Double(originalHeight) * scaleFactor)
+
+        // Resize the image
+        let scaledImage = self.scaled(to: CGSize(width: scaledWidth, height: scaledHeight))
+        guard let scaledCGImage = scaledImage.cgImage else { return nil }
+        guard let data = scaledCGImage.dataProvider?.data as Data? else { return nil }
+
+        let width = Int(scaledCGImage.width)
+        let height = Int(scaledCGImage.height)
+        let bytesPerRow = Int(scaledCGImage.bytesPerRow)
+        let bytesPerPixel = Int(scaledCGImage.bitsPerPixel / 8)
+
+        var minX = 0
+        var minY = 0
+        var maxX = width - 1
+        var maxY = height - 1
+
+        data.withUnsafeBytes { (pointer: UnsafeRawBufferPointer) in
+            guard let _ = pointer.baseAddress else { return }
+
+            // Similar logic as original for finding bounding box on scaled image
+            for y in 0..<height {
+                var found = false
+                for x in minX...maxX {
+                    let pixelIndex = y * bytesPerRow + x * bytesPerPixel
+                    let alpha = pointer.load(fromByteOffset: pixelIndex + bytesPerPixel - 1, as: UInt8.self)
+                    if alpha > 0 {
+                        minY = y
+                        found = true
+                        break
+                    }
+                }
+                if found { break }
+            }
+
+            if minY < height {
+                for y in (minY...maxY).reversed() {
+                    var found = false
+                    for x in minX...maxX {
+                        let pixelIndex = y * bytesPerRow + x * bytesPerPixel
+                        let alpha = pointer.load(fromByteOffset: pixelIndex + bytesPerPixel - 1, as: UInt8.self)
+                        if alpha > 0 {
+                            maxY = y
+                            found = true
+                            break
+                        }
+                    }
+                    if found { break }
+                }
+            }
+
+            if minY <= maxY {
+                for x in 0..<width {
+                    var found = false
+                    for y in minY...maxY {
+                        let pixelIndex = y * bytesPerRow + x * bytesPerPixel
+                        let alpha = pointer.load(fromByteOffset: pixelIndex + bytesPerPixel - 1, as: UInt8.self)
+                        if alpha > 0 {
+                            minX = x
+                            found = true
+                            break
+                        }
+                    }
+                    if found { break }
+                }
+            }
+
+            if minY <= maxY {
+                for x in (minX...maxX).reversed() {
+                    var found = false
+                    for y in minY...maxY {
+                        let pixelIndex = y * bytesPerRow + x * bytesPerPixel
+                        let alpha = pointer.load(fromByteOffset: pixelIndex + bytesPerPixel - 1, as: UInt8.self)
+                        if alpha > 0 {
+                            maxX = x
+                            found = true
+                            break
+                        }
+                    }
+                    if found { break }
+                }
+            }
+        }
+
+        if minY > maxY || minX > maxX { return nil }
+
+        // Scale back to original dimensions
+        let scale = 1.0 / scaleFactor
+        
+        let boxX: Int = max(0, Int(Double(minX) * scale - scale))
+        let boxY: Int = max(0, Int(Double(minY) * scale - scale))
+        let boxWidth: Int = min(originalWidth, Int(Double(maxX - minX + 1) * scale + 2 * scale))
+        let boxHeight: Int = min(originalHeight, Int(Double(maxY - minY + 1) * scale + 2 * scale))
+        
+        return CGRect(
+            x: boxX,
+            y: originalHeight - boxY - boxHeight, // flip coordinate system
+            width: boxWidth,
+            height: boxHeight
+        )
+    }
+
+    // Helper function to scale an image
+    func scaled(to size: CGSize) -> UIImage {
+        UIGraphicsBeginImageContextWithOptions(size, false, 1.0)
+        self.draw(in: CGRect(origin: .zero, size: size))
+        let scaledImage = UIGraphicsGetImageFromCurrentImageContext()
+        UIGraphicsEndImageContext()
+        return scaledImage ?? self
+    }
+}
+
 final class Overlay: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     private let url: URL
     private let bundler: OverlayBundler
@@ -168,8 +288,8 @@ final class Overlay: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
                     return
                 }
                 self.overlayImage = uiImage
-                let colorSpace = uiImage.cgImage?.colorSpace?.name as String?
-                LOG("Captured overlay with size \(uiImage.size), scale \(uiImage.scale), and color space: \(colorSpace ?? "unknown")", level: .debug)
+                let colorSpace = (uiImage.cgImage?.colorSpace?.name as String?)?.replacingOccurrences(of: "kCGColorSpace", with: "")
+                LOG("Captured overlay \(uiImage.size), scale \(uiImage.scale), and color space: \(colorSpace ?? "unknown")", level: .debug)
                 Task {
                     // Combine all images every time any image is changed
                     await self.bundler.combineOverlayImages()
@@ -195,23 +315,33 @@ actor OverlayBundleActor {
     }
 }
 
-actor CombinedImageActor {
-    private var combinedOverlayImage: CIImage? = nil
-    func setImage(_ image: CIImage?) {
-        combinedOverlayImage = image
+struct CombinedOverlay {
+    let image: CIImage
+    let boundingBoxes: [CGRect]
+    let coverage: Double
+}
+
+actor CombinedOverlayActor {
+    private var combinedOverlay: CombinedOverlay?
+    func setOverlay(_ image: CIImage, _ boundingBoxes: [CGRect] = []) {
+        var coverage: Double = 1.0
+        if !boundingBoxes.isEmpty {
+            coverage = boundingBoxes.map { $0.size.width * $0.size.height }.reduce(0, +) / (image.extent.width * image.extent.height)
+        }
+        combinedOverlay = CombinedOverlay(image: image, boundingBoxes: boundingBoxes, coverage: coverage)
     }
-    func getImage() -> CIImage? {
-        combinedOverlayImage
+    func getOverlay() -> CombinedOverlay? {
+        combinedOverlay
     }
-    func deleteImage() {
-        combinedOverlayImage = nil
+    func deleteOverlay() {
+        combinedOverlay = nil
     }
 }
 
 final class OverlayBundler: Sendable {
     public static let shared = OverlayBundler()
     private let overlayBundle = OverlayBundleActor()
-    private let combinedImage = CombinedImageActor()
+    private let combinedOverlay = CombinedOverlayActor()
 
     func addOverlay(url: URL, overlay: Overlay) async {
         await overlayBundle.addOverlay(url: url, overlay: overlay)
@@ -227,7 +357,7 @@ final class OverlayBundler: Sendable {
     func removeAllOverlays() {
         Task {
             await overlayBundle.removeAllOverlays()
-            await combinedImage.deleteImage()
+            await combinedOverlay.deleteOverlay()
         }
     }
     
@@ -243,7 +373,7 @@ final class OverlayBundler: Sendable {
     func combineOverlayImages() async {
         if Settings.hideOverlays {
             LOG("Overlays are hidden so no images will be combined", level: .debug)
-            await combinedImage.setImage(nil)
+            await combinedOverlay.deleteOverlay()
         }
         else {
             var images: [UIImage] = []
@@ -252,22 +382,34 @@ final class OverlayBundler: Sendable {
                     images.append(image)
                 }
             }
-            LOG("Combining \(images.count) images", level: .debug)
-            
+            if images.isEmpty {
+                LOG("There are no images to combine", level: .debug)
+                return
+            }
+            var boundingBoxes: [CGRect] = []
+            for uiImage in images {
+                if let boundingBox = uiImage.roughBoundingBox(scaledWidth: BOUNDING_BOX_SEARCH_WIDTH) {
+                    boundingBoxes.append(boundingBox)
+                }
+            }
             guard let imageComposition = UIImage.composite(images: images),
                   let ciImage = CIImage(image: imageComposition, options: [.expandToHDR: true, .colorSpace: CG_COLOR_SPACE])
             else {
                 LOG("Images could not be combined", level: .error)
                 return
             }
-            let colorSpace = ciImage.colorSpace?.name as String?
-            LOG("Combined overlay has color space: \(colorSpace ?? "unknown")", level: .debug)
-            await combinedImage.setImage(ciImage)
+            let colorSpace = (ciImage.colorSpace?.name as String?)?.replacingOccurrences(of: "kCGColorSpace", with: "")
+            await combinedOverlay.setOverlay(ciImage, boundingBoxes)
+            let combinedOverlay = await combinedOverlay.getOverlay()
+            LOG("Combined \(images.count) images to single overlay with color space: \(colorSpace ?? "unknown")", level: .debug)
+            let coveragePercentage = Int(100 * (combinedOverlay?.coverage ?? -1))
+            LOG("Bounding boxes: \(String(describing: combinedOverlay?.boundingBoxes)) covering \(coveragePercentage)%")
+            
         }
     }
     
-    func getCombinedImage() async -> CIImage? {
-        await combinedImage.getImage()
+    func getOverlay() async -> CombinedOverlay? {
+        await combinedOverlay.getOverlay()
     }
 }
 

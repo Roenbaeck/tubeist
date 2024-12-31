@@ -11,12 +11,12 @@ import CoreMedia
 import WebKit
 
 // Generic settings
-let STREAMING_QUEUE_CONCURRENT = DispatchQueue(label: "com.subside.StreamingQueueConcurrent", qos: .userInitiated, attributes: .concurrent)
+let STREAMING_QUEUE = DispatchQueue(label: "com.subside.Tubeist.StreamingQueue", qos: .userInitiated, attributes: .concurrent)
 let DEFAULT_MONITOR: Monitor = .camera
 
 // CameraMonitor settings
 let DEFAULT_CAMERA = "Back Camera" // available on most (all?) devices
-let ZOOM_LIMIT = 20.0
+let ZOOM_LIMIT: Double = 20.0
 let DEFAULT_FRAMERATE: Double = 60
 let DEFAULT_CAPTURE_WIDTH: Int = 3840
 let DEFAULT_CAPTURE_HEIGHT: Int = 2160
@@ -24,6 +24,9 @@ let DEFAULT_CAPTURE_HEIGHT: Int = 2160
 // Color settings
 let CG_COLOR_SPACE: CGColorSpace = .init(name: CGColorSpace.itur_2100_HLG)!
 let AV_COLOR_SPACE: AVCaptureColorSpace = .HLG_BT2020
+
+// OverlayBundler settings
+let BOUNDING_BOX_SEARCH_WIDTH: Int = 160 // needs to be a divisor of possible output widths (960, 1280, 1920, 2560, 3840)
 
 // AssetInterceptor settings
 let DEFAULT_COMPRESSED_WIDTH: Int = 1920

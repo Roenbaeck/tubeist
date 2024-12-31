@@ -315,7 +315,7 @@ actor PendingRetryActor {
         await withCheckedContinuation { continuation in
             let retry = PendingRetry(continuation: continuation)
             pendingRetries.append(retry)
-            STREAMING_QUEUE_CONCURRENT.asyncAfter(deadline: .now() + seconds) {
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + seconds) {
                 Task { await self.resume(id: retry.id) }
             }
         }

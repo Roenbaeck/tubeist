@@ -311,8 +311,8 @@ private actor CameraActor {
     }
 
     func startOutput() {
-        videoOutput.setSampleBufferDelegate(FrameGrabber.shared, queue: STREAMING_QUEUE_CONCURRENT)
-        audioOutput.setSampleBufferDelegate(FrameGrabber.shared, queue: STREAMING_QUEUE_CONCURRENT)
+        videoOutput.setSampleBufferDelegate(FrameGrabber.shared, queue: STREAMING_QUEUE)
+        audioOutput.setSampleBufferDelegate(FrameGrabber.shared, queue: STREAMING_QUEUE)
     }
     
     func stopOutput() {

@@ -6,36 +6,106 @@
 //
 
 @preconcurrency import AVFoundation
-@preconcurrency import CoreImage
+import CoreImage
 
-actor OverlayImprinter {
+private actor OverlayImprinter {
     nonisolated(unsafe) private let context: CIContext
+    // keeping one and the same render destination currently introduces flicker
+    private var renderDestination: CIRenderDestination?
+    
     init() {
-        context = CIContext(options: [
-            .useSoftwareRenderer: false,
-            .workingColorSpace: CG_COLOR_SPACE
-        ])
+        guard let metalDevice = MTLCreateSystemDefaultDevice() else {
+            context = CIContext(
+                options: [
+                    .useSoftwareRenderer: false,
+                    .workingColorSpace: CG_COLOR_SPACE
+                ])
+            LOG("Created rendering context without Metal support", level: .warning)
+            return
+        }
+        context = CIContext(
+            mtlDevice: metalDevice,
+            options: [
+                .useSoftwareRenderer: false,
+                .workingColorSpace: CG_COLOR_SPACE
+            ])
+        LOG("Created rendering context with Metal support", level: .info)
     }
-    func imprint(overlay overlayImage: CIImage, onto sampleBuffer: CMSampleBuffer) {
-        if let videoPixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) {
-            let destination = CIRenderDestination(pixelBuffer: videoPixelBuffer)
+    func reset() {
+        renderDestination = nil
+    }
+    func imprint(overlay combinedOverlay: CombinedOverlay, onto sampleBuffer: CMSampleBuffer) {
+        
+        /*
+        let destination: CIRenderDestination
+        if let existingDestination = renderDestination {
+            destination = existingDestination
+        } else {
+            guard let videoPixelBuffer = sampleBuffer.imageBuffer else {
+                LOG("Unable to get pixel buffer from sample buffer", level: .error)
+                return
+            }
+            destination = CIRenderDestination(pixelBuffer: videoPixelBuffer)
             destination.blendKernel = CIBlendKernel.sourceOver
             destination.blendsInDestinationColorSpace = true
             destination.alphaMode = .premultiplied
+            renderDestination = destination
             do {
-                let task = try self.context.startTask(toRender: overlayImage, to: destination)
-                try task.waitUntilCompleted()
+                try self.context.prepareRender(
+                    combinedOverlay.image,
+                    from: CGRect(origin: CGPoint(x: 0, y: 0), size: combinedOverlay.image.extent.size),
+                    to: destination,
+                    at: CGPoint(x: 0, y: 0)
+                )
             } catch {
-                LOG("Error rendering overlay: \(error)", level: .error)
+                LOG("Unable to prepare render destination: \(error)", level: .error)
+                return
             }
         }
-        else {
+        */
+        guard let videoPixelBuffer = sampleBuffer.imageBuffer else {
             LOG("Unable to get pixel buffer from sample buffer", level: .error)
+            return
         }
+        
+        let destination = CIRenderDestination(pixelBuffer: videoPixelBuffer)
+        destination.blendKernel = CIBlendKernel.sourceOver
+        destination.blendsInDestinationColorSpace = true
+        destination.alphaMode = .premultiplied
+        
+        do {
+            var renderTasks: [CIRenderTask] = []
+            // if more than 75% of the image has visuals, draw the entire image in one sweep
+            if combinedOverlay.coverage > 0.75 {
+                let task = try self.context.startTask(
+                    toRender: combinedOverlay.image,
+                    to: destination
+                )
+                renderTasks.append(task)
+            }
+            // otherwise draw each bounding box separately
+            else {
+                for boundingBox in combinedOverlay.boundingBoxes {
+                    let task = try self.context.startTask(
+                        toRender: combinedOverlay.image,
+                        from: boundingBox,
+                        to: destination,
+                        at: boundingBox.origin
+                    )
+                    renderTasks.append(task)
+                }
+            }
+            for renderTask in renderTasks {
+                try renderTask.waitUntilCompleted()
+            }
+        } catch {
+            LOG("Error rendering overlay: \(error)", level: .error)
+        }
+
     }
 }
 
-actor FrameGrabbingActor {
+private actor FrameGrabbingActor {
     private var grabbingFrames: Bool = true
     func start() {
         grabbingFrames = true
@@ -52,38 +122,41 @@ final class FrameGrabber: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
     public static let shared = FrameGrabber()
     private let overlayImprinter = OverlayImprinter()
     private let frameGrabbing = FrameGrabbingActor()
-
+    
     func commenceGrabbing() async {
+        await overlayImprinter.reset()
         await frameGrabbing.start()
     }
     func terminateGrabbing() async {
         await frameGrabbing.stop()
+        await overlayImprinter.reset()
     }
     
     func captureOutput(_ output: AVCaptureOutput,
                        didOutput sampleBuffer: CMSampleBuffer,
                        from connection: AVCaptureConnection) {
-        STREAMING_QUEUE_CONCURRENT.async {
-            Task.detached {
-                if await self.frameGrabbing.isActive() {
-                    switch output {
-                    case is AVCaptureVideoDataOutput:
-                        if let overlayImage = await OverlayBundler.shared.getCombinedImage() {
-                            await self.overlayImprinter.imprint(overlay: overlayImage, onto: sampleBuffer)
-                        }
-                        if await Streamer.shared.isStreaming() {
-                            await AssetInterceptor.shared.appendVideoSampleBuffer(sampleBuffer)
-                        }
-                        if await Streamer.shared.getMonitor() == .output {
-                            OutputMonitor.shared.enqueue(sampleBuffer)
-                        }
-                    case is AVCaptureAudioDataOutput:
-                        if await Streamer.shared.isStreaming() {
-                            await AssetInterceptor.shared.appendAudioSampleBuffer(sampleBuffer)
-                        }
-                    default:
-                        LOG("Unknown output type")
+        Task {
+            if await self.frameGrabbing.isActive() {
+                switch output {
+                case is AVCaptureVideoDataOutput:
+                    if let overlay = await OverlayBundler.shared.getOverlay() {
+                        await self.overlayImprinter.imprint(overlay: overlay, onto: sampleBuffer)
                     }
+                    else {
+                        LOG("No overlay available")
+                    }
+                    if await Streamer.shared.isStreaming() {
+                        await AssetInterceptor.shared.appendVideoSampleBuffer(sampleBuffer)
+                    }
+                    if await Streamer.shared.getMonitor() == .output {
+                        OutputMonitor.shared.enqueue(sampleBuffer)
+                    }
+                case is AVCaptureAudioDataOutput:
+                    if await Streamer.shared.isStreaming() {
+                        await AssetInterceptor.shared.appendAudioSampleBuffer(sampleBuffer)
+                    }
+                default:
+                    LOG("Unknown output type")
                 }
             }
         }
