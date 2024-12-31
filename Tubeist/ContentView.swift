@@ -9,7 +9,6 @@ import SwiftUI
 import UserNotifications
 import Intents
 
-@Observable
 class InteractionData {
     var location = CGPoint(x: 0, y: 0)
     private var hideWorkItem: DispatchWorkItem?

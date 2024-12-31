@@ -8,6 +8,11 @@
 import OSLog
 import Foundation
 import SwiftUI
+import Observation
+
+func LOG(_ message: String, level: LogLevel = .info) {
+    Journal.shared.log(message, level: level)
+}
 
 enum LogLevel {
     case debug
@@ -26,29 +31,39 @@ enum LogLevel {
 }
 
 struct LogEntry: Identifiable {
-    let id = UUID()
-    let timestamp: Date
-    let level: LogLevel
+    var id: String { message }
     let message: String
+    let level: LogLevel
+    var timestamp: Date = Date()
+    var repeatCount: Int = 1
 }
 
 actor JournalActor {
     // Observable property for tracking error presence
-    var hasErrors = false
-    private var journal: [LogEntry] = []
-    func log(_ logEntry: LogEntry) {
-        journal.append(logEntry)
-        // Update error tracking
-        if logEntry.level == .error {
+    public var hasErrors = false
+    private var messageOrder: [String] = []
+    private var journal: [String: LogEntry] = [:]
+    func log(message: String, level: LogLevel) {
+        messageOrder.append(message)
+        if var existingEntry = journal[message] {
+            existingEntry.timestamp = Date()
+            existingEntry.repeatCount += 1
+            journal[message] = existingEntry
+        }
+        else {
+            journal[message] = LogEntry(message: message, level: level)
+        }
+        if level == .error {
             hasErrors = true
         }
-        // Optional: Limit log store size
         if journal.count > MAX_LOG_ENTRIES {
-            journal.removeFirst()
+            let oldestMessage = messageOrder.first!
+            journal[oldestMessage] = nil
+            messageOrder.removeAll(where: { $0 == oldestMessage })
         }
     }
     func getJournal() -> [LogEntry] {
-        journal
+        Array(journal.values).sorted(by: { $0.timestamp < $1.timestamp })
     }
     func clearJournal() {
         journal.removeAll()
@@ -56,8 +71,14 @@ actor JournalActor {
     }
 }
 
+@Observable @MainActor
+final class JournalPublisher {
+    var journal: [LogEntry] = []
+}
+
 final class Journal: Sendable {
     static let shared = Journal()
+    @MainActor public static let publisher = JournalPublisher()
     private let journal = JournalActor()
     private let logger: Logger
     
@@ -78,10 +99,10 @@ final class Journal: Sendable {
             logger.error("\(message)")
         }
         
-        // Store in log store
-        let entry = LogEntry(timestamp: Date(), level: level, message: message)
-        Task {
-            await journal.log(entry)
+        // updates must happen on MainActor (UI related)
+        Task { @MainActor in
+            await journal.log(message: message, level: level)
+            Journal.publisher.journal = await journal.getJournal()
         }
     }
     
@@ -96,8 +117,9 @@ final class Journal: Sendable {
     }
 }
 
+
 struct JournalView: View {
-    @State private var logs: [LogEntry] = []
+    @State var journalPublisher = Journal.publisher
     private let hh_mm_ss = {
         let formatter = DateFormatter()
         formatter.dateFormat = "HH:mm ss"
@@ -105,25 +127,23 @@ struct JournalView: View {
     }()
     
     var body: some View {
-        List(logs) { log in
-            HStack {
+        List(journalPublisher.journal.reversed()) { log in
+            HStack(alignment: .top) {
                 Text(log.timestamp, formatter: hh_mm_ss)
                     .font(.system(size: 12))
+                    .padding(.top, 1)
+                Text(log.repeatCount.description)
+                    .font(.system(size: 12))
+                    .foregroundColor(.orange)
+                    .padding(.top, 1)
                 Text(log.message)
                     .font(.system(size: 14))
                     .foregroundColor(log.level.color)
             }
-            .lineLimit(1)
             .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
-            .frame(height: 20) // Force a specific height
             .clipped()
         }
         .listStyle(PlainListStyle())
         .environment(\.defaultMinListRowHeight, 20) // Reduce default row height
-        .onAppear {
-            Task {
-                logs = await Journal.shared.getJournal().reversed()
-            }
-        }
     }
 }

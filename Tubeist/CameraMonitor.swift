@@ -11,7 +11,7 @@ import SwiftUI
 import AVKit
 
 private actor CameraActor {
-    private let cameraControlQueue = DispatchQueue(label: "com.subside.CameraControlQueue")
+    private let cameraControlQueue = DispatchQueue(label: "com.subside.Tubeist.CameraControlQueue")
     private let session = AVCaptureSession()
     private let videoDevice: AVCaptureDevice?
     private var videoInput: AVCaptureDeviceInput?
@@ -522,7 +522,6 @@ private actor CameraManager {
     }
 }
 
-@Observable
 final class CameraMonitor: NSObject, Sendable, AVCaptureSessionControlsDelegate {
     public static let shared = CameraMonitor()
     private let cameraManager = CameraManager()

@@ -63,7 +63,7 @@ struct OverlaySetting: Identifiable, Codable, Hashable {
     }
 }
 
-@Observable class OverlaySettingsManager {
+class OverlaySettingsManager {
     var overlays: [OverlaySetting]
 
     init() {

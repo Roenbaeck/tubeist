@@ -51,9 +51,6 @@ let AUDIO_METER_HEIGHT: CGFloat = 3
 
 // Journal settings
 let MAX_LOG_ENTRIES = 1000
-func LOG(_ message: String, level: LogLevel = .info) {
-    Journal.shared.log(message, level: level)
-}
 
 // FragmentPusher settings
 let DEFAULT_TARGET = "youtube"
