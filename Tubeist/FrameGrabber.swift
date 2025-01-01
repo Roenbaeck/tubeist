@@ -30,39 +30,13 @@ private actor OverlayImprinter {
                 .workingColorSpace: CG_COLOR_SPACE
             ])
         LOG("Created rendering context with Metal support", level: .info)
+//        LOG("Overlay Imprinter set up on thread: \(Thread.current)", level: .debug)
+
     }
     func reset() {
         renderDestination = nil
     }
     func imprint(overlay combinedOverlay: CombinedOverlay, onto sampleBuffer: CMSampleBuffer) {
-        
-        /*
-        let destination: CIRenderDestination
-        if let existingDestination = renderDestination {
-            destination = existingDestination
-        } else {
-            guard let videoPixelBuffer = sampleBuffer.imageBuffer else {
-                LOG("Unable to get pixel buffer from sample buffer", level: .error)
-                return
-            }
-            destination = CIRenderDestination(pixelBuffer: videoPixelBuffer)
-            destination.blendKernel = CIBlendKernel.sourceOver
-            destination.blendsInDestinationColorSpace = true
-            destination.alphaMode = .premultiplied
-            renderDestination = destination
-            do {
-                try self.context.prepareRender(
-                    combinedOverlay.image,
-                    from: CGRect(origin: CGPoint(x: 0, y: 0), size: combinedOverlay.image.extent.size),
-                    to: destination,
-                    at: CGPoint(x: 0, y: 0)
-                )
-            } catch {
-                LOG("Unable to prepare render destination: \(error)", level: .error)
-                return
-            }
-        }
-        */
         guard let videoPixelBuffer = sampleBuffer.imageBuffer else {
             LOG("Unable to get pixel buffer from sample buffer", level: .error)
             return
@@ -72,7 +46,7 @@ private actor OverlayImprinter {
         destination.blendKernel = CIBlendKernel.sourceOver
         destination.blendsInDestinationColorSpace = true
         destination.alphaMode = .premultiplied
-        
+
         do {
             var renderTasks: [CIRenderTask] = []
             // if more than 75% of the image has visuals, draw the entire image in one sweep
@@ -119,7 +93,7 @@ private actor FrameGrabbingActor {
 }
 
 final class FrameGrabber: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptureAudioDataOutputSampleBufferDelegate, Sendable {
-    public static let shared = FrameGrabber()
+    @PipelineActor public static let shared = FrameGrabber()
     private let overlayImprinter = OverlayImprinter()
     private let frameGrabbing = FrameGrabbingActor()
     
@@ -135,7 +109,7 @@ final class FrameGrabber: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
     func captureOutput(_ output: AVCaptureOutput,
                        didOutput sampleBuffer: CMSampleBuffer,
                        from connection: AVCaptureConnection) {
-        Task {
+        Task { @PipelineActor in
             if await self.frameGrabbing.isActive() {
                 switch output {
                 case is AVCaptureVideoDataOutput:

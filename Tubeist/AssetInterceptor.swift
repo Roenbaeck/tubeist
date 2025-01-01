@@ -41,7 +41,9 @@ actor AssetWriterActor {
         assetWriter.outputFileTypeProfile = .mpeg4AppleHLS
         assetWriter.preferredOutputSegmentInterval = CMTime(seconds: adjustedFragmentDuration, preferredTimescale: CMTimeScale(selectedFrameRate))
         assetWriter.initialSegmentStartTime = .zero
-        assetWriter.delegate = AssetInterceptor.shared
+        Task { @PipelineActor in
+            assetWriter.delegate = AssetInterceptor.shared
+        }
         
         let videoSettings: [String: Any] = [
             AVVideoCodecKey: AVVideoCodecType.hevc,
@@ -159,7 +161,7 @@ actor fragmentSequenceNumberActor {
 }
 
 final class AssetInterceptor: NSObject, AVAssetWriterDelegate, Sendable {
-    public static let shared = AssetInterceptor()
+    @PipelineActor public static let shared = AssetInterceptor()
     private let assetWriter = AssetWriterActor()
     private let fragmentSequenceNumber = fragmentSequenceNumberActor()
     private let fragmentFolderURL: URL?
@@ -214,12 +216,12 @@ final class AssetInterceptor: NSObject, AVAssetWriterDelegate, Sendable {
         }
         let duration = segmentReport?.trackReports.first?.duration.seconds ?? 0
         if segmentType == .initialization || duration >= FRAGMENT_MINIMUM_DURATION {
-            Task.detached { [self] in
+            Task { [self] in
                 let sequenceNumber = await fragmentSequenceNumber.next()
                 let fragment = Fragment(sequence: sequenceNumber, segment: segmentData, duration: duration, type: fragmentType)
                 LOG("Produced \(fragment)", level: .debug)
-                FragmentPusher.shared.addFragment(fragment)
-                FragmentPusher.shared.uploadFragment(attempt: 1)
+                await FragmentPusher.shared.addFragment(fragment)
+                await FragmentPusher.shared.uploadFragment(attempt: 1)
                 saveFragmentToFile(fragment)
             }
         }

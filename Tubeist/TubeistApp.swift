@@ -46,6 +46,9 @@ struct TubeistApp: App {
         WindowGroup {
             ContentView().environment(appState)
                 .onAppear {
+                    Task { 
+                        await Streamer.shared.setAppState(appState)
+                    }
                     UIApplication.shared.isIdleTimerDisabled = true
                 }
                 .onDisappear {
@@ -83,7 +86,6 @@ struct TubeistApp: App {
     init() {
         LOG("Starting Tubeist", level: .info)
         LOG("Using \(REFERENCE_TIMEPOINT) as reference time for streams", level: .debug)
-        Streamer.shared.setAppState(appState)
         UIApplication.shared.isIdleTimerDisabled = true
         do {
             try AVAudioSession.sharedInstance().setCategory(

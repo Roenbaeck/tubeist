@@ -11,7 +11,14 @@ import CoreMedia
 import WebKit
 
 // Generic settings
-let STREAMING_QUEUE = DispatchQueue(label: "com.subside.Tubeist.StreamingQueue", qos: .userInitiated, attributes: .concurrent)
+@globalActor actor PipelineActor: GlobalActor {
+    static let shared = PipelineActor()
+    static let queue = DispatchQueue(label: "com.subside.Tubeist.PipelineQueue", qos: .userInitiated, attributes: .concurrent)
+}
+@globalActor actor UploadActor: GlobalActor {
+    static let shared = UploadActor()
+}
+
 let DEFAULT_MONITOR: Monitor = .camera
 
 // CameraMonitor settings

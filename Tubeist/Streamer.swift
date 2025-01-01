@@ -56,13 +56,11 @@ actor StreamingActor {
 }
 
 final class Streamer: Sendable {
-    public static let shared = Streamer()
+    @PipelineActor public static let shared = Streamer()
     private let streamingActor = StreamingActor()
     
-    func setAppState(_ appState: AppState) {
-        Task {
-            await self.streamingActor.setAppState(appState)
-        }
+    func setAppState(_ appState: AppState) async {
+        await self.streamingActor.setAppState(appState)
     }
     func cycleCamera() async {
         await CameraMonitor.shared.stopCamera()

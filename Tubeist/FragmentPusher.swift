@@ -254,14 +254,18 @@ final class NetworkPerformanceDelegate: NSObject, URLSessionDelegate, URLSession
     
     func urlSession(_ session: URLSession, taskIsWaitingForConnectivity task: URLSessionTask) {
         LOG("No network connectivity, buffering fragments and retrying", level: .warning)
-        Streamer.shared.setStreamHealth(.unusable)
+        Task {
+            await Streamer.shared.setStreamHealth(.unusable)
+        }
         task.cancel()
     }
     
     func urlSession(_ session: URLSession, didBecomeInvalidWithError error: (any Error)?) {
         if let error = error {
-            Streamer.shared.setStreamHealth(.unusable)
             LOG("URLSession became invalid with error: \(error.localizedDescription)", level: .error)
+            Task {
+                await Streamer.shared.setStreamHealth(.unusable)
+            }
         }
     }
         
@@ -340,7 +344,7 @@ actor PendingRetryActor {
 }
 
 final class FragmentPusher: Sendable {
-    public static let shared = FragmentPusher()
+    @UploadActor public static let shared = FragmentPusher()
     private let uploadQueue: OperationQueue
     private let maxRetryAttempts = MAX_UPLOAD_RETRIES
     private let fragmentBuffer = FragmentBufferActor(maxBufferSize: MAX_BUFFERED_FRAGMENTS)

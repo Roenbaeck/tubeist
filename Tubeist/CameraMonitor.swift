@@ -127,6 +127,7 @@ private actor CameraActor {
         } catch {
             LOG("Error setting up camera: \(error)", level: .error)
         }
+//        LOG("Camera set up on thread: \(Thread.current)", level: .debug)
     }
 
     func bind(totalZoom: Binding<Double>, currentZoom: Binding<Double>) {
@@ -156,8 +157,9 @@ private actor CameraActor {
                 LOG("Adding system exposure bias slider camera control", level: .debug)
                 session.addControl(exposureBiasSlider)
             }
-            
-            session.setControlsDelegate(CameraMonitor.shared, queue: cameraControlQueue)
+            Task { @PipelineActor in
+                await session.setControlsDelegate(CameraMonitor.shared, queue: cameraControlQueue)
+            }
         }
     }
     
@@ -311,8 +313,10 @@ private actor CameraActor {
     }
 
     func startOutput() {
-        videoOutput.setSampleBufferDelegate(FrameGrabber.shared, queue: STREAMING_QUEUE)
-        audioOutput.setSampleBufferDelegate(FrameGrabber.shared, queue: STREAMING_QUEUE)
+        Task { @PipelineActor in
+            await videoOutput.setSampleBufferDelegate(FrameGrabber.shared, queue: PipelineActor.queue)
+            await audioOutput.setSampleBufferDelegate(FrameGrabber.shared, queue: PipelineActor.queue)
+        }
     }
     
     func stopOutput() {
@@ -523,7 +527,7 @@ private actor CameraManager {
 }
 
 final class CameraMonitor: NSObject, Sendable, AVCaptureSessionControlsDelegate {
-    public static let shared = CameraMonitor()
+    @PipelineActor public static let shared = CameraMonitor()
     private let cameraManager = CameraManager()
         
     func bind(totalZoom: Binding<Double>, currentZoom: Binding<Double>) async {
@@ -731,7 +735,9 @@ struct CameraMonitorView: UIViewControllerRepresentable {
     }
     
     func updateUIViewController(_ uiViewController: UIViewController, context: Context) {
-        CameraMonitor.shared.configurePreviewLayer(on: uiViewController)
+        Task { @PipelineActor in
+            CameraMonitor.shared.configurePreviewLayer(on: uiViewController)
+        }
     }
 }
 

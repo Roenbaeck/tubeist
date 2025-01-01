@@ -126,10 +126,7 @@ struct SettingsView: View {
     @State private var customAudioChannels: Int = DEFAULT_AUDIO_CHANNELS
     @State private var customAudioBitrate: Int = DEFAULT_AUDIO_BITRATE
     @State private var customVideoBitrate: Int = DEFAULT_VIDEO_BITRATE
-    
-    private var maxFrameRate: Double {
-        CameraMonitor.shared.frameRateLookup[customResolution] ?? DEFAULT_FRAMERATE
-    }
+    @State private var maxFrameRate: Double = DEFAULT_FRAMERATE
     
     var body: some View {
         NavigationView {
@@ -230,8 +227,12 @@ struct SettingsView: View {
                         }
                         .pickerStyle(.segmented)
                         .onChange(of: customResolution) { oldValue, newValue in
-                            if customFrameRate > maxFrameRate {
-                                customFrameRate = maxFrameRate
+                            Task {
+                                maxFrameRate = await CameraMonitor.shared.frameRateLookup[customResolution] ?? DEFAULT_FRAMERATE
+                                
+                                if customFrameRate > maxFrameRate {
+                                    customFrameRate = maxFrameRate
+                                }
                             }
                         }
                         
