@@ -248,12 +248,23 @@ private actor CameraActor {
             LOG("Focus configuration error: \(error.localizedDescription)", level: .error)
         }
     }
-    func setAutoFocus() {
+    func autoFocus() {
         guard let device = videoDevice else { return }
         
         do {
             try device.lockForConfiguration()
             device.focusMode = .continuousAutoFocus
+            device.unlockForConfiguration()
+        } catch {
+            LOG("Focus configuration error: \(error.localizedDescription)", level: .error)
+        }
+    }
+    func lockFocus() {
+        guard let device = videoDevice else { return }
+        
+        do {
+            try device.lockForConfiguration()
+            device.focusMode = .locked
             device.unlockForConfiguration()
         } catch {
             LOG("Focus configuration error: \(error.localizedDescription)", level: .error)
@@ -269,20 +280,29 @@ private actor CameraActor {
                 device.exposurePointOfInterest = point
                 device.exposureMode = .autoExpose
             }
-            device.exposureMode = .custom
-            device.setExposureModeCustom(duration: AVCaptureDevice.currentExposureDuration, iso: AVCaptureDevice.currentISO)
             
             device.unlockForConfiguration()
         } catch {
             LOG("Exposure configuration error: \(error.localizedDescription)", level: .error)
         }
     }
-    func setAutoExposure() {
+    func autoExposure() {
         guard let device = videoDevice else { return }
         
         do {
             try device.lockForConfiguration()
             device.exposureMode = .continuousAutoExposure
+            device.unlockForConfiguration()
+        } catch {
+            LOG("Exposure configuration error: \(error.localizedDescription)", level: .error)
+        }
+    }
+    func lockExposure() {
+        guard let device = videoDevice else { return }
+        
+        do {
+            try device.lockForConfiguration()
+            device.exposureMode = .locked
             device.unlockForConfiguration()
         } catch {
             LOG("Exposure configuration error: \(error.localizedDescription)", level: .error)
@@ -300,7 +320,7 @@ private actor CameraActor {
             LOG("White balance configuration error: \(error.localizedDescription)", level: .error)
         }
     }
-    func setAutoWhiteBalance() {
+    func autoWhiteBalance() {
         guard let device = videoDevice else { return }
 
         do {
@@ -500,20 +520,26 @@ private actor CameraManager {
     func setFocus(at point: CGPoint) async {
         await cameraActor?.setFocus(at: point)
     }
-    func setAutoFocus() async {
-        await cameraActor?.setAutoFocus()
+    func autoFocus() async {
+        await cameraActor?.autoFocus()
+    }
+    func lockFocus() async {
+        await cameraActor?.lockFocus()
     }
     func setExposure(at point: CGPoint) async {
         await cameraActor?.setExposure(at: point)
     }
-    func setAutoExposure() async {
-        await cameraActor?.setAutoExposure()
+    func autoExposure() async {
+        await cameraActor?.autoExposure()
+    }
+    func lockExposure() async {
+        await cameraActor?.lockExposure()
     }
     func lockWhiteBalance() async {
         await cameraActor?.lockWhiteBalance()
     }
-    func setAutoWhiteBalance() async {
-        await cameraActor?.setAutoWhiteBalance()
+    func autoWhiteBalance() async {
+        await cameraActor?.autoWhiteBalance()
     }
     func configurePreviewLayer(on viewController: UIViewController) async {
         await cameraActor?.configurePreviewLayer(on: viewController)
@@ -595,20 +621,26 @@ final class CameraMonitor: NSObject, Sendable, AVCaptureSessionControlsDelegate 
     func setFocus(at point: CGPoint) async {
         await cameraManager.setFocus(at: point)
     }
-    func setAutoFocus() async {
-        await cameraManager.setAutoFocus()
+    func autoFocus() async {
+        await cameraManager.autoFocus()
+    }
+    func lockFocus() async {
+        await cameraManager.lockFocus()
     }
     func setExposure(at point: CGPoint) async {
         await cameraManager.setExposure(at: point)
     }
-    func setAutoExposure() async {
-        await cameraManager.setAutoExposure()
+    func autoExposure() async {
+        await cameraManager.autoExposure()
+    }
+    func lockExposure() async {
+        await cameraManager.lockExposure()
     }
     func lockWhiteBalance() async {
         await cameraManager.lockWhiteBalance()
     }
-    func setAutoWhiteBalance() async {
-        await cameraManager.setAutoWhiteBalance()
+    func autoWhiteBalance() async {
+        await cameraManager.autoWhiteBalance()
     }
     func getCameraFrameRate() async -> Double {
         await cameraManager.getCameraFrameRate()

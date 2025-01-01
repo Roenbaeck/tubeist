@@ -9,24 +9,18 @@ import SwiftUI
 import UserNotifications
 import Intents
 
-class InteractionData {
+@Observable
+class Interaction {
     var location = CGPoint(x: 0, y: 0)
-    private var hideWorkItem: DispatchWorkItem?
+    private var actionWorkItem: DispatchWorkItem?
 
-    func scheduleHide(action: @escaping () -> Void) {
-        // Cancel any existing work item
-        hideWorkItem?.cancel()
-        
-        // Create a new work item
+    func scheduleAction(seconds: Double = 3.0, action: @escaping () -> Void) {
+        actionWorkItem?.cancel()
         let workItem = DispatchWorkItem {
             action()
         }
-        
-        // Store the new work item
-        hideWorkItem = workItem
-        
-        // Schedule the new work item
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0, execute: workItem)
+        actionWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: workItem)
     }
 }
 
@@ -51,12 +45,17 @@ struct ContentView: View {
     @State private var selectedStabilization = "Off"
     @State private var cameras: [String] = []
     @State private var stabilizations: [String] = []
-    private let interactionData = InteractionData()
-    
+
+    @State private var interaction = Interaction()
+
+    @State private var startMagnification: CGFloat?
     private var magnification: some Gesture {
         MagnifyGesture()
             .onChanged { value in
-                currentZoom = value.magnification - 1
+                if startMagnification == nil {
+                    startMagnification = value.magnification
+                }
+                currentZoom = value.magnification - (startMagnification ?? 1.0)
                 let zoomDelta = totalZoom * currentZoom
                 let safeZoom = max(minZoom, min(zoomDelta + totalZoom, maxZoom))
                 Task {
@@ -71,6 +70,7 @@ struct ContentView: View {
                     await CameraMonitor.shared.setZoomFactor(totalZoom)
                 }
                 currentZoom = 0
+                startMagnification = nil
             }
     }
     
@@ -122,6 +122,38 @@ struct ContentView: View {
                                 }
                             }
                         }
+                        .onTapGesture { location in
+                            if enableFocusAndExposureTap {
+                                interaction.location = location
+                                Task {
+                                    let normalizedLocation = CGPoint(
+                                        x: location.x / width,
+                                        y: location.y / height
+                                    )
+                                    if appState.isExposureLocked {
+                                        await CameraMonitor.shared.setExposure(at: normalizedLocation)
+                                        LOG("Probing exposure at \(location)")
+                                    }
+                                    if appState.isFocusLocked {
+                                        await CameraMonitor.shared.setFocus(at: normalizedLocation)
+                                        LOG("Probing focus at \(location)")
+                                    }
+                                }
+                                showFocusAndExposureArea = true
+                                // Schedule hide with a method that cancels and reschedules
+                                interaction.scheduleAction {
+                                    showFocusAndExposureArea = false
+                                }
+                            }
+                        }
+                    
+                    if showFocusAndExposureArea {
+                        FocusExposureIndicator(
+                            position: interaction.location,
+                            isExposureLocked: appState.isExposureLocked,
+                            isFocusLocked: appState.isFocusLocked
+                        )
+                    }
 
                     ForEach(overlayManager.overlays) { overlay in
                         if let url = URL(string: overlay.url) {
@@ -309,7 +341,8 @@ struct ContentView: View {
 
                     Spacer()
 
-                    SmallButton(imageName: appState.isBatterySavingOn ? "sunrise.fill" : "sunset") {
+                    SmallButton(imageName: appState.isBatterySavingOn ? "sunrise.fill" : "sunset",
+                                foregroundColor: appState.isBatterySavingOn ? .yellow : .white) {
                         showBatterySavingConfirmation = true
                     }
                     .confirmationDialog("Change Battery Saving Mode?", isPresented: $showBatterySavingConfirmation) {
@@ -324,7 +357,8 @@ struct ContentView: View {
                         .font(.system(size: 8))
                         .padding(.bottom, 3)
                     
-                    SmallButton(imageName: "camera", foregroundColor: appState.isStreamActive ? .yellow : .white) {
+                    SmallButton(imageName: appState.isStreamActive ? "camera.fill" : "camera",
+                                foregroundColor: appState.isStreamActive || showCameraPicker ? .yellow : .white) {
                         if(!appState.isStreamActive) {
                             showCameraPicker.toggle()
                             if showCameraPicker && showStabilizationPicker {
@@ -337,7 +371,8 @@ struct ContentView: View {
                         .font(.system(size: 8))
                         .padding(.bottom, 3)
 
-                    SmallButton(imageName: appState.isStabilizationOn ? "hand.raised.fill" : "hand.raised.slash") {
+                    SmallButton(imageName: appState.isStabilizationOn ? "hand.raised.fill" : "hand.raised.slash",
+                                foregroundColor: showStabilizationPicker ? .yellow : .white) {
                         Task {
                             stabilizations = await CameraMonitor.shared.getStabilizations()
                             showStabilizationPicker.toggle()
@@ -354,9 +389,14 @@ struct ContentView: View {
                                 foregroundColor: appState.isFocusLocked ? .yellow : .white) {
                         appState.isFocusLocked.toggle()
                         enableFocusAndExposureTap = appState.isExposureLocked || appState.isFocusLocked
-                        if !appState.isFocusLocked {
+                        if appState.isFocusLocked {
                             Task {
-                                await CameraMonitor.shared.setAutoFocus()
+                                await CameraMonitor.shared.lockFocus()
+                            }
+                        }
+                        else {
+                            Task {
+                                await CameraMonitor.shared.autoFocus()
                             }
                         }
                     }
@@ -368,9 +408,14 @@ struct ContentView: View {
                                 foregroundColor: appState.isExposureLocked ? .yellow : .white) {
                         appState.isExposureLocked.toggle()
                         enableFocusAndExposureTap = appState.isExposureLocked || appState.isFocusLocked
-                        if !appState.isExposureLocked {
+                        if appState.isExposureLocked {
                             Task {
-                                await CameraMonitor.shared.setAutoExposure()
+                                await CameraMonitor.shared.lockExposure()
+                            }
+                        }
+                        else {
+                            Task {
+                                await CameraMonitor.shared.autoExposure()
                             }
                         }
                     }
@@ -388,7 +433,7 @@ struct ContentView: View {
                         }
                         else {
                             Task {
-                                await CameraMonitor.shared.setAutoWhiteBalance()
+                                await CameraMonitor.shared.autoWhiteBalance()
                             }
                         }
                         
@@ -408,7 +453,8 @@ struct ContentView: View {
                         .font(.system(size: 8))
                         .padding(.bottom, 3)
 
-                    SmallButton(imageName: "text.quote", foregroundColor: showJournal ? .yellow : .white) {
+                    SmallButton(imageName: "text.quote",
+                                foregroundColor: showJournal ? .yellow : .white) {
                         showJournal.toggle()
                     }
                     Text("JORNL")
@@ -421,42 +467,7 @@ struct ContentView: View {
                 .padding(.leading, 10)
             }
             .frame(width: geometry.size.width, height: geometry.size.height)
-            .onTapGesture { location in
-                if enableFocusAndExposureTap {
-                    interactionData.location = location
-                    Task {
-                        if appState.isExposureLocked { await CameraMonitor.shared.setExposure(at: location) }
-                        if appState.isFocusLocked { await CameraMonitor.shared.setFocus(at: location) }
-                    }
-                    showFocusAndExposureArea = true
-                    // Schedule hide with a method that cancels and reschedules
-                    interactionData.scheduleHide {
-                        showFocusAndExposureArea = false
-                    }
-                }
-            }
             
-            if showFocusAndExposureArea {
-                Rectangle()
-                    .stroke(Color.white.opacity(0.5), lineWidth: 25)
-                    .position(interactionData.location)
-                    .frame(width: 80, height: 80)
-                if appState.isExposureLocked {
-                    Text("EXPOSURE")
-                        .fontWeight(.black)
-                        .font(.system(size: 14))
-                        .foregroundColor(Color.white)
-                        .position(x: interactionData.location.x, y: interactionData.location.y - 40)
-                }
-                if appState.isFocusLocked {
-                    Text("FOCUS")
-                        .fontWeight(.black)
-                        .font(.system(size: 14))
-                        .foregroundColor(Color.white)
-                        .position(x: interactionData.location.x, y: interactionData.location.y + 40)
-                }
-            }
-                
         }
         .edgesIgnoringSafeArea(.all)
         .persistentSystemOverlays(.hidden)
@@ -522,3 +533,79 @@ struct SmallButton: View {
     }
 }
 
+struct FocusExposureIndicator: View {
+    let position: CGPoint
+    let isExposureLocked: Bool
+    let isFocusLocked: Bool
+    
+    @State private var scale: CGFloat = 1.2
+    @State private var opacity: Double = 1.0
+    
+    var body: some View {
+        ZStack {
+            // Corner elements
+            ForEach(0..<4) { index in
+                Path { path in
+                    let isTop = index < 2
+                    let isLeft = index % 2 == 0
+                    let x = isLeft ? 0 : 80
+                    let y = isTop ? 0 : 80
+                    
+                    path.move(to: CGPoint(x: x, y: y))
+                    path.addLine(to: CGPoint(
+                        x: x + (isLeft ? 20 : -20),
+                        y: y
+                    ))
+                    path.move(to: CGPoint(x: x, y: y))
+                    path.addLine(to: CGPoint(
+                        x: x,
+                        y: y + (isTop ? 20 : -20)
+                    ))
+                }
+                .stroke(Color.yellow, lineWidth: 2)
+            }
+            
+            // Center crosshair
+            Circle()
+                .fill(Color.yellow)
+                .frame(width: 4, height: 4)
+            
+            // Labels
+            if isExposureLocked {
+                Text("EXPSR")
+                    .font(.system(size: 12, weight: .bold))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .background(Color.black.opacity(0.3))
+                    .foregroundColor(.white)
+                    .cornerRadius(4)
+                    .offset(y: -54)
+            }
+            
+            if isFocusLocked {
+                Text("FOCUS")
+                    .font(.system(size: 12, weight: .bold))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .background(Color.black.opacity(0.3))
+                    .foregroundColor(.white)
+                    .cornerRadius(4)
+                    .offset(y: 54)
+            }
+        }
+        .frame(width: 80, height: 80)
+        .position(position)
+        .scaleEffect(scale)
+        .opacity(opacity)
+        .onAppear {
+            withAnimation(.spring(response: 0.3)) {
+                scale = 1.0
+            }
+        }
+        .onDisappear {
+            withAnimation(.easeOut.delay(1.5)) {
+                opacity = 0
+            }
+        }
+    }
+}

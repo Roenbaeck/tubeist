@@ -17,8 +17,9 @@ private actor OverlayImprinter {
         guard let metalDevice = MTLCreateSystemDefaultDevice() else {
             context = CIContext(
                 options: [
-                    .useSoftwareRenderer: false,
-                    .workingColorSpace: CG_COLOR_SPACE
+                    .useSoftwareRenderer: true,
+                    .workingColorSpace: CG_COLOR_SPACE,
+                    .cacheIntermediates: true
                 ])
             LOG("Created rendering context without Metal support", level: .warning)
             return
@@ -27,7 +28,9 @@ private actor OverlayImprinter {
             mtlDevice: metalDevice,
             options: [
                 .useSoftwareRenderer: false,
-                .workingColorSpace: CG_COLOR_SPACE
+                .workingColorSpace: CG_COLOR_SPACE,
+                .cacheIntermediates: true,
+                .memoryTarget: 512
             ])
         LOG("Created rendering context with Metal support", level: .info)
 //        LOG("Overlay Imprinter set up on thread: \(Thread.current)", level: .debug)
