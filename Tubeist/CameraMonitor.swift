@@ -308,6 +308,17 @@ private actor CameraActor {
             LOG("Exposure configuration error: \(error.localizedDescription)", level: .error)
         }
     }
+    func setExposureBias(to bias: Float) {
+        guard let device = videoDevice else { return }
+        
+        do {
+            try device.lockForConfiguration()
+            device.setExposureTargetBias(bias)
+            device.unlockForConfiguration()
+        } catch {
+            LOG("Exposure configuration error: \(error.localizedDescription)", level: .error)
+        }
+    }
 
     func lockWhiteBalance() {
         guard let device = videoDevice else { return }
@@ -532,6 +543,9 @@ private actor CameraManager {
     func autoExposure() async {
         await cameraActor?.autoExposure()
     }
+    func setExposureBias(to bias: Float) async {
+        await cameraActor?.setExposureBias(to: bias)
+    }
     func lockExposure() async {
         await cameraActor?.lockExposure()
     }
@@ -635,6 +649,9 @@ final class CameraMonitor: NSObject, Sendable, AVCaptureSessionControlsDelegate 
     }
     func lockExposure() async {
         await cameraManager.lockExposure()
+    }
+    func setExposureBias(to bias: Float) async {
+        await cameraManager.setExposureBias(to: bias)
     }
     func lockWhiteBalance() async {
         await cameraManager.lockWhiteBalance()

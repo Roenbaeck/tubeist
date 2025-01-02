@@ -41,6 +41,7 @@ struct ContentView: View {
     @State private var minZoom = 1.0
     @State private var maxZoom = 1.0
     @State private var opticalZoom = 1.0
+    @State private var exposureBias: Float = 0.0
     @State private var selectedCamera = DEFAULT_CAMERA
     @State private var selectedStabilization = "Off"
     @State private var cameras: [String] = []
@@ -94,6 +95,7 @@ struct ContentView: View {
             let width = height * (16.0/9.0)
             
             HStack(spacing: 0) {
+                Spacer()
                 // 16:9 Content Area
                 ZStack {
                     CameraMonitorView()
@@ -146,7 +148,7 @@ struct ContentView: View {
                                 }
                             }
                         }
-                    
+
                     if showFocusAndExposureArea {
                         FocusExposureIndicator(
                             position: interaction.location,
@@ -335,7 +337,7 @@ struct ContentView: View {
                     }
                 }
                 .frame(width: width, height: height)
-                
+
                 // Vertical Small Button Column
                 VStack(spacing: 2) {
 
@@ -465,9 +467,20 @@ struct ContentView: View {
                 }
                 .frame(width: 30) // Width based on button size and padding
                 .padding(.leading, 10)
+                    
+                Spacer().overlay {
+                    if appState.isExposureLocked {
+                        ExposureBiasSlider(bias: $exposureBias)
+                            .frame(height: geometry.size.height * 0.50)
+                            .padding(.leading, 10)
+                            .onChange(of: exposureBias) { oldValue, newValue in
+                                Task {
+                                    await CameraMonitor.shared.setExposureBias(to: newValue)
+                                }
+                            }
+                    }
+                }
             }
-            .frame(width: geometry.size.width, height: geometry.size.height)
-            
         }
         .edgesIgnoringSafeArea(.all)
         .persistentSystemOverlays(.hidden)
@@ -609,3 +622,55 @@ struct FocusExposureIndicator: View {
         }
     }
 }
+
+struct ExposureBiasSlider: View {
+    @Binding var bias: Float // Exposure bias in stops (-2 to +2)
+    let range: ClosedRange<Double> = -2.0...2.0
+    let step: Double = 0.1
+
+    var body: some View {
+        GeometryReader { geometry in
+            let stepSize = geometry.size.height / Double(range.upperBound - range.lowerBound)
+            let zero = geometry.size.height / 2
+
+            ZStack(alignment: .leading) { // Align ZStack to the leading edge
+                Text("\(String(format: "%.1f", bias))")
+                    .font(.system(size: 10))
+                    .foregroundColor(.yellow)
+                    .offset(x: 14, y: zero - CGFloat(bias) * stepSize)
+
+                // Scale Markers
+                ForEach(Array(stride(from: range.lowerBound, through: range.upperBound, by: step)), id: \.self) { position in
+                    let atBias = Int((position * 10).rounded()) == Int((bias * 10).rounded())
+                    let width: CGFloat = {
+                        switch Int((position * 10).rounded()) {
+                        case -20, -10, 0, 10, 20:
+                            return 8
+                        case -15, -5, 5, 15:
+                            return 5
+                        default:
+                            return 2
+                        }
+                    }()
+                    HStack {
+                        Rectangle()
+                            .fill(atBias ? Color.yellow : Color.gray)
+                            .frame(width: atBias ? 5 : width, height: atBias ? 2 : 1)
+                    }
+                    .offset(y: zero - CGFloat(position) * stepSize)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading) // Ensure the ZStack takes full width and aligns content to leading
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { gesture in
+                        let y = gesture.location.y
+                        let draggedBias = range.upperBound - (y / geometry.size.height) * (range.upperBound - range.lowerBound)
+                        let roundedDraggedBias = (draggedBias * 10).rounded() / 10
+                        bias = Float(min(range.upperBound, max(range.lowerBound, roundedDraggedBias)))
+                    }
+            )
+        }
+    }
+}
+
