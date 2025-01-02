@@ -27,6 +27,7 @@ final class AppState {
     var isExposureLocked = false
     var isWhiteBalanceLocked = false
     var areOverlaysHidden = Settings.hideOverlays
+    var soonGoingToBackground = false
     var justCameFromBackground = false
     var hadToStopStreaming = false
     var streamHealth = StreamHealth.silenced
@@ -46,7 +47,7 @@ struct TubeistApp: App {
         WindowGroup {
             ContentView().environment(appState)
                 .onAppear {
-                    Task { 
+                    Task {
                         await Streamer.shared.setAppState(appState)
                     }
                     UIApplication.shared.isIdleTimerDisabled = true
@@ -58,18 +59,23 @@ struct TubeistApp: App {
         .onChange(of: scenePhase) { oldValue, newValue in
             switch (oldValue, newValue) {
             case (.inactive, .background), (.active, .background):
-                LOG("App is entering background", level: .debug)
-                Task {
-                    if await Streamer.shared.isStreaming() {
-                        LOG("Stopping stream due to background state", level: .warning)
-                        appState.hadToStopStreaming = true
-                        await Streamer.shared.endStream()
+                if !appState.soonGoingToBackground {
+                    appState.soonGoingToBackground = true
+                    appState.justCameFromBackground = false
+                    LOG("App is entering background", level: .debug)
+                    Task {
+                        if await Streamer.shared.isStreaming() {
+                            LOG("Stopping stream due to background state", level: .warning)
+                            appState.hadToStopStreaming = true
+                            await Streamer.shared.endStream()
+                        }
+                        await Streamer.shared.stopCamera()
                     }
-                    await Streamer.shared.stopCamera()
                 }
             case (.background, .inactive), (.background, .active):
                 if !appState.justCameFromBackground {
                     appState.justCameFromBackground = true
+                    appState.soonGoingToBackground = false
                     LOG("App is coming back from background", level: .debug)
                     Task {
                         // Refresh the camera view

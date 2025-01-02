@@ -77,9 +77,13 @@ struct ContentView: View {
     
     func updateCameraProperties() {
         Task {
-            // Passing Binding<variable> is fine as long as we know what we are doing
-            await CameraMonitor.shared.bind(totalZoom: $totalZoom, currentZoom: $currentZoom)
-            selectedStabilization = await CameraMonitor.shared.getCameraStabilization()
+            // Passing Binding<variable> to a singleton is fine
+            await CameraMonitor.shared.bind(
+                totalZoom: $totalZoom,
+                currentZoom: $currentZoom,
+                exposureBias: $exposureBias
+            )
+            selectedStabilization = Settings.cameraStabilization ?? "Off"
             appState.isStabilizationOn = selectedStabilization != "Off"
             minZoom = await CameraMonitor.shared.getMinZoomFactor()
             maxZoom = await min(CameraMonitor.shared.getMaxZoomFactor(), ZOOM_LIMIT)
@@ -499,9 +503,6 @@ struct ContentView: View {
                 UNUserNotificationCenter.current().add(request)
                 
                 appState.hadToStopStreaming = false
-            }
-            if newValue {
-                appState.justCameFromBackground = false
             }
         }
         .onAppear {

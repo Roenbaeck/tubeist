@@ -11,6 +11,9 @@ import CoreMedia
 import WebKit
 
 // Generic settings
+let DEFAULT_MONITOR: Monitor = .camera
+let CAMERA_CONTROL_QUEUE = DispatchQueue(label: "com.subside.Tubeist.CameraControlQueue")
+
 @globalActor actor PipelineActor: GlobalActor {
     static let shared = PipelineActor()
     static let queue = DispatchQueue(label: "com.subside.Tubeist.PipelineQueue", qos: .userInitiated, attributes: .concurrent)
@@ -18,8 +21,6 @@ import WebKit
 @globalActor actor UploadActor: GlobalActor {
     static let shared = UploadActor()
 }
-
-let DEFAULT_MONITOR: Monitor = .camera
 
 // CameraMonitor settings
 let DEFAULT_CAMERA = "Back Camera" // available on most (all?) devices
