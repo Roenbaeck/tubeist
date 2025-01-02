@@ -110,7 +110,7 @@ final class FrameGrabber: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
     func captureOutput(_ output: AVCaptureOutput,
                        didOutput sampleBuffer: CMSampleBuffer,
                        from connection: AVCaptureConnection) {
-        Task { @PipelineActor in
+        Task { @PipelineActor [sampleBuffer] in
             if await self.frameGrabbing.isActive() {
                 if let overlay = await OverlayBundler.shared.getOverlay() {
                     await self.overlayImprinter.imprint(overlay: overlay, onto: sampleBuffer)

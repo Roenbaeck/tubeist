@@ -183,12 +183,6 @@ struct ContentView: View {
                     }
                     
                     VStack {
-                        if appState.activeMonitor == .output {
-                            Text("OUTPUT MONITORING")
-                                .font(.system(size: 12))
-                                .foregroundColor(Color.white)
-                                .fontWeight(.black)
-                        }
                         Spacer()
                         if appState.isBatterySavingOn {
                             Text("BATTERY SAVING MODE")
@@ -300,6 +294,16 @@ struct ContentView: View {
                                 .fontWeight(.semibold)
                                 .foregroundColor(zoom > opticalZoom ? .yellow : zoom > 1 ? .white : .white.opacity(0.5))
                             
+                            Spacer()
+                            if appState.activeMonitor == .output {
+                                Text("OUTPUT MONITORING")
+                                    .font(.system(size: 12))
+                                    .foregroundColor(Color.white)
+                                    .fontWeight(.black)
+                                    .rotationEffect(.degrees(90))
+                                    .fixedSize()
+                                    .frame(width: 15)
+                            }
                             Spacer()
 
                             // Computed property to determine the color based on streamHealth
@@ -639,47 +643,56 @@ struct ExposureBiasSlider: View {
     let step: Double = 0.1
 
     var body: some View {
-        GeometryReader { geometry in
-            let stepSize = geometry.size.height / Double(range.upperBound - range.lowerBound)
-            let zero = geometry.size.height / 2
-
-            ZStack(alignment: .leading) { // Align ZStack to the leading edge
-                Text("\(String(format: "%.1f", bias))")
+        VStack {
+            HStack {
+                Text("\(String(format: "%.1f EV", bias))")
                     .font(.system(size: 10))
                     .foregroundColor(.yellow)
-                    .offset(x: 14, y: zero - CGFloat(bias) * stepSize)
-
-                // Scale Markers
-                ForEach(Array(stride(from: range.lowerBound, through: range.upperBound, by: step)), id: \.self) { position in
-                    let atBias = Int((position * 10).rounded()) == Int((bias * 10).rounded())
-                    let width: CGFloat = {
-                        switch Int((position * 10).rounded()) {
-                        case -20, -10, 0, 10, 20:
-                            return 8
-                        case -15, -5, 5, 15:
-                            return 5
-                        default:
-                            return 2
-                        }
-                    }()
-                    HStack {
-                        Rectangle()
-                            .fill(atBias ? Color.yellow : Color.gray)
-                            .frame(width: atBias ? 5 : width, height: atBias ? 2 : 1)
-                    }
-                    .offset(y: zero - CGFloat(position) * stepSize)
-                }
+                Spacer()
             }
-            .frame(maxWidth: .infinity, alignment: .leading) // Ensure the ZStack takes full width and aligns content to leading
-            .gesture(
-                DragGesture(minimumDistance: 0)
-                    .onChanged { gesture in
-                        let y = gesture.location.y
-                        let draggedBias = range.upperBound - (y / geometry.size.height) * (range.upperBound - range.lowerBound)
-                        let roundedDraggedBias = (draggedBias * 10).rounded() / 10
-                        bias = Float(min(range.upperBound, max(range.lowerBound, roundedDraggedBias)))
+            
+            GeometryReader { geometry in
+                let stepSize = geometry.size.height / Double(range.upperBound - range.lowerBound)
+                let zero = geometry.size.height / 2
+                
+                ZStack(alignment: .leading) { // Align ZStack to the leading edge
+                    Text("\(String(format: "%.1f", bias))")
+                        .font(.system(size: 10))
+                        .foregroundColor(.yellow)
+                        .offset(x: 14, y: zero - CGFloat(bias) * stepSize)
+                    
+                    // Scale Markers
+                    ForEach(Array(stride(from: range.lowerBound, through: range.upperBound, by: step)), id: \.self) { position in
+                        let atBias = Int((position * 10).rounded()) == Int((bias * 10).rounded())
+                        let width: CGFloat = {
+                            switch Int((position * 10).rounded()) {
+                            case -20, -10, 0, 10, 20:
+                                return 8
+                            case -15, -5, 5, 15:
+                                return 5
+                            default:
+                                return 2
+                            }
+                        }()
+                        HStack {
+                            Rectangle()
+                                .fill(atBias ? Color.yellow : Color.gray)
+                                .frame(width: atBias ? 5 : width, height: atBias ? 2 : 1)
+                        }
+                        .offset(y: zero - CGFloat(position) * stepSize)
                     }
-            )
+                }
+                .frame(maxWidth: .infinity, alignment: .leading) // Ensure the ZStack takes full width and aligns content to leading
+                .gesture(
+                    DragGesture(minimumDistance: 0)
+                        .onChanged { gesture in
+                            let y = gesture.location.y
+                            let draggedBias = range.upperBound - (y / geometry.size.height) * (range.upperBound - range.lowerBound)
+                            let roundedDraggedBias = (draggedBias * 10).rounded() / 10
+                            bias = Float(min(range.upperBound, max(range.lowerBound, roundedDraggedBias)))
+                        }
+                )
+            }
         }
     }
 }

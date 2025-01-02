@@ -16,7 +16,7 @@ let CAMERA_CONTROL_QUEUE = DispatchQueue(label: "com.subside.Tubeist.CameraContr
 
 @globalActor actor PipelineActor: GlobalActor {
     static let shared = PipelineActor()
-    static let queue = DispatchQueue(label: "com.subside.Tubeist.PipelineQueue", qos: .userInitiated, attributes: .concurrent)
+    static let queue = DispatchQueue(label: "com.subside.Tubeist.PipelineQueue", qos: .userInitiated) //, attributes: .concurrent)
 }
 @globalActor actor UploadActor: GlobalActor {
     static let shared = UploadActor()
@@ -69,6 +69,25 @@ let MAX_CONCURRENT_UPLOADS = 3
 let MAX_BUFFERED_FRAGMENTS = 90
 
 // Web View Process Pool
-@MainActor
-let WK_PROCESS_POOL = WKProcessPool()
+@MainActor let WK_PROCESS_POOL = WKProcessPool()
 
+// Useful for debugging purposes
+func printCurrentExecutionInfo(message: String = "") {
+    let currentQueue = OperationQueue.current?.name ?? "No Queue"
+    let underlyingCurrentQueue = OperationQueue.current?.underlyingQueue?.label ?? "No Queue"
+    let thread = Thread.current
+    let threadName = thread.name ?? (thread.isMainThread ? "Main Thread" : "Background Thread")
+    let threadNumber = thread.hashValue
+
+    print("""
+    --------------------------------------------------
+    \(message)
+    Queue: \(currentQueue)
+    Underlying: \(underlyingCurrentQueue)
+    Thread: \(threadName) (ID: \(threadNumber))
+    Is Main Thread: \(thread.isMainThread)
+    Call Stack:
+    \(Thread.callStackSymbols.joined(separator: "\n"))
+    --------------------------------------------------
+    """)
+}
