@@ -24,6 +24,7 @@ let CAMERA_CONTROL_QUEUE = DispatchQueue(label: "com.subside.Tubeist.CameraContr
 
 // CameraMonitor settings
 let DEFAULT_CAMERA = "Back Camera" // available on most (all?) devices
+let DEFAULT_MICROPHONE = "iPhone Microphone"
 let ZOOM_LIMIT: Double = 20.0
 let DEFAULT_FRAMERATE: Double = 60
 let DEFAULT_CAPTURE_WIDTH: Int = 3840

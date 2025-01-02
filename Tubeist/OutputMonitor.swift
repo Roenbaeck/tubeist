@@ -10,31 +10,23 @@ import SwiftUI
 
 final class OutputMonitor: Sendable {
     public static let shared = OutputMonitor()
-    private let displayLayer: AVSampleBufferDisplayLayer
+    public let displayLayer: AVSampleBufferDisplayLayer
     
     init() {
         displayLayer = AVSampleBufferDisplayLayer()
+        displayLayer.videoGravity = .resizeAspect
     }
     
     func configurePreviewLayer(on viewController: UIViewController) {
-        displayLayer.videoGravity = .resizeAspect
-        
-        DispatchQueue.main.async {
-            // Remove existing preview layers
-            viewController.view.layer.sublayers?.forEach { $0.removeFromSuperlayer() }
-            
-            // Add preview layer
-            viewController.view.layer.addSublayer(self.displayLayer)
-            
-            // Calculate the frame based on 16:9 ratio
+        Task { @MainActor in
             let height = viewController.view.bounds.height
             let width = height * (16.0/9.0)
             let x: CGFloat = 0
             let y: CGFloat = 0
-            
+
             CATransaction.begin()
             CATransaction.setAnimationDuration(0)
-            self.displayLayer.frame = CGRect(x: x, y: y, width: width, height: height)
+            displayLayer.frame = CGRect(x: x, y: y, width: width, height: height)
             CATransaction.commit()
         }
     }
@@ -61,6 +53,13 @@ struct OutputMonitorView: UIViewControllerRepresentable {
     }
     
     func updateUIViewController(_ uiViewController: UIViewController, context: Context) {
+        let outputMonitor = OutputMonitor.shared
+
+        // Add the displayLayer to the view's layer if it's not already there
+        if outputMonitor.displayLayer.superlayer != uiViewController.view.layer {
+            uiViewController.view.layer.addSublayer(outputMonitor.displayLayer)
+        }
+        
         OutputMonitor.shared.configurePreviewLayer(on: uiViewController)
     }
 }

@@ -274,7 +274,7 @@ final class Overlay: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     private func captureWebViewImage() {
         lastCaptureTime = Date()
         Task {
-            guard let width = await CameraMonitor.shared.getResolution()?.width else {
+            guard let width = await AVMonitor.shared.getResolution()?.width else {
                 LOG("Cannot get width from the camera input", level: .error)
                 return
             }

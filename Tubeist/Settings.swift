@@ -228,7 +228,7 @@ struct SettingsView: View {
                         .pickerStyle(.segmented)
                         .onChange(of: customResolution) { oldValue, newValue in
                             Task {
-                                maxFrameRate = await CameraMonitor.shared.frameRateLookup[customResolution] ?? DEFAULT_FRAMERATE
+                                maxFrameRate = await AVMonitor.shared.frameRateLookup[customResolution] ?? DEFAULT_FRAMERATE
                                 
                                 if customFrameRate > maxFrameRate {
                                     customFrameRate = maxFrameRate

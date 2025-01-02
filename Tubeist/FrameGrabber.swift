@@ -33,8 +33,6 @@ private actor OverlayImprinter {
                 .memoryTarget: 512
             ])
         LOG("Created rendering context with Metal support", level: .info)
-//        LOG("Overlay Imprinter set up on thread: \(Thread.current)", level: .debug)
-
     }
     func reset() {
         renderDestination = nil
@@ -95,7 +93,7 @@ private actor FrameGrabbingActor {
     }
 }
 
-final class FrameGrabber: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptureAudioDataOutputSampleBufferDelegate, Sendable {
+final class FrameGrabber: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, Sendable {
     @PipelineActor public static let shared = FrameGrabber()
     private let overlayImprinter = OverlayImprinter()
     private let frameGrabbing = FrameGrabbingActor()
@@ -114,26 +112,14 @@ final class FrameGrabber: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
                        from connection: AVCaptureConnection) {
         Task { @PipelineActor in
             if await self.frameGrabbing.isActive() {
-                switch output {
-                case is AVCaptureVideoDataOutput:
-                    if let overlay = await OverlayBundler.shared.getOverlay() {
-                        await self.overlayImprinter.imprint(overlay: overlay, onto: sampleBuffer)
-                    }
-                    else {
-                        LOG("No overlay available")
-                    }
-                    if await Streamer.shared.isStreaming() {
-                        await AssetInterceptor.shared.appendVideoSampleBuffer(sampleBuffer)
-                    }
-                    if await Streamer.shared.getMonitor() == .output {
-                        OutputMonitor.shared.enqueue(sampleBuffer)
-                    }
-                case is AVCaptureAudioDataOutput:
-                    if await Streamer.shared.isStreaming() {
-                        await AssetInterceptor.shared.appendAudioSampleBuffer(sampleBuffer)
-                    }
-                default:
-                    LOG("Unknown output type")
+                if let overlay = await OverlayBundler.shared.getOverlay() {
+                    await self.overlayImprinter.imprint(overlay: overlay, onto: sampleBuffer)
+                }
+                if await Streamer.shared.isStreaming() {
+                    await AssetInterceptor.shared.appendVideoSampleBuffer(sampleBuffer)
+                }
+                if await Streamer.shared.getMonitor() == .output {
+                    OutputMonitor.shared.enqueue(sampleBuffer)
                 }
             }
         }

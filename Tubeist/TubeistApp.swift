@@ -69,7 +69,7 @@ struct TubeistApp: App {
                             appState.hadToStopStreaming = true
                             await Streamer.shared.endStream()
                         }
-                        await Streamer.shared.stopCamera()
+                        await Streamer.shared.stopSessions()
                     }
                 }
             case (.background, .inactive), (.background, .active):
@@ -79,7 +79,7 @@ struct TubeistApp: App {
                     LOG("App is coming back from background", level: .debug)
                     Task {
                         // Refresh the camera view
-                        await Streamer.shared.startCamera()
+                        await Streamer.shared.startSessions()
                         appState.refreshCameraView()
                     }
                 }

@@ -63,31 +63,32 @@ final class Streamer: Sendable {
         await self.streamingActor.setAppState(appState)
     }
     func cycleCamera() async {
-        await CameraMonitor.shared.stopCamera()
-        await CameraMonitor.shared.startCamera()
+        await AVMonitor.shared.cycleCamera()
         await streamingActor.refreshCameraView()
     }
-    func startCamera() async {
-        await CameraMonitor.shared.startCamera()
+    func startSessions() async {
+        await AVMonitor.shared.startSessions()
     }
-    func stopCamera() async {
-        await CameraMonitor.shared.stopCamera()
+    func stopSessions() async {
+        await AVMonitor.shared.stopSessions()
     }
     func startStream() async {
         await FragmentPusher.shared.immediatePreparation()
         await AssetInterceptor.shared.beginIntercepting()
+        await SoundGrabber.shared.commenceGrabbing()
         if await streamingActor.getMonitor() == .camera {
             await FrameGrabber.shared.commenceGrabbing()
-            await CameraMonitor.shared.startOutput()
+            await AVMonitor.shared.startOutput()
         }
         await streamingActor.run()
     }
     func endStream() async {
         await streamingActor.pause()
         if await streamingActor.getMonitor() == .camera {
-            await CameraMonitor.shared.stopOutput()
+            await AVMonitor.shared.stopOutput()
             await FrameGrabber.shared.terminateGrabbing()
         }
+        await SoundGrabber.shared.terminateGrabbing()
         await AssetInterceptor.shared.endIntercepting()
         await FragmentPusher.shared.gracefulShutdown()
     }
@@ -111,11 +112,11 @@ final class Streamer: Sendable {
         if monitor == .output, await !isStreaming() {
             LOG("Starting half the streaming pipeline", level: .debug)
             await FrameGrabber.shared.commenceGrabbing()
-            await CameraMonitor.shared.startOutput()
+            await AVMonitor.shared.startOutput()
         }
         else if monitor == .camera, await !isStreaming() {
             LOG("Stopping half the streaming pipeline", level: .debug)
-            await CameraMonitor.shared.stopOutput()
+            await AVMonitor.shared.stopOutput()
             await FrameGrabber.shared.terminateGrabbing()
         }
     }
