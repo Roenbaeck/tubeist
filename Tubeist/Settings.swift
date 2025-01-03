@@ -99,6 +99,41 @@ class OverlaySettingsManager {
     }
 }
 
+@Observable
+class StreamKeyManager {
+    var currentKey: String = ""
+    
+    init() {
+        loadKey(for: Settings.target)
+    }
+    
+    private var storage: [String: String] {
+        get {
+            guard let targetData = Settings.targetData,
+                  let decodedTargetData = try? JSONDecoder().decode([String: String].self, from: targetData) else {
+                return [:]
+            }
+            return decodedTargetData
+        }
+        set {
+            if let encoded = try? JSONEncoder().encode(newValue) {
+                Settings.targetData  = encoded
+            }
+        }
+    }
+    
+    func loadKey(for target: String) {
+        currentKey = storage[target] ?? ""
+    }
+    
+    func saveKey(_ key: String, for target: String) {
+        var newStorage = storage
+        newStorage[target] = key
+        storage = newStorage
+        currentKey = key
+    }
+}
+
 struct SettingsView: View {
     var overlayManager: OverlaySettingsManager
     @Environment(AppState.self) var appState
@@ -107,7 +142,6 @@ struct SettingsView: View {
     @AppStorage("Username") private var hlsUsername: String = ""
     @AppStorage("Password") private var hlsPassword: String = ""
     @AppStorage("Target") private var target: String = DEFAULT_TARGET
-    @AppStorage("StreamKey") private var streamKey: String = ""
     @AppStorage("SaveFragmentsLocally") private var saveFragmentsLocally: Bool = false
     @AppStorage("InputSyncsWithOutput") private var inputSyncsWithOutput: Bool = false
     @AppStorage("MeasuredBandwidth") private var measuredBandwidth: Int = 1000 // in kbit/s
@@ -118,7 +152,8 @@ struct SettingsView: View {
     @State private var newOverlayURL: String = ""
     @State private var selectedPreset: Preset? = nil
     @State private var activeMonitor: Monitor = DEFAULT_MONITOR
-    
+    @State private var streamKeyManager = StreamKeyManager()
+
     // State variables for custom preset settings
     @State private var customResolution: Resolution = Resolution(DEFAULT_COMPRESSED_WIDTH, DEFAULT_COMPRESSED_HEIGHT)
     @State private var customFrameRate: Double = DEFAULT_FRAMERATE
@@ -127,7 +162,7 @@ struct SettingsView: View {
     @State private var customAudioBitrate: Int = DEFAULT_AUDIO_BITRATE
     @State private var customVideoBitrate: Int = DEFAULT_VIDEO_BITRATE
     @State private var maxFrameRate: Double = DEFAULT_FRAMERATE
-    
+        
     var body: some View {
         NavigationView {
             Form {
@@ -151,14 +186,23 @@ struct SettingsView: View {
                 Section(header: Text("Target Platform"), footer: Text("Select the target platform and provide its related stream details.")) {
                     Picker("Target Platform", selection: $target) {
                         Text("YouTube").tag("youtube")
+                        Text("Twitch").tag("twitch")
                     }
                     .pickerStyle(.segmented)
-                    TextField("Stream Key", text: $streamKey)
-                        .keyboardType(.asciiCapable)
-                        .autocapitalization(.none)
-                        .disableAutocorrection(true)
+                    .onChange(of: target) { _, newValue in
+                        LOG("Changing stream target to: \(newValue)", level: .debug)
+                        streamKeyManager.loadKey(for: newValue)
+                    }
+
+                    TextField("Stream Key", text: Binding(
+                        get: { streamKeyManager.currentKey },
+                        set: { streamKeyManager.saveKey($0, for: target) }
+                    ))
+                    .keyboardType(.asciiCapable)
+                    .autocapitalization(.none)
+                    .disableAutocorrection(true)
                 }
-                
+
                 Section(header: Text("Camera"), footer: Text("Select if the camera will be moving around with altering scenery or remain stationary aimed at a single scene. If you do not want to get suggested presets and instead configure settings in detail, select 'Custom' here.")) {
                     Picker("Camera Position", selection: $cameraPosition) {
                         Text("Stationary").tag("stationary")
@@ -359,7 +403,7 @@ struct SettingsView: View {
             }
         }
     }
-
+    
     func saveCustomPreset() {
         let customPreset = Preset(
             name: "Custom",
@@ -398,6 +442,16 @@ final class Settings: Sendable {
         }
         return selectedPreset
     }
+    static var streamKey: String? {
+        guard let targetData = Settings.targetData,
+              let decodedTargetData = try? JSONDecoder().decode([String: String].self, from: targetData),
+              let streamKey = decodedTargetData[Settings.target]
+        else {
+            return nil
+        }
+        return streamKey
+    }
+    
     static var isInputSyncedWithOutput: Bool {
         get {
             UserDefaults.standard.bool(forKey: "InputSyncsWithOutput")
@@ -454,14 +508,6 @@ final class Settings: Sendable {
             UserDefaults.standard.set(newValue, forKey: "Target")
         }
     }
-    static var streamKey: String? {
-        get {
-            UserDefaults.standard.string(forKey: "StreamKey")
-        }
-        set {
-            UserDefaults.standard.set(newValue, forKey: "StreamKey")
-        }
-    }
     static var cameraStabilization: String? {
         get {
             UserDefaults.standard.string(forKey: "CameraStabilization")
@@ -484,6 +530,14 @@ final class Settings: Sendable {
         }
         set {
             UserDefaults.standard.set(newValue, forKey: "Overlays")
+        }
+    }
+    static var targetData: Data? {
+        get {
+            UserDefaults.standard.data(forKey: "TargetData")
+        }
+        set {
+            UserDefaults.standard.set(newValue, forKey: "TargetData")
         }
     }
 }

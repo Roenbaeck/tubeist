@@ -183,7 +183,7 @@ actor URLSessionActor {
             let target = Settings.target
             request.setValue(target, forHTTPHeaderField: "Target")
             
-            let streamKey = Settings.streamKey ?? ""
+            let streamKey = Settings.streamKey ?? MISSING_STREAM_KEY
             request.setValue(streamKey, forHTTPHeaderField: "Stream-Key")
             
             return request

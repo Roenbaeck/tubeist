@@ -63,6 +63,7 @@ let MAX_LOG_ENTRIES = 1000
 
 // FragmentPusher settings
 let DEFAULT_TARGET = "youtube"
+let MISSING_STREAM_KEY = "missing_stream_key"
 let NETWORK_METRICS_SLIDING_WINDOW: TimeInterval = 10 // seconds
 let MAX_UPLOAD_RETRIES = 30
 let MAX_CONCURRENT_UPLOADS = 3
