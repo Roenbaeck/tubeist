@@ -41,9 +41,18 @@ private class MicrophoneActor {
     func setup(microphoneType: AVCaptureDevice.DeviceType) {
         setupLock.lock()
         defer { setupLock.unlock() }
-        guard let audioDevice = AVCaptureDevice.default(for: .audio) else {
+
+        guard let defaultAudioDevice = AVCaptureDevice.default(for: .audio) else {
             LOG("Could not create audio capture device", level: .error)
             return
+        }
+
+        let audioDevice: AVCaptureDevice
+        if let selectedAudioDevice = AVCaptureDevice.default(microphoneType, for: .audio, position: .unspecified) {
+            audioDevice = selectedAudioDevice
+        }
+        else {
+            audioDevice = defaultAudioDevice
         }
         self.audioDevice = audioDevice
 
