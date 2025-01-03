@@ -116,7 +116,7 @@ struct ContentView: View {
                         }
                         .onDisappear {
                             Task {
-                                await Streamer.shared.stopSessions() 
+                                await Streamer.shared.stopSessions()
                             }
                         }
                         .onChange(of: appState.cameraMonitorId) {
@@ -194,7 +194,7 @@ struct ContentView: View {
                         SystemMetricsView()
                             .offset(y: 3)
                             .opacity(showJournal ? 0 : 1)
-                        CoreGraphicsAudioMeter(width: width, height: AUDIO_METER_HEIGHT)
+                        AudioMonitorView(width: width, height: AUDIO_METER_HEIGHT)
                             .frame(width: width, height: AUDIO_METER_HEIGHT)
                     }
 

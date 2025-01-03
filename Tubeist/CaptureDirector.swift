@@ -15,6 +15,7 @@ private class MicrophoneActor {
     private var audioDevice: AVCaptureDevice?
     private var audioInput: AVCaptureDeviceInput?
     private var audioOutput: AVCaptureAudioDataOutput?
+    private let setupLock = NSLock()
 
     // capabilties
     private let microphones: [String: AVCaptureDevice.DeviceType]
@@ -38,6 +39,8 @@ private class MicrophoneActor {
     }
     
     func setup(microphoneType: AVCaptureDevice.DeviceType) {
+        setupLock.lock()
+        defer { setupLock.unlock() }
         guard let audioDevice = AVCaptureDevice.default(for: .audio) else {
             LOG("Could not create audio capture device", level: .error)
             return
@@ -79,7 +82,7 @@ private class MicrophoneActor {
             }
 
             CaptureDirector.audioSession.commitConfiguration()
-            // only after the configuarion is commited, the following can be changed
+            CaptureDirector.audioSession.startRunning()
 
         } catch {
             LOG("Error setting up microphone: \(error)", level: .error)
@@ -128,6 +131,7 @@ private class CameraActor {
     private var maxZoomFactor: CGFloat = 1.0
     private var opticalZoomFactor: CGFloat = 1.0
     private var resolution = Resolution(DEFAULT_CAPTURE_WIDTH, DEFAULT_CAPTURE_HEIGHT)
+    private let setupLock = NSLock()
     
     // UI bindings
     private var totalZoom: Binding<Double>?
@@ -201,6 +205,9 @@ private class CameraActor {
     }
     
     func setup(cameraType: AVCaptureDevice.DeviceType) {
+        setupLock.lock()
+        defer { setupLock.unlock() }
+
         // Fetch frame rate from settings
         self.frameRate = Settings.selectedPreset?.frameRate ?? DEFAULT_FRAMERATE
         
@@ -271,6 +278,8 @@ private class CameraActor {
                 Int(videoDevice.activeFormat.formatDescription.dimensions.width),
                 Int(videoDevice.activeFormat.formatDescription.dimensions.height)
             )
+
+            CaptureDirector.videoSession.startRunning()
 
         } catch {
             LOG("Error setting up camera: \(error)", level: .error)
@@ -525,10 +534,8 @@ final class CaptureDirector: NSObject, Sendable, AVCaptureSessionControlsDelegat
     }
     func cycleCamera() async {
         if await CaptureDirector.videoSession.isRunning {
-            await CaptureDirector.videoSession.stopRunning()
             await detachCamera()
             await attachCamera()
-            await CaptureDirector.videoSession.startRunning()
         }
     }
     func attachCamera() async {
@@ -545,6 +552,7 @@ final class CaptureDirector: NSObject, Sendable, AVCaptureSessionControlsDelegat
         await setCameraStabilization(to: selectedStabilization)
     }
     func detachCamera() async {
+        await CaptureDirector.videoSession.stopRunning()
         for output in await CaptureDirector.videoSession.outputs {
             await CaptureDirector.videoSession.removeOutput(output)
         }
@@ -554,10 +562,8 @@ final class CaptureDirector: NSObject, Sendable, AVCaptureSessionControlsDelegat
     }
     func cycleMicrophone() async {
         if await CaptureDirector.audioSession.isRunning {
-            await CaptureDirector.audioSession.stopRunning()
             await detachMicrophone()
             await attachMicrophone()
-            await CaptureDirector.audioSession.startRunning()
         }
     }
     func attachMicrophone() async {
@@ -570,6 +576,7 @@ final class CaptureDirector: NSObject, Sendable, AVCaptureSessionControlsDelegat
         await microphoneActor.setup(microphoneType: microphoneType)
     }
     func detachMicrophone() async {
+        await CaptureDirector.audioSession.stopRunning()
         for output in await CaptureDirector.audioSession.outputs {
             await CaptureDirector.audioSession.removeOutput(output)
         }
@@ -578,16 +585,16 @@ final class CaptureDirector: NSObject, Sendable, AVCaptureSessionControlsDelegat
         }
     }
     func startSessions() async {
-        await attachCamera()
-        await attachMicrophone()
-        await CaptureDirector.videoSession.startRunning()
-        await CaptureDirector.audioSession.startRunning()
+        if await !isRunning() {
+            await attachCamera()
+            await attachMicrophone()
+        }
     }
     func stopSessions() async {
-        await CaptureDirector.audioSession.stopRunning()
-        await CaptureDirector.videoSession.stopRunning()
-        await detachMicrophone()
-        await detachCamera()
+        if await isRunning() {
+            await detachMicrophone()
+            await detachCamera()
+        }
     }
     func isRunning() async -> Bool {
         let videoRunning = await CaptureDirector.videoSession.isRunning
@@ -769,167 +776,7 @@ extension AVCaptureDevice {
     }
 }
 
-struct CameraMonitorView: UIViewControllerRepresentable {
-    @MainActor public static private(set) var previewLayer: AVCaptureVideoPreviewLayer?
 
-    static func createPreviewLayer() async -> AVCaptureVideoPreviewLayer? {
-        return await AVCaptureVideoPreviewLayer(session: CaptureDirector.videoSession)
-    }
 
-    func makeUIViewController(context: Context) -> UIViewController {
-        let viewController = UIViewController()
-        viewController.loadViewIfNeeded()
-
-        Task { @MainActor in
-            if CameraMonitorView.previewLayer == nil {
-                CameraMonitorView.previewLayer = await CameraMonitorView.createPreviewLayer()
-                LOG("Created preview layer", level: .debug)
-            }
-            if let previewLayer = CameraMonitorView.previewLayer {
-                previewLayer.videoGravity = .resizeAspect
-                if let connection = previewLayer.connection, connection.isVideoRotationAngleSupported(0) {
-                    connection.videoRotationAngle = 0
-                }
-                previewLayer.frame = viewController.view.bounds // Initial frame
-
-                // Add the layer immediately in makeUIViewController
-                viewController.view.layer.addSublayer(previewLayer)
-            }
-        }
-        return viewController
-    }
-
-    func updateUIViewController(_ uiViewController: UIViewController, context: Context) {
-        Task { @MainActor in
-            guard let previewLayer = CameraMonitorView.previewLayer else { return }
-
-            let height = uiViewController.view.bounds.height
-            let width = height * (16.0/9.0)
-            let x: CGFloat = 0
-            let y: CGFloat = 0
-
-            CATransaction.begin()
-            CATransaction.setAnimationDuration(0)
-            previewLayer.frame = CGRect(x: x, y: y, width: width, height: height)
-            CATransaction.commit()
-        }
-    }
-}
-
-struct CoreGraphicsAudioMeter: UIViewRepresentable {
-    @Environment(AppState.self) var appState
-    var width: CGFloat
-    var height: CGFloat
-
-    func makeUIView(context: Context) -> MeterView {
-        let meterView = MeterView(width: width, height: height)
-        return meterView
-    }
-    
-    func updateUIView(_ uiView: MeterView, context: Context) {
-        if appState.isAudioLevelRunning, !appState.soonGoingToBackground {
-            uiView.startTimer()
-        } else {
-            uiView.stopTimer()
-        }
-        uiView.setNeedsDisplay() // Trigger redraw
-    }
-}
-
-class MeterView: UIView {
-    var width: CGFloat
-    var height: CGFloat
-    private var leftAverageLevel: Float = 0 { didSet { setNeedsDisplay() } }
-    private var leftPeakLevel: Float = 0 { didSet { setNeedsDisplay() } }
-    private var rightAverageLevel: Float = 0 { didSet { setNeedsDisplay() } }
-    private var rightPeakLevel: Float = 0 { didSet { setNeedsDisplay() } }
-    private var timer: Timer?
-
-    init(width: CGFloat, height: CGFloat) {
-        self.width = width
-        self.height = height
-        super.init(frame: .zero)
-        self.backgroundColor = UIColor.black.withAlphaComponent(0)
-        startTimer()
-    }
-
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-    
-    func startTimer() {
-        guard let timer = self.timer else {
-            self.timer = Timer.scheduledTimer(timeInterval: 0.04, target: self, selector: #selector(updateLevels), userInfo: nil, repeats: true)
-            return
-        }
-        if !timer.isValid {
-            self.timer = Timer.scheduledTimer(timeInterval: 0.04, target: self, selector: #selector(updateLevels), userInfo: nil, repeats: true)
-        }
-    }
-    
-    func stopTimer() {
-        timer?.invalidate()
-        timer = nil
-    }
-
-    @objc private func updateLevels() {
-        Task { @MainActor in // Ensure UI updates on main thread
-            let channels = await CaptureDirector.shared.getAudioChannels()
-            if channels.count == 2 {
-                leftAverageLevel = channels[0].averagePowerLevel
-                leftPeakLevel = channels[0].peakHoldLevel
-                rightAverageLevel = channels[1].averagePowerLevel
-                rightPeakLevel = channels[1].peakHoldLevel
-            } else if channels.count == 1 {
-                leftAverageLevel = channels[0].averagePowerLevel
-                leftPeakLevel = channels[0].peakHoldLevel
-                rightAverageLevel = channels[0].averagePowerLevel
-                rightPeakLevel = channels[0].peakHoldLevel
-            }
-        }
-    }
-
-    // Normalization function (adjust scaling as desired)
-    private func normalizeLevel(_ level: Float) -> CGFloat {
-        let normalizedLevel = max(0, level + 160) / 160  // Ensure level is in the 0-1 range
-        let sigmoid = 1 / (1 + exp(-10 * (normalizedLevel - 0.95)))
-        return CGFloat(sigmoid)
-    }
-
-    override func draw(_ rect: CGRect) {
-        guard let context = UIGraphicsGetCurrentContext() else { return }
-
-        let meterHeight = rect.height
-        let halfWidth = rect.width / 2
-
-        // Left Channel
-        let leftPeakWidth = normalizeLevel(leftPeakLevel) * halfWidth
-        let leftAverageWidth = normalizeLevel(leftAverageLevel) * halfWidth
-
-        // Yellow (Peak) - Draw from right to left
-        context.setFillColor(UIColor.green.withAlphaComponent(0.3).cgColor)
-        context.fill(CGRect(x: halfWidth - leftPeakWidth, y: 0, width: leftPeakWidth, height: meterHeight))
-
-        // Green (Average) - Draw from right to left
-        context.setFillColor(UIColor.green.cgColor)
-        context.fill(CGRect(x: halfWidth - leftAverageWidth, y: 0, width: leftAverageWidth, height: meterHeight))
-
-        // Right Channel
-        let rightPeakWidth = normalizeLevel(rightPeakLevel) * halfWidth
-        let rightAverageWidth = normalizeLevel(rightAverageLevel) * halfWidth
-
-        // Yellow (Peak) - Draw from left to right
-        context.setFillColor(UIColor.green.withAlphaComponent(0.3).cgColor)
-        context.fill(CGRect(x: halfWidth, y: 0, width: rightPeakWidth, height: meterHeight))
-
-        // Green (Average) - Draw from left to right
-        context.setFillColor(UIColor.green.cgColor)
-        context.fill(CGRect(x: halfWidth, y: 0, width: rightAverageWidth, height: meterHeight))
-
-        // Middle Line
-        context.setFillColor(UIColor.black.cgColor)
-        context.fill(CGRect(x: halfWidth - 1, y: 0, width: 2, height: meterHeight))
-    }
-}
 
 

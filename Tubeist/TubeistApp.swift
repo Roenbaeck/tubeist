@@ -27,6 +27,7 @@ final class AppState {
     var isExposureLocked = false
     var isWhiteBalanceLocked = false
     var areOverlaysHidden = Settings.hideOverlays
+    var isAppInitialization = true
     var soonGoingToBackground = false
     var justCameFromBackground = false
     var hadToStopStreaming = false
@@ -51,6 +52,8 @@ struct TubeistApp: App {
                         await Streamer.shared.setAppState(appState)
                     }
                     UIApplication.shared.isIdleTimerDisabled = true
+                    // scenePhase triggers on app init - distinguish this from backgrounding the app
+                    appState.isAppInitialization = false
                 }
                 .onDisappear {
                     UIApplication.shared.isIdleTimerDisabled = false
@@ -59,7 +62,7 @@ struct TubeistApp: App {
         .onChange(of: scenePhase) { oldValue, newValue in
             switch (oldValue, newValue) {
             case (.inactive, .background), (.active, .background):
-                if !appState.soonGoingToBackground {
+                if !appState.soonGoingToBackground, !appState.isAppInitialization {
                     appState.soonGoingToBackground = true
                     appState.justCameFromBackground = false
                     LOG("App is entering background", level: .debug)
@@ -69,19 +72,13 @@ struct TubeistApp: App {
                             appState.hadToStopStreaming = true
                             await Streamer.shared.endStream()
                         }
-                        await Streamer.shared.stopSessions()
                     }
                 }
             case (.background, .inactive), (.background, .active):
-                if !appState.justCameFromBackground {
+                if !appState.justCameFromBackground, !appState.isAppInitialization {
                     appState.justCameFromBackground = true
                     appState.soonGoingToBackground = false
                     LOG("App is coming back from background", level: .debug)
-                    Task {
-                        // Refresh the camera view
-                        await Streamer.shared.startSessions()
-                        appState.refreshCameraView()
-                    }
                 }
             default: break
             }
@@ -90,6 +87,7 @@ struct TubeistApp: App {
     
     
     init() {
+        appState.isAppInitialization = true
         LOG("Starting Tubeist", level: .info)
         LOG("Using \(REFERENCE_TIMEPOINT) as reference time for streams", level: .debug)
         UIApplication.shared.isIdleTimerDisabled = true
