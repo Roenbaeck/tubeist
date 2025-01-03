@@ -42,6 +42,7 @@ struct ContentView: View {
     @State private var maxZoom = 1.0
     @State private var opticalZoom = 1.0
     @State private var exposureBias: Float = 0.0
+    @State private var lensPosition: Float = 1.0
     @State private var selectedCamera = DEFAULT_CAMERA
     @State private var selectedStabilization = "Off"
     @State private var cameras: [String] = []
@@ -487,7 +488,12 @@ struct ContentView: View {
                     
                 Spacer().overlay {
                     if appState.isExposureLocked {
-                        ExposureBiasSlider(bias: $exposureBias)
+                        CameraControlSlider(
+                            value: $exposureBias,
+                            range: -2.0...2.0,
+                            step: 0.1,
+                            format: "%.1f EV"
+                        )
                             .frame(height: geometry.size.height * 0.50)
                             .padding(.leading, 10)
                             .onChange(of: exposureBias) { oldValue, newValue in
@@ -495,6 +501,21 @@ struct ContentView: View {
                                     await AVMonitor.shared.setExposureBias(to: newValue)
                                 }
                             }
+                    }
+                    else if appState.isFocusLocked {
+                        CameraControlSlider(
+                            value: $lensPosition,
+                            range: 0...1.0,
+                            step: 0.02,
+                            format: "%.2f"
+                        )
+                        .frame(height: geometry.size.height * 0.50)
+                        .padding(.leading, 10)
+                        .onChange(of: lensPosition) { oldValue, newValue in
+                            Task {
+                                await AVMonitor.shared.setLensPosition(to: newValue)
+                            }
+                        }
                     }
                 }
             }
@@ -637,15 +658,16 @@ struct FocusExposureIndicator: View {
     }
 }
 
-struct ExposureBiasSlider: View {
-    @Binding var bias: Float // Exposure bias in stops (-2 to +2)
-    let range: ClosedRange<Double> = -2.0...2.0
-    let step: Double = 0.1
+struct CameraControlSlider: View {
+    @Binding var value: Float
+    var range: ClosedRange<Double>
+    var step: Double
+    var format: String
 
     var body: some View {
         VStack {
             HStack {
-                Text("\(String(format: "%.1f EV", bias))")
+                Text("\(String(format: format, value))")
                     .font(.system(size: 10))
                     .foregroundColor(.yellow)
                 Spacer()
@@ -653,22 +675,23 @@ struct ExposureBiasSlider: View {
             
             GeometryReader { geometry in
                 let stepSize = geometry.size.height / Double(range.upperBound - range.lowerBound)
-                let zero = geometry.size.height / 2
+                let zero = geometry.size.height / Double(range.upperBound)
                 
                 ZStack(alignment: .leading) { // Align ZStack to the leading edge
-                    Text("\(String(format: "%.1f", bias))")
+                    Image(systemName: "chevron.left.2")
                         .font(.system(size: 10))
                         .foregroundColor(.yellow)
-                        .offset(x: 14, y: zero - CGFloat(bias) * stepSize)
+                        .offset(x: 14, y: zero - CGFloat(value) * stepSize - 0.5)
+                        .padding(2)
                     
                     // Scale Markers
                     ForEach(Array(stride(from: range.lowerBound, through: range.upperBound, by: step)), id: \.self) { position in
-                        let atBias = Int((position * 10).rounded()) == Int((bias * 10).rounded())
+                        let atValue = Int((position * 100).rounded()) == Int((value * 100).rounded())
                         let width: CGFloat = {
-                            switch Int((position * 10).rounded()) {
-                            case -20, -10, 0, 10, 20:
+                            switch Int((position * 100).rounded()) % 100 {
+                            case 0:
                                 return 8
-                            case -15, -5, 5, 15:
+                            case -50, 50:
                                 return 5
                             default:
                                 return 2
@@ -676,8 +699,8 @@ struct ExposureBiasSlider: View {
                         }()
                         HStack {
                             Rectangle()
-                                .fill(atBias ? Color.yellow : Color.gray)
-                                .frame(width: atBias ? 5 : width, height: atBias ? 2 : 1)
+                                .fill(atValue ? Color.yellow : Color.gray)
+                                .frame(width: atValue ? 5 : width, height: atValue ? 2 : 1)
                         }
                         .offset(y: zero - CGFloat(position) * stepSize)
                     }
@@ -687,13 +710,12 @@ struct ExposureBiasSlider: View {
                     DragGesture(minimumDistance: 0)
                         .onChanged { gesture in
                             let y = gesture.location.y
-                            let draggedBias = range.upperBound - (y / geometry.size.height) * (range.upperBound - range.lowerBound)
-                            let roundedDraggedBias = (draggedBias * 10).rounded() / 10
-                            bias = Float(min(range.upperBound, max(range.lowerBound, roundedDraggedBias)))
+                            let draggedValue = range.upperBound - (y / geometry.size.height) * (range.upperBound - range.lowerBound)
+                            let roundedDraggedValue = (draggedValue / step).rounded() * step
+                            value = Float(min(range.upperBound, max(range.lowerBound, roundedDraggedValue)))
                         }
                 )
             }
         }
     }
 }
-

@@ -397,6 +397,17 @@ private class CameraActor {
             LOG("Focus configuration error: \(error.localizedDescription)", level: .error)
         }
     }
+    func setLensPosition(to lensPosition: Float) {
+        guard let device = videoDevice else { return }
+        
+        do {
+            try device.lockForConfiguration()
+            device.setFocusModeLocked(lensPosition: lensPosition)
+            device.unlockForConfiguration()
+        } catch {
+            LOG("Focus configuration error: \(error.localizedDescription)", level: .error)
+        }
+    }
     
     func setExposure(at point: CGPoint) {
         guard let device = videoDevice else { return }
@@ -624,6 +635,9 @@ final class AVMonitor: NSObject, Sendable, AVCaptureSessionControlsDelegate {
     }
     func lockFocus() async {
         await cameraActor.lockFocus()
+    }
+    func setLensPosition(to lensPosition: Float) async {
+        await cameraActor.setLensPosition(to: lensPosition)
     }
     func setExposure(at point: CGPoint) async {
         await cameraActor.setExposure(at: point)
