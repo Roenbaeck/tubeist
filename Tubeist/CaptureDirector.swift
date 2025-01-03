@@ -1,5 +1,5 @@
 //
-//  AVMonitor.swift
+//  CaptureDirector.swift
 //  Tubeist
 //
 //  Created by Lars Rönnbäck on 2024-12-04.
@@ -47,10 +47,10 @@ private class MicrophoneActor {
         // Configure the capture
         do {
             // configure session by adding inputs and outputs first
-            AVMonitor.audioSession.beginConfiguration()
+            CaptureDirector.audioSession.beginConfiguration()
             // that's the only way I was able to get .inputPriority working
-            AVMonitor.audioSession.sessionPreset = .inputPriority
-            AVMonitor.audioSession.configuresApplicationAudioSessionToMixWithOthers = true
+            CaptureDirector.audioSession.sessionPreset = .inputPriority
+            CaptureDirector.audioSession.configuresApplicationAudioSessionToMixWithOthers = true
 
             // set up audio
             self.audioInput = try AVCaptureDeviceInput(device: audioDevice)
@@ -64,21 +64,21 @@ private class MicrophoneActor {
                 return
             }
             // Add audio input to the session
-            if AVMonitor.audioSession.canAddInput(audioInput) {
-                AVMonitor.audioSession.addInput(audioInput)
+            if CaptureDirector.audioSession.canAddInput(audioInput) {
+                CaptureDirector.audioSession.addInput(audioInput)
             } else {
                 LOG("Cannot add audio input", level: .error)
                 return
             }
             // Add audio output to the session
-            if AVMonitor.audioSession.canAddOutput(audioOutput) {
-                AVMonitor.audioSession.addOutput(audioOutput)
+            if CaptureDirector.audioSession.canAddOutput(audioOutput) {
+                CaptureDirector.audioSession.addOutput(audioOutput)
             } else {
                 LOG("Cannot add audio output", level: .error)
                 return
             }
 
-            AVMonitor.audioSession.commitConfiguration()
+            CaptureDirector.audioSession.commitConfiguration()
             // only after the configuarion is commited, the following can be changed
 
         } catch {
@@ -215,10 +215,10 @@ private class CameraActor {
         // Configure the capture
         do {
             // configure session by adding inputs and outputs first
-            AVMonitor.videoSession.beginConfiguration()
+            CaptureDirector.videoSession.beginConfiguration()
             // that's the only way I was able to get .inputPriority working
-            AVMonitor.videoSession.sessionPreset = .inputPriority
-            AVMonitor.videoSession.automaticallyConfiguresCaptureDeviceForWideColor = true
+            CaptureDirector.videoSession.sessionPreset = .inputPriority
+            CaptureDirector.videoSession.automaticallyConfiguresCaptureDeviceForWideColor = true
 
             // set up video
             self.videoInput = try AVCaptureDeviceInput(device: videoDevice)
@@ -232,21 +232,21 @@ private class CameraActor {
                 return
             }
             // Add video input to the session
-            if AVMonitor.videoSession.canAddInput(videoInput) {
-                AVMonitor.videoSession.addInput(videoInput)
+            if CaptureDirector.videoSession.canAddInput(videoInput) {
+                CaptureDirector.videoSession.addInput(videoInput)
             } else {
                 LOG("Cannot add video input", level: .error)
                 return
             }
             // Add video output to the session
-            if AVMonitor.videoSession.canAddOutput(videoOutput) {
-                AVMonitor.videoSession.addOutput(videoOutput)
+            if CaptureDirector.videoSession.canAddOutput(videoOutput) {
+                CaptureDirector.videoSession.addOutput(videoOutput)
             } else {
                 LOG("Cannot add video output", level: .error)
                 return
             }
 
-            AVMonitor.videoSession.commitConfiguration()
+            CaptureDirector.videoSession.commitConfiguration()
             // only after the configuarion is commited, the following can be changed
 
             // videoDevice.listFormats()
@@ -285,7 +285,7 @@ private class CameraActor {
     }
     
     func addCameraControls() {
-        if AVMonitor.videoSession.supportsControls {
+        if CaptureDirector.videoSession.supportsControls {
             guard let videoDevice else { return }
             let zoomSlider = AVCaptureSystemZoomSlider(device: videoDevice) { zoomFactor in
                 let displayZoom = videoDevice.displayVideoZoomFactorMultiplier * zoomFactor
@@ -295,21 +295,21 @@ private class CameraActor {
                     await self.currentZoom?.wrappedValue = 0
                 }
             }
-            if AVMonitor.videoSession.canAddControl(zoomSlider) {
+            if CaptureDirector.videoSession.canAddControl(zoomSlider) {
                 LOG("Adding system zoom slider camera control", level: .debug)
-                AVMonitor.videoSession.addControl(zoomSlider)
+                CaptureDirector.videoSession.addControl(zoomSlider)
             }
             let exposureBiasSlider = AVCaptureSystemExposureBiasSlider(device: videoDevice) { exposureBias in
                 Task {
                     await self.exposureBias?.wrappedValue = exposureBias
                 }
             }
-            if AVMonitor.videoSession.canAddControl(exposureBiasSlider) {
+            if CaptureDirector.videoSession.canAddControl(exposureBiasSlider) {
                 LOG("Adding system exposure bias slider camera control", level: .debug)
-                AVMonitor.videoSession.addControl(exposureBiasSlider)
+                CaptureDirector.videoSession.addControl(exposureBiasSlider)
             }
             Task { @PipelineActor in
-                AVMonitor.videoSession.setControlsDelegate(AVMonitor.shared, queue: CAMERA_CONTROL_QUEUE)
+                CaptureDirector.videoSession.setControlsDelegate(CaptureDirector.shared, queue: CAMERA_CONTROL_QUEUE)
             }
         }
     }
@@ -502,8 +502,8 @@ private class CameraActor {
     
 }
 
-final class AVMonitor: NSObject, Sendable, AVCaptureSessionControlsDelegate {
-    @PipelineActor public static let shared = AVMonitor()
+final class CaptureDirector: NSObject, Sendable, AVCaptureSessionControlsDelegate {
+    @PipelineActor public static let shared = CaptureDirector()
     @PipelineActor public static let audioSession = AVCaptureSession()
     @PipelineActor public static let videoSession = AVCaptureSession()
     @PipelineActor private let cameraActor = CameraActor()
@@ -524,11 +524,11 @@ final class AVMonitor: NSObject, Sendable, AVCaptureSessionControlsDelegate {
         return await cameraActor.getCameras()
     }
     func cycleCamera() async {
-        if await AVMonitor.videoSession.isRunning {
-            await AVMonitor.videoSession.stopRunning()
+        if await CaptureDirector.videoSession.isRunning {
+            await CaptureDirector.videoSession.stopRunning()
             await detachCamera()
             await attachCamera()
-            await AVMonitor.videoSession.startRunning()
+            await CaptureDirector.videoSession.startRunning()
         }
     }
     func attachCamera() async {
@@ -545,19 +545,19 @@ final class AVMonitor: NSObject, Sendable, AVCaptureSessionControlsDelegate {
         await setCameraStabilization(to: selectedStabilization)
     }
     func detachCamera() async {
-        for output in await AVMonitor.videoSession.outputs {
-            await AVMonitor.videoSession.removeOutput(output)
+        for output in await CaptureDirector.videoSession.outputs {
+            await CaptureDirector.videoSession.removeOutput(output)
         }
-        for input in await AVMonitor.videoSession.inputs {
-            await AVMonitor.videoSession.removeInput(input)
+        for input in await CaptureDirector.videoSession.inputs {
+            await CaptureDirector.videoSession.removeInput(input)
         }
     }
     func cycleMicrophone() async {
-        if await AVMonitor.audioSession.isRunning {
-            await AVMonitor.audioSession.stopRunning()
+        if await CaptureDirector.audioSession.isRunning {
+            await CaptureDirector.audioSession.stopRunning()
             await detachMicrophone()
             await attachMicrophone()
-            await AVMonitor.audioSession.startRunning()
+            await CaptureDirector.audioSession.startRunning()
         }
     }
     func attachMicrophone() async {
@@ -570,28 +570,28 @@ final class AVMonitor: NSObject, Sendable, AVCaptureSessionControlsDelegate {
         await microphoneActor.setup(microphoneType: microphoneType)
     }
     func detachMicrophone() async {
-        for output in await AVMonitor.audioSession.outputs {
-            await AVMonitor.audioSession.removeOutput(output)
+        for output in await CaptureDirector.audioSession.outputs {
+            await CaptureDirector.audioSession.removeOutput(output)
         }
-        for input in await AVMonitor.videoSession.inputs {
-            await AVMonitor.audioSession.removeInput(input)
+        for input in await CaptureDirector.videoSession.inputs {
+            await CaptureDirector.audioSession.removeInput(input)
         }
     }
     func startSessions() async {
         await attachCamera()
         await attachMicrophone()
-        await AVMonitor.videoSession.startRunning()
-        await AVMonitor.audioSession.startRunning()
+        await CaptureDirector.videoSession.startRunning()
+        await CaptureDirector.audioSession.startRunning()
     }
     func stopSessions() async {
-        await AVMonitor.audioSession.stopRunning()
-        await AVMonitor.videoSession.stopRunning()
+        await CaptureDirector.audioSession.stopRunning()
+        await CaptureDirector.videoSession.stopRunning()
         await detachMicrophone()
         await detachCamera()
     }
     func isRunning() async -> Bool {
-        let videoRunning = await AVMonitor.videoSession.isRunning
-        let audioRunning = await AVMonitor.audioSession.isRunning
+        let videoRunning = await CaptureDirector.videoSession.isRunning
+        let audioRunning = await CaptureDirector.audioSession.isRunning
         return videoRunning && audioRunning
     }
     func startOutput() async {
@@ -773,7 +773,7 @@ struct CameraMonitorView: UIViewControllerRepresentable {
     @MainActor public static private(set) var previewLayer: AVCaptureVideoPreviewLayer?
 
     static func createPreviewLayer() async -> AVCaptureVideoPreviewLayer? {
-        return await AVCaptureVideoPreviewLayer(session: AVMonitor.videoSession)
+        return await AVCaptureVideoPreviewLayer(session: CaptureDirector.videoSession)
     }
 
     func makeUIViewController(context: Context) -> UIViewController {
@@ -874,7 +874,7 @@ class MeterView: UIView {
 
     @objc private func updateLevels() {
         Task { @MainActor in // Ensure UI updates on main thread
-            let channels = await AVMonitor.shared.getAudioChannels()
+            let channels = await CaptureDirector.shared.getAudioChannels()
             if channels.count == 2 {
                 leftAverageLevel = channels[0].averagePowerLevel
                 leftPeakLevel = channels[0].peakHoldLevel

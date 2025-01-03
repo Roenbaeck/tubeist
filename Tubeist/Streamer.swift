@@ -63,14 +63,14 @@ final class Streamer: Sendable {
         await self.streamingActor.setAppState(appState)
     }
     func cycleCamera() async {
-        await AVMonitor.shared.cycleCamera()
+        await CaptureDirector.shared.cycleCamera()
         await streamingActor.refreshCameraView()
     }
     func startSessions() async {
-        await AVMonitor.shared.startSessions()
+        await CaptureDirector.shared.startSessions()
     }
     func stopSessions() async {
-        await AVMonitor.shared.stopSessions()
+        await CaptureDirector.shared.stopSessions()
     }
     func startStream() async {
         await FragmentPusher.shared.immediatePreparation()
@@ -78,14 +78,14 @@ final class Streamer: Sendable {
         await SoundGrabber.shared.commenceGrabbing()
         if await streamingActor.getMonitor() == .camera {
             await FrameGrabber.shared.commenceGrabbing()
-            await AVMonitor.shared.startOutput()
+            await CaptureDirector.shared.startOutput()
         }
         await streamingActor.run()
     }
     func endStream() async {
         await streamingActor.pause()
         if await streamingActor.getMonitor() == .camera {
-            await AVMonitor.shared.stopOutput()
+            await CaptureDirector.shared.stopOutput()
             await FrameGrabber.shared.terminateGrabbing()
         }
         await SoundGrabber.shared.terminateGrabbing()
@@ -112,11 +112,11 @@ final class Streamer: Sendable {
         if monitor == .output, await !isStreaming() {
             LOG("Starting half the streaming pipeline", level: .debug)
             await FrameGrabber.shared.commenceGrabbing()
-            await AVMonitor.shared.startOutput()
+            await CaptureDirector.shared.startOutput()
         }
         else if monitor == .camera, await !isStreaming() {
             LOG("Stopping half the streaming pipeline", level: .debug)
-            await AVMonitor.shared.stopOutput()
+            await CaptureDirector.shared.stopOutput()
             await FrameGrabber.shared.terminateGrabbing()
         }
     }

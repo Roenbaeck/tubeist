@@ -61,7 +61,7 @@ struct ContentView: View {
                 let zoomDelta = totalZoom * currentZoom
                 let safeZoom = max(minZoom, min(zoomDelta + totalZoom, maxZoom))
                 Task {
-                    await AVMonitor.shared.setZoomFactor(safeZoom)
+                    await CaptureDirector.shared.setZoomFactor(safeZoom)
                 }
                 currentZoom = safeZoom - totalZoom
             }
@@ -69,7 +69,7 @@ struct ContentView: View {
                 totalZoom += currentZoom
                 totalZoom = max(minZoom, min(totalZoom, maxZoom))
                 Task {
-                    await AVMonitor.shared.setZoomFactor(totalZoom)
+                    await CaptureDirector.shared.setZoomFactor(totalZoom)
                 }
                 currentZoom = 0
                 startMagnification = nil
@@ -79,18 +79,18 @@ struct ContentView: View {
     func updateCameraProperties() {
         Task {
             // Passing Binding<variable> to a singleton is fine
-            await AVMonitor.shared.bind(
+            await CaptureDirector.shared.bind(
                 totalZoom: $totalZoom,
                 currentZoom: $currentZoom,
                 exposureBias: $exposureBias
             )
             selectedStabilization = Settings.cameraStabilization ?? "Off"
             appState.isStabilizationOn = selectedStabilization != "Off"
-            minZoom = await AVMonitor.shared.getMinZoomFactor()
-            maxZoom = await min(AVMonitor.shared.getMaxZoomFactor(), ZOOM_LIMIT)
-            opticalZoom = await AVMonitor.shared.getOpticalZoomFactor()
+            minZoom = await CaptureDirector.shared.getMinZoomFactor()
+            maxZoom = await min(CaptureDirector.shared.getMaxZoomFactor(), ZOOM_LIMIT)
+            opticalZoom = await CaptureDirector.shared.getOpticalZoomFactor()
             let safeZoom = max(minZoom, min(totalZoom, maxZoom))
-            await AVMonitor.shared.setZoomFactor(safeZoom)
+            await CaptureDirector.shared.setZoomFactor(safeZoom)
         }
     }
     
@@ -138,11 +138,11 @@ struct ContentView: View {
                                         y: location.y / height
                                     )
                                     if appState.isExposureLocked {
-                                        await AVMonitor.shared.setExposure(at: normalizedLocation)
+                                        await CaptureDirector.shared.setExposure(at: normalizedLocation)
                                         LOG("Probing exposure at \(location)")
                                     }
                                     if appState.isFocusLocked {
-                                        await AVMonitor.shared.setFocus(at: normalizedLocation)
+                                        await CaptureDirector.shared.setFocus(at: normalizedLocation)
                                         LOG("Probing focus at \(location)")
                                     }
                                 }
@@ -250,7 +250,7 @@ struct ContentView: View {
                                 .onChange(of: selectedStabilization) { _, newStabilization in
                                     LOG("Seletected stabilization: \(newStabilization)", level: .debug)
                                     Task {
-                                        await AVMonitor.shared.setCameraStabilization(to: newStabilization)
+                                        await CaptureDirector.shared.setCameraStabilization(to: newStabilization)
                                         appState.isStabilizationOn = newStabilization != "Off"
                                     }
                                 }
@@ -394,7 +394,7 @@ struct ContentView: View {
                     SmallButton(imageName: appState.isStabilizationOn ? "hand.raised.fill" : "hand.raised.slash",
                                 foregroundColor: showStabilizationPicker ? .yellow : .white) {
                         Task {
-                            stabilizations = await AVMonitor.shared.getStabilizations()
+                            stabilizations = await CaptureDirector.shared.getStabilizations()
                             showStabilizationPicker.toggle()
                             if showStabilizationPicker && showCameraPicker {
                                 showCameraPicker = false
@@ -411,12 +411,12 @@ struct ContentView: View {
                         enableFocusAndExposureTap = appState.isExposureLocked || appState.isFocusLocked
                         if appState.isFocusLocked {
                             Task {
-                                await AVMonitor.shared.lockFocus()
+                                await CaptureDirector.shared.lockFocus()
                             }
                         }
                         else {
                             Task {
-                                await AVMonitor.shared.autoFocus()
+                                await CaptureDirector.shared.autoFocus()
                             }
                         }
                     }
@@ -430,12 +430,12 @@ struct ContentView: View {
                         enableFocusAndExposureTap = appState.isExposureLocked || appState.isFocusLocked
                         if appState.isExposureLocked {
                             Task {
-                                await AVMonitor.shared.lockExposure()
+                                await CaptureDirector.shared.lockExposure()
                             }
                         }
                         else {
                             Task {
-                                await AVMonitor.shared.autoExposure()
+                                await CaptureDirector.shared.autoExposure()
                             }
                         }
                     }
@@ -448,12 +448,12 @@ struct ContentView: View {
                         appState.isWhiteBalanceLocked.toggle()
                         if appState.isWhiteBalanceLocked {
                             Task {
-                                await AVMonitor.shared.lockWhiteBalance()
+                                await CaptureDirector.shared.lockWhiteBalance()
                             }
                         }
                         else {
                             Task {
-                                await AVMonitor.shared.autoWhiteBalance()
+                                await CaptureDirector.shared.autoWhiteBalance()
                             }
                         }
                         
@@ -498,7 +498,7 @@ struct ContentView: View {
                             .padding(.leading, 10)
                             .onChange(of: exposureBias) { oldValue, newValue in
                                 Task {
-                                    await AVMonitor.shared.setExposureBias(to: newValue)
+                                    await CaptureDirector.shared.setExposureBias(to: newValue)
                                 }
                             }
                     }
@@ -513,7 +513,7 @@ struct ContentView: View {
                         .padding(.leading, 10)
                         .onChange(of: lensPosition) { oldValue, newValue in
                             Task {
-                                await AVMonitor.shared.setLensPosition(to: newValue)
+                                await CaptureDirector.shared.setLensPosition(to: newValue)
                             }
                         }
                     }
@@ -543,7 +543,7 @@ struct ContentView: View {
             selectedCamera = Settings.selectedCamera
             selectedStabilization = Settings.cameraStabilization ?? "Off"
             Task {
-                cameras = await AVMonitor.shared.getCameras()
+                cameras = await CaptureDirector.shared.getCameras()
             }
         }
     }
