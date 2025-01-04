@@ -160,12 +160,13 @@ struct ContentView: View {
 
                     if showSplashScreen {
                         ZStack {
-                            Rectangle()
+                            Image("SplashScreen")
+                                .resizable()
                                 .frame(width: width, height: height)
-                                .foregroundColor(Color.black)
-                            Text("This is the Tubeist splash screen placeholder")
-                                .font(.system(size: 24))
-                                .fontWeight(.bold)
+                                .scaledToFill()
+                            Text("Hiding some ugly looking device setup...")
+                                .font(.system(size: 14))
+                                .offset(y: 30)
                         }
                         .opacity(splashOpacity) // Apply the opacity
                         .onChange(of: isCameraReady) { _, newValue in
