@@ -164,19 +164,18 @@ final class Overlay: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         super.init()
     }
     
+    func prepareForRemoval() {
+        self.captureTimer?.invalidate()
+        self.captureTimer = nil
+
+        self.webView?.navigationDelegate = nil
+        self.webView?.configuration.userContentController.removeScriptMessageHandler(forName: "domChanged")
+        self.webView?.stopLoading()
+        self.webView = nil
+    }
+        
     deinit {
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self else { return }
-            LOG("Deinitializing Overlay for \(self.url)")
-
-            self.captureTimer?.invalidate()
-            self.captureTimer = nil
-
-            self.webView?.navigationDelegate = nil
-            self.webView?.configuration.userContentController.removeScriptMessageHandler(forName: "domChanged")
-            self.webView?.stopLoading()
-            self.webView = nil
-        }
+        LOG("Deinitializing Overlay for \(self.url)")
     }
     
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
@@ -264,7 +263,7 @@ final class Overlay: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         } else {
             captureTimer?.invalidate()
             captureTimer = Timer.scheduledTimer(withTimeInterval: minimumCaptureInterval, repeats: false) { [weak self] _ in
-                DispatchQueue.main.async {
+                Task { @MainActor in
                     self?.captureWebViewImage()
                 }
             }
@@ -300,18 +299,25 @@ final class Overlay: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
 }
 
 actor OverlayBundleActor {
-    private var overlays: [URL: Overlay] = [:]
+    private var url2overlay: [URL: Overlay] = [:]
     func addOverlay(url: URL, overlay: Overlay) async {
-        overlays[url] = overlay
+        url2overlay[url] = overlay
     }
     func removeOverlay(url: URL) {
-        overlays.removeValue(forKey: url)
+        guard let overlay = url2overlay.removeValue(forKey: url) else { return }
+        Task { @MainActor in
+            overlay.prepareForRemoval()
+        }
     }
     func getOverlays() -> [Overlay] {
-        Array(overlays.values)
+        Array(url2overlay.values)
     }
     func removeAllOverlays() {
-        overlays.removeAll()
+        let overlays = getOverlays()
+        Task { @MainActor in
+            overlays.forEach { $0.prepareForRemoval() }
+        }
+        url2overlay.removeAll()
     }
 }
 

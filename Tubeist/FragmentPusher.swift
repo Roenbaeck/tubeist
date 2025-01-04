@@ -226,11 +226,9 @@ actor NetworkMetricsActor {
 
 final class NetworkPerformanceDelegate: NSObject, URLSessionDelegate, URLSessionDataDelegate, URLSessionTaskDelegate {
     private let netowrkMetrics = NetworkMetricsActor()
-    private let queue = DispatchQueue(label: "com.tubeist.NetworkPerformanceQueue", attributes: .concurrent)
-
     
     func urlSession(_ session: URLSession, task: URLSessionTask, didFinishCollecting metrics: URLSessionTaskMetrics) {
-        queue.async(flags: .barrier) {
+        NETWORK_PERFORMANCE_QUEUE.async(flags: .barrier) {
             Task {
                 if var metric = await self.netowrkMetrics.getMetric(taskIdenfitier: task.taskIdentifier) {
                     metric.networkDuration = metrics.taskInterval.duration
@@ -242,7 +240,7 @@ final class NetworkPerformanceDelegate: NSObject, URLSessionDelegate, URLSession
     }
     
     func urlSession(_ session: URLSession, task: URLSessionTask, didSendBodyData bytesSent: Int64, totalBytesSent: Int64, totalBytesExpectedToSend: Int64) {
-        queue.async(flags: .barrier) {
+        NETWORK_PERFORMANCE_QUEUE.async(flags: .barrier) {
             Task {
                 if var metric = await self.netowrkMetrics.getMetric(taskIdenfitier: task.taskIdentifier) {
                     metric.bytesSent = bytesSent

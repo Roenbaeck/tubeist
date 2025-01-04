@@ -13,6 +13,7 @@ import WebKit
 // Generic settings
 let DEFAULT_MONITOR: Monitor = .camera
 let CAMERA_CONTROL_QUEUE = DispatchQueue(label: "com.subside.Tubeist.CameraControlQueue")
+let NETWORK_PERFORMANCE_QUEUE = DispatchQueue(label: "com.subside.Tubeist.NetworkPerformanceQueue", attributes: .concurrent)
 
 @globalActor actor PipelineActor: GlobalActor {
     static let shared = PipelineActor()

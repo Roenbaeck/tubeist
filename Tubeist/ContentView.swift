@@ -20,7 +20,7 @@ class Interaction {
             action()
         }
         actionWorkItem = workItem
-        DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: workItem)
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + seconds, execute: workItem)
     }
 }
 
