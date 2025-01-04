@@ -103,7 +103,13 @@ private class MicrophoneActor {
             LOG("Cannot start output, since audio is unavailable", level: .warning)
             return
         }
-        audioOutput.setSampleBufferDelegate(SoundGrabber.shared, queue: PipelineActor.queue)
+        if audioOutput.sampleBufferDelegate == nil {
+            audioOutput.setSampleBufferDelegate(SoundGrabber.shared, queue: PipelineActor.queue)
+            LOG("Starting audio output", level: .debug)
+        }
+        else {
+            LOG("Audio output already started", level: .debug)
+        }
     }
     
     func stopOutput() {
@@ -111,7 +117,13 @@ private class MicrophoneActor {
             LOG("Cannot stop output, since audio is unavailable", level: .warning)
             return
         }
-        audioOutput.setSampleBufferDelegate(nil, queue: nil)
+        if audioOutput.sampleBufferDelegate != nil {
+            audioOutput.setSampleBufferDelegate(nil, queue: nil)
+            LOG("Stopping audio output", level: .debug)
+        }
+        else {
+            LOG("Audio output already stopped", level: .debug)
+        }
     }
     
     func getMicrophones() -> [String] {
@@ -505,6 +517,7 @@ private class CameraActor {
             return
         }
         videoOutput.setSampleBufferDelegate(FrameGrabber.shared, queue: PipelineActor.queue)
+        LOG("Starting video output", level: .debug)
     }
     
     func stopOutput() {
@@ -513,6 +526,7 @@ private class CameraActor {
             return
         }
         videoOutput.setSampleBufferDelegate(nil, queue: nil)
+        LOG("Stopping video output", level: .debug)
     }
     func getResolution() -> Resolution? {
         resolution

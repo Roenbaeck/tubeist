@@ -13,6 +13,7 @@ actor AssetWriterActor {
     private var assetWriter: AVAssetWriter?
     private var videoInput: AVAssetWriterInput?
     private var audioInput: AVAssetWriterInput?
+    private var frameRate: Double = DEFAULT_FRAMERATE
 
     func setupAssetWriter() {
         guard let contentType = UTType(AVFileType.mp4.rawValue) else {
@@ -34,6 +35,8 @@ actor AssetWriterActor {
         let selectedFrameRate = selectedPreset?.frameRate ?? DEFAULT_FRAMERATE
         let frameIntervalKey = Int(ceil(selectedKeyframeInterval * selectedFrameRate))
         let adjustedFragmentDuration = selectedFrameRate / trunc(selectedFrameRate / FRAGMENT_DURATION)
+
+        frameRate = selectedFrameRate
         
         LOG("[video bitrate]: \(selectedVideoBitrate) [audio bitrate]: \(selectedAudioBitrate) [audio channels]: \(selectedAudioChannels) [width]: \(selectedWidth) [height]: \(selectedHeight) [frame rate]: \(selectedFrameRate) [key frame every frames]: \(frameIntervalKey)", level: .debug)
         
@@ -93,10 +96,8 @@ actor AssetWriterActor {
             LOG("Error starting writing: \(assetWriter.error?.localizedDescription ?? "Unknown error")")
             return
         }
-        let currentTime = CMTime(seconds: Date().timeIntervalSince(REFERENCE_TIMEPOINT), preferredTimescale: CMTimeScale(selectedFrameRate))
-        assetWriter.startSession(atSourceTime: currentTime)
         
-        LOG("Asset writer configured successfully (at source time: \(currentTime.value) | \(currentTime.timescale))", level: .info)
+        LOG("Asset writer configured successfully", level: .info)
     }
     
      func finishWriting() async {
@@ -122,6 +123,9 @@ actor AssetWriterActor {
          }
      }
      
+    let startSessionOnceLock = NSLock()
+    var sessionStarted: Bool = false
+    
     func appendSampleBuffer(_ sampleBuffer: CMSampleBuffer, to input: AVAssetWriterInput?, inputType: String) {
         guard let assetWriter = self.assetWriter, assetWriter.status == .writing else {
             LOG("Cannot append \(inputType) buffer, writer not in writing state: \(self.assetWriter?.status.rawValue ?? -1)", level: .warning)
@@ -130,6 +134,16 @@ actor AssetWriterActor {
         guard let input = input, input.isReadyForMoreMediaData else {
             LOG("\(inputType) input not ready for more media data", level: .warning)
             return
+        }
+        if !sessionStarted { // more than one thread might enter here
+            startSessionOnceLock.lock() // first thread to reach this point aquires the lock and the rest are blocked
+            defer { startSessionOnceLock.unlock() } // ensure unlock, releasing any other threads
+            if !sessionStarted { // check again, first thread will enter and set sessionStarted to true, so released threads won't execute this code
+                let currentTime = CMTime(seconds: Date().timeIntervalSince(REFERENCE_TIMEPOINT), preferredTimescale: CMTimeScale(frameRate))
+                assetWriter.startSession(atSourceTime: currentTime)
+                LOG("Asset writing session started at source time: \(currentTime.value) | \(currentTime.timescale)")
+                sessionStarted = true
+            }
         }
         if input.append(sampleBuffer) == false {
             LOG("Error appending video buffer", level: .error)
@@ -142,6 +156,9 @@ actor AssetWriterActor {
 
     func appendAudioSampleBuffer(_ sampleBuffer: CMSampleBuffer) {
         appendSampleBuffer(sampleBuffer, to: audioInput, inputType: "Audio")
+    }
+    func status() -> AVAssetWriter.Status? {
+        assetWriter?.status
     }
 }
 
@@ -187,11 +204,21 @@ final class AssetInterceptor: NSObject, AVAssetWriterDelegate, Sendable {
         super.init()
     }
     func beginIntercepting() async {
+        guard await assetWriter.status() != .writing else {
+            LOG("Asset writer had already started intercepting sample buffers", level: .debug)
+            return
+        }
         await self.assetWriter.setupAssetWriter()
+        LOG("Asset writer is now intercepting sample buffers", level: .debug)
     }
     func endIntercepting() async {
+        guard await assetWriter.status() == .writing else {
+            LOG("Asset writer had already stopped intercepting sample buffers", level: .debug)
+            return
+        }
         await self.assetWriter.finishWriting()
         await self.fragmentSequenceNumber.reset()
+        LOG("Asset writer is no longer intercepting sample buffers", level: .debug)
     }
 
     func appendVideoSampleBuffer(_ sampleBuffer: CMSampleBuffer) async {

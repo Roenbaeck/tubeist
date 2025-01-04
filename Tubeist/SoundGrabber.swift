@@ -7,7 +7,7 @@
 @preconcurrency import AVFoundation
 
 private actor SoundGrabbingActor {
-    private var grabbingSound: Bool = true
+    private var grabbingSound: Bool = false
     func start() {
         grabbingSound = true
     }
@@ -24,15 +24,27 @@ final class SoundGrabber: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate
     private let soundGrabbing = SoundGrabbingActor()
     
     func commenceGrabbing() async {
-        await soundGrabbing.start()
+        if await !soundGrabbing.isActive() {
+            await soundGrabbing.start()
+            LOG("Started grabbing sound", level: .debug)
+        }
+        else {
+            LOG("Sound grabbing already started", level: .debug)
+        }
     }
     func terminateGrabbing() async {
-        await soundGrabbing.stop()
+        if await soundGrabbing.isActive() {
+            await soundGrabbing.stop()
+            LOG("Stopped grabbing sound", level: .debug)
+        }
+        else {
+            LOG("Sound grabbing already stopped", level: .debug)
+        }
     }
     
     func captureOutput(_ output: AVCaptureOutput,
                        didOutput sampleBuffer: CMSampleBuffer,
-                       from connection: AVCaptureConnection) {        
+                       from connection: AVCaptureConnection) {
         Task { @PipelineActor in
             if await self.soundGrabbing.isActive(), await Streamer.shared.isStreaming() {
                 await AssetInterceptor.shared.appendAudioSampleBuffer(sampleBuffer)

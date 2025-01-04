@@ -81,7 +81,7 @@ private actor OverlayImprinter {
 }
 
 private actor FrameGrabbingActor {
-    private var grabbingFrames: Bool = true
+    private var grabbingFrames: Bool = false
     func start() {
         grabbingFrames = true
     }
@@ -99,12 +99,24 @@ final class FrameGrabber: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
     private let frameGrabbing = FrameGrabbingActor()
     
     func commenceGrabbing() async {
-        await overlayImprinter.reset()
-        await frameGrabbing.start()
+        if await !frameGrabbing.isActive() {
+            await overlayImprinter.reset()
+            await frameGrabbing.start()
+            LOG("Started grabbing frames", level: .debug)
+        }
+        else {
+            LOG("Frame grabbing already started", level: .debug)
+        }
     }
     func terminateGrabbing() async {
-        await frameGrabbing.stop()
-        await overlayImprinter.reset()
+        if await frameGrabbing.isActive() {
+            await frameGrabbing.stop()
+            await overlayImprinter.reset()
+            LOG("Stopped grabbing frames", level: .debug)
+        }
+        else {
+            LOG("Frame grabbing already stopped", level: .debug)
+        }
     }
     
     func captureOutput(_ output: AVCaptureOutput,
