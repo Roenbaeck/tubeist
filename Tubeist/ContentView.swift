@@ -49,7 +49,10 @@ struct ContentView: View {
     @State private var stabilizations: [String] = []
 
     @State private var interaction = Interaction()
-
+    @State private var isCameraReady = false
+    @State private var showSplashScreen = true
+    @State private var splashOpacity: Double = 1.0
+    
     @State private var startMagnification: CGFloat?
     private var magnification: some Gesture {
         MagnifyGesture()
@@ -112,6 +115,7 @@ struct ContentView: View {
                                 await Streamer.shared.startSessions()
                                 appState.refreshCameraView()
                                 updateCameraProperties()
+                                isCameraReady = true
                             }
                         }
                         .onDisappear {
@@ -153,6 +157,27 @@ struct ContentView: View {
                                 }
                             }
                         }
+
+                    if showSplashScreen {
+                        ZStack {
+                            Rectangle()
+                                .frame(width: width, height: height)
+                                .foregroundColor(Color.black)
+                            Text("This is the Tubeist splash screen placeholder")
+                                .font(.system(size: 24))
+                                .fontWeight(.bold)
+                        }
+                        .opacity(splashOpacity) // Apply the opacity
+                        .onChange(of: isCameraReady) { _, newValue in
+                            if newValue {
+                                withAnimation(.easeInOut(duration: 1.0)) {
+                                    splashOpacity = 0.0
+                                } completion: {
+                                    showSplashScreen = false // Hide the splash screen after animation
+                                }
+                            }
+                        }
+                    }
 
                     if showFocusAndExposureArea {
                         FocusExposureIndicator(
