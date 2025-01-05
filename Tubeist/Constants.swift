@@ -13,8 +13,7 @@ import WebKit
 // Generic settings
 let VERSION_BUILD = "\(Bundle.main.appVersion ?? "unknown") (build: \(Bundle.main.appBuild ?? "unknown"))"
 let DEFAULT_MONITOR: Monitor = .camera
-let CAMERA_CONTROL_QUEUE = DispatchQueue(label: "com.subside.Tubeist.CameraControlQueue")
-let NETWORK_PERFORMANCE_QUEUE = DispatchQueue(label: "com.subside.Tubeist.NetworkPerformanceQueue", attributes: .concurrent)
+let CAMERA_CONTROL_QUEUE = DispatchQueue(label: "com.subside.Tubeist.CameraControlQueue", qos: .userInteractive)
 
 @globalActor actor PipelineActor: GlobalActor {
     static let shared = PipelineActor()

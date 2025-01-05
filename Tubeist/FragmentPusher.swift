@@ -200,53 +200,56 @@ struct NetworkMetric {
     var networkDuration: TimeInterval?
     var bytesSent: Int64?
     var timestamp: Date
+    var isCompeted: Bool {
+        actualDuration != nil && networkDuration != nil && bytesSent != nil
+    }
 }
 
 actor NetworkMetricsActor {
-    private var networkMetrics: [Int: NetworkMetric] = [:]
-    func setMetric(taskIdentifier: Int, metric: NetworkMetric) {
-        self.networkMetrics[taskIdentifier] = metric
+    private var metrics: [Int: NetworkMetric] = [:]
+
+    func insertMetric(taskIdentifier: Int, metric: NetworkMetric) {
+        metrics[taskIdentifier] = metric
     }
-    func getMetric(taskIdenfitier: Int) -> NetworkMetric? {
-        networkMetrics[taskIdenfitier]
+    func updateMetric(taskIdentifier: Int, networkDuration: TimeInterval, timestamp: Date) {
+        if var metric = metrics[taskIdentifier] {
+            metric.networkDuration = networkDuration
+            metric.timestamp = timestamp
+            metrics[taskIdentifier] = metric
+        }
     }
-    func getAllMetrics() -> [Int: NetworkMetric] {
-        networkMetrics
+    func updateMetric(taskIdentifier: Int, bytesSent: Int64) {
+        if var metric = metrics[taskIdentifier] {
+            metric.bytesSent = bytesSent
+            metrics[taskIdentifier] = metric
+        }
     }
-    func removeAllMetrics() {
-        networkMetrics.removeAll()
+    func selectAllCompletedMetrics() -> [Int: NetworkMetric] {
+        metrics.filter { $0.value.isCompeted }
     }
-    func removeStaleMetrics() {
+    func deleteAllMetrics() {
+        metrics.removeAll()
+    }
+    func deleteStaleMetrics() {
         let now = Date()
-        networkMetrics = networkMetrics.filter {
+        metrics = metrics.filter {
             now.timeIntervalSince($0.value.timestamp) <= NETWORK_METRICS_SLIDING_WINDOW
         }
     }
 }
 
 final class NetworkPerformanceDelegate: NSObject, URLSessionDelegate, URLSessionDataDelegate, URLSessionTaskDelegate {
-    private let netowrkMetrics = NetworkMetricsActor()
+    public let netowrkMetrics = NetworkMetricsActor()
     
     func urlSession(_ session: URLSession, task: URLSessionTask, didFinishCollecting metrics: URLSessionTaskMetrics) {
-        NETWORK_PERFORMANCE_QUEUE.async(flags: .barrier) {
-            Task {
-                if var metric = await self.netowrkMetrics.getMetric(taskIdenfitier: task.taskIdentifier) {
-                    metric.networkDuration = metrics.taskInterval.duration
-                    metric.timestamp = metrics.taskInterval.end
-                    await self.setMetric(taskIdentifier: task.taskIdentifier, metric: metric)
-                }
-            }
+        Task(priority: .utility) {
+            await netowrkMetrics.updateMetric(taskIdentifier: task.taskIdentifier, networkDuration: metrics.taskInterval.duration, timestamp: metrics.taskInterval.end)
         }
     }
     
     func urlSession(_ session: URLSession, task: URLSessionTask, didSendBodyData bytesSent: Int64, totalBytesSent: Int64, totalBytesExpectedToSend: Int64) {
-        NETWORK_PERFORMANCE_QUEUE.async(flags: .barrier) {
-            Task {
-                if var metric = await self.netowrkMetrics.getMetric(taskIdenfitier: task.taskIdentifier) {
-                    metric.bytesSent = bytesSent
-                    await self.setMetric(taskIdentifier: task.taskIdentifier, metric: metric)
-                }
-            }
+        Task(priority: .utility) {
+            await netowrkMetrics.updateMetric(taskIdentifier: task.taskIdentifier, bytesSent: bytesSent)
         }
     }
     
@@ -267,10 +270,6 @@ final class NetworkPerformanceDelegate: NSObject, URLSessionDelegate, URLSession
         }
     }
         
-    func setMetric(taskIdentifier: Int, metric: NetworkMetric) async {
-        await netowrkMetrics.setMetric(taskIdentifier: taskIdentifier, metric: metric)
-    }
-    
     func networkPerformance() async -> (mbps: Int, utilization: Int) {
         let totalActualDuration: TimeInterval
         let totalNetworkDuration: TimeInterval
@@ -281,7 +280,7 @@ final class NetworkPerformanceDelegate: NSObject, URLSessionDelegate, URLSession
             var actualDuration: TimeInterval = 0
             var networkDuration: TimeInterval = 0
             var bitsSent: Int64 = 0
-            let metrics = await self.netowrkMetrics.getAllMetrics()
+            let metrics = await netowrkMetrics.selectAllCompletedMetrics()
             for (_, metric) in metrics {
                 if let metricActualDuration = metric.actualDuration, let metricNetworkDuration = metric.networkDuration, let metricBytesSent = metric.bytesSent {
                     actualDuration += metricActualDuration
@@ -289,7 +288,7 @@ final class NetworkPerformanceDelegate: NSObject, URLSessionDelegate, URLSession
                     bitsSent += metricBytesSent * 8
                 }
             }
-            await self.netowrkMetrics.removeStaleMetrics()
+            await netowrkMetrics.deleteStaleMetrics()
             return (actualDuration, networkDuration, bitsSent)
         }.value
         
@@ -298,9 +297,6 @@ final class NetworkPerformanceDelegate: NSObject, URLSessionDelegate, URLSession
         let mbps = Int(Double(totalBitsSent) / (totalNetworkDuration * 1_000_000.0))
         let utilization = Int((totalNetworkDuration / totalActualDuration) * 100)
         return (mbps, utilization)
-    }
-    func removeAllMetrics() async {
-        await netowrkMetrics.removeAllMetrics()
     }
 }
 
@@ -346,7 +342,7 @@ final class FragmentPusher: Sendable {
         uploadQueue.cancelAllOperations()
         await urlSession.refresh()
         await fragmentBuffer.expelAllFragments()
-        await networkPerformance.removeAllMetrics()
+        await networkPerformance.netowrkMetrics.deleteAllMetrics()
         LOG("Fragment pusher is prepared to upload", level: .debug)
     }
     
@@ -469,7 +465,7 @@ final class FragmentPusher: Sendable {
                     )
                     Task {
                         await fragmentBuffer.attachFragment(to: task.taskIdentifier, with: fragment)
-                        await networkPerformance.setMetric(taskIdentifier: task.taskIdentifier, metric: metric)
+                        await networkPerformance.netowrkMetrics.insertMetric(taskIdentifier: task.taskIdentifier, metric: metric)
                         task.resume()
                     }
                 }
