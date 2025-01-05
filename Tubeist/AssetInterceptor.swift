@@ -6,10 +6,11 @@
 //
 
 // @preconcurrency needed to pass CMSampleBuffer around
-@preconcurrency import AVFoundation
+import AVFoundation
 import VideoToolbox
 
-actor AssetWriterActor {
+@PipelineActor
+private class AssetWriterActor {
     private var assetWriter: AVAssetWriter?
     private var videoInput: AVAssetWriterInput?
     private var audioInput: AVAssetWriterInput?
@@ -107,9 +108,10 @@ actor AssetWriterActor {
              }
              self.videoInput?.markAsFinished()
              self.audioInput?.markAsFinished()
+             nonisolated(unsafe) let sendableAssetWriter = assetWriter
              assetWriter.finishWriting {
-                 if assetWriter.status != .completed {
-                     LOG("Failed to finish writing: \(String(describing: assetWriter.error))", level: .warning)
+                 if sendableAssetWriter.status != .completed {
+                     LOG("Failed to finish writing: \(String(describing: sendableAssetWriter.error))", level: .warning)
                  } else {
                      LOG("Finished writing successfully", level: .info)
                  }
@@ -200,7 +202,7 @@ actor fragmentSequenceNumberActor {
 
 final class AssetInterceptor: NSObject, AVAssetWriterDelegate, Sendable {
     @PipelineActor public static let shared = AssetInterceptor()
-    private let assetWriter = AssetWriterActor()
+    @PipelineActor private static let assetWriter = AssetWriterActor()
     private let fragmentSequenceNumber = fragmentSequenceNumberActor()
     private let fragmentFolderURL: URL?
     override init() {
@@ -225,28 +227,30 @@ final class AssetInterceptor: NSObject, AVAssetWriterDelegate, Sendable {
         super.init()
     }
     func beginIntercepting() async {
-        guard await assetWriter.status() != .writing else {
+        guard await AssetInterceptor.assetWriter.status() != .writing else {
             LOG("Asset writer had already started intercepting sample buffers", level: .debug)
             return
         }
-        await self.assetWriter.setupAssetWriter()
+        await AssetInterceptor.assetWriter.setupAssetWriter()
         LOG("Asset writer is now intercepting sample buffers", level: .debug)
     }
     func endIntercepting() async {
-        guard await assetWriter.status() == .writing else {
+        guard await AssetInterceptor.assetWriter.status() == .writing else {
             LOG("Asset writer had already stopped intercepting sample buffers", level: .debug)
             return
         }
-        await self.assetWriter.finishWriting()
+        await AssetInterceptor.assetWriter.finishWriting()
         await self.fragmentSequenceNumber.reset()
         LOG("Asset writer is no longer intercepting sample buffers", level: .debug)
     }
 
     func appendVideoSampleBuffer(_ sampleBuffer: CMSampleBuffer) async {
-        await self.assetWriter.appendVideoSampleBuffer(sampleBuffer)
+        nonisolated(unsafe) let sendableSampleBuffer = sampleBuffer
+        await AssetInterceptor.assetWriter.appendVideoSampleBuffer(sendableSampleBuffer)
     }
     func appendAudioSampleBuffer(_ sampleBuffer: CMSampleBuffer) async {
-        await self.assetWriter.appendAudioSampleBuffer(sampleBuffer)
+        nonisolated(unsafe) let sendableSampleBuffer = sampleBuffer
+        await AssetInterceptor.assetWriter.appendAudioSampleBuffer(sendableSampleBuffer)
     }
     func assetWriter(_ writer: AVAssetWriter,
                      didOutputSegmentData segmentData: Data,

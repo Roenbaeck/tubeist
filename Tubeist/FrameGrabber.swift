@@ -5,11 +5,11 @@
 //  Created by Lars Rönnbäck on 2024-12-05.
 //
 
-@preconcurrency import AVFoundation
+import AVFoundation
 import CoreImage
 
 private actor OverlayImprinter {
-    nonisolated(unsafe) private let context: CIContext
+    private let context: CIContext
     // keeping one and the same render destination currently introduces flicker
     private var renderDestination: CIRenderDestination?
     
@@ -119,19 +119,23 @@ final class FrameGrabber: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
         }
     }
     
-    func captureOutput(_ output: AVCaptureOutput,
+    nonisolated func captureOutput(_ output: AVCaptureOutput,
                        didOutput sampleBuffer: CMSampleBuffer,
                        from connection: AVCaptureConnection) {
-        Task { @PipelineActor [sampleBuffer] in
-            if await self.frameGrabbing.isActive() {
-                if let overlay = await OverlayBundler.shared.getOverlay() {
-                    await self.overlayImprinter.imprint(overlay: overlay, onto: sampleBuffer)
-                }
-                if await Streamer.shared.isStreaming() {
-                    await AssetInterceptor.shared.appendVideoSampleBuffer(sampleBuffer)
-                }
-                if await Streamer.shared.getMonitor() == .output {
-                    OutputMonitor.shared.enqueue(sampleBuffer)
+        nonisolated(unsafe) let sendableSampleBuffer = sampleBuffer
+        PipelineActor.queue.async {
+            Task { @PipelineActor [sendableSampleBuffer] in
+                nonisolated(unsafe) let doublySendableSampleBuffer = sendableSampleBuffer
+                if await self.frameGrabbing.isActive() {
+                    if let overlay = await OverlayBundler.shared.getOverlay() {
+                        await self.overlayImprinter.imprint(overlay: overlay, onto: doublySendableSampleBuffer)
+                    }
+                    if await Streamer.shared.isStreaming() {
+                        await AssetInterceptor.shared.appendVideoSampleBuffer(doublySendableSampleBuffer)
+                    }
+                    if await Streamer.shared.getMonitor() == .output {
+                        OutputMonitor.shared.enqueue(doublySendableSampleBuffer)
+                    }
                 }
             }
         }

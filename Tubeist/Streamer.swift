@@ -63,7 +63,7 @@ final class Streamer: Sendable {
         await self.streamingActor.setAppState(appState)
     }
     func cycleCamera() async {
-        await CaptureDirector.shared.cycleCamera()
+        await CaptureDirector.shared.cycleSession()
         await streamingActor.refreshCameraView()
     }
     func startSessions() async {

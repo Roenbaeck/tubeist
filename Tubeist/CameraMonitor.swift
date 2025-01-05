@@ -12,7 +12,7 @@ struct CameraMonitorView: UIViewControllerRepresentable {
     @State private var previewLayerAdded: Bool = false
     
     static func createPreviewLayer() async -> AVCaptureVideoPreviewLayer? {
-        await AVCaptureVideoPreviewLayer(session: CaptureDirector.videoSession)
+        await AVCaptureVideoPreviewLayer(session: CaptureDirector.shared.getSession())
     }
     
     func makeUIViewController(context: Context) -> UIViewController {

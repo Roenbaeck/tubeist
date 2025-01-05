@@ -38,7 +38,7 @@ private class MicrophoneActor {
         LOG("Microphones: \(microphones.keys)", level: .debug)
     }
     
-    func setup(microphoneType: AVCaptureDevice.DeviceType) {
+    func setup(microphoneType: AVCaptureDevice.DeviceType, session: AVCaptureSession) {
         setupLock.lock()
         defer { setupLock.unlock() }
 
@@ -60,10 +60,10 @@ private class MicrophoneActor {
         // Configure the capture
         do {
             // configure session by adding inputs and outputs first
-            CaptureDirector.audioSession.beginConfiguration()
+            session.beginConfiguration()
             // that's the only way I was able to get .inputPriority working
-            CaptureDirector.audioSession.sessionPreset = .inputPriority
-            CaptureDirector.audioSession.automaticallyConfiguresApplicationAudioSession = false
+            session.sessionPreset = .inputPriority
+            session.automaticallyConfiguresApplicationAudioSession = false
             do {
                 try AVAudioSession.sharedInstance().setCategory(
                     .playAndRecord,
@@ -88,22 +88,21 @@ private class MicrophoneActor {
                 return
             }
             // Add audio input to the session
-            if CaptureDirector.audioSession.canAddInput(audioInput) {
-                CaptureDirector.audioSession.addInput(audioInput)
+            if session.canAddInput(audioInput) {
+                session.addInput(audioInput)
             } else {
                 LOG("Cannot add audio input", level: .error)
                 return
             }
             // Add audio output to the session
-            if CaptureDirector.audioSession.canAddOutput(audioOutput) {
-                CaptureDirector.audioSession.addOutput(audioOutput)
+            if session.canAddOutput(audioOutput) {
+                session.addOutput(audioOutput)
             } else {
                 LOG("Cannot add audio output", level: .error)
                 return
             }
 
-            CaptureDirector.audioSession.commitConfiguration()
-            CaptureDirector.audioSession.startRunning()
+            session.commitConfiguration()
 
         } catch {
             LOG("Error setting up microphone: \(error)", level: .error)
@@ -237,7 +236,7 @@ private class CameraActor {
         stabilizations = supportedModes
     }
     
-    func setup(cameraType: AVCaptureDevice.DeviceType) {
+    func setup(cameraType: AVCaptureDevice.DeviceType, session: AVCaptureSession) {
         setupLock.lock()
         defer { setupLock.unlock() }
 
@@ -255,10 +254,10 @@ private class CameraActor {
         // Configure the capture
         do {
             // configure session by adding inputs and outputs first
-            CaptureDirector.videoSession.beginConfiguration()
+            session.beginConfiguration()
             // that's the only way I was able to get .inputPriority working
-            CaptureDirector.videoSession.sessionPreset = .inputPriority
-            CaptureDirector.videoSession.automaticallyConfiguresCaptureDeviceForWideColor = true
+            session.sessionPreset = .inputPriority
+            session.automaticallyConfiguresCaptureDeviceForWideColor = true
 
             // set up video
             self.videoInput = try AVCaptureDeviceInput(device: videoDevice)
@@ -272,21 +271,21 @@ private class CameraActor {
                 return
             }
             // Add video input to the session
-            if CaptureDirector.videoSession.canAddInput(videoInput) {
-                CaptureDirector.videoSession.addInput(videoInput)
+            if session.canAddInput(videoInput) {
+                session.addInput(videoInput)
             } else {
                 LOG("Cannot add video input", level: .error)
                 return
             }
             // Add video output to the session
-            if CaptureDirector.videoSession.canAddOutput(videoOutput) {
-                CaptureDirector.videoSession.addOutput(videoOutput)
+            if session.canAddOutput(videoOutput) {
+                session.addOutput(videoOutput)
             } else {
                 LOG("Cannot add video output", level: .error)
                 return
             }
 
-            CaptureDirector.videoSession.commitConfiguration()
+            session.commitConfiguration()
             // only after the configuarion is commited, the following can be changed
 
             // videoDevice.listFormats()
@@ -312,7 +311,7 @@ private class CameraActor {
                 Int(videoDevice.activeFormat.formatDescription.dimensions.height)
             )
 
-            CaptureDirector.videoSession.startRunning()
+            session.startRunning()
 
         } catch {
             LOG("Error setting up camera: \(error)", level: .error)
@@ -326,8 +325,8 @@ private class CameraActor {
         self.exposureBias = exposureBias
     }
     
-    func addCameraControls() {
-        if CaptureDirector.videoSession.supportsControls {
+    func addCameraControls(session: AVCaptureSession) {
+        if session.supportsControls {
             guard let videoDevice else { return }
             let zoomSlider = AVCaptureSystemZoomSlider(device: videoDevice) { zoomFactor in
                 let displayZoom = videoDevice.displayVideoZoomFactorMultiplier * zoomFactor
@@ -337,21 +336,21 @@ private class CameraActor {
                     await self.currentZoom?.wrappedValue = 0
                 }
             }
-            if CaptureDirector.videoSession.canAddControl(zoomSlider) {
+            if session.canAddControl(zoomSlider) {
                 LOG("Adding system zoom slider camera control", level: .debug)
-                CaptureDirector.videoSession.addControl(zoomSlider)
+                session.addControl(zoomSlider)
             }
             let exposureBiasSlider = AVCaptureSystemExposureBiasSlider(device: videoDevice) { exposureBias in
                 Task {
                     await self.exposureBias?.wrappedValue = exposureBias
                 }
             }
-            if CaptureDirector.videoSession.canAddControl(exposureBiasSlider) {
+            if session.canAddControl(exposureBiasSlider) {
                 LOG("Adding system exposure bias slider camera control", level: .debug)
-                CaptureDirector.videoSession.addControl(exposureBiasSlider)
+                session.addControl(exposureBiasSlider)
             }
             Task { @PipelineActor in
-                CaptureDirector.videoSession.setControlsDelegate(CaptureDirector.shared, queue: CAMERA_CONTROL_QUEUE)
+                session.setControlsDelegate(CaptureDirector.shared, queue: CAMERA_CONTROL_QUEUE)
             }
         }
     }
@@ -548,8 +547,11 @@ private class CameraActor {
 
 final class CaptureDirector: NSObject, Sendable, AVCaptureSessionControlsDelegate {
     @PipelineActor public static let shared = CaptureDirector()
-    @PipelineActor public static let audioSession = AVCaptureSession()
-    @PipelineActor public static let videoSession = AVCaptureSession()
+    @PipelineActor private let session = {
+        let session = AVCaptureSession() // a single session avoids sync issues, but makes it hard to switch camera
+        session.sessionPreset = .inputPriority // take responsibility of setting everything up "by hand"
+        return session
+    }()
     @PipelineActor private let cameraActor = CameraActor()
     @PipelineActor private let microphoneActor = MicrophoneActor()
     // minimal AVCaptureSessionControlsDelegate compliance
@@ -567,10 +569,24 @@ final class CaptureDirector: NSObject, Sendable, AVCaptureSessionControlsDelegat
     func getCameras() async -> [String] {
         return await cameraActor.getCameras()
     }
-    func cycleCamera() async {
-        if await CaptureDirector.videoSession.isRunning {
-            await detachCamera()
+    func getSession() async -> AVCaptureSession {
+        await session
+    }
+    func cycleSession() async {
+        if await session.isRunning {
+            await session.stopRunning()
+            await detachAll()
             await attachCamera()
+            await attachMicrophone()
+            await session.startRunning()
+        }
+    }
+    func detachAll() async {
+        for output in await session.outputs {
+            await session.removeOutput(output)
+        }
+        for input in await session.inputs {
+            await session.removeInput(input)
         }
     }
     func attachCamera() async {
@@ -580,26 +596,11 @@ final class CaptureDirector: NSObject, Sendable, AVCaptureSessionControlsDelegat
             LOG("Cannot find camera \(camera)", level: .error)
             return
         }
-        await cameraActor.setup(cameraType: cameraType)
-        await cameraActor.addCameraControls()
+        await cameraActor.setup(cameraType: cameraType, session: session)
+        await cameraActor.addCameraControls(session: session)
         await cameraActor.findSupportedStabilizationModes()
         let selectedStabilization = Settings.cameraStabilization ?? "Off"
         await setCameraStabilization(to: selectedStabilization)
-    }
-    func detachCamera() async {
-        await CaptureDirector.videoSession.stopRunning()
-        for output in await CaptureDirector.videoSession.outputs {
-            await CaptureDirector.videoSession.removeOutput(output)
-        }
-        for input in await CaptureDirector.videoSession.inputs {
-            await CaptureDirector.videoSession.removeInput(input)
-        }
-    }
-    func cycleMicrophone() async {
-        if await CaptureDirector.audioSession.isRunning {
-            await detachMicrophone()
-            await attachMicrophone()
-        }
     }
     func attachMicrophone() async {
         // set up audio session
@@ -608,33 +609,23 @@ final class CaptureDirector: NSObject, Sendable, AVCaptureSessionControlsDelegat
             LOG("Cannot find microphone \(microphone)", level: .error)
             return
         }
-        await microphoneActor.setup(microphoneType: microphoneType)
-    }
-    func detachMicrophone() async {
-        await CaptureDirector.audioSession.stopRunning()
-        for output in await CaptureDirector.audioSession.outputs {
-            await CaptureDirector.audioSession.removeOutput(output)
-        }
-        for input in await CaptureDirector.videoSession.inputs {
-            await CaptureDirector.audioSession.removeInput(input)
-        }
+        await microphoneActor.setup(microphoneType: microphoneType, session: session)
     }
     func startSessions() async {
         if await !isRunning() {
             await attachCamera()
             await attachMicrophone()
+            await session.startRunning()
         }
     }
     func stopSessions() async {
         if await isRunning() {
-            await detachMicrophone()
-            await detachCamera()
+            await session.stopRunning()
+            await detachAll()
         }
     }
     func isRunning() async -> Bool {
-        let videoRunning = await CaptureDirector.videoSession.isRunning
-        let audioRunning = await CaptureDirector.audioSession.isRunning
-        return videoRunning && audioRunning
+        await session.isRunning
     }
     func startOutput() async {
         await cameraActor.startOutput()

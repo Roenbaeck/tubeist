@@ -4,7 +4,7 @@
 //
 //  Created by Lars Rönnbäck on 2025-01-02.
 //
-@preconcurrency import AVFoundation
+import AVFoundation
 
 private actor SoundGrabbingActor {
     private var grabbingSound: Bool = false
@@ -42,12 +42,15 @@ final class SoundGrabber: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate
         }
     }
     
-    func captureOutput(_ output: AVCaptureOutput,
+    nonisolated func captureOutput(_ output: AVCaptureOutput,
                        didOutput sampleBuffer: CMSampleBuffer,
                        from connection: AVCaptureConnection) {
-        Task { @PipelineActor in
-            if await self.soundGrabbing.isActive(), await Streamer.shared.isStreaming() {
-                await AssetInterceptor.shared.appendAudioSampleBuffer(sampleBuffer)
+        nonisolated(unsafe) let sendableSampleBuffer = sampleBuffer
+        PipelineActor.queue.async {
+            Task { @PipelineActor [sendableSampleBuffer] in
+                if await self.soundGrabbing.isActive(), await Streamer.shared.isStreaming() {
+                    await AssetInterceptor.shared.appendAudioSampleBuffer(sendableSampleBuffer)
+                }
             }
         }
     }

@@ -11,13 +11,14 @@ import CoreMedia
 import WebKit
 
 // Generic settings
+let VERSION_BUILD = "\(Bundle.main.appVersion ?? "unknown") (build: \(Bundle.main.appBuild ?? "unknown"))"
 let DEFAULT_MONITOR: Monitor = .camera
 let CAMERA_CONTROL_QUEUE = DispatchQueue(label: "com.subside.Tubeist.CameraControlQueue")
 let NETWORK_PERFORMANCE_QUEUE = DispatchQueue(label: "com.subside.Tubeist.NetworkPerformanceQueue", attributes: .concurrent)
 
 @globalActor actor PipelineActor: GlobalActor {
     static let shared = PipelineActor()
-    static let queue = DispatchQueue(label: "com.subside.Tubeist.PipelineQueue", qos: .userInitiated) //, attributes: .concurrent)
+    static let queue = DispatchQueue(label: "com.subside.Tubeist.PipelineQueue", qos: .userInitiated)
 }
 @globalActor actor UploadActor: GlobalActor {
     static let shared = UploadActor()
@@ -93,4 +94,14 @@ func printCurrentExecutionInfo(message: String = "") {
     \(Thread.callStackSymbols.joined(separator: "\n"))
     --------------------------------------------------
     """)
+}
+
+extension Bundle {
+    var appVersion: String? {
+        return infoDictionary?["CFBundleShortVersionString"] as? String
+    }
+
+    var appBuild: String? {
+        return infoDictionary?["CFBundleVersion"] as? String
+    }
 }
