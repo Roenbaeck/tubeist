@@ -305,39 +305,24 @@ final class NetworkPerformanceDelegate: NSObject, URLSessionDelegate, URLSession
 }
 
 actor PendingRetryActor {
-    private struct PendingRetry {
-        let id = UUID()
-        let continuation: CheckedContinuation<Void, Never>
-    }
-    
-    private var pendingRetries: [PendingRetry] = []
-    private var shouldResetAttempt = false
+    private var pendingTasks: [UUID: Task<Bool, Never>] = [:]
     
     func wait(seconds: Double) async -> Bool {
-        await withCheckedContinuation { continuation in
-            let retry = PendingRetry(continuation: continuation)
-            pendingRetries.append(retry)
-            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + seconds) {
-                Task { await self.resume(id: retry.id) }
+        let id = UUID()
+        pendingTasks[id] = Task {
+            defer { pendingTasks.removeValue(forKey: id) }
+            do {
+                try await Task.sleep(for: .seconds(seconds))
+                return false
+            } catch {
+                return true
             }
         }
-        let shouldReset = shouldResetAttempt // may be set by resumeAll
-        shouldResetAttempt = false
-        return shouldReset
-    }
-    
-    func resume(id: UUID) {
-        if let index = pendingRetries.firstIndex(where: { $0.id == id }) {
-            let retry = pendingRetries.remove(at: index)
-            retry.continuation.resume()
-        }
+        return await pendingTasks[id]?.value ?? false
     }
     
     func resumeAll() {
-        shouldResetAttempt = true
-        let retries = pendingRetries
-        pendingRetries.removeAll()
-        retries.forEach { $0.continuation.resume() }
+        pendingTasks.values.forEach { $0.cancel() }
     }
 }
 
@@ -352,7 +337,7 @@ final class FragmentPusher: Sendable {
 
     init() {
         self.uploadQueue = OperationQueue()
-        self.uploadQueue.maxConcurrentOperationCount = MAX_CONCURRENT_UPLOADS
+        self.uploadQueue.maxConcurrentOperationCount = 1 // MAX_CONCURRENT_UPLOADS
         self.urlSession = URLSessionActor(queue: uploadQueue, delegate: networkPerformance)
         LOG("The FragmentPusher is initialized", level: .info)
     }
@@ -446,7 +431,7 @@ final class FragmentPusher: Sendable {
                                 LOG("Upload error: \(error.localizedDescription)", level: .error)
                                 if attempt < maxRetryAttempts {
                                     await fragmentBuffer.detachFragment(forSequence: fragment.sequence)  // fragment already attached to task here
-                                    let resetAttempt = await pendingRetry.wait(seconds: Double(attempt)) // linear backoff
+                                    let resetAttempt = await pendingRetry.wait(seconds: FRAGMENT_DURATION + Double(2 * (attempt - 1))) // exponential backoff
                                     self.uploadFragment(attempt: resetAttempt ? 1 : attempt + 1)
                                 }
                                 else {
@@ -463,7 +448,7 @@ final class FragmentPusher: Sendable {
                                 }
                                 if attempt < maxRetryAttempts {
                                     await fragmentBuffer.detachFragment(forSequence: fragment.sequence)  // fragment already attached to task here
-                                    let resetAttempt = await pendingRetry.wait(seconds: Double(attempt)) // linear backoff
+                                    let resetAttempt = await pendingRetry.wait(seconds: FRAGMENT_DURATION + Double(2 * (attempt - 1))) // exponential backoff
                                     self.uploadFragment(attempt: resetAttempt ? 1 : attempt + 1)
                                 }
                                 else {

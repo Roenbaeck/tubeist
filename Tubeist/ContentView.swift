@@ -9,18 +9,23 @@ import SwiftUI
 import UserNotifications
 import Intents
 
-@Observable
+@Observable @MainActor
 class Interaction {
     var location = CGPoint(x: 0, y: 0)
-    private var actionWorkItem: DispatchWorkItem?
+    private var actionTask: Task<Void, Never>?
 
     func scheduleAction(seconds: Double = 3.0, action: @escaping () -> Void) {
-        actionWorkItem?.cancel()
-        let workItem = DispatchWorkItem {
-            action()
+        actionTask?.cancel()
+        actionTask = Task(priority: .utility) { @MainActor in
+            do {
+                try await Task.sleep(for: .seconds(seconds))
+                if !Task.isCancelled {
+                    action()
+                }
+            } catch {
+                // this is where we end up when actionTask?.cancel() actually cancels a Task
+            }
         }
-        actionWorkItem = workItem
-        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + seconds, execute: workItem)
     }
 }
 
