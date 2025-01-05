@@ -31,7 +31,7 @@ enum LogLevel {
 }
 
 struct LogEntry: Identifiable {
-    var id: String { message }
+    let id = UUID()
     let message: String
     let level: LogLevel
     var timestamp: Date = Date()
@@ -125,25 +125,37 @@ struct JournalView: View {
         formatter.dateFormat = "HH:mm ss"
         return formatter
     }()
+    private let almostBlack = Color(red: 0.1, green: 0.1, blue: 0.1)
     
     var body: some View {
-        List(journalPublisher.journal.reversed()) { log in
-            HStack(alignment: .top) {
-                Text(log.timestamp, formatter: hh_mm_ss)
-                    .font(.system(size: 12))
-                    .padding(.top, 1)
-                Text(log.repeatCount.description)
-                    .font(.system(size: 12))
-                    .foregroundColor(.orange)
-                    .padding(.top, 1)
-                Text(log.message)
-                    .font(.system(size: 14))
-                    .foregroundColor(log.level.color)
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 0) {
+                ForEach(journalPublisher.journal.reversed()) { log in
+                    HStack(alignment: .top) {
+                        Text(log.timestamp, formatter: hh_mm_ss)
+                            .font(.system(size: 12))
+                            .padding(.top, 1)
+                            .monospacedDigit()
+                        Text(log.repeatCount.description)
+                            .font(.system(size: 12))
+                            .foregroundColor(.orange)
+                            .padding(.top, 1)
+                            .frame(minWidth: 15)
+                        Text(log.message)
+                            .font(.system(size: 14))
+                            .foregroundColor(log.level.color)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .padding(.horizontal)
+                    .overlay(alignment: .bottom) {
+                        Rectangle()
+                            .frame(height: 1)
+                            .foregroundColor(almostBlack)
+                            .padding(.horizontal)
+                    }
+                }
             }
-            .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
-            .clipped()
         }
-        .listStyle(PlainListStyle())
-        .environment(\.defaultMinListRowHeight, 20) // Reduce default row height
+        .background(Color.black)
     }
 }

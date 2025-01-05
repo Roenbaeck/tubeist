@@ -212,6 +212,8 @@ struct ContentView: View {
                                         
                     if showJournal {
                         JournalView()
+                            .frame(width: width, height: height)
+                            .fixedSize()
                     }
                     
                     VStack {
