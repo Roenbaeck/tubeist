@@ -165,13 +165,13 @@ struct ContentView: View {
                                 .frame(width: width, height: height)
                                 .scaledToFill()
                             Text("Hiding some ugly looking device setup...")
-                                .font(.system(size: 14))
+                                .font(.system(size: 12))
                                 .offset(y: 30)
                         }
                         .opacity(splashOpacity) // Apply the opacity
                         .onChange(of: isCameraReady) { _, newValue in
                             if newValue {
-                                withAnimation(.easeInOut(duration: 1.0)) {
+                                withAnimation(.easeInOut(duration: 2.0)) {
                                     splashOpacity = 0.0
                                 } completion: {
                                     showSplashScreen = false // Hide the splash screen after animation

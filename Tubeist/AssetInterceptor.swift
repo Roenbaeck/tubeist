@@ -14,6 +14,7 @@ actor AssetWriterActor {
     private var videoInput: AVAssetWriterInput?
     private var audioInput: AVAssetWriterInput?
     private var frameRate: Double = DEFAULT_FRAMERATE
+    private var earlyAudioSamples: [CMSampleBuffer] = []
 
     func setupAssetWriter() {
         guard let contentType = UTType(AVFileType.mp4.rawValue) else {
@@ -43,6 +44,7 @@ actor AssetWriterActor {
         assetWriter.shouldOptimizeForNetworkUse = true
         assetWriter.outputFileTypeProfile = .mpeg4AppleHLS
         assetWriter.preferredOutputSegmentInterval = CMTime(seconds: adjustedFragmentDuration, preferredTimescale: CMTimeScale(selectedFrameRate))
+        assetWriter.movieTimeScale = CMTimeScale(selectedFrameRate)
         assetWriter.initialSegmentStartTime = .zero
         Task { @PipelineActor in
             assetWriter.delegate = AssetInterceptor.shared
@@ -73,10 +75,11 @@ actor AssetWriterActor {
             return
         }
         videoInput.expectsMediaDataInRealTime = true
+        videoInput.mediaTimeScale = CMTimeScale(selectedFrameRate)
         
         let audioSettings: [String: Any] = [
             AVFormatIDKey: kAudioFormatMPEG4AAC,
-            AVSampleRateKey: 44100,
+            AVSampleRateKey: AUDIO_SAMPLE_RATE,
             AVNumberOfChannelsKey: selectedAudioChannels,
             AVEncoderBitRatePerChannelKey: selectedAudioBitrate,
             AVEncoderBitRateStrategyKey: AVAudioBitRateStrategy_Variable
@@ -91,11 +94,6 @@ actor AssetWriterActor {
         
         assetWriter.add(videoInput)
         assetWriter.add(audioInput)
-
-        if assetWriter.startWriting() == false {
-            LOG("Error starting writing: \(assetWriter.error?.localizedDescription ?? "Unknown error")")
-            return
-        }
         
         LOG("Asset writer configured successfully", level: .info)
     }
@@ -120,43 +118,66 @@ actor AssetWriterActor {
              self.assetWriter = nil
              self.videoInput = nil
              self.audioInput = nil
+             self.sessionStarted = false
          }
      }
      
-    let startSessionOnceLock = NSLock()
-    var sessionStarted: Bool = false
+    private let startSessionOnceLock = NSLock()
+    private var sessionStarted: Bool = false
     
     func appendSampleBuffer(_ sampleBuffer: CMSampleBuffer, to input: AVAssetWriterInput?, inputType: String) {
-        guard let assetWriter = self.assetWriter, assetWriter.status == .writing else {
-            LOG("Cannot append \(inputType) buffer, writer not in writing state: \(self.assetWriter?.status.rawValue ?? -1)", level: .warning)
-            return
-        }
-        guard let input = input, input.isReadyForMoreMediaData else {
-            LOG("\(inputType) input not ready for more media data", level: .warning)
+        guard let assetWriter = self.assetWriter else {
+            LOG("Cannot append \(inputType.lowercased()) buffer, asset writer not initialized", level: .warning)
             return
         }
         if !sessionStarted { // more than one thread might enter here
             startSessionOnceLock.lock() // first thread to reach this point aquires the lock and the rest are blocked
             defer { startSessionOnceLock.unlock() } // ensure unlock, releasing any other threads
             if !sessionStarted { // check again, first thread will enter and set sessionStarted to true, so released threads won't execute this code
+                guard assetWriter.startWriting() else {
+                    LOG("Error starting writing: \(assetWriter.error?.localizedDescription ?? "Unknown error")")
+                    return
+                }
                 let currentTime = CMTime(seconds: Date().timeIntervalSince(REFERENCE_TIMEPOINT), preferredTimescale: CMTimeScale(frameRate))
                 assetWriter.startSession(atSourceTime: currentTime)
                 LOG("Asset writing session started at source time: \(currentTime.value) | \(currentTime.timescale)")
                 sessionStarted = true
             }
         }
-        if input.append(sampleBuffer) == false {
-            LOG("Error appending video buffer", level: .error)
+        guard let input = input, input.isReadyForMoreMediaData else {
+            LOG("\(inputType) input not ready for more media data", level: .warning)
+            return
+        }
+        guard input.append(sampleBuffer) else {
+            LOG("Error appending \(inputType.lowercased()) buffer", level: .error)
+            return
         }
     }
 
+    private var firstVideoPresentationTimestamp: CMTime?
+    
     func appendVideoSampleBuffer(_ sampleBuffer: CMSampleBuffer) {
+        if firstVideoPresentationTimestamp == nil {
+            firstVideoPresentationTimestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+        }
         appendSampleBuffer(sampleBuffer, to: videoInput, inputType: "Video")
     }
-
+    
     func appendAudioSampleBuffer(_ sampleBuffer: CMSampleBuffer) {
+        if firstVideoPresentationTimestamp == nil {
+            earlyAudioSamples.append(sampleBuffer) // buffer samples coming in before video
+        }
+        else if !earlyAudioSamples.isEmpty { // prune buffer from unusable samples once a video frame has arrived
+            LOG("Releasing \(earlyAudioSamples.count) audio samples that came in earlier than any video frames", level: .debug)
+            earlyAudioSamples.removeAll(where: { CMSampleBufferGetPresentationTimeStamp($0) < firstVideoPresentationTimestamp! })
+            for sampleBuffer in earlyAudioSamples {
+                appendSampleBuffer(sampleBuffer, to: audioInput, inputType: "Audio")
+            }
+            earlyAudioSamples.removeAll()
+        }
         appendSampleBuffer(sampleBuffer, to: audioInput, inputType: "Audio")
     }
+    
     func status() -> AVAssetWriter.Status? {
         assetWriter?.status
     }

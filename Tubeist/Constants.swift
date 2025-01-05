@@ -23,13 +23,14 @@ let NETWORK_PERFORMANCE_QUEUE = DispatchQueue(label: "com.subside.Tubeist.Networ
     static let shared = UploadActor()
 }
 
-// CameraMonitor settings
+// CaptureDirector settings
 let DEFAULT_CAMERA = "Back Camera" // available on most (all?) devices
 let DEFAULT_MICROPHONE = "iPhone Microphone"
 let ZOOM_LIMIT: Double = 20.0
 let DEFAULT_FRAMERATE: Double = 60
 let DEFAULT_CAPTURE_WIDTH: Int = 3840
 let DEFAULT_CAPTURE_HEIGHT: Int = 2160
+let AUDIO_SAMPLE_RATE: Double = 44_100 // enough given that we are using an iPhone microphone
 
 // Color settings
 let CG_COLOR_SPACE: CGColorSpace = .init(name: CGColorSpace.itur_2100_HLG)!

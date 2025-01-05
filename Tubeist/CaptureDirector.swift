@@ -49,6 +49,7 @@ private class MicrophoneActor {
 
         let audioDevice: AVCaptureDevice
         if let selectedAudioDevice = AVCaptureDevice.default(microphoneType, for: .audio, position: .unspecified) {
+            LOG("Using selected microphone: \(selectedAudioDevice.localizedName)", level: .debug)
             audioDevice = selectedAudioDevice
         }
         else {
@@ -62,7 +63,18 @@ private class MicrophoneActor {
             CaptureDirector.audioSession.beginConfiguration()
             // that's the only way I was able to get .inputPriority working
             CaptureDirector.audioSession.sessionPreset = .inputPriority
-            CaptureDirector.audioSession.configuresApplicationAudioSessionToMixWithOthers = true
+            CaptureDirector.audioSession.automaticallyConfiguresApplicationAudioSession = false
+            do {
+                try AVAudioSession.sharedInstance().setCategory(
+                    .playAndRecord,
+                    mode: .videoRecording,
+                    options: [.mixWithOthers, .overrideMutedMicrophoneInterruption])
+                try AVAudioSession.sharedInstance().setPreferredSampleRate(AUDIO_SAMPLE_RATE)
+                try AVAudioSession.sharedInstance().setActive(true)
+            }
+            catch {
+                LOG("Could not set up the app audio session: \(error.localizedDescription)", level: .error)
+            }
 
             // set up audio
             self.audioInput = try AVCaptureDeviceInput(device: audioDevice)

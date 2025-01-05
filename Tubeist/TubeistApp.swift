@@ -92,15 +92,6 @@ struct TubeistApp: App {
         LOG("Streaming target is set to: \(Settings.target)", level: .info)
         LOG("Using \(REFERENCE_TIMEPOINT) as reference time for streams", level: .debug)
         UIApplication.shared.isIdleTimerDisabled = true
-        do {
-            try AVAudioSession.sharedInstance().setCategory(
-                .playAndRecord,
-                mode: .videoRecording,
-                options: [.mixWithOthers, .overrideMutedMicrophoneInterruption])
-        }
-        catch {
-            LOG("Could not set up the app audio session: \(error.localizedDescription)", level: .error)
-        }
     }
 }
 
