@@ -85,12 +85,9 @@ struct TubeistApp: App {
         }
     }
     
-    
     init() {
         appState.isAppInitialization = true
         LOG("Starting Tubeist version \(VERSION_BUILD)", level: .info)
-        LOG("Streaming target is set to: \(Settings.target)", level: .info)
-        LOG("Using \(REFERENCE_TIMEPOINT) as reference time for streams", level: .debug)
         UIApplication.shared.isIdleTimerDisabled = true
     }
 }

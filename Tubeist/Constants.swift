@@ -48,14 +48,6 @@ let DEFAULT_AUDIO_CHANNELS: Int = 2
 let DEFAULT_KEYFRAME_INTERVAL: Double = 2.0 // seconds
 let FRAGMENT_DURATION: Double = 2.0 // seconds
 let FRAGMENT_MINIMUM_DURATION: Double = 0.010 // at least 10ms (to ignore very short fragments at the end of the stream)
-let REFERENCE_TIMEPOINT: Date = {
-    let referenceTime = Date() // always UTC?
-    var calendar = Calendar.current
-    calendar.timeZone = TimeZone(secondsFromGMT: 0)!
-    let previousYear = calendar.component(.year, from: referenceTime) - 1
-    let startOfPreviousYear = calendar.date(from: DateComponents(year: previousYear, month: 1, day: 1))!
-    return startOfPreviousYear
-}()
 
 // AudioMeter settings
 let AUDIO_METER_HEIGHT: CGFloat = 3

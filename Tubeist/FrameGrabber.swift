@@ -122,19 +122,19 @@ final class FrameGrabber: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
     nonisolated func captureOutput(_ output: AVCaptureOutput,
                        didOutput sampleBuffer: CMSampleBuffer,
                        from connection: AVCaptureConnection) {
-        nonisolated(unsafe) let sendableSampleBuffer = sampleBuffer
+        nonisolated(unsafe) let sendableSampleBuffer = sampleBuffer // removes the need for @preconcurrency
         PipelineActor.queue.async {
             Task { @PipelineActor [sendableSampleBuffer] in
-                nonisolated(unsafe) let doublySendableSampleBuffer = sendableSampleBuffer
+                nonisolated(unsafe) let sendableSampleBuffer = sendableSampleBuffer // it's needed again here
                 if await self.frameGrabbing.isActive() {
                     if let overlay = await OverlayBundler.shared.getOverlay() {
-                        await self.overlayImprinter.imprint(overlay: overlay, onto: doublySendableSampleBuffer)
+                        await self.overlayImprinter.imprint(overlay: overlay, onto: sendableSampleBuffer)
                     }
                     if await Streamer.shared.isStreaming() {
-                        await AssetInterceptor.shared.appendVideoSampleBuffer(doublySendableSampleBuffer)
+                        await AssetInterceptor.shared.appendVideoSampleBuffer(sendableSampleBuffer)
                     }
                     if await Streamer.shared.getMonitor() == .output {
-                        OutputMonitor.shared.enqueue(doublySendableSampleBuffer)
+                        OutputMonitor.shared.enqueue(sendableSampleBuffer)
                     }
                 }
             }
