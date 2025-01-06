@@ -69,4 +69,4 @@ We welcome contributions to Tubeist! If you're interested in helping make Tubeis
 * Submit a Pull Request: Create a pull request from your branch to the main Tubeist repository. Describe the changes you've made and why they are necessary.
 
 ## Acknowledgements
-Tubeist was inspired by the amazing work put into [https://github.com/eerimoq/moblin](Moblin), another Open Source live streaming software. 
+Tubeist was inspired by the amazing work put into [Moblin](https://github.com/eerimoq/moblin), another Open Source live streaming software. 
