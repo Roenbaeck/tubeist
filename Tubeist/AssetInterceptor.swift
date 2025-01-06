@@ -138,6 +138,34 @@ private class AssetWriterActor {
         }
     }
     
+    func analyzeVideoSampleBuffer(_ sampleBuffer: CMSampleBuffer) {
+        if let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) {
+            let format = CVPixelBufferGetPixelFormatType(pixelBuffer)
+            var formatName = "Unknown"
+            
+            switch format {
+            case kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange: formatName = "420YpCbCr10BiPlanarVideoRange (x420)"
+            case kCVPixelFormatType_422YpCbCr10BiPlanarVideoRange: formatName = "422YpCbCr10BiPlanarVideoRange (x422)"
+            default: formatName = String(format: "0x%08x", format)
+            }
+            
+            var isHDR = false
+            if let formatDescription = CMSampleBufferGetFormatDescription(sampleBuffer),
+               let attachments = CMFormatDescriptionGetExtensions(formatDescription) as? [String: Any] {
+                // Check for HDR metadata
+                if let colorPrimaries = attachments[kCVImageBufferColorPrimariesKey as String] as? String,
+                   let transferFunction = attachments[kCVImageBufferTransferFunctionKey as String] as? String,
+                   let yCbCrMatrix = attachments[kCVImageBufferYCbCrMatrixKey as String] as? String {
+                    
+                    isHDR = (colorPrimaries == kCVImageBufferColorPrimaries_ITU_R_2020 as String) &&
+                            (transferFunction == kCVImageBufferTransferFunction_ITU_R_2100_HLG as String) &&
+                            (yCbCrMatrix == AVVideoYCbCrMatrix_ITU_R_2020 as String)
+                }
+            }
+            LOG("Video format of first frame: \(formatName), HDR: \(isHDR)", level: .info)
+        }
+    }
+    
     func appendVideoSampleBuffer(_ sampleBuffer: CMSampleBuffer) {
         guard let assetWriter = self.assetWriter else {
             LOG("Cannot append video frame, asset writer not initialized", level: .warning)
@@ -151,6 +179,7 @@ private class AssetWriterActor {
                     LOG("Error starting writing: \(assetWriter.error?.localizedDescription ?? "Unknown error")")
                     return
                 }
+                analyzeVideoSampleBuffer(sampleBuffer)
                 let presentationTimeStamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
                 assetWriter.startSession(atSourceTime: presentationTimeStamp)
                 LOG("Asset writing session started at time of first video frame: \(presentationTimeStamp)")
