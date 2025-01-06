@@ -250,7 +250,6 @@ private class CameraActor {
         }
         self.videoDevice = videoDevice
 
-        
         // Configure the capture
         do {
             // configure session by adding inputs and outputs first
@@ -310,8 +309,6 @@ private class CameraActor {
                 Int(videoDevice.activeFormat.formatDescription.dimensions.width),
                 Int(videoDevice.activeFormat.formatDescription.dimensions.height)
             )
-
-            session.startRunning()
 
         } catch {
             LOG("Error setting up camera: \(error)", level: .error)
