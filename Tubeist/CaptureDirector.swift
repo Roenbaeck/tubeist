@@ -591,12 +591,12 @@ final class CaptureDirector: NSObject, Sendable, AVCaptureSessionControlsDelegat
         await session.isRunning
     }
     func startOutput() async {
+        await deviceActor.startAudioOutput() // start audio first, to ensure we get audio samples with the video
         await deviceActor.startVideoOutput()
-        await deviceActor.startAudioOutput()
     }
     func stopOutput() async {
-        await deviceActor.stopAudioOutput()
         await deviceActor.stopVideoOutput()
+        await deviceActor.stopAudioOutput()
     }
     func getAudioChannels() async -> [AVCaptureAudioChannel] {
         return await deviceActor.getAudioChannels()
