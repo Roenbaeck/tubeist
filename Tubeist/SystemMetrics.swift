@@ -18,7 +18,7 @@ struct SystemMetricsView: View {
     @State private var networkUtilization: Int = 0
     @State private var fragmentBufferCount: Int = 0
     @State private var updateSystemMetricsTask: Task<Void, Never>?
-        
+            
     var body: some View {
         HStack(spacing: 10) {
             Text("CPU: \(String(format: "%.1f", cpuUsage))%")
@@ -28,7 +28,7 @@ struct SystemMetricsView: View {
         }
         .font(.system(size: 13))
         .lineLimit(1) // Ensure text stays on a single line
-        .foregroundColor(.white)
+        .foregroundColor(BRIGHTER_THAN_WHITE)
         .onAppear {
             updateSystemMetricsTask = Task(priority: .utility) {
                 while !Task.isCancelled {

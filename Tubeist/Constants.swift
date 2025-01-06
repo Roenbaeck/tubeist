@@ -9,6 +9,7 @@ import Foundation
 import AVFoundation
 import CoreMedia
 import WebKit
+import SwiftUI
 
 // Generic settings
 let VERSION_BUILD = "\(Bundle.main.appVersion ?? "unknown") (build: \(Bundle.main.appBuild ?? "unknown"))"
@@ -35,6 +36,7 @@ let AUDIO_SAMPLE_RATE: Double = 44_100 // enough given that we are using an iPho
 // Color settings
 let CG_COLOR_SPACE: CGColorSpace = .init(name: CGColorSpace.itur_2100_HLG)!
 let AV_COLOR_SPACE: AVCaptureColorSpace = .HLG_BT2020
+let BRIGHTER_THAN_WHITE: Color = Color(red: 1.5, green: 1.5, blue: 1.5)
 
 // OverlayBundler settings
 let BOUNDING_BOX_SEARCH_WIDTH: Int = 160 // needs to be a divisor of possible output widths (960, 1280, 1920, 2560, 3840)
