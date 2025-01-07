@@ -711,10 +711,11 @@ struct CameraControlSlider: View {
                 let zero = geometry.size.height / Double(range.upperBound)
                 
                 ZStack(alignment: .leading) { // Align ZStack to the leading edge
-                    Image(systemName: "chevron.left.2")
-                        .font(.system(size: 10))
+                    Image(systemName: "arrowtriangle.left.fill")
+                        .font(.system(size: 16))
+                        .fontWeight(.bold)
                         .foregroundColor(.yellow)
-                        .offset(x: 14, y: zero - CGFloat(value) * stepSize - 0.5)
+                        .offset(x: 15, y: zero - CGFloat(value) * stepSize - 0.5)
                         .padding(2)
                     
                     // Scale Markers
