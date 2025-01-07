@@ -131,7 +131,7 @@ final class FrameGrabber: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
                         await self.overlayImprinter.imprint(overlay: overlay, onto: sendableSampleBuffer)
                     }
                     if await Streamer.shared.isStreaming() {
-                        await AssetInterceptor.shared.appendVideoSampleBuffer(sendableSampleBuffer)
+                        await ContentPackager.shared.appendVideoSampleBuffer(sendableSampleBuffer)
                     }
                     if await Streamer.shared.getMonitor() == .output {
                         OutputMonitor.shared.enqueue(sendableSampleBuffer)

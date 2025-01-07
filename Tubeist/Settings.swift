@@ -27,7 +27,31 @@ struct Preset: Codable, Equatable, Identifiable, Hashable {
         case audioBitrate = "audio_bitrate"
         case videoBitrate = "video_bitrate"
     }
+    
+    var description: String {
+        return """
+        Preset:
+        - Name: \(name)
+        - Resolution: \(width)x\(height)
+        - Frame rate: \(frameRate) FPS
+        - Keyframe interval: \(keyframeInterval)s
+        - Video bitrate: \(videoBitrate)
+        - Audio channels: \(audioChannels)
+        - Audio bitrate: \(audioBitrate)        
+        """
+    }
 }
+
+let defaultPreset: Preset = Preset(
+    name: "Default",
+    width: DEFAULT_COMPRESSED_WIDTH,
+    height: DEFAULT_COMPRESSED_HEIGHT,
+    frameRate: DEFAULT_FRAMERATE,
+    keyframeInterval: DEFAULT_KEYFRAME_INTERVAL,
+    audioChannels: DEFAULT_AUDIO_CHANNELS,
+    audioBitrate: DEFAULT_AUDIO_BITRATE,
+    videoBitrate: DEFAULT_VIDEO_BITRATE
+)
 
 let movingCameraPresets: [Preset] = [
     Preset(name: "540p",  width: 960,  height: 540,  frameRate: 30, keyframeInterval: 1.0, audioChannels: 1, audioBitrate: 48_000,  videoBitrate: 1_450_000),
@@ -433,12 +457,15 @@ struct SettingsView: View {
 }
 
 final class Settings: Sendable {
-    static var selectedPreset: Preset? {
+    static var selectedPreset: Preset {
         var selectedPreset: Preset?
         if let selectedPresetData = UserDefaults.standard.data(forKey: "SelectedPreset") {
             if let preset = try? JSONDecoder().decode(Preset.self, from: selectedPresetData) {
                 selectedPreset = preset
             }
+        }
+        guard let selectedPreset = selectedPreset, selectedPreset.name != "" else {
+            return defaultPreset
         }
         return selectedPreset
     }

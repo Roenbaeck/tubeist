@@ -119,7 +119,7 @@ private class DeviceActor {
         defer { setupLock.unlock() }
 
         // Fetch frame rate from settings
-        self.frameRate = Settings.selectedPreset?.frameRate ?? DEFAULT_FRAMERATE
+        self.frameRate = Settings.selectedPreset.frameRate
         
         // Get devices
         guard let videoDevice = AVCaptureDevice.default(cameraType, for: .video, position: .back) else {
@@ -692,9 +692,9 @@ struct CaptureFormatCandidate {
 // Extend AVCaptureDevice to include findFormat method
 extension AVCaptureDevice {
     func findFormat() -> AVCaptureDevice.Format? {
-        let width = (Settings.isInputSyncedWithOutput ? Settings.selectedPreset?.width : DEFAULT_CAPTURE_WIDTH) ?? DEFAULT_CAPTURE_WIDTH
-        let height = (Settings.isInputSyncedWithOutput ? Settings.selectedPreset?.height : DEFAULT_CAPTURE_HEIGHT) ?? DEFAULT_CAPTURE_HEIGHT
-        let frameRate = Settings.selectedPreset?.frameRate ?? DEFAULT_FRAMERATE
+        let width = (Settings.isInputSyncedWithOutput ? Settings.selectedPreset.width : DEFAULT_CAPTURE_WIDTH)
+        let height = (Settings.isInputSyncedWithOutput ? Settings.selectedPreset.height : DEFAULT_CAPTURE_HEIGHT)
+        let frameRate = Settings.selectedPreset.frameRate 
         LOG("Searching for best capture format with resolution \(width)x\(height) and \(frameRate) FPS.")
         var candidates: [CaptureFormatCandidate] = []
         for captureFormat in formats {

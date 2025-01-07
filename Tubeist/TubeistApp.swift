@@ -46,7 +46,7 @@ struct TubeistApp: App {
     
     var body: some Scene {
         WindowGroup {
-            ContentView().environment(appState)
+            TubeistView().environment(appState)
                 .onAppear {
                     Task {
                         await Streamer.shared.setAppState(appState)

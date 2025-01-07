@@ -74,7 +74,7 @@ final class Streamer: Sendable {
     }
     func startStream() async {
         await FragmentPusher.shared.immediatePreparation()
-        await AssetInterceptor.shared.beginIntercepting()
+        await ContentPackager.shared.beginPackaging()
         await SoundGrabber.shared.commenceGrabbing()
         await FrameGrabber.shared.commenceGrabbing()
         await CaptureDirector.shared.startOutput()
@@ -85,7 +85,7 @@ final class Streamer: Sendable {
         await CaptureDirector.shared.stopOutput()
         await FrameGrabber.shared.terminateGrabbing()
         await SoundGrabber.shared.terminateGrabbing()
-        await AssetInterceptor.shared.endIntercepting()
+        await ContentPackager.shared.endPackaging()
         await FragmentPusher.shared.gracefulShutdown()
     }
     func isStreaming() async -> Bool {

@@ -431,7 +431,8 @@ struct OverlayView: UIViewRepresentable {
     }
 
     func makeUIView(context: Context) -> WKWebView {
-        if Settings.isInputSyncedWithOutput, let preset = Settings.selectedPreset {
+        if Settings.isInputSyncedWithOutput {
+            let preset = Settings.selectedPreset
             return context.coordinator.createWebView(width: preset.width, height: preset.height)
         }
         return context.coordinator.createWebView(width: DEFAULT_CAPTURE_WIDTH, height: DEFAULT_CAPTURE_HEIGHT)

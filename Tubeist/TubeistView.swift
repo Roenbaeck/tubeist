@@ -1,5 +1,5 @@
 //
-//  ContentView.swift
+//  TubeistView.swift
 //  Tubeist
 //
 //  Created by Lars Rönnbäck on 2024-12-05.
@@ -29,7 +29,7 @@ class Interaction {
     }
 }
 
-struct ContentView: View {
+struct TubeistView: View {
     @Environment(AppState.self) var appState
     @State private var overlayManager = OverlaySettingsManager()
     @State private var showSettings = false
