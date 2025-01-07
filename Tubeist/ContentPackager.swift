@@ -16,76 +16,12 @@ private class AssetWriterActor {
     private var videoInput: AVAssetWriterInput?
     private var audioInput: AVAssetWriterInput?
     // these are used to ensure both audio and video goes into the initialization fragment
-    private var firstVideoPresentationTimestamp: CMTime?
-    private var firstAudioPresentationTimestamp: CMTime?
+    private var firstVideoPresentationTimestamp: CMTime? = nil
+    private var firstAudioPresentationTimestamp: CMTime? = nil
     private var earlyAudioSamples: [CMSampleBuffer] = []
-
-    /*
-    func setupFileAssetWriter(filename: URL?) {
-        guard let filename else {
-            LOG("No filename provided", level: .error)
-            return
-        }
-        fileAssetWriter = try? AVAssetWriter(outputURL: filename, fileType: .mp4)
-        guard let fileAssetWriter else {
-            LOG("Could not create asset writer", level: .error)
-            return
-        }
-        let selectedPreset = Settings.selectedPreset
-        let selectedVideoBitrate = selectedPreset.videoBitrate
-        let selectedAudioBitrate = selectedPreset.audioBitrate
-        let selectedAudioChannels = selectedPreset.audioChannels
-        let selectedWidth = selectedPreset.width
-        let selectedHeight = selectedPreset.height
-        let selectedKeyframeInterval = selectedPreset.keyframeInterval
-        let selectedFrameRate = selectedPreset.frameRate
-        let frameIntervalKey = Int(ceil(selectedKeyframeInterval * selectedFrameRate))
-        let adjustedFragmentDuration = selectedFrameRate / trunc(selectedFrameRate / FRAGMENT_DURATION)
-        
-        fileAssetWriter.shouldOptimizeForNetworkUse = false
-        fileAssetWriter.movieTimeScale = CMTimeScale(selectedFrameRate)
-
-        let videoSettings: [String: Any] = [
-            AVVideoCodecKey: AVVideoCodecType.hevc,
-            AVVideoWidthKey: Settings.isInputSyncedWithOutput ? selectedWidth : DEFAULT_CAPTURE_WIDTH,
-            AVVideoHeightKey: Settings.isInputSyncedWithOutput ? selectedHeight : DEFAULT_CAPTURE_HEIGHT,
-            AVVideoColorPropertiesKey: [
-                AVVideoColorPrimariesKey: AVVideoColorPrimaries_ITU_R_2020,
-                AVVideoTransferFunctionKey: AVVideoTransferFunction_ITU_R_2100_HLG,
-                AVVideoYCbCrMatrixKey: AVVideoYCbCrMatrix_ITU_R_2020
-            ],
-            AVVideoCompressionPropertiesKey: [
-                AVVideoProfileLevelKey: kVTProfileLevel_HEVC_Main10_AutoLevel,
-                AVVideoAverageBitRateKey: Settings.isInputSyncedWithOutput ? selectedVideoBitrate : 20_000_000, // TODO: additional setting for file
-                AVVideoExpectedSourceFrameRateKey: selectedFrameRate,
-                AVVideoMaxKeyFrameIntervalKey: frameIntervalKey,
-                AVVideoAllowFrameReorderingKey: true,
-                kVTCompressionPropertyKey_HDRMetadataInsertionMode: kVTHDRMetadataInsertionMode_Auto
-            ]
-        ]
-        
-        let videoInput = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
-        videoInput.expectsMediaDataInRealTime = true
-        videoInput.mediaTimeScale = CMTimeScale(selectedFrameRate)
-        
-        let audioSettings: [String: Any] = [
-            AVFormatIDKey: kAudioFormatMPEG4AAC,
-            AVSampleRateKey: AUDIO_SAMPLE_RATE,
-            AVNumberOfChannelsKey: selectedAudioChannels,
-            AVEncoderBitRatePerChannelKey: selectedAudioBitrate,
-            AVEncoderBitRateStrategyKey: AVAudioBitRateStrategy_Variable
-        ]
-        
-        let audioInput = AVAssetWriterInput(mediaType: .audio, outputSettings: audioSettings)
-        audioInput.expectsMediaDataInRealTime = true
-        
-        fileAssetWriter.add(videoInput)
-        fileAssetWriter.add(audioInput)
-        
-        LOG("Asset writer configured successfully", level: .info)
-
-    }
-    */
+    // session startup guard
+    private let startSessionOnceLock = NSLock()
+    private var sessionStarted: Bool = false
     
     func setupFragmentAssetWriter() {
         guard let contentType = UTType(AVFileType.mp4.rawValue) else {
@@ -107,7 +43,7 @@ private class AssetWriterActor {
         let selectedFrameRate = selectedPreset.frameRate
         let frameIntervalKey = Int(ceil(selectedKeyframeInterval * selectedFrameRate))
         let adjustedFragmentDuration = selectedFrameRate / trunc(selectedFrameRate / FRAGMENT_DURATION)
-
+        
         LOG("\(selectedPreset.description)", level: .debug)
         
         fragmentAssetWriter.shouldOptimizeForNetworkUse = true
@@ -165,43 +101,30 @@ private class AssetWriterActor {
         LOG("Asset writer configured successfully", level: .info)
     }
     
-     func finishWriting() async {
-         await withCheckedContinuation { continuation in
-             guard let fragmentAssetWriter else {
-                 LOG("Asset writer not active or configured", level: .error)
-                 continuation.resume() // Resume immediately if there's nothing to stop
-                 return
-             }
-             self.videoInput?.markAsFinished()
-             self.audioInput?.markAsFinished()
-             nonisolated(unsafe) let sendableAssetWriter = fragmentAssetWriter
-             fragmentAssetWriter.finishWriting {
-                 if sendableAssetWriter.status != .completed {
-                     LOG("Failed to finish writing: \(String(describing: sendableAssetWriter.error))", level: .warning)
-                 } else {
-                     LOG("Finished writing successfully", level: .info)
-                 }
-                 continuation.resume() // Resume after `finishWriting` completes
-             }
-             self.fragmentAssetWriter = nil
-             self.videoInput = nil
-             self.audioInput = nil
-             self.firstVideoPresentationTimestamp = nil
-             self.sessionStarted = false
-         }
-     }
-     
-    private let startSessionOnceLock = NSLock()
-    private var sessionStarted: Bool = false
-    
-    func appendSampleBuffer(_ sampleBuffer: CMSampleBuffer, to input: AVAssetWriterInput?, inputType: String) {
-        guard let input = input, input.isReadyForMoreMediaData else {
-            LOG("\(inputType) input not ready for more media data", level: .warning)
-            return
-        }
-        guard input.append(sampleBuffer) else {
-            LOG("Error appending \(inputType.lowercased()) buffer", level: .error)
-            return
+    func finishWriting() async {
+        await withCheckedContinuation { continuation in
+            guard let fragmentAssetWriter else {
+                LOG("Asset writer not active or configured", level: .error)
+                continuation.resume() // Resume immediately if there's nothing to stop
+                return
+            }
+            self.videoInput?.markAsFinished()
+            self.audioInput?.markAsFinished()
+            nonisolated(unsafe) let sendableAssetWriter = fragmentAssetWriter
+            fragmentAssetWriter.finishWriting {
+                if sendableAssetWriter.status != .completed {
+                    LOG("Failed to finish writing: \(String(describing: sendableAssetWriter.error))", level: .warning)
+                } else {
+                    LOG("Finished writing successfully", level: .info)
+                }
+                continuation.resume() // Resume after `finishWriting` completes
+            }
+            self.fragmentAssetWriter = nil
+            self.videoInput = nil
+            self.audioInput = nil
+            self.firstVideoPresentationTimestamp = nil
+            self.firstAudioPresentationTimestamp = nil
+            self.sessionStarted = false
         }
     }
     
@@ -225,11 +148,21 @@ private class AssetWriterActor {
                    let yCbCrMatrix = attachments[kCVImageBufferYCbCrMatrixKey as String] as? String {
                     
                     isHDR = (colorPrimaries == kCVImageBufferColorPrimaries_ITU_R_2020 as String) &&
-                            (transferFunction == kCVImageBufferTransferFunction_ITU_R_2100_HLG as String) &&
-                            (yCbCrMatrix == AVVideoYCbCrMatrix_ITU_R_2020 as String)
+                    (transferFunction == kCVImageBufferTransferFunction_ITU_R_2100_HLG as String) &&
+                    (yCbCrMatrix == AVVideoYCbCrMatrix_ITU_R_2020 as String)
                 }
             }
             LOG("Video format of first frame: \(formatName), HDR: \(isHDR)", level: .info)
+        }
+    }
+    
+    func appendSampleBuffer(_ sampleBuffer: CMSampleBuffer, to input: AVAssetWriterInput?, inputType: String) {
+        guard let input = input, input.isReadyForMoreMediaData, input.append(sampleBuffer) else {
+            LOG("\(inputType) input not ready for more media data", level: .warning)
+            // reset sync if we lose a frame
+            firstVideoPresentationTimestamp = nil
+            firstAudioPresentationTimestamp = nil
+            return
         }
     }
     
@@ -253,7 +186,7 @@ private class AssetWriterActor {
                 analyzeVideoSampleBuffer(sampleBuffer)
                 let presentationTimeStamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
                 fragmentAssetWriter.startSession(atSourceTime: presentationTimeStamp)
-                LOG("Asset writing session started at time of first video frame: \(presentationTimeStamp)")
+                LOG("Asset writing started at time of first video frame: \(presentationTimeStamp.value) | \(presentationTimeStamp.timescale) ticks")
                 firstVideoPresentationTimestamp = presentationTimeStamp
                 sessionStarted = true
             }
@@ -331,10 +264,6 @@ final class ContentPackager: NSObject, AVAssetWriterDelegate, Sendable {
             return
         }
         await ContentPackager.assetWriter.setupFragmentAssetWriter()
-        /*
-        let filename = fragmentFolderURL?.appendingPathComponent("DataFiles").appendingPathComponent("movie.mp4")
-        await ContentPackager.assetWriter.setupFileAssetWriter(filename: filename)
-        */
         LOG("Asset writer is now intercepting sample buffers", level: .debug)
     }
     func endPackaging() async {
@@ -346,7 +275,7 @@ final class ContentPackager: NSObject, AVAssetWriterDelegate, Sendable {
         await self.fragmentSequenceNumber.reset()
         LOG("Asset writer is no longer intercepting sample buffers", level: .debug)
     }
-
+    
     func appendVideoSampleBuffer(_ sampleBuffer: CMSampleBuffer) async {
         nonisolated(unsafe) let sendableSampleBuffer = sampleBuffer
         await ContentPackager.assetWriter.appendVideoSampleBuffer(sendableSampleBuffer)
