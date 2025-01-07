@@ -209,8 +209,8 @@ struct SettingsView: View {
                 
                 Section(header: Text("Target Platform"), footer: Text("Select the target platform and provide its related stream details.")) {
                     Picker("Target Platform", selection: $target) {
-                        Text("YouTube").tag("youtube")
-                        Text("Twitch").tag("twitch")
+                        Text("YouTube (HDR)").tag("youtube")
+                        Text("Twitch (beta, no HDR)").tag("twitch")
                     }
                     .pickerStyle(.segmented)
                     .onChange(of: target) { _, newValue in
