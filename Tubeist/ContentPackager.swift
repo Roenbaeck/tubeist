@@ -12,18 +12,10 @@ import VideoToolbox
 @PipelineActor
 private class AssetWriterActor {
     private var fragmentAssetWriter: AVAssetWriter?
-    private var fileAssetWriter: AVAssetWriter?
     private var videoInput: AVAssetWriterInput?
     private var audioInput: AVAssetWriterInput?
-    // these are used to ensure both audio and video goes into the initialization fragment
-    private var firstVideoPresentationTimestamp: CMTime? = nil
-    private var firstAudioPresentationTimestamp: CMTime? = nil
-    private var earlyAudioSamples: [CMSampleBuffer] = []
-    // session startup guard
-    private let startSessionOnceLock = NSLock()
-    private var sessionStarted: Bool = false
     
-    func setupFragmentAssetWriter() {
+    func setupFragmentAssetWriter() async {
         guard let contentType = UTType(AVFileType.mp4.rawValue) else {
             LOG("MP4 is not a valid type", level: .error)
             return
@@ -97,8 +89,18 @@ private class AssetWriterActor {
         
         fragmentAssetWriter.add(videoInput)
         fragmentAssetWriter.add(audioInput)
-        
-        LOG("Asset writer configured successfully", level: .info)
+
+        guard fragmentAssetWriter.startWriting() else {
+            LOG("Error starting writing: \(fragmentAssetWriter.error?.localizedDescription ?? "Unknown error")", level: .error)
+            return
+        }
+        guard let sessionTime = await CaptureDirector.shared.getSessionTime() else {
+            LOG("Error getting session time", level: .error)
+            return
+        }
+        // starting the asset writer here seems to give it enough spin up time to avoid issues like no audio in the first fragment
+        fragmentAssetWriter.startSession(atSourceTime: sessionTime)
+        LOG("Asset writing started at time: \(sessionTime.value) | \(sessionTime.timescale) ticks")
     }
     
     func finishWriting() async {
@@ -122,12 +124,10 @@ private class AssetWriterActor {
             self.fragmentAssetWriter = nil
             self.videoInput = nil
             self.audioInput = nil
-            self.firstVideoPresentationTimestamp = nil
-            self.firstAudioPresentationTimestamp = nil
-            self.sessionStarted = false
         }
     }
     
+    // this can be used to ensure that tampering with the contents of the sample buffer has not affected HDR
     func analyzeVideoSampleBuffer(_ sampleBuffer: CMSampleBuffer) {
         if let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) {
             let format = CVPixelBufferGetPixelFormatType(pixelBuffer)
@@ -159,60 +159,18 @@ private class AssetWriterActor {
     func appendSampleBuffer(_ sampleBuffer: CMSampleBuffer, to input: AVAssetWriterInput?, inputType: String) {
         guard let input = input, input.isReadyForMoreMediaData, input.append(sampleBuffer) else {
             LOG("\(inputType) input not ready for more media data", level: .warning)
-            // reset sync if we lose a frame
-            firstVideoPresentationTimestamp = nil
-            firstAudioPresentationTimestamp = nil
             return
         }
     }
     
     func appendVideoSampleBuffer(_ sampleBuffer: CMSampleBuffer) {
-        guard let fragmentAssetWriter else {
-            LOG("Cannot append video frame, asset writer not initialized", level: .warning)
-            return
-        }
-        guard firstAudioPresentationTimestamp != nil else {
-            LOG("Waiting for first audio to arrive before capturing video", level: .debug)
-            return
-        }
-        if !sessionStarted { // more than one thread might enter here
-            startSessionOnceLock.lock() // first thread to reach this point aquires the lock and the rest are blocked
-            defer { startSessionOnceLock.unlock() } // ensure unlock, releasing any other threads
-            if !sessionStarted { // check again, first thread will enter and set sessionStarted to true, so released threads won't execute this code
-                guard fragmentAssetWriter.startWriting() else {
-                    LOG("Error starting writing: \(fragmentAssetWriter.error?.localizedDescription ?? "Unknown error")")
-                    return
-                }
-                analyzeVideoSampleBuffer(sampleBuffer)
-                let presentationTimeStamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
-                fragmentAssetWriter.startSession(atSourceTime: presentationTimeStamp)
-                LOG("Asset writing started at time of first video frame: \(presentationTimeStamp.value) | \(presentationTimeStamp.timescale) ticks")
-                firstVideoPresentationTimestamp = presentationTimeStamp
-                sessionStarted = true
-            }
-        }
         appendSampleBuffer(sampleBuffer, to: videoInput, inputType: "Video")
     }
     
     func appendAudioSampleBuffer(_ sampleBuffer: CMSampleBuffer) {
-        if firstVideoPresentationTimestamp != nil {
-            if !earlyAudioSamples.isEmpty { // prune buffer from unusable samples once a video frame has arrived
-                LOG("Releasing \(earlyAudioSamples.count) audio samples that came in earlier than any video frames", level: .debug)
-                earlyAudioSamples.removeAll(where: { CMSampleBufferGetPresentationTimeStamp($0) < firstVideoPresentationTimestamp! })
-                for sampleBuffer in earlyAudioSamples {
-                    appendSampleBuffer(sampleBuffer, to: audioInput, inputType: "Audio")
-                }
-                earlyAudioSamples.removeAll()
-            }
-            appendSampleBuffer(sampleBuffer, to: audioInput, inputType: "Audio")
-        }
-        else {
-            let presentationTimeStamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
-            firstAudioPresentationTimestamp = presentationTimeStamp
-            earlyAudioSamples.append(sampleBuffer) // buffer samples coming in before video
-        }
+        appendSampleBuffer(sampleBuffer, to: audioInput, inputType: "Audio")
     }
-    
+
     func status() -> AVAssetWriter.Status? {
         fragmentAssetWriter?.status
     }
@@ -229,7 +187,7 @@ actor fragmentSequenceNumberActor {
         return fragmentSequenceNumber
     }
     func reset() {
-        fragmentSequenceNumber = 0
+        fragmentSequenceNumber = -1
     }
 }
 

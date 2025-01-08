@@ -540,6 +540,9 @@ final class CaptureDirector: NSObject, Sendable, AVCaptureSessionControlsDelegat
     func getSession() async -> AVCaptureSession {
         await session
     }
+    func getSessionTime() async -> CMTime? {
+        await session.synchronizationClock?.time
+    }
     func cycleSession() async {
         if await session.isRunning {
             await session.stopRunning()
