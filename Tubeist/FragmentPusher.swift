@@ -340,7 +340,7 @@ final class FragmentPusher: Sendable {
 
     init() {
         self.uploadQueue = OperationQueue()
-        self.uploadQueue.maxConcurrentOperationCount = 1 // MAX_CONCURRENT_UPLOADS
+        self.uploadQueue.maxConcurrentOperationCount = MAX_CONCURRENT_UPLOADS
         self.urlSession = URLSessionActor(queue: uploadQueue, delegate: networkPerformance)
         LOG("The FragmentPusher is initialized", level: .info)
     }
