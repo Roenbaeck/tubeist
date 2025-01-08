@@ -167,8 +167,8 @@ struct SettingsView: View {
     @AppStorage("Password") private var hlsPassword: String = ""
     @AppStorage("Target") private var target: String = DEFAULT_TARGET
     @AppStorage("SaveFragmentsLocally") private var saveFragmentsLocally: Bool = false
-    @AppStorage("InputSyncsWithOutput") private var inputSyncsWithOutput: Bool = false
-    @AppStorage("MeasuredBandwidth") private var measuredBandwidth: Int = 1000 // in kbit/s
+    @AppStorage("InputSyncsWithOutput") private var inputSyncsWithOutput: Bool = true // assume energy efficiency is top priority
+    @AppStorage("MeasuredBandwidth") private var measuredBandwidth: Int = 1_000 // in kbit/s
     @AppStorage("NetworkSharing") private var networkSharing: String = "many"
     @AppStorage("CameraPosition") private var cameraPosition: String = "stationary"
     @AppStorage("SelectedPreset") private var selectedPresetData: Data = Data()
