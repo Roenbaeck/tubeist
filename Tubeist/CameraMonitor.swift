@@ -31,22 +31,31 @@ struct CameraMonitorView: UIViewControllerRepresentable {
             guard let previewLayer = CameraMonitorView.previewLayer else { return }
             
             previewLayer.videoGravity = .resizeAspect
-            if let connection = previewLayer.connection, connection.isVideoRotationAngleSupported(0) {
-                connection.videoRotationAngle = 0
+            if let connection = previewLayer.connection {
+                if Settings.cameraStabilization == "Off" {
+                    if connection.isVideoRotationAngleSupported(180) {
+                        connection.videoRotationAngle = 180
+                    }
+                }
+                else {
+                    if connection.isVideoRotationAngleSupported(0) {
+                        connection.videoRotationAngle = 0
+                    }
+                }
             }
 
+            CATransaction.begin()
+            CATransaction.setAnimationDuration(0)
             let height = uiViewController.view.bounds.height
             let width = height * (16.0/9.0)
             let x: CGFloat = 0
             let y: CGFloat = 0
-            
-            CATransaction.begin()
-            CATransaction.setAnimationDuration(0)
             previewLayer.frame = CGRect(x: x, y: y, width: width, height: height)
             CATransaction.commit()
             
             if !previewLayerAdded {
                 uiViewController.view.layer.addSublayer(previewLayer)
+                previewLayerAdded = true
             }
         }
     }

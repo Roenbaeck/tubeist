@@ -281,9 +281,9 @@ struct TubeistView: View {
                                         .fill(Color.black.opacity(0.5))
                                 )
                                 .onChange(of: selectedStabilization) { _, newStabilization in
-                                    LOG("Seletected stabilization: \(newStabilization)", level: .debug)
                                     Task {
                                         await CaptureDirector.shared.setCameraStabilization(to: newStabilization)
+                                        appState.refreshCameraView()
                                         appState.isStabilizationOn = newStabilization != "Off"
                                     }
                                 }
