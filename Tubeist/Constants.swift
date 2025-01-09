@@ -36,7 +36,7 @@ let AUDIO_SAMPLE_RATE: Double = 44_100 // enough given that we are using an iPho
 // Color settings
 let CG_COLOR_SPACE: CGColorSpace = .init(name: CGColorSpace.itur_2100_HLG)!
 let AV_COLOR_SPACE: AVCaptureColorSpace = .HLG_BT2020
-let BRIGHTER_THAN_WHITE: Color = Color(red: 1.5, green: 1.5, blue: 1.5)
+let BRIGHTER_THAN_WHITE: Color = Color(red: 1.2, green: 1.2, blue: 1.2) // 1.5 was a bit too bright
 
 // OverlayBundler settings
 let BOUNDING_BOX_SEARCH_WIDTH: Int = 160 // needs to be a divisor of possible output widths (960, 1280, 1920, 2560, 3840)
@@ -49,7 +49,6 @@ let DEFAULT_AUDIO_BITRATE: Int = 48_000
 let DEFAULT_AUDIO_CHANNELS: Int = 2
 let DEFAULT_KEYFRAME_INTERVAL: Double = 2.0 // seconds
 let FRAGMENT_DURATION: Double = 2.0 // seconds
-let FRAGMENT_MINIMUM_DURATION: Double = 0.010 // at least 10ms (to ignore very short fragments at the end of the stream)
 
 // AudioMeter settings
 let AUDIO_METER_HEIGHT: CGFloat = 3

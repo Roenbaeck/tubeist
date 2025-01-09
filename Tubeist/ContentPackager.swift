@@ -14,8 +14,12 @@ private class AssetWriterActor {
     private var fragmentAssetWriter: AVAssetWriter?
     private var videoInput: AVAssetWriterInput?
     private var audioInput: AVAssetWriterInput?
+    private var stream: Bool = Settings.stream
+    private var record: Bool = Settings.record
+    private var finalizing: Bool = false
     
     func setupFragmentAssetWriter() async {
+        finalizing = false
         guard let contentType = UTType(AVFileType.mp4.rawValue) else {
             LOG("MP4 is not a valid type", level: .error)
             return
@@ -98,12 +102,18 @@ private class AssetWriterActor {
             LOG("Error getting session time", level: .error)
             return
         }
+        
+        // fetch whether to stream or record or both
+        stream = Settings.stream
+        record = Settings.record
+        
         // starting the asset writer here seems to give it enough spin up time to avoid issues like no audio in the first fragment
         fragmentAssetWriter.startSession(atSourceTime: sessionTime)
         LOG("Asset writing started at time: \(sessionTime.value) | \(sessionTime.timescale) ticks")
     }
     
     func finishWriting() async {
+        finalizing = true
         await withCheckedContinuation { continuation in
             guard let fragmentAssetWriter else {
                 LOG("Asset writer not active or configured", level: .error)
@@ -174,9 +184,21 @@ private class AssetWriterActor {
     func status() -> AVAssetWriter.Status? {
         fragmentAssetWriter?.status
     }
+
+    func shouldStream() -> Bool {
+        stream
+    }
+    
+    func shouldRecord() -> Bool {
+        record
+    }
+    
+    func isFinalizing() -> Bool {
+        finalizing
+    }
 }
 
-actor fragmentSequenceNumberActor {
+actor FragmentSequenceNumberActor {
     // with next() first sequence is numbered 0 (ensuring correspondence with the sequence numbers in the m4s files)
     private var fragmentSequenceNumber: Int = -1
     func next() -> Int {
@@ -191,31 +213,71 @@ actor fragmentSequenceNumberActor {
     }
 }
 
+actor RecordingActor {
+    private var filename: String?
+    private var fileHandle: FileHandle?
+    private let recordingFolder: URL?
+    init() {
+        // Use a shared container that's accessible in Files app
+        if let recordingFolder = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
+            self.recordingFolder = recordingFolder
+        }
+        else {
+            LOG("Could not access directory where fragments are stored", level: .error)
+            self.recordingFolder = nil
+        }
+    }
+    func new() {
+        guard let recordingFolder else {
+            LOG("The folder where recordings are supposed to be stored is not available", level: .error)
+            return
+        }
+        let timestamp = ISO8601DateFormatter().string(from: Date())
+        filename = "recording_\(timestamp).mp4"
+        let fileURL = recordingFolder.appendingPathComponent(filename!)
+        do {
+            try? FileManager.default.removeItem(at: fileURL)
+            FileManager.default.createFile(atPath: fileURL.path, contents: nil, attributes: nil)
+            fileHandle = try FileHandle(forWritingTo: fileURL)
+        } catch {
+            LOG("Error creating output file: \(error)", level: .error)
+            fileHandle = nil
+        }
+    }
+    func writeFragment(_ fragment: Fragment) {
+        Task {
+            if fragment.type == .initialization {
+                LOG("Starting recording", level: .debug)
+                new()
+            }
+            guard let fileHandle else {
+                LOG("File handle is not initialized", level: .error)
+                return
+            }
+            do {
+                try fileHandle.write(contentsOf: fragment.segment)
+                LOG("Appended fragment \(fragment.sequence) to file: \(filename ?? "<none>")", level: .debug)
+            }
+            catch {
+                LOG("Recording error: \(error)", level: .error)
+            }
+            if fragment.type == .finalization {
+                LOG("Stopping recording", level: .debug)
+                try? fileHandle.close()
+            }
+        }
+    }
+    deinit {
+        try? fileHandle?.close()
+    }
+}
+
 final class ContentPackager: NSObject, AVAssetWriterDelegate, Sendable {
     @PipelineActor public static let shared = ContentPackager()
     @PipelineActor private static let assetWriter = AssetWriterActor()
-    private let fragmentSequenceNumber = fragmentSequenceNumberActor()
-    private let fragmentFolderURL: URL?
-    override init() {
-        let fileManager = FileManager.default
-        
-        // Use a shared container that's accessible in Files app
-        if let fragmentFolderURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
-            self.fragmentFolderURL = fragmentFolderURL
-            // Create output directory in the shared container
-            let outputDirectory = fragmentFolderURL.appendingPathComponent("DataFiles")
-            do {
-                try fileManager.createDirectory(at: outputDirectory, withIntermediateDirectories: true, attributes: nil)
-            } catch {
-                LOG("Error creating output directory: \(error)", level: .error)
-            }
-        }
-        else {
-            self.fragmentFolderURL = nil
-            LOG("Could not access directory where fragments are stored", level: .error)
-        }
-        super.init()
-    }
+    private let fragmentSequenceNumber = FragmentSequenceNumberActor()
+    private let recording = RecordingActor()
+
     func beginPackaging() async {
         guard await ContentPackager.assetWriter.status() != .writing else {
             LOG("Asset writer had already started intercepting sample buffers", level: .debug)
@@ -246,48 +308,30 @@ final class ContentPackager: NSObject, AVAssetWriterDelegate, Sendable {
                      didOutputSegmentData segmentData: Data,
                      segmentType: AVAssetSegmentType,
                      segmentReport: AVAssetSegmentReport?) {
-        guard let fragmentType: Fragment.SegmentType = {
-            switch segmentType {
-            case .initialization: .initialization
-            case .separable: writer.status == .writing ? .separable : .finalization
-            @unknown default: nil
-            }
-        }() else {
-            LOG("Unknown segment type", level: .error)
-            return
-        }
-        let duration = segmentReport?.trackReports.first?.duration.seconds ?? 0
-        if segmentType == .initialization || duration >= FRAGMENT_MINIMUM_DURATION {
-            Task { [self] in
-                let sequenceNumber = await fragmentSequenceNumber.next()
-                let fragment = Fragment(sequence: sequenceNumber, segment: segmentData, duration: duration, type: fragmentType)
-                LOG("Produced \(fragment)", level: .debug)
-                await FragmentPusher.shared.addFragment(fragment)
-                await FragmentPusher.shared.uploadFragment(attempt: 1)
-                saveFragmentToFile(fragment)
-            }
-        }
-    }
-    func saveFragmentToFile(_ fragment: Fragment) {
-        let saveFragmentsLocally = Settings.saveFragmentsLocally
-        if saveFragmentsLocally {
-            guard let outputDirectory = fragmentFolderURL?.appendingPathComponent("DataFiles") else {
-                LOG("Cannot write file to local storage", level: .error)
+        Task { @PipelineActor in
+            guard let fragmentType: Fragment.SegmentType = {
+                switch (segmentType, ContentPackager.assetWriter.isFinalizing()) {
+                case (.separable, false): .separable
+                case (.initialization, _): .initialization
+                case (.separable, true): .finalization
+                @unknown default: nil
+                }
+            }() else {
+                LOG("Unknown segment type", level: .error)
                 return
             }
-            let sequenceNumber = fragment.sequence
-            let ext = fragment.type == .initialization ? "mp4" : "m4s"
-            let filename = "segment_\(sequenceNumber).\(ext)"
-            let fileURL = outputDirectory.appendingPathComponent(filename)
-            let segmentData = fragment.segment
-            do {
-                try segmentData.write(to: fileURL)
-            }
-            catch {
-                LOG("Error writing files: \(error)", level: .error)
-            }
-            LOG("Wrote file: \(fileURL)", level: .debug)
+            let duration = segmentReport?.trackReports.first?.duration.seconds ?? 0
+            let sequenceNumber = await fragmentSequenceNumber.next()
+            let fragment = Fragment(sequence: sequenceNumber, segment: segmentData, duration: duration, type: fragmentType)
+            LOG("Produced \(fragment)", level: .debug)
             
+            if ContentPackager.assetWriter.shouldStream() {
+                await FragmentPusher.shared.addFragment(fragment)
+                await FragmentPusher.shared.uploadFragment(attempt: 1)
+            }
+            if ContentPackager.assetWriter.shouldRecord() {
+                await recording.writeFragment(fragment)
+            }
         }
     }
 }

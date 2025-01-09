@@ -366,12 +366,12 @@ struct TubeistView: View {
                                 if appState.isStreamActive {
                                     Task {
                                         await Streamer.shared.endStream()
-                                        LOG("Stopped recording", level: .info)
+                                        LOG("Stopped streaming engine", level: .info)
                                     }
                                 } else {
                                     Task {
                                         await Streamer.shared.startStream()
-                                        LOG("Started recording", level: .info)
+                                        LOG("Started streaming engine", level: .info)
                                     }
                                 }
                             }) {

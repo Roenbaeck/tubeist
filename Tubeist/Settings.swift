@@ -158,6 +158,22 @@ class StreamKeyManager {
     }
 }
 
+enum RecordingOption: String, CaseIterable, Identifiable {
+    case streamOnly
+    case streamAndRecord
+    case recordOnly
+
+    var id: Self { self }
+
+    var description: String {
+        switch self {
+        case .streamOnly: return "Stream only"
+        case .streamAndRecord: return "Stream and Record"
+        case .recordOnly: return "Record only"
+        }
+    }
+}
+
 struct SettingsView: View {
     var overlayManager: OverlaySettingsManager
     @Environment(AppState.self) var appState
@@ -166,7 +182,8 @@ struct SettingsView: View {
     @AppStorage("Username") private var hlsUsername: String = ""
     @AppStorage("Password") private var hlsPassword: String = ""
     @AppStorage("Target") private var target: String = DEFAULT_TARGET
-    @AppStorage("SaveFragmentsLocally") private var saveFragmentsLocally: Bool = false
+    @AppStorage("Stream") private var stream: Bool = true
+    @AppStorage("Record") private var record: Bool = false
     @AppStorage("InputSyncsWithOutput") private var inputSyncsWithOutput: Bool = true // assume energy efficiency is top priority
     @AppStorage("MeasuredBandwidth") private var measuredBandwidth: Int = 1_000 // in kbit/s
     @AppStorage("NetworkSharing") private var networkSharing: String = "many"
@@ -177,6 +194,7 @@ struct SettingsView: View {
     @State private var selectedPreset: Preset? = nil
     @State private var activeMonitor: Monitor = DEFAULT_MONITOR
     @State private var streamKeyManager = StreamKeyManager()
+    @State private var selectedOption: RecordingOption = .streamOnly
 
     // State variables for custom preset settings
     @State private var customResolution: Resolution = Resolution(DEFAULT_COMPRESSED_WIDTH, DEFAULT_COMPRESSED_HEIGHT)
@@ -207,24 +225,54 @@ struct SettingsView: View {
                         .textContentType(.password)
                 }
                 
-                Section(header: Text("Target Platform"), footer: Text("Select the target platform and provide its related stream details.")) {
-                    Picker("Target Platform", selection: $target) {
-                        Text("YouTube (HDR)").tag("youtube")
-                        Text("Twitch (beta, no HDR)").tag("twitch")
+                Section(header: Text("Target Platform with Recording Options"), footer: Text("Select the target platform and provide its related stream details. You can also select to save a copy of the stream locally on the phone, which can later be transferred to your computer.")) {
+                    Picker("Stream or Record", selection: $selectedOption) {
+                        ForEach(RecordingOption.allCases) { option in
+                            Text(option.description).tag(option)
+                        }
                     }
-                    .pickerStyle(.segmented)
-                    .onChange(of: target) { _, newValue in
-                        LOG("Changing stream target to: \(newValue)", level: .debug)
-                        streamKeyManager.loadKey(for: newValue)
+                    .onChange(of: selectedOption) { _, newValue in
+                        switch newValue {
+                        case .streamOnly:
+                            stream = true
+                            record = false
+                        case .streamAndRecord:
+                            stream = true
+                            record = true
+                        case .recordOnly:
+                            stream = false
+                            record = true
+                        }
                     }
 
-                    TextField("Stream Key", text: Binding(
-                        get: { streamKeyManager.currentKey },
-                        set: { streamKeyManager.saveKey($0, for: target) }
-                    ))
-                    .keyboardType(.asciiCapable)
-                    .autocapitalization(.none)
-                    .disableAutocorrection(true)
+                    if stream {
+                        Picker("Target Platform", selection: $target) {
+                            Text("YouTube (HDR)").tag("youtube")
+                            Text("Twitch (beta, no HDR)").tag("twitch")
+                        }
+                        .pickerStyle(.segmented)
+                        .onChange(of: target) { _, newValue in
+                            LOG("Changing stream target to: \(newValue)", level: .debug)
+                            streamKeyManager.loadKey(for: newValue)
+                        }
+
+                        TextField("Stream Key", text: Binding(
+                            get: { streamKeyManager.currentKey },
+                            set: { streamKeyManager.saveKey($0, for: target) }
+                        ))
+                        .keyboardType(.asciiCapable)
+                        .autocapitalization(.none)
+                        .disableAutocorrection(true)
+                    }
+                }
+                .onAppear {
+                    if stream && record {
+                        selectedOption = .streamAndRecord
+                    } else if record {
+                        selectedOption = .recordOnly
+                    } else {
+                        selectedOption = .streamOnly
+                    }
                 }
 
                 Section(header: Text("Camera"), footer: Text("Select if the camera will be moving around with altering scenery or remain stationary aimed at a single scene. If you do not want to get suggested presets and instead configure settings in detail, select 'Custom' here.")) {
@@ -394,13 +442,6 @@ struct SettingsView: View {
                         appState.activeMonitor = newValue
                     }
                 }
-                       
-#if DEBUG
-                // Intended for internal use and testing
-                Section(header: Text("Internal testing features"), footer: Text("These settings are not part of the final app and only appear in debug mode.")) {
-                    Toggle("Save Fragments Locally", isOn: $saveFragmentsLocally)
-                }
-#endif
             }
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
@@ -487,12 +528,20 @@ final class Settings: Sendable {
             UserDefaults.standard.set(newValue, forKey: "InputSyncsWithOutput")
         }
     }
-    static var saveFragmentsLocally: Bool {
+    static var stream: Bool {
         get {
-            UserDefaults.standard.bool(forKey: "SaveFragmentsLocally")
+            UserDefaults.standard.bool(forKey: "Stream")
         }
         set {
-            UserDefaults.standard.set(newValue, forKey: "SaveFragmentsLocally")
+            UserDefaults.standard.set(newValue, forKey: "Stream")
+        }
+    }
+    static var record: Bool {
+        get {
+            UserDefaults.standard.bool(forKey: "Record")
+        }
+        set {
+            UserDefaults.standard.set(newValue, forKey: "Record")
         }
     }
     static var selectedCamera: String {
