@@ -232,7 +232,9 @@ actor RecordingActor {
             LOG("The folder where recordings are supposed to be stored is not available", level: .error)
             return
         }
-        let timestamp = ISO8601DateFormatter().string(from: Date())
+        let dateFormatter = DateFormatter()
+        dateFormatter.dateFormat = "yyyyMMdd_HHmmss" 
+        let timestamp = dateFormatter.string(from: Date())
         filename = "recording_\(timestamp).mp4"
         let fileURL = recordingFolder.appendingPathComponent(filename!)
         do {
