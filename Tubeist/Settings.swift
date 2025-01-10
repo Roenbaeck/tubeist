@@ -87,8 +87,9 @@ struct OverlaySetting: Identifiable, Codable, Hashable {
     }
 }
 
+@Observable
 class OverlaySettingsManager {
-    var overlays: [OverlaySetting]
+    var overlays: [OverlaySetting] = []
 
     init() {
         overlays = OverlaySettingsManager.loadOverlaysFromStorage()
