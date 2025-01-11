@@ -700,69 +700,46 @@ extension AVCaptureDevice {
         let frameRate = Settings.selectedPreset.frameRate 
         LOG("Searching for best capture format with resolution \(width)x\(height) and \(frameRate) FPS.")
         var candidates: [CaptureFormatCandidate] = []
-        for captureFormat in formats {
+        let pixelFormats = [
             // Prefer 'x422' for HDR capture, since 4:2:2 gives the best possible color fidelity on current phones
-            if captureFormat.formatDescription.mediaSubType.rawValue == kCVPixelFormatType_422YpCbCr10BiPlanarVideoRange {
-                let description = captureFormat.formatDescription as CMFormatDescription
-                let dimensions = CMVideoFormatDescriptionGetDimensions(description)
-                if dimensions.width >= width && dimensions.height >= height,
-                   dimensions.width * 9 == dimensions.height * 16,
-                   let frameRateRange = captureFormat.videoSupportedFrameRateRanges.first,
-                   frameRateRange.maxFrameRate >= frameRate,
-                   captureFormat.isVideoHDRSupported {
-                    candidates.append(
-                        CaptureFormatCandidate(
-                            width: Int(dimensions.width),
-                            height: Int(dimensions.height),
-                            frameRate: frameRateRange.maxFrameRate,
-                            format: captureFormat
-                        )
-                    )
-                }
-            }
-        }
-        if !candidates.isEmpty {
-            LOG("Found \(candidates.count) 'x422' candidates")
-            candidates.sort {
-                if $0.width != $1.width {
-                    return $0.width < $1.width          // Sort by width primarily
-                } else {
-                    return $0.frameRate < $1.frameRate  // Sort by frameRate secondarily if widths are equal
-                }
-            }
-            return candidates.first?.format
-        }
-        for captureFormat in formats {
+            kCVPixelFormatType_422YpCbCr10BiPlanarFullRange,
+            kCVPixelFormatType_422YpCbCr10BiPlanarVideoRange,
             // Fall back to 'x420' for HDR capture, which has less fidelity due to 4:2:0 chroma subsampling
-            if captureFormat.formatDescription.mediaSubType.rawValue == kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange {
-                let description = captureFormat.formatDescription as CMFormatDescription
-                let dimensions = CMVideoFormatDescriptionGetDimensions(description)
-                if dimensions.width >= width && dimensions.height >= height,
-                   dimensions.width * 9 == dimensions.height * 16,
-                   let frameRateRange = captureFormat.videoSupportedFrameRateRanges.first,
-                   frameRateRange.maxFrameRate >= frameRate,
-                   captureFormat.isVideoHDRSupported {
-                    candidates.append(
-                        CaptureFormatCandidate(
-                            width: Int(dimensions.width),
-                            height: Int(dimensions.height),
-                            frameRate: frameRateRange.maxFrameRate,
-                            format: captureFormat
+            kCVPixelFormatType_420YpCbCr10BiPlanarFullRange,
+            kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
+        ]
+        for pixelFormat in pixelFormats {
+            for captureFormat in formats {
+                if captureFormat.formatDescription.mediaSubType.rawValue == pixelFormat {
+                    let description = captureFormat.formatDescription as CMFormatDescription
+                    let dimensions = CMVideoFormatDescriptionGetDimensions(description)
+                    if dimensions.width >= width && dimensions.height >= height,
+                       dimensions.width * 9 == dimensions.height * 16,
+                       let frameRateRange = captureFormat.videoSupportedFrameRateRanges.first,
+                       frameRateRange.maxFrameRate >= frameRate,
+                       captureFormat.supportedColorSpaces.contains(.HLG_BT2020) {
+                        candidates.append(
+                            CaptureFormatCandidate(
+                                width: Int(dimensions.width),
+                                height: Int(dimensions.height),
+                                frameRate: frameRateRange.maxFrameRate,
+                                format: captureFormat
+                            )
                         )
-                    )
+                    }
                 }
             }
-        }
-        if !candidates.isEmpty {
-            LOG("Found \(candidates.count) 'x420' candidates")
-            candidates.sort {
-                if $0.width != $1.width {
-                    return $0.width < $1.width          // Sort by width primarily
-                } else {
-                    return $0.frameRate < $1.frameRate  // Sort by frameRate secondarily if widths are equal
+            if !candidates.isEmpty {
+                LOG("Found \(candidates.count) pixel format candidates")
+                candidates.sort {
+                    if $0.width != $1.width {
+                        return $0.width < $1.width          // Sort by width primarily
+                    } else {
+                        return $0.frameRate < $1.frameRate  // Sort by frameRate secondarily if widths are equal
+                    }
                 }
+                return candidates.first?.format
             }
-            return candidates.first?.format
         }
         return nil
     }
