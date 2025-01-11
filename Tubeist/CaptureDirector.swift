@@ -717,7 +717,7 @@ extension AVCaptureDevice {
                        dimensions.width * 9 == dimensions.height * 16,
                        let frameRateRange = captureFormat.videoSupportedFrameRateRanges.first,
                        frameRateRange.maxFrameRate >= frameRate,
-                       captureFormat.supportedColorSpaces.contains(.HLG_BT2020) {
+                       captureFormat.supportedColorSpaces.contains(AV_COLOR_SPACE) {
                         candidates.append(
                             CaptureFormatCandidate(
                                 width: Int(dimensions.width),
