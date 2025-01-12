@@ -147,12 +147,13 @@ actor URLSessionActor {
     init(queue: OperationQueue, delegate: URLSessionDelegate) {
         // For HTTP 1.1 persistent connections without cookies and extra fluff
         let configuration = URLSessionConfiguration.ephemeral
-        configuration.waitsForConnectivity = true
+        configuration.waitsForConnectivity = false
+        configuration.timeoutIntervalForRequest = TimeInterval(2 * FRAGMENT_DURATION)
+        configuration.timeoutIntervalForResource = TimeInterval(8 * FRAGMENT_DURATION)
+        configuration.httpMaximumConnectionsPerHost = MAX_CONCURRENT_UPLOADS
         configuration.allowsCellularAccess = true
         configuration.networkServiceType = .video
-//        configuration.multipathServiceType = .aggregate // not working right now
-        configuration.httpMaximumConnectionsPerHost = MAX_CONCURRENT_UPLOADS
-        configuration.timeoutIntervalForRequest = TimeInterval(FRAGMENT_DURATION)
+        // configuration.multipathServiceType = .none // .aggregate not working right now (MPTCP)
         self.session = URLSession(configuration: configuration, delegate: delegate, delegateQueue: queue)
         // initialize this with whatever the user has set, if anything is set
         baseURLRequest = URLSessionActor.createBaseUploadRequest()

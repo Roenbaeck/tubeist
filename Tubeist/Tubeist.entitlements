@@ -2,6 +2,14 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>com.apple.developer.networking.slicing.appcategory</key>
+	<array>
+		<string>streaming-9001</string>
+	</array>
+	<key>com.apple.developer.networking.slicing.trafficcategory</key>
+	<array>
+		<string>avstreaming-7</string>
+	</array>
 	<key>inter-app-audio</key>
 	<true/>
 </dict>
