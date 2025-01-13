@@ -74,6 +74,7 @@ actor JournalActor {
 @Observable @MainActor
 final class JournalPublisher {
     var journal: [LogEntry] = []
+    var hasErrors: Bool = false
 }
 
 final class Journal: Sendable {
@@ -103,6 +104,7 @@ final class Journal: Sendable {
         Task { @MainActor in
             await journal.log(message: message, level: level)
             Journal.publisher.journal = await journal.getJournal()
+            Journal.publisher.hasErrors = await journal.hasErrors
         }
     }
     

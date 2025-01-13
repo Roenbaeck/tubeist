@@ -507,7 +507,7 @@ struct TubeistView: View {
                         .padding(.bottom, 3)
 
                     SmallButton(imageName: "text.quote",
-                                foregroundColor: showJournal ? .yellow : .white) {
+                                foregroundColor: showJournal ? .yellow : Journal.publisher.hasErrors ? .red : .white) {
                         showJournal.toggle()
                     }
                     Text("JORNL")
