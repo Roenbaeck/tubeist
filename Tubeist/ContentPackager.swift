@@ -9,6 +9,11 @@
 import AVFoundation
 import VideoToolbox
 
+enum MediaType {
+    case audio
+    case video
+}
+
 @PipelineActor
 private class AssetWriterActor {
     private var fragmentAssetWriter: AVAssetWriter?
@@ -44,8 +49,8 @@ private class AssetWriterActor {
         
         fragmentAssetWriter.shouldOptimizeForNetworkUse = true
         fragmentAssetWriter.outputFileTypeProfile = .mpeg4AppleHLS
-        fragmentAssetWriter.preferredOutputSegmentInterval = CMTime(seconds: adjustedFragmentDuration, preferredTimescale: CMTimeScale(selectedFrameRate))
-        fragmentAssetWriter.movieTimeScale = CMTimeScale(selectedFrameRate)
+        fragmentAssetWriter.preferredOutputSegmentInterval = CMTime(seconds: adjustedFragmentDuration, preferredTimescale: FRAGMENT_TIMESCALE)
+        fragmentAssetWriter.movieTimeScale = FRAGMENT_TIMESCALE
         fragmentAssetWriter.initialSegmentStartTime = .zero
         fragmentAssetWriter.delegate = ContentPackager.shared
         
@@ -74,7 +79,7 @@ private class AssetWriterActor {
             return
         }
         videoInput.expectsMediaDataInRealTime = true
-        videoInput.mediaTimeScale = CMTimeScale(selectedFrameRate)
+        videoInput.mediaTimeScale = FRAGMENT_TIMESCALE
         
         let audioSettings: [String: Any] = [
             AVFormatIDKey: kAudioFormatMPEG4AAC,
@@ -98,17 +103,20 @@ private class AssetWriterActor {
             LOG("Error starting writing: \(fragmentAssetWriter.error?.localizedDescription ?? "Unknown error")", level: .error)
             return
         }
-        guard let sessionTime = await CaptureDirector.shared.getSessionTime() else {
-            LOG("Error getting session time", level: .error)
-            return
-        }
         
         // fetch whether to stream or record or both
         stream = Settings.stream
         record = Settings.record
+
+        guard let sessionTime = await CaptureDirector.shared.getSessionTime() else {
+            LOG("Error getting session time", level: .error)
+            return
+        }
+
+        let sessionTimeInFragmentTimescale = CMTimeConvertScale(sessionTime, timescale: FRAGMENT_TIMESCALE, method: .roundTowardZero)
         
         // starting the asset writer here seems to give it enough spin up time to avoid issues like no audio in the first fragment
-        fragmentAssetWriter.startSession(atSourceTime: sessionTime)
+        fragmentAssetWriter.startSession(atSourceTime: sessionTimeInFragmentTimescale)
         LOG("Asset writing started at time: \(sessionTime.value) | \(sessionTime.timescale) ticks")
     }
     
@@ -166,20 +174,43 @@ private class AssetWriterActor {
         }
     }
     
-    func appendSampleBuffer(_ sampleBuffer: CMSampleBuffer, to input: AVAssetWriterInput?, inputType: String) {
-        guard let input = input, input.isReadyForMoreMediaData, input.append(sampleBuffer) else {
-            LOG("\(inputType) input not ready for more media data", level: .warning)
+    func appendSampleBuffer(_ sampleBuffer: CMSampleBuffer, to input: AVAssetWriterInput?) {
+        guard let input = input, input.isReadyForMoreMediaData else {
+            LOG("Asset writer input not ready for more media data", level: .warning)
             return
         }
+        if !input.append(sampleBuffer) {
+            LOG("Failed to append sample buffer", level: .error)
+        }
+    }
+        
+    func appendVideoSampleBuffer(_ sampleBuffer: CMSampleBuffer) async {
+        appendSampleBuffer(sampleBuffer, to: videoInput)
     }
     
-    func appendVideoSampleBuffer(_ sampleBuffer: CMSampleBuffer) {
-        appendSampleBuffer(sampleBuffer, to: videoInput, inputType: "Video")
+    func appendAudioSampleBuffer(_ sampleBuffer: CMSampleBuffer) async {
+        appendSampleBuffer(sampleBuffer, to: audioInput)
+    }
+
+    /*
+    var interleaveTo: MediaType = .audio
+        
+    func appendVideoSampleBuffer(_ sampleBuffer: CMSampleBuffer) async {
+        while interleaveTo != .video && !finalizing {
+            await Task.yield()
+        }
+        appendSampleBuffer(sampleBuffer, to: videoInput)
+        interleaveTo = .audio
     }
     
-    func appendAudioSampleBuffer(_ sampleBuffer: CMSampleBuffer) {
-        appendSampleBuffer(sampleBuffer, to: audioInput, inputType: "Audio")
+    func appendAudioSampleBuffer(_ sampleBuffer: CMSampleBuffer) async {
+        while interleaveTo != .audio && !finalizing {
+            await Task.yield()
+        }
+        appendSampleBuffer(sampleBuffer, to: audioInput)
+        interleaveTo = .video
     }
+     */
 
     func status() -> AVAssetWriter.Status? {
         fragmentAssetWriter?.status
@@ -233,7 +264,7 @@ actor RecordingActor {
             return
         }
         let dateFormatter = DateFormatter()
-        dateFormatter.dateFormat = "yyyyMMdd_HHmmss" 
+        dateFormatter.dateFormat = "yyyyMMdd_HHmmss"
         let timestamp = dateFormatter.string(from: Date())
         filename = "recording_\(timestamp).mp4"
         let fileURL = recordingFolder.appendingPathComponent(filename!)

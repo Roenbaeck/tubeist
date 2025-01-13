@@ -49,6 +49,7 @@ let DEFAULT_AUDIO_BITRATE: Int = 48_000
 let DEFAULT_AUDIO_CHANNELS: Int = 2
 let DEFAULT_KEYFRAME_INTERVAL: Double = 2.0 // seconds
 let FRAGMENT_DURATION: Double = 2.0 // seconds
+let FRAGMENT_TIMESCALE = CMTimeScale(90_000) // 90 000 is the default timescale in ffmpeg
 
 // AudioMeter settings
 let AUDIO_METER_HEIGHT: CGFloat = 3
