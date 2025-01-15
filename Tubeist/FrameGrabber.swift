@@ -9,29 +9,12 @@ import AVFoundation
 import CoreImage
 import Metal
 
-let shaderSource = """
-#include <metal_stdlib>
-using namespace metal;
-
-kernel void applyStyle(texture2d<float, access::read_write> texture [[texture(0)]],
-                      uint2 gid [[thread_position_in_grid]]) {
-    float4 color = texture.read(gid);
-    float3 rgb = color.rgb;
-    
-    // Apply style modifications directly
-    rgb *= float3(1.1, 1.0, 0.95); // Example: Warm style
-    
-    texture.write(float4(rgb, color.a), gid);
-}
-"""
-
-
 private actor FrameTinkerer {
     private let context: CIContext
     private var metalDevice: MTLDevice?
     private var commandQueue: MTLCommandQueue?
     private var textureCache: CVMetalTextureCache?
-    private var pipelineState: MTLComputePipelineState?
+    private var styles: [String: MTLComputePipelineState] = [:]
     // keeping one and the same render destination currently introduces flicker
     private var renderDestination: CIRenderDestination?
     
@@ -68,45 +51,64 @@ private actor FrameTinkerer {
             &textureCache
         )
         self.textureCache = textureCache
-        let library = try? metalDevice.makeLibrary(source: shaderSource, options: nil)
-        guard let function = library?.makeFunction(name: "applyStyle") else {
+        let library = metalDevice.makeDefaultLibrary()
+        guard let function = library?.makeFunction(name: "grayscale") else {
             LOG("Could not make function with the shader source provided", level: .error)
             return
         }
-        self.pipelineState = try? metalDevice.makeComputePipelineState(function: function)
-        
+        do {
+            let pipeline = try metalDevice.makeComputePipelineState(function: function)
+            styles["grayscale"] = pipeline
+        }
+        catch {
+            LOG("Could not create compute pipeline state", level: .error)
+            return
+        }
     }
     
     func reset() {
         renderDestination = nil
     }
     
-    func effect(onto sampleBuffer: CMSampleBuffer) {
+    func effect(style: String, onto sampleBuffer: CMSampleBuffer) {
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer),
               let textureCache = textureCache else {
             LOG("Could not get pixel buffer from sample buffer", level: .error)
             return
         }
         
-        let width = CVPixelBufferGetWidth(pixelBuffer)
-        let height = CVPixelBufferGetHeight(pixelBuffer)
-        
-        var cvTexture: CVMetalTexture?
+        var lumaTexture: CVMetalTexture?
         CVMetalTextureCacheCreateTextureFromImage(
             kCFAllocatorDefault,
             textureCache,
             pixelBuffer,
             nil,
-            .rgb10a2Unorm,  // This format handles the YUV to RGB conversion
-            width,
-            height,
+            .r16Unorm,
+            CVPixelBufferGetWidthOfPlane(pixelBuffer, 0),
+            CVPixelBufferGetHeightOfPlane(pixelBuffer, 0),
             0,
-            &cvTexture
+            &lumaTexture
         )
-        
-        guard let cvTexture = cvTexture,
-              let texture = CVMetalTextureGetTexture(cvTexture) else {
-            LOG("Could not create a texture from the pixel buffer", level: .error)
+
+        var chromaTexture: CVMetalTexture?
+        CVMetalTextureCacheCreateTextureFromImage(
+            kCFAllocatorDefault,
+            textureCache,
+            pixelBuffer,
+            nil,
+            .rg16Unorm,
+            CVPixelBufferGetWidthOfPlane(pixelBuffer, 1),
+            CVPixelBufferGetHeightOfPlane(pixelBuffer, 1),
+            1,
+            &chromaTexture
+        )
+
+        guard let lumaTexture,
+              let chromaTexture,
+              let yTexture = CVMetalTextureGetTexture(lumaTexture),
+              let cbcrTexture = CVMetalTextureGetTexture(chromaTexture)
+        else {
+            LOG("Could not create a texture from the pixel buffer planes", level: .error)
             return
         }
 
@@ -116,17 +118,18 @@ private actor FrameTinkerer {
             return
         }
         
-        guard let pipelineState else {
+        guard let pipelineState = styles[style] else {
             LOG("The pipeline state is not initialized", level: .error)
             return
         }
         encoder.setComputePipelineState(pipelineState)
-        encoder.setTexture(texture, index: 0) // Same texture for input and output
-        
+        encoder.setTexture(yTexture, index: 0)
+        encoder.setTexture(cbcrTexture, index: 1)
+
         let threadGroupSize = MTLSize(width: 16, height: 16, depth: 1)
         let threadGroups = MTLSize(
-            width: (texture.width + threadGroupSize.width - 1) / threadGroupSize.width,
-            height: (texture.height + threadGroupSize.height - 1) / threadGroupSize.height,
+            width: (yTexture.width + threadGroupSize.width - 1) / threadGroupSize.width,
+            height: (yTexture.height + threadGroupSize.height - 1) / threadGroupSize.height,
             depth: 1
         )
         
@@ -225,7 +228,7 @@ final class FrameGrabber: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
             Task { @PipelineActor [sendableSampleBuffer] in
                 nonisolated(unsafe) let sendableSampleBuffer = sendableSampleBuffer // it's needed again here
                 if await self.frameGrabbing.isActive() {
-                    // await self.frameTinkerer.effect(onto: sendableSampleBuffer)
+                    // await self.frameTinkerer.effect(style: "grayscale", onto: sendableSampleBuffer)
                     if let overlay = await OverlayBundler.shared.getOverlay() {
                         await self.frameTinkerer.imprint(overlay: overlay, onto: sendableSampleBuffer)
                     }
