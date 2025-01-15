@@ -52,7 +52,7 @@ private actor FrameTinkerer {
         )
         self.textureCache = textureCache
         let library = metalDevice.makeDefaultLibrary()
-        for style in AVAILABLE_STYLES {
+        for style in AVAILABLE_STYLES.filter( { $0 != NO_STYLE } ) {
             guard let function = library?.makeFunction(name: style.lowercased()) else {
                 LOG("Could not make function with the shader source provided", level: .error)
                 return

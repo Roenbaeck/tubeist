@@ -257,6 +257,9 @@ private class DeviceActor {
     
     func addCameraControls(session: AVCaptureSession) {
         if session.supportsControls {
+            // remove controls so they don't get added over and over
+            session.controls.forEach({ session.removeControl($0) })
+            
             guard let videoDevice else { return }
             let zoomSlider = AVCaptureSystemZoomSlider(device: videoDevice) { zoomFactor in
                 let displayZoom = videoDevice.displayVideoZoomFactorMultiplier * zoomFactor
@@ -279,9 +282,31 @@ private class DeviceActor {
                 LOG("Adding system exposure bias slider camera control", level: .debug)
                 session.addControl(exposureBiasSlider)
             }
+            
+            // custom controls must be added in a nonisolated context
+            addCustomCameraControls(to: session)
+            
             Task { @PipelineActor in
                 session.setControlsDelegate(CaptureDirector.shared, queue: CAMERA_CONTROL_QUEUE)
             }
+        }
+    }
+    
+    nonisolated func addCustomCameraControls(to session: AVCaptureSession) {
+        let indexPicker = AVCaptureIndexPicker(
+            "Style",
+            symbolName: "square.and.line.vertical.and.square.fill",
+            localizedIndexTitles: AVAILABLE_STYLES
+        )
+        indexPicker.setActionQueue(CAMERA_CONTROL_QUEUE) { index in
+            Settings.style = AVAILABLE_STYLES[index]
+            Task {
+                await FrameGrabber.shared.refreshStyle()
+            }
+        }
+        if session.canAddControl(indexPicker) {
+            LOG("Adding style picker camera control", level: .debug)
+            session.addControl(indexPicker)
         }
     }
     
@@ -518,15 +543,18 @@ private class DeviceActor {
 
 }
 
-final class CaptureDirector: NSObject, Sendable, AVCaptureSessionControlsDelegate {
-    @PipelineActor public static let shared = CaptureDirector()
-    @PipelineActor private let session = AVCaptureSession()
-    @PipelineActor private let deviceActor = DeviceActor()
+extension CaptureDirector: AVCaptureSessionControlsDelegate {
     // minimal AVCaptureSessionControlsDelegate compliance
     func sessionControlsDidBecomeActive(_ session: AVCaptureSession) { return }
     func sessionControlsWillEnterFullscreenAppearance(_ session: AVCaptureSession) { return }
     func sessionControlsWillExitFullscreenAppearance(_ session: AVCaptureSession) { return }
     func sessionControlsDidBecomeInactive(_ session: AVCaptureSession) { return }
+}
+
+final class CaptureDirector: NSObject, Sendable {
+    @PipelineActor public static let shared = CaptureDirector()
+    @PipelineActor private let session = AVCaptureSession()
+    @PipelineActor private let deviceActor = DeviceActor()
 
     func bind(totalZoom: Binding<Double>, currentZoom: Binding<Double>, exposureBias: Binding<Float>) async {
         await deviceActor.bind(totalZoom: totalZoom, currentZoom: currentZoom, exposureBias: exposureBias)

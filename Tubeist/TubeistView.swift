@@ -271,7 +271,6 @@ struct TubeistView: View {
                                 
                                 Text("Select Style")
                                 Picker("Style Selection", selection: $style) {
-                                    Text("<none>").tag("<none>")
                                     ForEach(AVAILABLE_STYLES, id: \.self) { style in
                                         Text(style)
                                             .tag(style)
@@ -287,12 +286,7 @@ struct TubeistView: View {
                                 }
                                 .onChange(of: style) { _, newStyle in
                                     LOG("Seletected style: \(newStyle)", level: .debug)
-                                    if newStyle != NO_STYLE {
-                                        Settings.style = newStyle
-                                    }
-                                    else {
-                                        Settings.style = nil
-                                    }
+                                    Settings.style = newStyle
                                     Task {
                                         await FrameGrabber.shared.refreshStyle()
                                     }

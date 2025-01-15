@@ -622,13 +622,20 @@ final class Settings: Sendable {
     }
     static var style: String? {
         get {
-            if let style = UserDefaults.standard.string(forKey: "Style"), AVAILABLE_STYLES.contains(style) {
+            if let style = UserDefaults.standard.string(forKey: "Style"),
+               style != NO_STYLE,
+               AVAILABLE_STYLES.contains(style) {
                 return style
             }
             return nil
         }
         set {
-            UserDefaults.standard.set(newValue, forKey: "Style")
+            if newValue == NO_STYLE {
+                UserDefaults.standard.set(nil, forKey: "Style")
+            }
+            else {
+                UserDefaults.standard.set(newValue, forKey: "Style")
+            }
         }
     }
 }

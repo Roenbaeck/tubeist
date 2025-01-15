@@ -37,8 +37,8 @@ let AUDIO_SAMPLE_RATE: Double = 44_100 // enough given that we are using an iPho
 let CG_COLOR_SPACE: CGColorSpace = .init(name: CGColorSpace.itur_2100_HLG)!
 let AV_COLOR_SPACE: AVCaptureColorSpace = .HLG_BT2020
 let BRIGHTER_THAN_WHITE: Color = Color(red: 1.2, green: 1.2, blue: 1.2) // 1.5 was a bit too bright
-let AVAILABLE_STYLES = ["Warmer", "Colder", "Film", "Grayscale", "BlackerWhiter", "Wild"]
 let NO_STYLE = "<none>"
+let AVAILABLE_STYLES = [NO_STYLE, "Warmer", "Colder", "Film", "Grayscale", "BlackerWhiter", "Wild"]
 
 // OverlayBundler settings
 let BOUNDING_BOX_SEARCH_WIDTH: Int = 160 // needs to be a divisor of possible output widths (960, 1280, 1920, 2560, 3840)
