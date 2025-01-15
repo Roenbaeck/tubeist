@@ -52,17 +52,19 @@ private actor FrameTinkerer {
         )
         self.textureCache = textureCache
         let library = metalDevice.makeDefaultLibrary()
-        guard let function = library?.makeFunction(name: "grayscale") else {
-            LOG("Could not make function with the shader source provided", level: .error)
-            return
-        }
-        do {
-            let pipeline = try metalDevice.makeComputePipelineState(function: function)
-            styles["grayscale"] = pipeline
-        }
-        catch {
-            LOG("Could not create compute pipeline state", level: .error)
-            return
+        for style in AVAILABLE_STYLES {
+            guard let function = library?.makeFunction(name: style.lowercased()) else {
+                LOG("Could not make function with the shader source provided", level: .error)
+                return
+            }
+            do {
+                let pipeline = try metalDevice.makeComputePipelineState(function: function)
+                styles[style] = pipeline
+            }
+            catch {
+                LOG("Could not create compute pipeline state", level: .error)
+                return
+            }
         }
     }
     
@@ -183,6 +185,8 @@ private actor FrameTinkerer {
 
 private actor FrameGrabbingActor {
     private var grabbingFrames: Bool = false
+    private var style: String?
+
     func start() {
         grabbingFrames = true
     }
@@ -191,6 +195,12 @@ private actor FrameGrabbingActor {
     }
     func isActive() -> Bool {
         grabbingFrames
+    }
+    func refreshStyle() {
+        style = Settings.style
+    }
+    func getStyle() -> String? {
+        style
     }
 }
 
@@ -202,6 +212,7 @@ final class FrameGrabber: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
     func commenceGrabbing() async {
         if await !frameGrabbing.isActive() {
             await frameTinkerer.reset()
+            await frameGrabbing.refreshStyle()
             await frameGrabbing.start()
             LOG("Started grabbing frames", level: .debug)
         }
@@ -212,12 +223,14 @@ final class FrameGrabber: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
     func terminateGrabbing() async {
         if await frameGrabbing.isActive() {
             await frameGrabbing.stop()
-            await frameTinkerer.reset()
             LOG("Stopped grabbing frames", level: .debug)
         }
         else {
             LOG("Frame grabbing already stopped", level: .debug)
         }
+    }
+    func refreshStyle() async {
+        await frameGrabbing.refreshStyle()
     }
     
     nonisolated func captureOutput(_ output: AVCaptureOutput,
@@ -228,7 +241,9 @@ final class FrameGrabber: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
             Task { @PipelineActor [sendableSampleBuffer] in
                 nonisolated(unsafe) let sendableSampleBuffer = sendableSampleBuffer // it's needed again here
                 if await self.frameGrabbing.isActive() {
-                    // await self.frameTinkerer.effect(style: "grayscale", onto: sendableSampleBuffer)
+                    if let style = await self.frameGrabbing.getStyle() {
+                        await self.frameTinkerer.effect(style: style, onto: sendableSampleBuffer)
+                    }
                     if let overlay = await OverlayBundler.shared.getOverlay() {
                         await self.frameTinkerer.imprint(overlay: overlay, onto: sendableSampleBuffer)
                     }

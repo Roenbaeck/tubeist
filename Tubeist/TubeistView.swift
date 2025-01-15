@@ -52,6 +52,8 @@ struct TubeistView: View {
     @State private var selectedStabilization = "Off"
     @State private var cameras: [String] = []
     @State private var stabilizations: [String] = []
+    @State private var activeMonitor: Monitor = DEFAULT_MONITOR
+    @State private var style: String = NO_STYLE
 
     @State private var interaction = Interaction()
     @State private var isCameraReady = false
@@ -248,7 +250,7 @@ struct TubeistView: View {
                                 .pickerStyle(MenuPickerStyle())
                                 .background(
                                     RoundedRectangle(cornerRadius: 10)
-                                        .fill(Color.black.opacity(0.5))
+                                        .fill(Color.black.opacity(0.6))
                                 )
                                 .onChange(of: selectedCamera) { _, newCamera in
                                     LOG("Seletected camera: \(newCamera)", level: .debug)
@@ -261,7 +263,74 @@ struct TubeistView: View {
                             .padding(5)
                             .background(
                                 Rectangle()
-                                    .fill(Color.black.opacity(0.2))
+                                    .fill(Color.black.opacity(0.4))
+                            )
+
+                            HStack(alignment: .center, spacing: 10) {
+                                Spacer()
+                                
+                                Text("Select Style")
+                                Picker("Style Selection", selection: $style) {
+                                    Text("<none>").tag("<none>")
+                                    ForEach(AVAILABLE_STYLES, id: \.self) { style in
+                                        Text(style)
+                                            .tag(style)
+                                    }
+                                }
+                                .pickerStyle(MenuPickerStyle())
+                                .background(
+                                    RoundedRectangle(cornerRadius: 10)
+                                        .fill(Color.black.opacity(0.6))
+                                )
+                                .onAppear {
+                                    style = Settings.style ?? NO_STYLE
+                                }
+                                .onChange(of: style) { _, newStyle in
+                                    LOG("Seletected style: \(newStyle)", level: .debug)
+                                    if newStyle != NO_STYLE {
+                                        Settings.style = newStyle
+                                    }
+                                    else {
+                                        Settings.style = nil
+                                    }
+                                    Task {
+                                        await FrameGrabber.shared.refreshStyle()
+                                    }
+                                }
+                            }
+                            .padding(5)
+                            .background(
+                                Rectangle()
+                                    .fill(Color.black.opacity(0.4))
+                            )
+                            
+                            HStack(alignment: .center, spacing: 10) {
+                                Spacer()
+                                
+                                Text("Select Monitor")
+                                Picker("Monitor Selection", selection: $activeMonitor) {
+                                    Text("Camera (view without delay, not styled)").tag(Monitor.camera)
+                                    Text("Output (viewing is delayed, but styled)").tag(Monitor.output)
+                                }
+                                .pickerStyle(MenuPickerStyle())
+                                .background(
+                                    RoundedRectangle(cornerRadius: 10)
+                                        .fill(Color.black.opacity(0.6))
+                                )
+                                .onAppear {
+                                    activeMonitor = appState.activeMonitor
+                                }
+                                .onChange(of: activeMonitor) { _, newMonitor in
+                                    appState.activeMonitor = newMonitor
+                                    Task {
+                                        await Streamer.shared.setMonitor(activeMonitor)
+                                    }
+                                }
+                            }
+                            .padding(5)
+                            .background(
+                                Rectangle()
+                                    .fill(Color.black.opacity(0.4))
                             )
                         }
                         if showStabilizationPicker {
@@ -278,7 +347,7 @@ struct TubeistView: View {
                                 .pickerStyle(MenuPickerStyle())
                                 .background(
                                     RoundedRectangle(cornerRadius: 10)
-                                        .fill(Color.black.opacity(0.5))
+                                        .fill(Color.black.opacity(0.6))
                                 )
                                 .onChange(of: selectedStabilization) { _, newStabilization in
                                     Task {
@@ -291,11 +360,29 @@ struct TubeistView: View {
                             .padding(5)
                             .background(
                                 Rectangle()
-                                    .fill(Color.black.opacity(0.2))
+                                    .fill(Color.black.opacity(0.4))
                             )
                         }
                         
                         Spacer()
+                    }
+                    
+                    if appState.activeMonitor == .output {
+                        HStack {
+                            VStack {
+                                Spacer()
+                                Text("OUTPUT MONITORING")
+                                    .font(.system(size: 10))
+                                    .foregroundColor(BRIGHTER_THAN_WHITE)
+                                    .fontWeight(.black)
+                                    .rotationEffect(.degrees(-90))
+                                    .fixedSize()
+                                    .frame(width: 15)
+                                    .padding(3)
+                                Spacer()
+                            }
+                            Spacer()
+                        }
                     }
                     
                     // Controls now positioned relative to 16:9 frame
@@ -328,16 +415,6 @@ struct TubeistView: View {
                                 .fontWeight(.semibold)
                                 .foregroundColor(zoom > opticalZoom ? .yellow : zoom > 1 ? .white : .white.opacity(0.5))
                             
-                            Spacer()
-                            if appState.activeMonitor == .output {
-                                Text("OUTPUT MONITORING")
-                                    .font(.system(size: 12))
-                                    .foregroundColor(Color.white)
-                                    .fontWeight(.black)
-                                    .rotationEffect(.degrees(90))
-                                    .fixedSize()
-                                    .frame(width: 15)
-                            }
                             Spacer()
 
                             // Computed property to determine the color based on streamHealth

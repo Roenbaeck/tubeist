@@ -433,13 +433,16 @@ struct SettingsView: View {
                     }
                 }
 
-                Section(header: Text("Active Monitor"), footer: Text("Viewing the captured frames will start half of the rendering pipeline and introduce a lag between what is displayed and what is happning in reality. Use this if you want to confirm that the processed video frames look as expected.")) {
+                Section(header: Text("Active Monitor"), footer: Text("Viewing the output will start half of the rendering pipeline and introduce a lag between what is displayed and what is happning in reality. Use this if you want to confirm that the processed video frames look as expected and see styles in action.")) {
                     Picker("Select the active monitor", selection: $activeMonitor) {
-                        Text("Camera preview layer").tag(Monitor.camera)
-                        Text("Captured frames with imprinted overlays").tag(Monitor.output)
+                        Text("Camera (view without delay, not styled)").tag(Monitor.camera)
+                        Text("Output (viewing is delayed, but styled)").tag(Monitor.output)
                     }
                     .pickerStyle(.segmented)
-                    .onChange(of: activeMonitor) { oldValue, newValue in
+                    .onAppear() {
+                        activeMonitor = appState.activeMonitor
+                    }
+                    .onChange(of: activeMonitor) { _, newValue in
                         appState.activeMonitor = newValue
                     }
                 }
@@ -615,6 +618,17 @@ final class Settings: Sendable {
         }
         set {
             UserDefaults.standard.set(newValue, forKey: "TargetData")
+        }
+    }
+    static var style: String? {
+        get {
+            if let style = UserDefaults.standard.string(forKey: "Style"), AVAILABLE_STYLES.contains(style) {
+                return style
+            }
+            return nil
+        }
+        set {
+            UserDefaults.standard.set(newValue, forKey: "Style")
         }
     }
 }
