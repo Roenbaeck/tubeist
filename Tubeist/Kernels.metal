@@ -6,12 +6,15 @@ kernel void grayscale(texture2d<float, access::read_write> yTexture [[texture(0)
                       constant float &strength [[buffer(0)]],
                       uint2 gid [[thread_position_in_grid]]) {
     float4 luma = yTexture.read(gid);
-    
+    float4 chroma = cbcrTexture.read(gid);
+
     float y = luma.r;
-   
-    float newY = mix(y, 0.5, (strength - 1) / (2 - strength));
-    float newCb = 0.5;
-    float newCr = 0.5;
+    float cb = chroma.r;
+    float cr = chroma.g;
+
+    float newY = y;
+    float newCb = mix(cb, 0.5, strength);
+    float newCr = mix(cr, 0.5, strength);
     
     yTexture.write(float4(newY, 0, 0, 0), gid);
     cbcrTexture.write(float4(newCb, newCr, 0, 0), gid);
