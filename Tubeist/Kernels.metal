@@ -116,3 +116,88 @@ kernel void space(texture2d<float, access::read_write> yTexture [[texture(0)]],
     cbcrTexture.write(float4(newCb, newCr, 0, 0), gid);
 }
 
+kernel void rotoscope(texture2d<float, access::read_write> yTexture [[texture(0)]],
+                     texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
+                     constant float &strength [[buffer(0)]],
+                     uint2 gid [[thread_position_in_grid]]) {
+    
+    float edgeThreshold = 0.1;
+    // Early exit if outside texture bounds
+    if (gid.x >= yTexture.get_width() || gid.y >= yTexture.get_height()) {
+        return;
+    }
+    
+    // Get center pixel values
+    float4 lumaCenter = yTexture.read(gid);
+    float4 chromaCenter = cbcrTexture.read(gid);
+    
+    // Sample neighboring pixels for edge detection (Y plane only)
+    uint2 textureSize = uint2(yTexture.get_width(), yTexture.get_height());
+    
+    // Ensure we don't read outside texture bounds
+    uint2 leftPos = uint2(gid.x > 0 ? gid.x - 1 : gid.x, gid.y);
+    uint2 rightPos = uint2(gid.x < textureSize.x - 1 ? gid.x + 1 : gid.x, gid.y);
+    uint2 upPos = uint2(gid.x, gid.y > 0 ? gid.y - 1 : gid.y);
+    uint2 downPos = uint2(gid.x, gid.y < textureSize.y - 1 ? gid.y + 1 : gid.y);
+    
+    float lumaLeft = yTexture.read(leftPos).r;
+    float lumaRight = yTexture.read(rightPos).r;
+    float lumaUp = yTexture.read(upPos).r;
+    float lumaDown = yTexture.read(downPos).r;
+    
+    // Improved edge detection with reduced thread group boundary artifacts
+    float2 gradient;
+    gradient.x = (gid.x % 16 == 0) ? 0.0 : lumaRight - lumaLeft;
+    gradient.y = (gid.y % 16 == 0) ? 0.0 : lumaDown - lumaUp;
+    float edgeStrength = length(gradient);
+    
+    // Posterization on luma with EDR handling
+    float y = lumaCenter.r;
+    float levels = 4;
+
+    // Add subtle noise to break up perfectly flat areas
+    float noise = fract(sin(dot(float2(gid), float2(12.9898, 78.233))) * 43758.5453);
+    noise = (noise - 0.5) * 0.015;  // Very subtle noise
+    
+    // Handle EDR values
+    bool isEDR = y > 1.0;
+    float normalizedY = isEDR ? log2(y + 1.0) / 2.0 : y;
+    float posterizedY = floor((normalizedY + noise) * levels) / levels;
+    float finalY = isEDR ? exp2(posterizedY * 2.0) - 1.0 : posterizedY;
+
+    // Apply edge detection
+    float edgeWidth = mix(4.0, 1.0, strength);
+    finalY = edgeStrength > edgeThreshold / edgeWidth ? 0.05 : 1.5 * finalY;
+    
+    // Get chroma values
+    float cb = chromaCenter.r;
+    float cr = chromaCenter.g;
+    
+    // Calculate distance from neutral (0.5, 0.5)
+    float2 chromaDist = float2(cb - 0.5, cr - 0.5);
+    float chromaLength = length(chromaDist);
+    
+    // More conservative chroma quantization
+    uint numColorShades = 8;
+    
+    // Only quantize if there's significant color
+    float colorThreshold = 0.2;
+    if (chromaLength > colorThreshold) {
+        // Quantize the chroma values while preserving the angle
+        float quantizedLength = floor(chromaLength * float(numColorShades)) / float(numColorShades);
+        float2 normalizedChroma = chromaDist / chromaLength;
+        chromaDist = normalizedChroma * quantizedLength;
+    } else {
+        // If close to neutral, push towards neutral
+        chromaDist *= 0.5;
+    }
+    
+    // Convert back to cb/cr
+    float quantizedCb = chromaDist.x + 0.5;
+    float quantizedCr = chromaDist.y + 0.5;
+    
+    // Write results
+    yTexture.write(float4(finalY, 0, 0, 0), gid);
+    cbcrTexture.write(float4(quantizedCb, quantizedCr, 0, 0), gid);
+}
+
