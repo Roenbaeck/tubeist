@@ -1,7 +1,7 @@
 #include <metal_stdlib>
 using namespace metal;
 
-kernel void grayscale(texture2d<float, access::read_write> yTexture [[texture(0)]],
+kernel void saturation(texture2d<float, access::read_write> yTexture [[texture(0)]],
                       texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
                       constant float &strength [[buffer(0)]],
                       uint2 gid [[thread_position_in_grid]]) {
