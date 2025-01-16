@@ -157,7 +157,7 @@ private actor FrameTinkerer {
         let destination = CIRenderDestination(pixelBuffer: videoPixelBuffer)
         destination.blendKernel = CIBlendKernel.sourceOver
         destination.blendsInDestinationColorSpace = true
-        destination.alphaMode = .premultiplied
+        destination.alphaMode = .unpremultiplied
 
         do {
             var renderTasks: [CIRenderTask] = []
