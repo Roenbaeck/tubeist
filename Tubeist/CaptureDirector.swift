@@ -311,6 +311,11 @@ private class DeviceActor {
         if session.canAddControl(indexPicker) {
             LOG("Adding style picker camera control", level: .debug)
             session.addControl(indexPicker)
+            // the picker is very picky on being accessed on its designated queue
+            CAMERA_CONTROL_QUEUE.async {
+                let selectedIndex = AVAILABLE_STYLES.firstIndex(of: Settings.style ?? NO_STYLE) ?? 0
+                indexPicker.selectedIndex = selectedIndex
+            }
         }
     }
     
