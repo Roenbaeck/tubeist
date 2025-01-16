@@ -14,6 +14,7 @@ private actor FrameTinkerer {
     private var metalDevice: MTLDevice?
     private var commandQueue: MTLCommandQueue?
     private var textureCache: CVMetalTextureCache?
+    private var strengthBuffer: MTLBuffer?
     private var styles: [String: MTLComputePipelineState] = [:]
     // keeping one and the same render destination currently introduces flicker
     private var renderDestination: CIRenderDestination?
@@ -51,6 +52,7 @@ private actor FrameTinkerer {
             &textureCache
         )
         self.textureCache = textureCache
+        self.strengthBuffer = metalDevice.makeBuffer(length: MemoryLayout<Float>.size, options: [])
         let library = metalDevice.makeDefaultLibrary()
         for style in AVAILABLE_STYLES.filter( { $0 != NO_STYLE } ) {
             guard let function = library?.makeFunction(name: style.lowercased()) else {
@@ -72,7 +74,7 @@ private actor FrameTinkerer {
         renderDestination = nil
     }
     
-    func effect(style: String, onto sampleBuffer: CMSampleBuffer) {
+    func effect(style: String, strength: Float, onto sampleBuffer: CMSampleBuffer) {
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer),
               let textureCache = textureCache else {
             LOG("Could not get pixel buffer from sample buffer", level: .error)
@@ -127,6 +129,12 @@ private actor FrameTinkerer {
         encoder.setComputePipelineState(pipelineState)
         encoder.setTexture(yTexture, index: 0)
         encoder.setTexture(cbcrTexture, index: 1)
+        guard let strengthPointer = strengthBuffer?.contents().assumingMemoryBound(to: Float.self) else {
+            LOG("Unable to bind the strength buffer", level: .error)
+            return
+        }
+        strengthPointer[0] = strength
+        encoder.setBuffer(strengthBuffer, offset: 0, index: 0)
 
         let threadGroupSize = MTLSize(width: 16, height: 16, depth: 1)
         let threadGroups = MTLSize(
@@ -186,6 +194,7 @@ private actor FrameTinkerer {
 private actor FrameGrabbingActor {
     private var grabbingFrames: Bool = false
     private var style: String?
+    private var strength: Float = 1.0
 
     func start() {
         grabbingFrames = true
@@ -201,6 +210,12 @@ private actor FrameGrabbingActor {
     }
     func getStyle() -> String? {
         style
+    }
+    func setStrength(_ strength: Float) {
+        self.strength = strength
+    }
+    func getStrength() -> Float {
+        strength
     }
 }
 
@@ -232,6 +247,9 @@ final class FrameGrabber: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
     func refreshStyle() async {
         await frameGrabbing.refreshStyle()
     }
+    func setStrength(to strength: Float) async {
+        await frameGrabbing.setStrength(strength)
+    }
     
     nonisolated func captureOutput(_ output: AVCaptureOutput,
                        didOutput sampleBuffer: CMSampleBuffer,
@@ -242,7 +260,7 @@ final class FrameGrabber: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
                 nonisolated(unsafe) let sendableSampleBuffer = sendableSampleBuffer // it's needed again here
                 if await self.frameGrabbing.isActive() {
                     if let style = await self.frameGrabbing.getStyle() {
-                        await self.frameTinkerer.effect(style: style, onto: sendableSampleBuffer)
+                        await self.frameTinkerer.effect(style: style, strength: self.frameGrabbing.getStrength(), onto: sendableSampleBuffer)
                     }
                     if let overlay = await OverlayBundler.shared.getOverlay() {
                         await self.frameTinkerer.imprint(overlay: overlay, onto: sendableSampleBuffer)

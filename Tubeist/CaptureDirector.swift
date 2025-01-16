@@ -29,6 +29,7 @@ private class DeviceActor {
     private var totalZoom: Binding<Double>?
     private var currentZoom: Binding<Double>?
     private var exposureBias: Binding<Float>?
+    private var style: Binding<String>?
     // capabilties
     private let cameras: [String: AVCaptureDevice.DeviceType]
     private let microphones: [String: AVCaptureDevice.DeviceType]
@@ -249,10 +250,11 @@ private class DeviceActor {
         LOG("Devices set up successfully", level: .info)
     }
     
-    func bind(totalZoom: Binding<Double>, currentZoom: Binding<Double>, exposureBias: Binding<Float>) {
+    func bind(totalZoom: Binding<Double>, currentZoom: Binding<Double>, exposureBias: Binding<Float>, style: Binding<String>) {
         self.totalZoom = totalZoom
         self.currentZoom = currentZoom
         self.exposureBias = exposureBias
+        self.style = style
     }
     
     func addCameraControls(session: AVCaptureSession) {
@@ -295,12 +297,14 @@ private class DeviceActor {
     nonisolated func addCustomCameraControls(to session: AVCaptureSession) {
         let indexPicker = AVCaptureIndexPicker(
             "Style",
-            symbolName: "square.and.line.vertical.and.square.fill",
+            symbolName: "camera.filters",
             localizedIndexTitles: AVAILABLE_STYLES
         )
         indexPicker.setActionQueue(CAMERA_CONTROL_QUEUE) { index in
-            Settings.style = AVAILABLE_STYLES[index]
+            let style = AVAILABLE_STYLES[index]
+            Settings.style = style
             Task {
+                await self.style?.wrappedValue = style
                 await FrameGrabber.shared.refreshStyle()
             }
         }
@@ -556,8 +560,8 @@ final class CaptureDirector: NSObject, Sendable {
     @PipelineActor private let session = AVCaptureSession()
     @PipelineActor private let deviceActor = DeviceActor()
 
-    func bind(totalZoom: Binding<Double>, currentZoom: Binding<Double>, exposureBias: Binding<Float>) async {
-        await deviceActor.bind(totalZoom: totalZoom, currentZoom: currentZoom, exposureBias: exposureBias)
+    func bind(totalZoom: Binding<Double>, currentZoom: Binding<Double>, exposureBias: Binding<Float>, style: Binding<String>) async {
+        await deviceActor.bind(totalZoom: totalZoom, currentZoom: currentZoom, exposureBias: exposureBias, style: style)
     }
     func getStabilizations() async -> [String] {
         return await deviceActor.getStabilizations()

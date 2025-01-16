@@ -54,6 +54,7 @@ struct TubeistView: View {
     @State private var stabilizations: [String] = []
     @State private var activeMonitor: Monitor = DEFAULT_MONITOR
     @State private var style: String = NO_STYLE
+    @State private var styleStrength: Float = 1.0
 
     @State private var interaction = Interaction()
     @State private var isCameraReady = false
@@ -92,7 +93,8 @@ struct TubeistView: View {
             await CaptureDirector.shared.bind(
                 totalZoom: $totalZoom,
                 currentZoom: $currentZoom,
-                exposureBias: $exposureBias
+                exposureBias: $exposureBias,
+                style: $style
             )
             selectedStabilization = Settings.cameraStabilization ?? "Off"
             appState.isStabilizationOn = selectedStabilization != "Off"
@@ -598,13 +600,13 @@ struct TubeistView: View {
                             step: 0.1,
                             format: "%.1f EV"
                         )
-                            .frame(height: geometry.size.height * 0.50)
-                            .padding(.leading, 10)
-                            .onChange(of: exposureBias) { oldValue, newValue in
-                                Task {
-                                    await CaptureDirector.shared.setExposureBias(to: newValue)
-                                }
+                        .frame(height: geometry.size.height * 0.50)
+                        .padding(.leading, 10)
+                        .onChange(of: exposureBias) { _, newValue in
+                            Task {
+                                await CaptureDirector.shared.setExposureBias(to: newValue)
                             }
+                        }
                     }
                     else if appState.isFocusLocked {
                         CameraControlSlider(
@@ -615,9 +617,35 @@ struct TubeistView: View {
                         )
                         .frame(height: geometry.size.height * 0.50)
                         .padding(.leading, 10)
-                        .onChange(of: lensPosition) { oldValue, newValue in
+                        .onChange(of: lensPosition) { _, newValue in
                             Task {
                                 await CaptureDirector.shared.setLensPosition(to: newValue)
+                            }
+                        }
+                    }
+                    else if style != NO_STYLE {
+                        VStack {
+                            HStack {
+                                Image(systemName: "camera.filters")
+                                    .resizable()
+                                    .frame(width: 20, height: 20)
+                                    .padding(.leading, 10)
+                                    .foregroundColor(.yellow)
+                                Spacer()
+                            }
+                            
+                            CameraControlSlider(
+                                value: $styleStrength,
+                                range: -1.0...1.0,
+                                step: 0.1,
+                                format: "%.2f"
+                            )
+                            .frame(height: geometry.size.height * 0.50)
+                            .padding(.leading, 10)
+                            .onChange(of: styleStrength) { _, newValue in
+                                Task {
+                                    await FrameGrabber.shared.setStrength(to: newValue)
+                                }
                             }
                         }
                     }
@@ -779,7 +807,7 @@ struct CameraControlSlider: View {
             
             GeometryReader { geometry in
                 let stepSize = geometry.size.height / Double(range.upperBound - range.lowerBound)
-                let zero = geometry.size.height / Double(range.upperBound)
+                let zero = geometry.size.height * (range.upperBound / (range.upperBound - range.lowerBound))
                 
                 ZStack(alignment: .leading) { // Align ZStack to the leading edge
                     Image(systemName: "arrowtriangle.left.fill")
