@@ -246,3 +246,46 @@ kernel void sky(texture2d<float, access::read_write> yTexture [[texture(0)]],
     
     yTexture.write(float4(darkenedY, 0, 0, 0), gid);
 }
+
+kernel void vignette(texture2d<float, access::read_write> yTexture [[texture(0)]],
+                     texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
+                     constant float &strength [[buffer(0)]],
+                     uint2 gid [[thread_position_in_grid]]) {
+    float4 luma = yTexture.read(gid);
+    float y = luma.r;
+
+    uint width = yTexture.get_width();
+    uint height = yTexture.get_height();
+
+    // Calculate the center of the texture
+    float2 center = float2(width / 2.0, height / 2.0);
+
+    // Calculate the distance from the current pixel to the center
+    float2 currentPosition = float2(gid.x, gid.y);
+    float distance = length(currentPosition - center);
+
+    // Calculate the maximum possible distance (corner to center)
+    float maxDistance = length(float2(0.0, 0.0) - center);
+
+    // Normalize the distance to a 0-1 range (0 at center, 1 at corners)
+    float normalizedDistance = distance / maxDistance;
+
+    // Define the point where the vignette effect starts (1/3 of the way to the center)
+    float vignetteStart = 1.0 / 3.0;
+
+    // Calculate the vignette factor
+    float vignetteFactor = 0.0;
+    if (normalizedDistance > vignetteStart) {
+        // Remap the normalized distance to the range [0, 1] where 0 is the start of the effect and 1 is the edge
+        float effectDistance = (normalizedDistance - vignetteStart) / (1.0 - vignetteStart);
+        effectDistance = clamp(effectDistance, 0.0, 1.0); // Ensure it stays within 0-1
+
+        // Apply falloff to the effect distance
+        vignetteFactor = smoothstep(0.0, 1.0, effectDistance);
+    }
+
+    // Apply the darkening effect. Strength controls the intensity.
+    float darkenedY = y * (1.0 - (vignetteFactor * strength));
+
+    yTexture.write(float4(darkenedY, 0, 0, 0), gid);
+}
