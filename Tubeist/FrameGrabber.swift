@@ -14,8 +14,8 @@ private actor FrameTinkerer {
     private var metalDevice: MTLDevice?
     private var commandQueue: MTLCommandQueue?
     private var textureCache: CVMetalTextureCache?
-    private var strengthBuffer: MTLBuffer?
     private var kernels: [String: MTLComputePipelineState] = [:]
+    private var strengths: [String: MTLBuffer] = [:]
     // keeping one and the same render destination currently introduces flicker
     private var renderDestination: CIRenderDestination?
     
@@ -52,9 +52,11 @@ private actor FrameTinkerer {
             &textureCache
         )
         self.textureCache = textureCache
-        self.strengthBuffer = metalDevice.makeBuffer(length: MemoryLayout<Float>.size, options: [])
         let library = metalDevice.makeDefaultLibrary()
-        for kernel in AVAILABLE_STYLES.filter( { $0 != NO_STYLE } ) {
+        var kernelNames = AVAILABLE_STYLES.filter( { $0 != NO_STYLE } )
+        kernelNames.append(contentsOf: AVAILABLE_EFFECTS.filter( { $0 != NO_EFFECT } ))
+                                                   
+        for kernel in kernelNames {
             guard let function = library?.makeFunction(name: kernel.lowercased()) else {
                 LOG("Could not make function with the shader source provided", level: .error)
                 return
@@ -62,20 +64,8 @@ private actor FrameTinkerer {
             do {
                 let pipeline = try metalDevice.makeComputePipelineState(function: function)
                 kernels[kernel] = pipeline
-            }
-            catch {
-                LOG("Could not create compute pipeline state", level: .error)
-                return
-            }
-        }
-        for kernel in AVAILABLE_EFFECTS.filter( { $0 != NO_EFFECT } ) {
-            guard let function = library?.makeFunction(name: kernel.lowercased()) else {
-                LOG("Could not make function with the shader source provided", level: .error)
-                return
-            }
-            do {
-                let pipeline = try metalDevice.makeComputePipelineState(function: function)
-                kernels[kernel] = pipeline
+                let buffer = metalDevice.makeBuffer(length: MemoryLayout<Float>.size, options: .storageModeShared)
+                strengths[kernel] = buffer
             }
             catch {
                 LOG("Could not create compute pipeline state", level: .error)
@@ -87,8 +77,6 @@ private actor FrameTinkerer {
     func reset() {
         renderDestination = nil
     }
-    
-    // TODO: strength here is overwriting the strengthBuffer in the second call to apply
     
     func apply(kernel: String, strength: Float, onto sampleBuffer: CMSampleBuffer) {
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer),
@@ -145,10 +133,11 @@ private actor FrameTinkerer {
         encoder.setComputePipelineState(pipelineState)
         encoder.setTexture(yTexture, index: 0)
         encoder.setTexture(cbcrTexture, index: 1)
-        guard let strengthPointer = strengthBuffer?.contents().assumingMemoryBound(to: Float.self) else {
+        guard let strengthBuffer = strengths[kernel] else {
             LOG("Unable to bind the strength buffer", level: .error)
             return
         }
+        let strengthPointer = strengthBuffer.contents().assumingMemoryBound(to: Float.self)
         strengthPointer[0] = strength
         encoder.setBuffer(strengthBuffer, offset: 0, index: 0)
 

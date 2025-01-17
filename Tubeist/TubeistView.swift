@@ -658,8 +658,7 @@ struct TubeistView: View {
                             }
                         }
                     }
-                    // TODO: add both style and effect slider when both are selected
-                    else if style != NO_STYLE {
+                    else if style != NO_STYLE || effect != NO_EFFECT {
                         VStack {
                             HStack {
                                 Image(systemName: "camera.filters")
@@ -669,18 +668,34 @@ struct TubeistView: View {
                                     .foregroundColor(.yellow)
                                 Spacer()
                             }
-                            
-                            CameraControlSlider(
-                                value: $styleStrength,
-                                range: -1.0...1.0,
-                                step: 0.1,
-                                format: "%.2f"
-                            )
-                            .frame(height: geometry.size.height * 0.50)
-                            .padding(.leading, 10)
-                            .onChange(of: styleStrength) { _, newValue in
-                                Task {
-                                    await FrameGrabber.shared.setStyleStrength(to: newValue)
+                            if style != NO_STYLE {
+                                CameraControlSlider(
+                                    value: $styleStrength,
+                                    range: -1.0...1.0,
+                                    step: 0.1,
+                                    format: nil
+                                )
+                                .frame(height: geometry.size.height * 0.33)
+                                .padding(.leading, 10)
+                                .onChange(of: styleStrength) { _, newValue in
+                                    Task {
+                                        await FrameGrabber.shared.setStyleStrength(to: newValue)
+                                    }
+                                }
+                            }
+                            if effect != NO_EFFECT {
+                                CameraControlSlider(
+                                    value: $effectStrength,
+                                    range: -1.0...1.0,
+                                    step: 0.1,
+                                    format: nil
+                                )
+                                .frame(height: geometry.size.height * 0.33)
+                                .padding(.leading, 10)
+                                .onChange(of: effectStrength) { _, newValue in
+                                    Task {
+                                        await FrameGrabber.shared.setEffectStrength(to: newValue)
+                                    }
                                 }
                             }
                         }
@@ -830,15 +845,17 @@ struct CameraControlSlider: View {
     @Binding var value: Float
     var range: ClosedRange<Double>
     var step: Double
-    var format: String
+    var format: String?
 
     var body: some View {
         VStack {
-            HStack {
-                Text("\(String(format: format, value))")
-                    .font(.system(size: 10))
-                    .foregroundColor(.yellow)
-                Spacer()
+            if format != nil {
+                HStack {
+                    Text("\(String(format: format!, value))")
+                        .font(.system(size: 10))
+                        .foregroundColor(.yellow)
+                    Spacer()
+                }
             }
             
             GeometryReader { geometry in
