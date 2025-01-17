@@ -155,20 +155,17 @@ kernel void rotoscope(texture2d<float, access::read_write> yTexture [[texture(0)
     // Posterization on luma with EDR handling
     float y = lumaCenter.r;
     float levels = 4;
-
-    // Add subtle noise to break up perfectly flat areas
-    float noise = fract(sin(dot(float2(gid), float2(12.9898, 78.233))) * 43758.5453);
-    noise = (noise - 0.5) * 0.015;  // Very subtle noise
     
     // Handle EDR values
     bool isEDR = y > 1.0;
     float normalizedY = isEDR ? log2(y + 1.0) / 2.0 : y;
-    float posterizedY = floor((normalizedY + noise) * levels) / levels;
+    float posterizedY = floor(normalizedY * levels) / levels;
     float finalY = isEDR ? exp2(posterizedY * 2.0) - 1.0 : posterizedY;
 
     // Apply edge detection
     float edgeWidth = mix(4.0, 1.0, strength);
-    finalY = edgeStrength > edgeThreshold / edgeWidth ? 0.05 : 1.5 * finalY;
+    float lift = 1.25 + 0.25 * strength;
+    finalY = edgeStrength > edgeThreshold / edgeWidth ? 0.05 : lift * finalY;
     
     // Get chroma values
     float cb = chromaCenter.r;
