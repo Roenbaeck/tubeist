@@ -289,3 +289,33 @@ kernel void vignette(texture2d<float, access::read_write> yTexture [[texture(0)]
 
     yTexture.write(float4(darkenedY, 0, 0, 0), gid);
 }
+
+kernel void pixelate(texture2d<float, access::read_write> yTexture [[texture(0)]],
+                     texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
+                     constant float &strength [[buffer(0)]],
+                     uint2 gid [[thread_position_in_grid]]) {
+
+    uint width = yTexture.get_width();
+    uint height = yTexture.get_height();
+
+    // Calculate the size of the pixelated blocks based on strength.
+    // Lower strength means larger blocks, so we invert and scale.
+    float blockSizeFloat = 1.0 + (1.0 - strength) * 31.0; // Adjust 31.0 for max block size
+    uint blockSize = uint(blockSizeFloat);
+
+    // Calculate the top-left coordinate of the pixelated block for the current pixel.
+    uint blockStartX = (gid.x / blockSize) * blockSize;
+    uint blockStartY = (gid.y / blockSize) * blockSize;
+
+    // Sample the input textures at the top-left of the block.
+    uint2 sampleCoord = uint2(blockStartX, blockStartY);
+
+    // Ensure the sample coordinate is within the texture bounds.
+    if (sampleCoord.x < width && sampleCoord.y < height) {
+        float4 sampledY = yTexture.read(sampleCoord);
+        float4 sampledCbCr = cbcrTexture.read(sampleCoord);
+
+        yTexture.write(sampledY, gid);
+        cbcrTexture.write(sampledCbCr, gid);
+    }
+}
