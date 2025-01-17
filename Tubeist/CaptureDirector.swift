@@ -30,6 +30,7 @@ private class DeviceActor {
     private var currentZoom: Binding<Double>?
     private var exposureBias: Binding<Float>?
     private var style: Binding<String>?
+    private var effect: Binding<String>?
     // capabilties
     private let cameras: [String: AVCaptureDevice.DeviceType]
     private let microphones: [String: AVCaptureDevice.DeviceType]
@@ -250,11 +251,12 @@ private class DeviceActor {
         LOG("Devices set up successfully", level: .info)
     }
     
-    func bind(totalZoom: Binding<Double>, currentZoom: Binding<Double>, exposureBias: Binding<Float>, style: Binding<String>) {
+    func bind(totalZoom: Binding<Double>, currentZoom: Binding<Double>, exposureBias: Binding<Float>, style: Binding<String>, effect: Binding<String>) {
         self.totalZoom = totalZoom
         self.currentZoom = currentZoom
         self.exposureBias = exposureBias
         self.style = style
+        self.effect = effect
     }
     
     func addCameraControls(session: AVCaptureSession) {
@@ -295,12 +297,13 @@ private class DeviceActor {
     }
     
     nonisolated func addCustomCameraControls(to session: AVCaptureSession) {
-        let indexPicker = AVCaptureIndexPicker(
+        // styles
+        let stylePicker = AVCaptureIndexPicker(
             "Style",
             symbolName: "camera.filters",
             localizedIndexTitles: AVAILABLE_STYLES
         )
-        indexPicker.setActionQueue(CAMERA_CONTROL_QUEUE) { index in
+        stylePicker.setActionQueue(CAMERA_CONTROL_QUEUE) { index in
             let style = AVAILABLE_STYLES[index]
             Settings.style = style
             Task {
@@ -308,13 +311,36 @@ private class DeviceActor {
                 await FrameGrabber.shared.refreshStyle()
             }
         }
-        if session.canAddControl(indexPicker) {
+        if session.canAddControl(stylePicker) {
             LOG("Adding style picker camera control", level: .debug)
-            session.addControl(indexPicker)
+            session.addControl(stylePicker)
             // the picker is very picky on being accessed on its designated queue
             CAMERA_CONTROL_QUEUE.async {
                 let selectedIndex = AVAILABLE_STYLES.firstIndex(of: Settings.style ?? NO_STYLE) ?? 0
-                indexPicker.selectedIndex = selectedIndex
+                stylePicker.selectedIndex = selectedIndex
+            }
+        }
+        // effects
+        let effectPicker = AVCaptureIndexPicker(
+            "Effect",
+            symbolName: "circle.bottomrighthalf.pattern.checkered",
+            localizedIndexTitles: AVAILABLE_EFFECTS
+        )
+        effectPicker.setActionQueue(CAMERA_CONTROL_QUEUE) { index in
+            let effect = AVAILABLE_EFFECTS[index]
+            Settings.effect = effect
+            Task {
+                await self.effect?.wrappedValue = effect
+                await FrameGrabber.shared.refreshEffect()
+            }
+        }
+        if session.canAddControl(effectPicker) {
+            LOG("Adding effect picker camera control", level: .debug)
+            session.addControl(effectPicker)
+            // the picker is very picky on being accessed on its designated queue
+            CAMERA_CONTROL_QUEUE.async {
+                let selectedIndex = AVAILABLE_EFFECTS.firstIndex(of: Settings.effect ?? NO_EFFECT) ?? 0
+                effectPicker.selectedIndex = selectedIndex
             }
         }
     }
@@ -565,8 +591,8 @@ final class CaptureDirector: NSObject, Sendable {
     @PipelineActor private let session = AVCaptureSession()
     @PipelineActor private let deviceActor = DeviceActor()
 
-    func bind(totalZoom: Binding<Double>, currentZoom: Binding<Double>, exposureBias: Binding<Float>, style: Binding<String>) async {
-        await deviceActor.bind(totalZoom: totalZoom, currentZoom: currentZoom, exposureBias: exposureBias, style: style)
+    func bind(totalZoom: Binding<Double>, currentZoom: Binding<Double>, exposureBias: Binding<Float>, style: Binding<String>, effect: Binding<String>) async {
+        await deviceActor.bind(totalZoom: totalZoom, currentZoom: currentZoom, exposureBias: exposureBias, style: style, effect: effect)
     }
     func getStabilizations() async -> [String] {
         return await deviceActor.getStabilizations()

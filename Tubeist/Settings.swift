@@ -638,4 +638,22 @@ final class Settings: Sendable {
             }
         }
     }
+    static var effect: String? {
+        get {
+            if let effect = UserDefaults.standard.string(forKey: "Effect"),
+               effect != NO_EFFECT,
+               AVAILABLE_EFFECTS.contains(effect) {
+                return effect
+            }
+            return nil
+        }
+        set {
+            if newValue == NO_EFFECT {
+                UserDefaults.standard.set(nil, forKey: "Effect")
+            }
+            else {
+                UserDefaults.standard.set(newValue, forKey: "Effect")
+            }
+        }
+    }
 }

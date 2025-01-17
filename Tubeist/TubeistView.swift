@@ -55,6 +55,8 @@ struct TubeistView: View {
     @State private var activeMonitor: Monitor = DEFAULT_MONITOR
     @State private var style: String = NO_STYLE
     @State private var styleStrength: Float = 1.0
+    @State private var effect: String = NO_EFFECT
+    @State private var effectStrength: Float = 1.0
 
     @State private var interaction = Interaction()
     @State private var isCameraReady = false
@@ -94,7 +96,8 @@ struct TubeistView: View {
                 totalZoom: $totalZoom,
                 currentZoom: $currentZoom,
                 exposureBias: $exposureBias,
-                style: $style
+                style: $style,
+                effect: $effect
             )
             selectedStabilization = Settings.cameraStabilization ?? "Off"
             appState.isStabilizationOn = selectedStabilization != "Off"
@@ -299,7 +302,39 @@ struct TubeistView: View {
                                 Rectangle()
                                     .fill(Color.black.opacity(0.4))
                             )
-                            
+
+                            HStack(alignment: .center, spacing: 10) {
+                                Spacer()
+                                
+                                Text("Select Effect")
+                                Picker("Effect Selection", selection: $effect) {
+                                    ForEach(AVAILABLE_EFFECTS, id: \.self) { effect in
+                                        Text(effect)
+                                            .tag(effect)
+                                    }
+                                }
+                                .pickerStyle(MenuPickerStyle())
+                                .background(
+                                    RoundedRectangle(cornerRadius: 10)
+                                        .fill(Color.black.opacity(0.6))
+                                )
+                                .onAppear {
+                                    effect = Settings.effect ?? NO_EFFECT
+                                }
+                                .onChange(of: effect) { _, newEffect in
+                                    LOG("Seletected effect: \(newEffect)", level: .debug)
+                                    Settings.effect = newEffect
+                                    Task {
+                                        await FrameGrabber.shared.refreshEffect()
+                                    }
+                                }
+                            }
+                            .padding(5)
+                            .background(
+                                Rectangle()
+                                    .fill(Color.black.opacity(0.4))
+                            )
+
                             HStack(alignment: .center, spacing: 10) {
                                 Spacer()
                                 
@@ -623,6 +658,7 @@ struct TubeistView: View {
                             }
                         }
                     }
+                    // TODO: add both style and effect slider when both are selected
                     else if style != NO_STYLE {
                         VStack {
                             HStack {
@@ -644,7 +680,7 @@ struct TubeistView: View {
                             .padding(.leading, 10)
                             .onChange(of: styleStrength) { _, newValue in
                                 Task {
-                                    await FrameGrabber.shared.setStrength(to: newValue)
+                                    await FrameGrabber.shared.setStyleStrength(to: newValue)
                                 }
                             }
                         }

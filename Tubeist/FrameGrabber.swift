@@ -15,7 +15,7 @@ private actor FrameTinkerer {
     private var commandQueue: MTLCommandQueue?
     private var textureCache: CVMetalTextureCache?
     private var strengthBuffer: MTLBuffer?
-    private var styles: [String: MTLComputePipelineState] = [:]
+    private var kernels: [String: MTLComputePipelineState] = [:]
     // keeping one and the same render destination currently introduces flicker
     private var renderDestination: CIRenderDestination?
     
@@ -54,14 +54,28 @@ private actor FrameTinkerer {
         self.textureCache = textureCache
         self.strengthBuffer = metalDevice.makeBuffer(length: MemoryLayout<Float>.size, options: [])
         let library = metalDevice.makeDefaultLibrary()
-        for style in AVAILABLE_STYLES.filter( { $0 != NO_STYLE } ) {
-            guard let function = library?.makeFunction(name: style.lowercased()) else {
+        for kernel in AVAILABLE_STYLES.filter( { $0 != NO_STYLE } ) {
+            guard let function = library?.makeFunction(name: kernel.lowercased()) else {
                 LOG("Could not make function with the shader source provided", level: .error)
                 return
             }
             do {
                 let pipeline = try metalDevice.makeComputePipelineState(function: function)
-                styles[style] = pipeline
+                kernels[kernel] = pipeline
+            }
+            catch {
+                LOG("Could not create compute pipeline state", level: .error)
+                return
+            }
+        }
+        for kernel in AVAILABLE_EFFECTS.filter( { $0 != NO_EFFECT } ) {
+            guard let function = library?.makeFunction(name: kernel.lowercased()) else {
+                LOG("Could not make function with the shader source provided", level: .error)
+                return
+            }
+            do {
+                let pipeline = try metalDevice.makeComputePipelineState(function: function)
+                kernels[kernel] = pipeline
             }
             catch {
                 LOG("Could not create compute pipeline state", level: .error)
@@ -74,7 +88,9 @@ private actor FrameTinkerer {
         renderDestination = nil
     }
     
-    func effect(style: String, strength: Float, onto sampleBuffer: CMSampleBuffer) {
+    // TODO: strength here is overwriting the strengthBuffer in the second call to apply
+    
+    func apply(kernel: String, strength: Float, onto sampleBuffer: CMSampleBuffer) {
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer),
               let textureCache = textureCache else {
             LOG("Could not get pixel buffer from sample buffer", level: .error)
@@ -122,7 +138,7 @@ private actor FrameTinkerer {
             return
         }
         
-        guard let pipelineState = styles[style] else {
+        guard let pipelineState = kernels[kernel] else {
             LOG("The pipeline state is not initialized", level: .error)
             return
         }
@@ -194,7 +210,9 @@ private actor FrameTinkerer {
 private actor FrameGrabbingActor {
     private var grabbingFrames: Bool = false
     private var style: String?
-    private var strength: Float = 1.0
+    private var styleStrength: Float = 1.0
+    private var effect: String?
+    private var effectStrength: Float = 1.0
 
     func start() {
         grabbingFrames = true
@@ -211,11 +229,23 @@ private actor FrameGrabbingActor {
     func getStyle() -> String? {
         style
     }
-    func setStrength(_ strength: Float) {
-        self.strength = strength
+    func setStyleStrength(_ strength: Float) {
+        self.styleStrength = strength
     }
-    func getStrength() -> Float {
-        strength
+    func getStyleStrength() -> Float {
+        styleStrength
+    }
+    func refreshEffect() {
+        effect = Settings.effect
+    }
+    func getEffect() -> String? {
+        effect
+    }
+    func setEffectStrength(_ strength: Float) {
+        self.effectStrength = strength
+    }
+    func getEffectStrength() -> Float {
+        effectStrength
     }
 }
 
@@ -247,10 +277,16 @@ final class FrameGrabber: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
     func refreshStyle() async {
         await frameGrabbing.refreshStyle()
     }
-    func setStrength(to strength: Float) async {
-        await frameGrabbing.setStrength(strength)
+    func setStyleStrength(to strength: Float) async {
+        await frameGrabbing.setStyleStrength(strength)
     }
-    
+    func refreshEffect() async {
+        await frameGrabbing.refreshEffect()
+    }
+    func setEffectStrength(to strength: Float) async {
+        await frameGrabbing.setEffectStrength(strength)
+    }
+
     nonisolated func captureOutput(_ output: AVCaptureOutput,
                        didOutput sampleBuffer: CMSampleBuffer,
                        from connection: AVCaptureConnection) {
@@ -260,7 +296,10 @@ final class FrameGrabber: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
                 nonisolated(unsafe) let sendableSampleBuffer = sendableSampleBuffer // it's needed again here
                 if await self.frameGrabbing.isActive() {
                     if let style = await self.frameGrabbing.getStyle() {
-                        await self.frameTinkerer.effect(style: style, strength: self.frameGrabbing.getStrength(), onto: sendableSampleBuffer)
+                        await self.frameTinkerer.apply(kernel: style, strength: self.frameGrabbing.getStyleStrength(), onto: sendableSampleBuffer)
+                    }
+                    if let effect = await self.frameGrabbing.getEffect() {
+                        await self.frameTinkerer.apply(kernel: effect, strength: self.frameGrabbing.getEffectStrength(), onto: sendableSampleBuffer)
                     }
                     if let overlay = await OverlayBundler.shared.getOverlay() {
                         await self.frameTinkerer.imprint(overlay: overlay, onto: sendableSampleBuffer)

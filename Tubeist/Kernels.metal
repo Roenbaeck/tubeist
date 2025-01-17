@@ -1,6 +1,7 @@
 #include <metal_stdlib>
 using namespace metal;
 
+/* -------------=============== STYLES ===============------------- */
 kernel void saturation(texture2d<float, access::read_write> yTexture [[texture(0)]],
                       texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
                       constant float &strength [[buffer(0)]],
@@ -201,3 +202,47 @@ kernel void rotoscope(texture2d<float, access::read_write> yTexture [[texture(0)
     cbcrTexture.write(float4(quantizedCb, quantizedCr, 0, 0), gid);
 }
 
+/* -------------=============== EFFECTS ===============------------- */
+kernel void sky(texture2d<float, access::read_write> yTexture [[texture(0)]],
+                texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
+                constant float &strength [[buffer(0)]],
+                uint2 gid [[thread_position_in_grid]]) {
+    float4 luma = yTexture.read(gid);
+    float y = luma.r;
+    
+    // Get the height of the texture (assuming the dispatch size matches the texture size)
+    uint textureHeight = yTexture.get_height();
+    
+    // Calculate the vertical position as a normalized value (0.0 at the top, 1.0 at the bottom)
+    float normalizedY = (float)gid.y / (float)(textureHeight - 1.0); // Subtract 1 to handle 0-based indexing
+    
+    // We want the gradient to be strongest at the top and fade towards the middle.
+    // Let's define the middle point (where the gradient effect is minimal).
+    float middlePoint = 0.5;
+    
+    // Calculate the gradient factor. We only apply the gradient above the middle.
+    float gradientFactor = 0.0;
+    if (normalizedY < middlePoint) {
+        // Scale the gradient effect based on the distance from the top.
+        // At the top (normalizedY = 0), the factor is 1.
+        // At the middle (normalizedY = middlePoint), the factor is 0.
+        
+        // Option 1: Linear falloff
+        // gradientFactor = 1.0 - (normalizedY / middlePoint);
+        
+        // Option 2: More controlled falloff with a power function (adjust the exponent)
+        float power = 2.0; // You can adjust this for different curves
+        gradientFactor = pow(1.0 - (normalizedY / middlePoint), power);
+    }
+    
+    // Apply the darkening effect to the luma component.
+    // We subtract the gradient factor multiplied by the strength.
+    // Note that 'strength' here now controls the darkness amount.
+    // Reduce the max darkening to 0.8 instead of 1.0.
+    float darkenedY = y - (0.8 * gradientFactor * strength);
+    
+    // Clamp the value to ensure it stays within the valid range (0.0 to 1.0)
+    darkenedY = clamp(darkenedY, 0.0, 1.0);
+    
+    yTexture.write(float4(darkenedY, 0, 0, 0), gid);
+}
