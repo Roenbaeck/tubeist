@@ -10,17 +10,25 @@ import CoreImage
 import Metal
 
 private actor FrameTinkerer {
-    private var frameNumber: Float = 0
-    private var frameNumberBuffer: MTLBuffer?
     private let context: CIContext
     private var metalDevice: MTLDevice?
     private var commandQueue: MTLCommandQueue?
     private var textureCache: CVMetalTextureCache?
     private var kernels: [String: MTLComputePipelineState] = [:]
-    private var strengths: [String: MTLBuffer] = [:]
+    private var strengths: [String: (MTLBuffer, UnsafeMutablePointer<Float>)] = [:]
+    private var frameNumberBuffer: MTLBuffer?
+    private var frameNumberPointer: UnsafeMutablePointer<UInt32>?
     // keeping one and the same render destination currently introduces flicker
     private var renderDestination: CIRenderDestination?
-    
+    // resettable
+    private var frameNumber: UInt32 = 0
+    private var threadGroupSize: MTLSize = MTLSize(width: 16, height: 9, depth: 1)
+    private var threadGroups: MTLSize = MTLSize(
+        width: (DEFAULT_COMPRESSED_WIDTH + 16 - 1) / 16,
+        height: (DEFAULT_COMPRESSED_HEIGHT + 9 - 1) / 9,
+        depth: 1
+    )
+
     init() {
         guard let metalDevice = MTLCreateSystemDefaultDevice(),
         let commandQueue = metalDevice.makeCommandQueue() else {
@@ -55,7 +63,8 @@ private actor FrameTinkerer {
         )
         self.textureCache = textureCache
         let library = metalDevice.makeDefaultLibrary()
-        self.frameNumberBuffer = metalDevice.makeBuffer(length: MemoryLayout<Float>.size, options: .storageModeShared)
+        self.frameNumberBuffer = metalDevice.makeBuffer(length: MemoryLayout<UInt32>.size, options: .storageModeShared)
+        self.frameNumberPointer = frameNumberBuffer?.contents().assumingMemoryBound(to: UInt32.self)
         var kernelNames = AVAILABLE_STYLES.filter( { $0 != NO_STYLE } )
         kernelNames.append(contentsOf: AVAILABLE_EFFECTS.filter( { $0 != NO_EFFECT } ))
                                                    
@@ -67,8 +76,9 @@ private actor FrameTinkerer {
             do {
                 let pipeline = try metalDevice.makeComputePipelineState(function: function)
                 kernels[kernel] = pipeline
-                let buffer = metalDevice.makeBuffer(length: MemoryLayout<Float>.size, options: .storageModeShared)
-                strengths[kernel] = buffer
+                if let buffer = metalDevice.makeBuffer(length: MemoryLayout<Float>.size, options: .storageModeShared) {
+                    strengths[kernel] = (buffer, buffer.contents().assumingMemoryBound(to: Float.self))
+                }
             }
             catch {
                 LOG("Could not create compute pipeline state", level: .error)
@@ -80,6 +90,12 @@ private actor FrameTinkerer {
     func reset() {
         renderDestination = nil
         frameNumber = 0
+        let preset = Settings.selectedPreset
+        threadGroups = MTLSize(
+            width: (preset.width + threadGroupSize.width - 1) / threadGroupSize.width,
+            height: (preset.height + threadGroupSize.height - 1) / threadGroupSize.height,
+            depth: 1
+        )
     }
     
     func apply(kernel: String, strength: Float, onto sampleBuffer: CMSampleBuffer) {
@@ -138,25 +154,17 @@ private actor FrameTinkerer {
         encoder.setComputePipelineState(pipelineState)
         encoder.setTexture(yTexture, index: 0)
         encoder.setTexture(cbcrTexture, index: 1)
-        guard let strengthBuffer = strengths[kernel] else {
+        guard let (strengthBuffer, strengthPointer) = strengths[kernel] else {
             LOG("Unable to bind the strength buffer", level: .error)
             return
         }
-        let strengthPointer = strengthBuffer.contents().assumingMemoryBound(to: Float.self)
-        strengthPointer[0] = strength
+        strengthPointer.pointee = strength
         encoder.setBuffer(strengthBuffer, offset: 0, index: 0)
-        if let frameNumberPointer = frameNumberBuffer?.contents().assumingMemoryBound(to: Float.self) {
-            frameNumberPointer[0] = frameNumber
+        if let frameNumberPointer = frameNumberPointer {
+            frameNumberPointer.pointee = frameNumber
             encoder.setBuffer(frameNumberBuffer, offset: 0, index: 1)
         }
 
-        let threadGroupSize = MTLSize(width: 16, height: 16, depth: 1)
-        let threadGroups = MTLSize(
-            width: (yTexture.width + threadGroupSize.width - 1) / threadGroupSize.width,
-            height: (yTexture.height + threadGroupSize.height - 1) / threadGroupSize.height,
-            depth: 1
-        )
-        
         encoder.dispatchThreadgroups(threadGroups, threadsPerThreadgroup: threadGroupSize)
         encoder.endEncoding()
         commandBuffer.commit()
@@ -256,6 +264,7 @@ final class FrameGrabber: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
         if await !frameGrabbing.isActive() {
             await frameTinkerer.reset()
             await frameGrabbing.refreshStyle()
+            await frameGrabbing.refreshEffect()
             await frameGrabbing.start()
             LOG("Started grabbing frames", level: .debug)
         }

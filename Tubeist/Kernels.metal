@@ -5,7 +5,7 @@ using namespace metal;
 kernel void saturation(texture2d<float, access::read_write> yTexture [[texture(0)]],
                        texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
                        constant float &strength [[buffer(0)]],
-                       constant float &frame [[buffer(1)]],
+                       constant uint &frame [[buffer(1)]],
                        uint2 gid [[thread_position_in_grid]]) {
     float4 luma = yTexture.read(gid);
     float4 chroma = cbcrTexture.read(gid);
@@ -25,7 +25,7 @@ kernel void saturation(texture2d<float, access::read_write> yTexture [[texture(0
 kernel void warmth(texture2d<float, access::read_write> yTexture [[texture(0)]],
                    texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
                    constant float &strength [[buffer(0)]],
-                   constant float &frame [[buffer(1)]],
+                   constant uint &frame [[buffer(1)]],
                    uint2 gid [[thread_position_in_grid]]) {
     float4 luma = yTexture.read(gid);
     float4 chroma = cbcrTexture.read(gid);
@@ -49,7 +49,7 @@ kernel void warmth(texture2d<float, access::read_write> yTexture [[texture(0)]],
 kernel void film(texture2d<float, access::read_write> yTexture [[texture(0)]],
                  texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
                  constant float &strength [[buffer(0)]],
-                 constant float &frame [[buffer(1)]],
+                 constant uint &frame [[buffer(1)]],
                  uint2 gid [[thread_position_in_grid]]) {
     float4 luma = yTexture.read(gid);
     float4 chroma = cbcrTexture.read(gid);
@@ -59,34 +59,35 @@ kernel void film(texture2d<float, access::read_write> yTexture [[texture(0)]],
     float cr = chroma.g;
 
     // Lift Blacks and Tone Down Whites (film-like base tone)
-    float blackLift = 0.05 * abs(strength);
-    float whiteToneDown = 1.00 - 0.05 * abs(strength);
+    float blackLift = 0.04 * (strength + 1);
+    float whiteToneDown = 1.00 - 0.04 * (strength + 1);
     float adjustedY = y * whiteToneDown + blackLift * (1.0 - y);
         
     // Filmic S-Curve for contrast
     float sCurveY = adjustedY / (adjustedY + 0.5 * (1.0 - adjustedY));
+    adjustedY = mix(adjustedY, sCurveY, abs(1 - strength) / 2);
 
     // Warm shadows and cool highlights
-    float warmCoolBlend = 0.03;
+    float warmCoolBlend = 0.05;
     float shadowTint = 0.02; // warm tone
     float highlightTint = -0.02; // cool tone
-    float hueShift = (sCurveY < 0.5) ? shadowTint : highlightTint;
+    float hueShift = (adjustedY < 0.5) ? shadowTint : highlightTint;
     cb += hueShift * warmCoolBlend;
     cr -= hueShift * warmCoolBlend;
 
     // Subtle color adjust
-    float cbAdjust =  0.02 * strength;
-    float crAdjust = -0.02 * strength;
+    float cbAdjust = 0.02 * abs(strength);
+    float crAdjust = 0.02 * abs(strength);
     float mid = 0.5;
     float newCb = mix(cb, mid, cbAdjust);
     float newCr = mix(cr, mid, crAdjust);
 
     // Bloom or Halation Simulation
-    float bloomFactor = smoothstep(0.8, 1.0, sCurveY);
-    sCurveY += bloomFactor * 0.05 * abs(strength);
+    float bloomFactor = smoothstep(0.8, 1.0, adjustedY);
+    adjustedY += bloomFactor * 0.05 * abs(strength);
 
     // Write back (saturate for final output)
-    yTexture.write(float4(saturate(sCurveY), 0, 0, 0), gid);
+    yTexture.write(float4(saturate(adjustedY), 0, 0, 0), gid);
     cbcrTexture.write(float4(saturate(newCb), saturate(newCr), 0, 0), gid);
 }
 
@@ -94,7 +95,7 @@ kernel void film(texture2d<float, access::read_write> yTexture [[texture(0)]],
 kernel void blackbright(texture2d<float, access::read_write> yTexture [[texture(0)]],
                         texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
                         constant float &strength [[buffer(0)]],
-                        constant float &frame [[buffer(1)]],
+                        constant uint &frame [[buffer(1)]],
                         uint2 gid [[thread_position_in_grid]]) {
     float4 luma = yTexture.read(gid);
     
@@ -113,7 +114,7 @@ kernel void blackbright(texture2d<float, access::read_write> yTexture [[texture(
 kernel void space(texture2d<float, access::read_write> yTexture [[texture(0)]],
                   texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
                   constant float &strength [[buffer(0)]],
-                  constant float &frame [[buffer(1)]],
+                  constant uint &frame [[buffer(1)]],
                   uint2 gid [[thread_position_in_grid]]) {
     float4 luma = yTexture.read(gid);
     float4 chroma = cbcrTexture.read(gid);
@@ -137,7 +138,7 @@ kernel void space(texture2d<float, access::read_write> yTexture [[texture(0)]],
 kernel void rotoscope(texture2d<float, access::read_write> yTexture [[texture(0)]],
                       texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
                       constant float &strength [[buffer(0)]],
-                      constant float &frame [[buffer(1)]],
+                      constant uint &frame [[buffer(1)]],
                       uint2 gid [[thread_position_in_grid]]) {
     
     float edgeThreshold = 0.1;
@@ -221,7 +222,7 @@ kernel void rotoscope(texture2d<float, access::read_write> yTexture [[texture(0)
 kernel void sky(texture2d<float, access::read_write> yTexture [[texture(0)]],
                 texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
                 constant float &strength [[buffer(0)]],
-                constant float &frame [[buffer(1)]],
+                constant uint &frame [[buffer(1)]],
                 uint2 gid [[thread_position_in_grid]]) {
     float4 luma = yTexture.read(gid);
     float y = luma.r;
@@ -266,7 +267,7 @@ kernel void sky(texture2d<float, access::read_write> yTexture [[texture(0)]],
 kernel void vignette(texture2d<float, access::read_write> yTexture [[texture(0)]],
                      texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
                      constant float &strength [[buffer(0)]],
-                     constant float &frame [[buffer(1)]],
+                     constant uint &frame [[buffer(1)]],
                      uint2 gid [[thread_position_in_grid]]) {
     float4 luma = yTexture.read(gid);
     float y = luma.r;
@@ -310,7 +311,7 @@ kernel void vignette(texture2d<float, access::read_write> yTexture [[texture(0)]
 kernel void pixelate(texture2d<float, access::read_write> yTexture [[texture(0)]],
                      texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
                      constant float &strength [[buffer(0)]],
-                     constant float &frame [[buffer(1)]],
+                     constant uint &frame [[buffer(1)]],
                      uint2 gid [[thread_position_in_grid]]) {
 
     uint width = yTexture.get_width();
@@ -341,7 +342,7 @@ kernel void pixelate(texture2d<float, access::read_write> yTexture [[texture(0)]
 kernel void grain(texture2d<float, access::read_write> yTexture [[texture(0)]],
                   texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
                   constant float &strength [[buffer(0)]],
-                  constant float &frame [[buffer(1)]],
+                  constant uint &frame [[buffer(1)]],
                   uint2 gid [[thread_position_in_grid]]) {
     
     float4 color = yTexture.read(gid);
