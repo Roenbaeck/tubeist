@@ -3,16 +3,17 @@ using namespace metal;
 
 /* -------------=============== STYLES ===============------------- */
 kernel void saturation(texture2d<float, access::read_write> yTexture [[texture(0)]],
-                      texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
-                      constant float &strength [[buffer(0)]],
-                      uint2 gid [[thread_position_in_grid]]) {
+                       texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
+                       constant float &strength [[buffer(0)]],
+                       constant float &frame [[buffer(1)]],
+                       uint2 gid [[thread_position_in_grid]]) {
     float4 luma = yTexture.read(gid);
     float4 chroma = cbcrTexture.read(gid);
-
+    
     float y = luma.r;
     float cb = chroma.r;
     float cr = chroma.g;
-
+    
     float newY = y;
     float newCb = mix(cb, 0.5, strength);
     float newCr = mix(cr, 0.5, strength);
@@ -24,6 +25,7 @@ kernel void saturation(texture2d<float, access::read_write> yTexture [[texture(0
 kernel void warmth(texture2d<float, access::read_write> yTexture [[texture(0)]],
                    texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
                    constant float &strength [[buffer(0)]],
+                   constant float &frame [[buffer(1)]],
                    uint2 gid [[thread_position_in_grid]]) {
     float4 luma = yTexture.read(gid);
     float4 chroma = cbcrTexture.read(gid);
@@ -47,38 +49,52 @@ kernel void warmth(texture2d<float, access::read_write> yTexture [[texture(0)]],
 kernel void film(texture2d<float, access::read_write> yTexture [[texture(0)]],
                  texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
                  constant float &strength [[buffer(0)]],
+                 constant float &frame [[buffer(1)]],
                  uint2 gid [[thread_position_in_grid]]) {
     float4 luma = yTexture.read(gid);
     float4 chroma = cbcrTexture.read(gid);
-    
+
     float y = luma.r;
     float cb = chroma.r;
     float cr = chroma.g;
-    
-    // Lift Blacks and Tone Down Whites (on HDR values)
-    float blackLift = mix(0, 0.05, strength);
-    float whiteToneDown = mix(1.0, 0.95, strength);
+
+    // Lift Blacks and Tone Down Whites (film-like base tone)
+    float blackLift = 0.05 * abs(strength);
+    float whiteToneDown = 1.00 - 0.05 * abs(strength);
     float adjustedY = y * whiteToneDown + blackLift * (1.0 - y);
-    
-    // Subtle Desaturation (on HDR chroma)
-    float desaturation = mix(0, 0.03, strength);
+        
+    // Filmic S-Curve for contrast
+    float sCurveY = adjustedY / (adjustedY + 0.5 * (1.0 - adjustedY));
+
+    // Warm shadows and cool highlights
+    float warmCoolBlend = 0.03;
+    float shadowTint = 0.02; // warm tone
+    float highlightTint = -0.02; // cool tone
+    float hueShift = (sCurveY < 0.5) ? shadowTint : highlightTint;
+    cb += hueShift * warmCoolBlend;
+    cr -= hueShift * warmCoolBlend;
+
+    // Subtle color adjust
+    float cbAdjust =  0.02 * strength;
+    float crAdjust = -0.02 * strength;
     float mid = 0.5;
-    float newCb = mix(cb, mid, desaturation);
-    float newCr = mix(cr, mid, desaturation);
-    
-    // Some final tone mapping
-    newCb = mix(newCb, newCb * 0.98, strength);
-    newCr = mix(newCr, newCr * 1.01, strength);
-    float newY = mix(adjustedY, adjustedY * 1.03, strength);
-    
-    // Write back (saturate for final output if necessary)
-    yTexture.write(float4(newY, 0, 0, 0), gid);
-    cbcrTexture.write(float4(newCb, newCr, 0, 0), gid);
+    float newCb = mix(cb, mid, cbAdjust);
+    float newCr = mix(cr, mid, crAdjust);
+
+    // Bloom or Halation Simulation
+    float bloomFactor = smoothstep(0.8, 1.0, sCurveY);
+    sCurveY += bloomFactor * 0.05 * abs(strength);
+
+    // Write back (saturate for final output)
+    yTexture.write(float4(saturate(sCurveY), 0, 0, 0), gid);
+    cbcrTexture.write(float4(saturate(newCb), saturate(newCr), 0, 0), gid);
 }
+
 
 kernel void blackbright(texture2d<float, access::read_write> yTexture [[texture(0)]],
                         texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
                         constant float &strength [[buffer(0)]],
+                        constant float &frame [[buffer(1)]],
                         uint2 gid [[thread_position_in_grid]]) {
     float4 luma = yTexture.read(gid);
     
@@ -97,6 +113,7 @@ kernel void blackbright(texture2d<float, access::read_write> yTexture [[texture(
 kernel void space(texture2d<float, access::read_write> yTexture [[texture(0)]],
                   texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
                   constant float &strength [[buffer(0)]],
+                  constant float &frame [[buffer(1)]],
                   uint2 gid [[thread_position_in_grid]]) {
     float4 luma = yTexture.read(gid);
     float4 chroma = cbcrTexture.read(gid);
@@ -118,9 +135,10 @@ kernel void space(texture2d<float, access::read_write> yTexture [[texture(0)]],
 }
 
 kernel void rotoscope(texture2d<float, access::read_write> yTexture [[texture(0)]],
-                     texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
-                     constant float &strength [[buffer(0)]],
-                     uint2 gid [[thread_position_in_grid]]) {
+                      texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
+                      constant float &strength [[buffer(0)]],
+                      constant float &frame [[buffer(1)]],
+                      uint2 gid [[thread_position_in_grid]]) {
     
     float edgeThreshold = 0.1;
     // Early exit if outside texture bounds
@@ -203,6 +221,7 @@ kernel void rotoscope(texture2d<float, access::read_write> yTexture [[texture(0)
 kernel void sky(texture2d<float, access::read_write> yTexture [[texture(0)]],
                 texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
                 constant float &strength [[buffer(0)]],
+                constant float &frame [[buffer(1)]],
                 uint2 gid [[thread_position_in_grid]]) {
     float4 luma = yTexture.read(gid);
     float y = luma.r;
@@ -247,6 +266,7 @@ kernel void sky(texture2d<float, access::read_write> yTexture [[texture(0)]],
 kernel void vignette(texture2d<float, access::read_write> yTexture [[texture(0)]],
                      texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
                      constant float &strength [[buffer(0)]],
+                     constant float &frame [[buffer(1)]],
                      uint2 gid [[thread_position_in_grid]]) {
     float4 luma = yTexture.read(gid);
     float y = luma.r;
@@ -290,6 +310,7 @@ kernel void vignette(texture2d<float, access::read_write> yTexture [[texture(0)]
 kernel void pixelate(texture2d<float, access::read_write> yTexture [[texture(0)]],
                      texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
                      constant float &strength [[buffer(0)]],
+                     constant float &frame [[buffer(1)]],
                      uint2 gid [[thread_position_in_grid]]) {
 
     uint width = yTexture.get_width();
@@ -316,3 +337,53 @@ kernel void pixelate(texture2d<float, access::read_write> yTexture [[texture(0)]
         cbcrTexture.write(sampledCbCr, gid);
     }
 }
+
+kernel void grain(texture2d<float, access::read_write> yTexture [[texture(0)]],
+                  texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
+                  constant float &strength [[buffer(0)]],
+                  constant float &frame [[buffer(1)]],
+                  uint2 gid [[thread_position_in_grid]]) {
+    
+    float4 color = yTexture.read(gid);
+    float y = color.r;
+    
+    // Create pseudo-random noise based on position and time
+    float2 resolution = float2(yTexture.get_width(), yTexture.get_height());
+    float2 uv = float2(gid) / resolution;
+    
+    // Multi-octave noise for more natural looking grain
+    float noise = 0.0;
+    float frequency = 1.0;
+    float amplitude = 1.0;
+    float persistence = mix(0.5, 1.0, strength);
+    
+    for (int i = 0; i < 3; i++) {
+        float2 coord = uv * frequency + float2(frame * 0.1, frame * 0.2);
+        
+        // Generate noise using hash function
+        float2 p = fract(coord * float2(233.34, 851.73));
+        p += dot(p, p + 23.45);
+        float n = fract(p.x * p.y);
+        
+        noise += n * amplitude;
+        frequency *= 2.0;
+        amplitude *= persistence;
+    }
+    
+    // Normalize noise to [-1, 1] range
+    noise = noise * 2.0 - 1.0;
+    
+    // Make grain intensity dependent on luminance
+    float grainAmount = mix(0.08, 0.02, smoothstep(0.2, 0.8, y));
+    grainAmount *= strength;
+    
+    // Apply grain with HDR consideration
+    float grainStrength = noise * grainAmount;
+    float newY = y * (1.0 + grainStrength);
+    
+    // Write back
+    yTexture.write(float4(newY, 0, 0, 0), gid);
+}
+
+
+

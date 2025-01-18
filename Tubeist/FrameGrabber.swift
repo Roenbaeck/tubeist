@@ -10,6 +10,8 @@ import CoreImage
 import Metal
 
 private actor FrameTinkerer {
+    private var frameNumber: Float = 0
+    private var frameNumberBuffer: MTLBuffer?
     private let context: CIContext
     private var metalDevice: MTLDevice?
     private var commandQueue: MTLCommandQueue?
@@ -53,6 +55,7 @@ private actor FrameTinkerer {
         )
         self.textureCache = textureCache
         let library = metalDevice.makeDefaultLibrary()
+        self.frameNumberBuffer = metalDevice.makeBuffer(length: MemoryLayout<Float>.size, options: .storageModeShared)
         var kernelNames = AVAILABLE_STYLES.filter( { $0 != NO_STYLE } )
         kernelNames.append(contentsOf: AVAILABLE_EFFECTS.filter( { $0 != NO_EFFECT } ))
                                                    
@@ -76,9 +79,11 @@ private actor FrameTinkerer {
     
     func reset() {
         renderDestination = nil
+        frameNumber = 0
     }
     
     func apply(kernel: String, strength: Float, onto sampleBuffer: CMSampleBuffer) {
+        frameNumber += 1
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer),
               let textureCache = textureCache else {
             LOG("Could not get pixel buffer from sample buffer", level: .error)
@@ -140,6 +145,10 @@ private actor FrameTinkerer {
         let strengthPointer = strengthBuffer.contents().assumingMemoryBound(to: Float.self)
         strengthPointer[0] = strength
         encoder.setBuffer(strengthBuffer, offset: 0, index: 0)
+        if let frameNumberPointer = frameNumberBuffer?.contents().assumingMemoryBound(to: Float.self) {
+            frameNumberPointer[0] = frameNumber
+            encoder.setBuffer(frameNumberBuffer, offset: 0, index: 1)
+        }
 
         let threadGroupSize = MTLSize(width: 16, height: 16, depth: 1)
         let threadGroups = MTLSize(
