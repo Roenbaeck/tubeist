@@ -2,8 +2,8 @@
 using namespace metal;
 
 // we need these to adress the problem of reading neighboring pixel values already overwritten by another thread
-constant uint THREADGROUP_WIDTH = 16;
-constant uint THREADGROUP_HEIGHT = 9;
+constant uint THREADGROUP_WIDTH = 16 * 16;
+constant uint THREADGROUP_HEIGHT = 9 * 9;
 
 /* -------------=============== STYLES ===============------------- */
 kernel void saturation(texture2d<float, access::read_write> yTexture [[texture(0)]],
