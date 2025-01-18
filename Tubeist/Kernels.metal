@@ -1,6 +1,10 @@
 #include <metal_stdlib>
 using namespace metal;
 
+// we need these to adress the problem of reading neighboring pixel values already overwritten by another thread
+constant uint THREADGROUP_WIDTH = 16;
+constant uint THREADGROUP_HEIGHT = 9;
+
 /* -------------=============== STYLES ===============------------- */
 kernel void saturation(texture2d<float, access::read_write> yTexture [[texture(0)]],
                        texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
@@ -171,8 +175,8 @@ kernel void rotoscope(texture2d<float, access::read_write> yTexture [[texture(0)
 
     // Improved edge detection with reduced thread group boundary artifacts
     float2 gradient;
-    gradient.x = (gid.x % 16 == 0) ? 0.0 : lumaRight - lumaLeft;
-    gradient.y = (gid.y % 16 == 0) ? 0.0 : lumaDown - lumaUp;
+    gradient.x = (gid.x % THREADGROUP_WIDTH == 0) ? 0.0 : lumaRight - lumaLeft;
+    gradient.y = (gid.y % THREADGROUP_HEIGHT == 0) ? 0.0 : lumaDown - lumaUp;
     float edgeStrength = length(gradient);
     
     // Posterization on luma with EDR handling
@@ -233,6 +237,7 @@ kernel void rotoscope(texture2d<float, access::read_write> yTexture [[texture(0)
     yTexture.write(float4(finalY, 0, 0, 0), gid);
     cbcrTexture.write(float4(quantizedCb, quantizedCr, 0, 0), gid);
 }
+
 
 /* -------------=============== EFFECTS ===============------------- */
 kernel void sky(texture2d<float, access::read_write> yTexture [[texture(0)]],
