@@ -142,11 +142,8 @@ kernel void rotoscope(texture2d<float, access::read_write> yTexture [[texture(0)
                       uint2 gid [[thread_position_in_grid]]) {
     
     float edgeThreshold = 0.1;
-    // Early exit if outside texture bounds
-    if (gid.x >= yTexture.get_width() || gid.y >= yTexture.get_height()) {
-        return;
-    }
-    
+    uint numColorShades = 8;
+
     // Get center pixel values
     float4 lumaCenter = yTexture.read(gid);
     float4 chromaCenter = cbcrTexture.read(gid);
@@ -164,7 +161,7 @@ kernel void rotoscope(texture2d<float, access::read_write> yTexture [[texture(0)
     float lumaRight = yTexture.read(rightPos).r;
     float lumaUp = yTexture.read(upPos).r;
     float lumaDown = yTexture.read(downPos).r;
-    
+
     // Improved edge detection with reduced thread group boundary artifacts
     float2 gradient;
     gradient.x = (gid.x % 16 == 0) ? 0.0 : lumaRight - lumaLeft;
@@ -184,7 +181,17 @@ kernel void rotoscope(texture2d<float, access::read_write> yTexture [[texture(0)
     // Apply edge detection
     float edgeWidth = mix(4.0, 1.0, strength);
     float lift = 1.25 + 0.25 * strength;
-    finalY = edgeStrength > edgeThreshold / edgeWidth ? 0.05 : lift * finalY;
+
+    // Calculate blending factor based on edge detection
+    float edgeFactor = smoothstep(edgeThreshold / edgeWidth, edgeThreshold / (edgeWidth * 0.8), edgeStrength);
+
+    // Adjust finalY with normalized blending
+    float highlight = 0.05; // Minimal brightness for edges
+    float adjustedFinalY = mix(finalY, highlight, edgeFactor);
+
+    // Normalize brightness to compensate for blending
+    float normalizationFactor = mix(1.0, lift, edgeFactor);
+    finalY = adjustedFinalY * normalizationFactor;
     
     // Get chroma values
     float cb = chromaCenter.r;
@@ -192,11 +199,9 @@ kernel void rotoscope(texture2d<float, access::read_write> yTexture [[texture(0)
     
     // Calculate distance from neutral (0.5, 0.5)
     float2 chromaDist = float2(cb - 0.5, cr - 0.5);
+    // Calculate chroma length (distance from neutral)
     float chromaLength = length(chromaDist);
-    
-    // More conservative chroma quantization
-    uint numColorShades = 8;
-    
+
     // Only quantize if there's significant color
     float colorThreshold = 0.2;
     if (chromaLength > colorThreshold) {
