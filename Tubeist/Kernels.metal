@@ -339,52 +339,131 @@ kernel void pixelate(texture2d<float, access::read_write> yTexture [[texture(0)]
     }
 }
 
+
+// Grain based on the work by Stefan Gustavson in "Simplex noise demystified"
+constant int perm[256] = { 151,160,137,91,90,15,131,13,201,95,96,53,194,233,7,225,
+    140,36,103,30,69,142,8,99,37,240,21,10,23,190,6,148,247,120,234,75,0,26,197,
+    62,94,252,219,203,117,35,11,32,57,177,33,88,237,149,56,87,174,20,125,136,171,
+    168,68,175,74,165,71,134,139,48,27,166,77,146,158,231,83,111,229,122,60,211,
+    133,230,220,105,92,41,55,46,245,40,244,102,143,54,65,25,63,161,1,216,80,73,
+    209,76,132,187,208,89,18,169,200,196,135,130,116,188,159,86,164,100,109,198,
+    173,186,3,64,52,217,226,250,124,123,5,202,38,147,118,126,255,82,85,212,207,
+    206,59,227,47,16,58,17,182,189,28,42,223,183,170,213,119,248,152,2,44,154,
+    163,70,221,153,101,155,167,43,172,9,129,22,39,253,19,98,108,110,79,113,224,
+    232,178,185,112,104,218,246,97,228,251,34,242,193,238,210,144,12,191,179,162,
+    241,81,51,145,235,249,14,239,107,49,192,214,31,181,199,106,157,184,84,204,
+    176,115,121,50,45,127,4,150,254,138,236,205,93,222,114,67,29,24,72,243,141,
+    128,195,78,66,215,61,156,180 };
+
+constant float2 grad2[8] = {
+    float2(1,1), float2(-1,1), float2(1,-1), float2(-1,-1),
+    float2(1,0), float2(-1,0), float2(0,1), float2(0,-1)
+};
+
+inline int hash(int i) {
+    return perm[i & 255];
+}
+
+// Modified 2D simplex noise that takes a time parameter
+float snoise(float2 p, float time) {
+    // Add time variation to input coordinates
+    p += float2(sin(time * 0.1 + p.y), cos(time * 0.1 + p.x)) * 0.5;
+    
+    float n0, n1, n2;
+    const float F2 = 0.366025404f;
+    const float G2 = 0.211324865f;
+    
+    float s = (p.x + p.y) * F2;
+    float2 i = floor(p + s);
+    float t = (i.x + i.y) * G2;
+    float2 p0 = p - (i - t);
+    
+    float2 i1 = (p0.x > p0.y) ? float2(1, 0) : float2(0, 1);
+    float2 p1 = p0 - i1 + G2;
+    float2 p2 = p0 - 1.0 + 2.0 * G2;
+    
+    // Incorporate time into the hash calculation
+    int timeHash = hash(int(time * 13.0)) & 255;
+    int gi0 = hash(hash(int(i.x) + timeHash) + int(i.y));
+    int gi1 = hash(hash(int(i.x) + i1.x + timeHash) + int(i.y) + i1.y);
+    int gi2 = hash(hash(int(i.x) + 1 + timeHash) + int(i.y) + 1);
+    
+    float t0 = 0.5 - p0.x * p0.x - p0.y * p0.y;
+    if(t0 < 0) {
+        n0 = 0.0;
+    } else {
+        t0 *= t0;
+        n0 = t0 * t0 * dot(grad2[gi0 & 7], p0);
+    }
+    
+    float t1 = 0.5 - p1.x * p1.x - p1.y * p1.y;
+    if(t1 < 0) {
+        n1 = 0.0;
+    } else {
+        t1 *= t1;
+        n1 = t1 * t1 * dot(grad2[gi1 & 7], p1);
+    }
+    
+    float t2 = 0.5 - p2.x * p2.x - p2.y * p2.y;
+    if(t2 < 0) {
+        n2 = 0.0;
+    } else {
+        t2 *= t2;
+        n2 = t2 * t2 * dot(grad2[gi2 & 7], p2);
+    }
+    
+    return 70.0 * (n0 + n1 + n2);
+}
+
 kernel void grain(texture2d<float, access::read_write> yTexture [[texture(0)]],
-                  texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
-                  constant float &strength [[buffer(0)]],
-                  constant uint &frame [[buffer(1)]],
-                  uint2 gid [[thread_position_in_grid]]) {
+                 texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
+                 constant float &strength [[buffer(0)]],
+                 constant uint &frame [[buffer(1)]],
+                 uint2 gid [[thread_position_in_grid]]) {
+    
+    float normalizedStrength = (strength + 1.0) * 0.5;
     
     float4 color = yTexture.read(gid);
     float y = color.r;
     
-    // Create pseudo-random noise based on position and time
     float2 resolution = float2(yTexture.get_width(), yTexture.get_height());
     float2 uv = float2(gid) / resolution;
     
-    // Multi-octave noise for more natural looking grain
+    // Reduced number of octaves and modified frequencies for finer grain
     float noise = 0.0;
-    float frequency = 1.0;
+    float frequency = 2.0; // Start with higher frequency
     float amplitude = 1.0;
-    float persistence = mix(0.5, 1.0, strength);
+    // Reduced persistence for less clumping
+    float persistence = mix(0.3, 0.5, normalizedStrength);
     
-    for (int i = 0; i < 3; i++) {
-        float2 coord = uv * frequency + float2(frame * 0.1, frame * 0.2);
+    // Use frame number directly in noise generation
+    float timeValue = float(frame) * 0.05;
+    
+    for (int i = 0; i < 2; i++) { // Reduced to 2 octaves
+        // Increased scale for finer grain
+        float2 coord = uv * frequency * resolution * 0.03;
         
-        // Generate noise using hash function
-        float2 p = fract(coord * float2(233.34, 851.73));
-        p += dot(p, p + 23.45);
-        float n = fract(p.x * p.y);
+        // Pass time to noise function
+        float n = snoise(coord, timeValue + float(i) * 1.618); // Golden ratio for varied offsets
         
         noise += n * amplitude;
-        frequency *= 2.0;
+        frequency *= 3.0; // Larger frequency steps
         amplitude *= persistence;
     }
     
-    // Normalize noise to [-1, 1] range
-    noise = noise * 2.0 - 1.0;
+    noise = clamp(noise, -1.0, 1.0);
     
-    // Make grain intensity dependent on luminance
-    float grainAmount = mix(0.08, 0.02, smoothstep(0.2, 0.8, y));
-    grainAmount *= strength;
+    float baseGrainAmount = mix(0.08, 0.02, smoothstep(0.2, 0.8, y));
+    float enhancedStrength = pow(abs(normalizedStrength), 0.7) * sign(strength);
+    float grainAmount = baseGrainAmount * enhancedStrength * 3.0;
     
-    // Apply grain with HDR consideration
     float grainStrength = noise * grainAmount;
-    float newY = y * (1.0 + grainStrength);
+    if (normalizedStrength > 0.7) {
+        grainStrength *= 1.0 + (normalizedStrength - 0.7) * 2.0;
+    }
     
-    // Write back
+    float newY = y * (1.0 + grainStrength);
+    newY = clamp(newY, 0.0, 2.0);
+    
     yTexture.write(float4(newY, 0, 0, 0), gid);
 }
-
-
-

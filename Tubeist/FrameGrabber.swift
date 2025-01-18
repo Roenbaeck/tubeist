@@ -100,6 +100,7 @@ private actor FrameTinkerer {
     
     func apply(kernel: String, strength: Float, onto sampleBuffer: CMSampleBuffer) {
         frameNumber += 1
+        frameNumber = frameNumber % 600 // restart counter every 600 frames
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer),
               let textureCache = textureCache else {
             LOG("Could not get pixel buffer from sample buffer", level: .error)
