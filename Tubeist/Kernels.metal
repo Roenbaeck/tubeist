@@ -135,6 +135,13 @@ kernel void space(texture2d<float, access::read_write> yTexture [[texture(0)]],
     cbcrTexture.write(float4(newCb, newCr, 0, 0), gid);
 }
 
+float quantizeNonLinear(float value, float numSteps) {
+    float x = value * numSteps;
+    float stepped = floor(x);
+    // Apply non-linear spacing between levels
+    return pow(stepped / numSteps, 0.8); // Adjust power for different curves
+}
+
 kernel void rotoscope(texture2d<float, access::read_write> yTexture [[texture(0)]],
                       texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
                       constant float &strength [[buffer(0)]],
@@ -202,11 +209,15 @@ kernel void rotoscope(texture2d<float, access::read_write> yTexture [[texture(0)
     // Calculate chroma length (distance from neutral)
     float chromaLength = length(chromaDist);
 
+    // Boost more for less saturated colors
+    float saturationBoost = 1.0 + (0.5 * (1.0 - chromaLength));
+    chromaDist *= saturationBoost;
+    
     // Only quantize if there's significant color
-    float colorThreshold = 0.2;
+    float colorThreshold = 0.25;
     if (chromaLength > colorThreshold) {
         // Quantize the chroma values while preserving the angle
-        float quantizedLength = floor(chromaLength * float(numColorShades)) / float(numColorShades);
+        float quantizedLength = quantizeNonLinear(chromaLength, float(numColorShades));
         float2 normalizedChroma = chromaDist / chromaLength;
         chromaDist = normalizedChroma * quantizedLength;
     } else {
@@ -434,19 +445,17 @@ kernel void grain(texture2d<float, access::read_write> yTexture [[texture(0)]],
     float2 resolution = float2(yTexture.get_width(), yTexture.get_height());
     float2 uv = float2(gid) / resolution;
     
-    // Reduced number of octaves and modified frequencies for finer grain
     float noise = 0.0;
-    float frequency = 2.0; // Start with higher frequency
+    float frequency = 2.0;
     float amplitude = 1.0;
-    // Reduced persistence for less clumping
+    // Higher persistence gives more clumping of the grains
     float persistence = mix(0.3, 0.5, normalizedStrength);
     
     // Use frame number directly in noise generation
     float timeValue = float(frame) * 0.05;
     
-    for (int i = 0; i < 2; i++) { // Reduced to 2 octaves
-        // Increased scale for finer grain
-        float2 coord = uv * frequency * resolution * 0.03;
+    for (int i = 0; i < 2; i++) { // using 2 octaves
+        float2 coord = uv * frequency * resolution * 0.05; // 0.05 makes finer grain than 0.03
         
         // Pass time to noise function
         float n = snoise(coord, timeValue + float(i) * 1.618); // Golden ratio for varied offsets

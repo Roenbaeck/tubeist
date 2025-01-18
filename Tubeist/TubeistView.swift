@@ -242,34 +242,36 @@ struct TubeistView: View {
                         Spacer()
 
                         if showCameraPicker {
-                            HStack(alignment: .center, spacing: 10) {
-                                Spacer()
-                                
-                                Text("Select Camera")
-                                Picker("Camera Selection", selection: $selectedCamera) {
-                                    ForEach(cameras, id: \.self) { camera in
-                                        Text(camera)
-                                            .tag(camera)
+                            if !appState.isStreamActive {
+                                HStack(alignment: .center, spacing: 10) {
+                                    Spacer()
+                                    
+                                    Text("Select Camera")
+                                    Picker("Camera Selection", selection: $selectedCamera) {
+                                        ForEach(cameras, id: \.self) { camera in
+                                            Text(camera)
+                                                .tag(camera)
+                                        }
+                                    }
+                                    .pickerStyle(MenuPickerStyle())
+                                    .background(
+                                        RoundedRectangle(cornerRadius: 10)
+                                            .fill(Color.black.opacity(0.6))
+                                    )
+                                    .onChange(of: selectedCamera) { _, newCamera in
+                                        LOG("Seletected camera: \(newCamera)", level: .debug)
+                                        Settings.selectedCamera = newCamera
+                                        Task {
+                                            await Streamer.shared.cycleCamera()
+                                        }
                                     }
                                 }
-                                .pickerStyle(MenuPickerStyle())
+                                .padding(5)
                                 .background(
-                                    RoundedRectangle(cornerRadius: 10)
-                                        .fill(Color.black.opacity(0.6))
+                                    Rectangle()
+                                        .fill(Color.black.opacity(0.4))
                                 )
-                                .onChange(of: selectedCamera) { _, newCamera in
-                                    LOG("Seletected camera: \(newCamera)", level: .debug)
-                                    Settings.selectedCamera = newCamera
-                                    Task {
-                                        await Streamer.shared.cycleCamera()
-                                    }
-                                }
                             }
-                            .padding(5)
-                            .background(
-                                Rectangle()
-                                    .fill(Color.black.opacity(0.4))
-                            )
 
                             HStack(alignment: .center, spacing: 10) {
                                 Spacer()
@@ -518,13 +520,11 @@ struct TubeistView: View {
                         .font(.system(size: 8))
                         .padding(.bottom, 3)
                     
-                    SmallButton(imageName: appState.isStreamActive ? "camera.fill" : "camera",
-                                foregroundColor: appState.isStreamActive || showCameraPicker ? .yellow : .white) {
-                        if(!appState.isStreamActive) {
-                            showCameraPicker.toggle()
-                            if showCameraPicker && showStabilizationPicker {
-                                showStabilizationPicker = false
-                            }
+                    SmallButton(imageName: appState.activeMonitor == .output ? "camera.fill" : "camera",
+                                foregroundColor: appState.activeMonitor == .output || showCameraPicker ? .yellow : .white) {
+                        showCameraPicker.toggle()
+                        if showCameraPicker && showStabilizationPicker {
+                            showStabilizationPicker = false
                         }
                     }
                     

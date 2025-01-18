@@ -260,6 +260,10 @@ final class FrameGrabber: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
     @PipelineActor public static let shared = FrameGrabber()
     private let frameTinkerer = FrameTinkerer()
     private let frameGrabbing = FrameGrabbingActor()
+
+    func resetTinkerer() async {
+        await frameTinkerer.reset()
+    }
     
     func commenceGrabbing() async {
         if await !frameGrabbing.isActive() {

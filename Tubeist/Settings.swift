@@ -393,16 +393,6 @@ struct SettingsView: View {
                             set: { customVideoBitrate = Int($0) }
                         ), in: 500_000...50_000_000, step: 500_000)
                     }
-                    .onAppear {
-                        if let preset = selectedPreset, preset.name == "Custom" {
-                            customResolution = Resolution(preset.width, preset.height)
-                            customFrameRate = preset.frameRate
-                            customKeyframeInterval = preset.keyframeInterval
-                            customAudioChannels = preset.audioChannels
-                            customAudioBitrate = preset.audioBitrate
-                            customVideoBitrate = preset.videoBitrate
-                        }
-                    }
                 }
 
                 Section {
@@ -439,9 +429,6 @@ struct SettingsView: View {
                         Text("Output (viewing is delayed, but styled)").tag(Monitor.output)
                     }
                     .pickerStyle(.segmented)
-                    .onAppear() {
-                        activeMonitor = appState.activeMonitor
-                    }
                     .onChange(of: activeMonitor) { _, newValue in
                         appState.activeMonitor = newValue
                     }
@@ -455,6 +442,7 @@ struct SettingsView: View {
                     saveCustomPreset()
                 }
                 Task {
+                    await FrameGrabber.shared.resetTinkerer()
                     await Streamer.shared.cycleCamera()
                     await Streamer.shared.setMonitor(activeMonitor)
                     OverlayBundler.shared.refreshCombinedImage()
@@ -468,6 +456,14 @@ struct SettingsView: View {
                     selectedPreset = preset
                 } else {
                     selectedPreset = nil
+                }
+                if let preset = selectedPreset, preset.name == "Custom" {
+                    customResolution = Resolution(preset.width, preset.height)
+                    customFrameRate = preset.frameRate
+                    customKeyframeInterval = preset.keyframeInterval
+                    customAudioChannels = preset.audioChannels
+                    customAudioBitrate = preset.audioBitrate
+                    customVideoBitrate = preset.videoBitrate
                 }
             }
         }
