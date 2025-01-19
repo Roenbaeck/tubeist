@@ -90,10 +90,16 @@ private actor FrameTinkerer {
     func reset() {
         renderDestination = nil
         frameNumber = 0
-        let preset = Settings.selectedPreset
+        var width = DEFAULT_CAPTURE_WIDTH
+        var height = DEFAULT_CAPTURE_HEIGHT
+        if Settings.isInputSyncedWithOutput {
+            let preset = Settings.selectedPreset
+            width = preset.width
+            height = preset.height
+        }
         threadGroups = MTLSize(
-            width: (preset.width + threadGroupSize.width - 1) / threadGroupSize.width,
-            height: (preset.height + threadGroupSize.height - 1) / threadGroupSize.height,
+            width: (width + threadGroupSize.width - 1) / threadGroupSize.width,
+            height: (height + threadGroupSize.height - 1) / threadGroupSize.height,
             depth: 1
         )
     }
