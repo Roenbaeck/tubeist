@@ -82,8 +82,10 @@ final class Streamer: Sendable {
     }
     func endStream() async {
         await streamingActor.pause()
-        await CaptureDirector.shared.stopOutput()
-        await FrameGrabber.shared.terminateGrabbing()
+        if await getMonitor() == .camera {
+            await CaptureDirector.shared.stopOutput()
+            await FrameGrabber.shared.terminateGrabbing()
+        }
         await SoundGrabber.shared.terminateGrabbing()
         await ContentPackager.shared.endPackaging()
         await FragmentPusher.shared.gracefulShutdown()
