@@ -171,7 +171,10 @@ actor URLSessionActor {
         baseURLRequest = URLSessionActor.createBaseUploadRequest()
     }
     private static func createBaseUploadRequest() -> URLRequest? {
-        let hlsServer = Settings.hlsServer ?? ""
+        guard let hlsServer = Settings.hlsServer else {
+            LOG("No HLS server specified", level: .debug)
+            return nil
+        }
         if let url = URL(string: hlsServer) {
             var request = URLRequest(url: url.appendingPathComponent("upload_segment"))
             request.httpMethod = "POST"
