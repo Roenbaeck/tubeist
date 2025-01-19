@@ -28,7 +28,7 @@ actor Purchaser {
     
     @MainActor
     func isProductPurchased(_ productID: String) -> Bool {
-        purchasedProductIDs.contains(productID)
+        YOU_HAVE_IT_ALL || purchasedProductIDs.contains(productID)
     }
     
     // Verify past purchases on app launch
