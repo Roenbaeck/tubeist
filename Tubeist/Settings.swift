@@ -433,6 +433,23 @@ struct SettingsView: View {
                         appState.activeMonitor = newValue
                     }
                 }
+                
+                if !Purchaser.shared.isProductPurchased("tubeist_lifetime_styling") {
+                    if let product = appState.availableProducts["tubeist_lifetime_styling"] {
+                        Section(header: Text("In-App Purchases"), footer: Text("This set of styles and effects is the only unlockable content in this app, made available at the lowest price possible. Once unlocked you have lifetime access to all styles and effects. It is a small contribution going toward continued app development.")) {
+                            HStack {
+                                Text("Styles and Effects Lifetime Access")
+                                Spacer()
+                                Button(product.displayPrice) {
+                                    Task {
+                                        await Purchaser.shared.purchase(product: product)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                
             }
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)

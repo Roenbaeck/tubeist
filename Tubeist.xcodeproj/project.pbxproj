@@ -6,6 +6,10 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		460ED2DA2D3CEC46003F2989 /* StoreKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 460ED2D92D3CEC46003F2989 /* StoreKit.framework */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		46B97E762CE1120D00E802FC /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -37,6 +41,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		460ED2D92D3CEC46003F2989 /* StoreKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = StoreKit.framework; path = System/Library/Frameworks/StoreKit.framework; sourceTree = SDKROOT; };
 		46B97E632CE1120B00E802FC /* Tubeist.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Tubeist.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		46B97E752CE1120D00E802FC /* TubeistTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = TubeistTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		46B97E7F2CE1120D00E802FC /* TubeistUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = TubeistUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -78,6 +83,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				460ED2DA2D3CEC46003F2989 /* StoreKit.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -98,12 +104,21 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		460ED2D82D3CEC46003F2989 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				460ED2D92D3CEC46003F2989 /* StoreKit.framework */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
 		46B97E5A2CE1120B00E802FC = {
 			isa = PBXGroup;
 			children = (
 				46B97E652CE1120B00E802FC /* Tubeist */,
 				46B97E782CE1120D00E802FC /* TubeistTests */,
 				46B97E822CE1120D00E802FC /* TubeistUITests */,
+				460ED2D82D3CEC46003F2989 /* Frameworks */,
 				46B97E642CE1120B00E802FC /* Products */,
 			);
 			sourceTree = "<group>";

@@ -273,70 +273,72 @@ struct TubeistView: View {
                                 )
                             }
 
-                            HStack(alignment: .center, spacing: 10) {
-                                Spacer()
-                                
-                                Text("Select Style")
-                                Picker("Style Selection", selection: $style) {
-                                    ForEach(AVAILABLE_STYLES, id: \.self) { style in
-                                        Text(style)
-                                            .tag(style)
+                            if Purchaser.shared.isProductPurchased("tubeist_lifetime_styling") {
+                                HStack(alignment: .center, spacing: 10) {
+                                    Spacer()
+                                    
+                                    Text("Select Style")
+                                    Picker("Style Selection", selection: $style) {
+                                        ForEach(AVAILABLE_STYLES, id: \.self) { style in
+                                            Text(style)
+                                                .tag(style)
+                                        }
+                                    }
+                                    .pickerStyle(MenuPickerStyle())
+                                    .background(
+                                        RoundedRectangle(cornerRadius: 10)
+                                            .fill(Color.black.opacity(0.6))
+                                    )
+                                    .onAppear {
+                                        style = Settings.style ?? NO_STYLE
+                                    }
+                                    .onChange(of: style) { _, newStyle in
+                                        LOG("Seletected style: \(newStyle)", level: .debug)
+                                        Settings.style = newStyle
+                                        Task {
+                                            await FrameGrabber.shared.refreshStyle()
+                                        }
                                     }
                                 }
-                                .pickerStyle(MenuPickerStyle())
+                                .padding(5)
                                 .background(
-                                    RoundedRectangle(cornerRadius: 10)
-                                        .fill(Color.black.opacity(0.6))
+                                    Rectangle()
+                                        .fill(Color.black.opacity(0.4))
                                 )
-                                .onAppear {
-                                    style = Settings.style ?? NO_STYLE
-                                }
-                                .onChange(of: style) { _, newStyle in
-                                    LOG("Seletected style: \(newStyle)", level: .debug)
-                                    Settings.style = newStyle
-                                    Task {
-                                        await FrameGrabber.shared.refreshStyle()
-                                    }
-                                }
-                            }
-                            .padding(5)
-                            .background(
-                                Rectangle()
-                                    .fill(Color.black.opacity(0.4))
-                            )
-
-                            HStack(alignment: .center, spacing: 10) {
-                                Spacer()
                                 
-                                Text("Select Effect")
-                                Picker("Effect Selection", selection: $effect) {
-                                    ForEach(AVAILABLE_EFFECTS, id: \.self) { effect in
-                                        Text(effect)
-                                            .tag(effect)
+                                HStack(alignment: .center, spacing: 10) {
+                                    Spacer()
+                                    
+                                    Text("Select Effect")
+                                    Picker("Effect Selection", selection: $effect) {
+                                        ForEach(AVAILABLE_EFFECTS, id: \.self) { effect in
+                                            Text(effect)
+                                                .tag(effect)
+                                        }
+                                    }
+                                    .pickerStyle(MenuPickerStyle())
+                                    .background(
+                                        RoundedRectangle(cornerRadius: 10)
+                                            .fill(Color.black.opacity(0.6))
+                                    )
+                                    .onAppear {
+                                        effect = Settings.effect ?? NO_EFFECT
+                                    }
+                                    .onChange(of: effect) { _, newEffect in
+                                        LOG("Seletected effect: \(newEffect)", level: .debug)
+                                        Settings.effect = newEffect
+                                        Task {
+                                            await FrameGrabber.shared.refreshEffect()
+                                        }
                                     }
                                 }
-                                .pickerStyle(MenuPickerStyle())
+                                .padding(5)
                                 .background(
-                                    RoundedRectangle(cornerRadius: 10)
-                                        .fill(Color.black.opacity(0.6))
+                                    Rectangle()
+                                        .fill(Color.black.opacity(0.4))
                                 )
-                                .onAppear {
-                                    effect = Settings.effect ?? NO_EFFECT
-                                }
-                                .onChange(of: effect) { _, newEffect in
-                                    LOG("Seletected effect: \(newEffect)", level: .debug)
-                                    Settings.effect = newEffect
-                                    Task {
-                                        await FrameGrabber.shared.refreshEffect()
-                                    }
-                                }
                             }
-                            .padding(5)
-                            .background(
-                                Rectangle()
-                                    .fill(Color.black.opacity(0.4))
-                            )
-
+                            
                             HStack(alignment: .center, spacing: 10) {
                                 Spacer()
                                 

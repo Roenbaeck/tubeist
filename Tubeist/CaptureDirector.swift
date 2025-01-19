@@ -288,7 +288,11 @@ private class DeviceActor {
             }
             
             // custom controls must be added in a nonisolated context
-            addCustomCameraControls(to: session)
+            Task {
+                if await Purchaser.shared.isProductPurchased("tubeist_lifetime_styling") {
+                    addCustomCameraControls(to: session)
+                }
+            }
             
             Task { @PipelineActor in
                 session.setControlsDelegate(CaptureDirector.shared, queue: CAMERA_CONTROL_QUEUE)

@@ -8,6 +8,7 @@
 import SwiftUI
 import Observation
 import AVFoundation
+import StoreKit
 
 // different views for the iPhone display
 enum Monitor {
@@ -33,6 +34,7 @@ final class AppState {
     var hadToStopStreaming = false
     var streamHealth = StreamHealth.silenced
     var cameraMonitorId = UUID()
+    var availableProducts: [String: Product] = [:]
     
     func refreshCameraView() {
         cameraMonitorId = UUID()
@@ -89,6 +91,17 @@ struct TubeistApp: App {
         appState.isAppInitialization = true
         LOG("Starting Tubeist version \(VERSION_BUILD)", level: .info)
         UIApplication.shared.isIdleTimerDisabled = true
+        Task { [appState] in
+            let products = await Purchaser.shared.fetchProducts()
+            for product in products {
+                LOG("Available product \(product.id)", level: .debug)
+                appState.availableProducts[product.id] = product
+            }
+        }
+        Task {
+            LOG("Checking for previously made purchases", level: .debug)
+            await Purchaser.shared.verifyPurchases()
+        }
     }
 }
 
