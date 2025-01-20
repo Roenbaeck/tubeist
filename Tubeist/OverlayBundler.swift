@@ -153,6 +153,7 @@ final class Overlay: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     private let url: URL
     private let bundler: OverlayBundler
     private var webView: WKWebView?
+    private var mimeType: String?
     private var overlayImage: UIImage?
     private var lastCaptureTime: Date = Date.distantPast
     private var captureTimer: Timer?
@@ -225,10 +226,22 @@ final class Overlay: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     }
     
     // MARK: - WKNavigationDelegate
+    func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse) async -> WKNavigationResponsePolicy {
+        if let mimeType = navigationResponse.response.mimeType {
+            self.mimeType = mimeType
+        }
+        return .allow
+    }
+    
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         LOG("Web view finished loading", level: .info)
         captureWebViewImageOrSchedule()
-
+        
+        guard let mimeType, mimeType.hasSuffix("html") else {
+            LOG("Not detecting DOM changes for non-HTML content")
+            return
+        }
+        
         let script = """
             (function() {
                 // Create a MutationObserver to watch for DOM changes
