@@ -20,7 +20,7 @@ struct CameraMonitorView: UIViewControllerRepresentable {
         viewController.loadViewIfNeeded()
         return viewController
     }
-    
+
     func updateUIViewController(_ uiViewController: UIViewController, context: Context) {
         Task { @MainActor in
             if CameraMonitorView.previewLayer == nil {
@@ -32,15 +32,8 @@ struct CameraMonitorView: UIViewControllerRepresentable {
             
             previewLayer.videoGravity = .resizeAspect
             if let connection = previewLayer.connection {
-                if Settings.cameraStabilization == "Off" {
-                    if connection.isVideoRotationAngleSupported(180) {
-                        connection.videoRotationAngle = 180
-                    }
-                }
-                else {
-                    if connection.isVideoRotationAngleSupported(0) {
-                        connection.videoRotationAngle = 0
-                    }
+                if connection.isVideoRotationAngleSupported(0) {
+                    connection.videoRotationAngle = 0
                 }
             }
 

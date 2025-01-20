@@ -129,7 +129,7 @@ private class DeviceActor {
             return
         }
         self.videoDevice = videoDevice
-
+        
         guard let defaultAudioDevice = AVCaptureDevice.default(for: .audio) else {
             LOG("Could not create audio capture device", level: .error)
             return
