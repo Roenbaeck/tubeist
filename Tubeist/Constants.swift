@@ -12,7 +12,7 @@ import WebKit
 import SwiftUI
 
 // Generic settings
-let YOU_HAVE_IT_ALL: Bool = true // quick override for in-app purchases
+let YOU_HAVE_IT_ALL: Bool = false // quick override for in-app purchases
 let VERSION_BUILD = "\(Bundle.main.appVersion ?? "unknown") (build: \(Bundle.main.appBuild ?? "unknown"))"
 let DEFAULT_MONITOR: Monitor = .camera
 let CAMERA_CONTROL_QUEUE = DispatchQueue(label: "com.subside.Tubeist.CameraControlQueue", qos: .userInteractive)

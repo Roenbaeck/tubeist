@@ -15,17 +15,19 @@ private actor FrameTinkerer {
     private var commandQueue: MTLCommandQueue?
     private var textureCache: CVMetalTextureCache?
     private var kernels: [String: MTLComputePipelineState] = [:]
+    private var threads: [String: MTLSize] = [:]
     private var strengths: [String: (MTLBuffer, UnsafeMutablePointer<Float>)] = [:]
+    private var widths: [String: (MTLBuffer, UnsafeMutablePointer<UInt32>)] = [:]
+    private var heights: [String: (MTLBuffer, UnsafeMutablePointer<UInt32>)] = [:]
     private var frameNumberBuffer: MTLBuffer?
     private var frameNumberPointer: UnsafeMutablePointer<UInt32>?
     // keeping one and the same render destination currently introduces flicker
     private var renderDestination: CIRenderDestination?
     // resettable
     private var frameNumber: UInt32 = 0
-    private var threadGroupSize: MTLSize = MTLSize(width: 16, height: 9, depth: 1)
-    private var threadGroups: MTLSize = MTLSize(
-        width: (DEFAULT_COMPRESSED_WIDTH + 16 - 1) / 16,
-        height: (DEFAULT_COMPRESSED_HEIGHT + 9 - 1) / 9,
+    private var threadsPerGrid: MTLSize = MTLSize(
+        width: DEFAULT_CAPTURE_WIDTH,
+        height: DEFAULT_CAPTURE_HEIGHT,
         depth: 1
     )
 
@@ -79,6 +81,16 @@ private actor FrameTinkerer {
                 if let buffer = metalDevice.makeBuffer(length: MemoryLayout<Float>.size, options: .storageModeShared) {
                     strengths[kernel] = (buffer, buffer.contents().assumingMemoryBound(to: Float.self))
                 }
+                if let buffer = metalDevice.makeBuffer(length: MemoryLayout<UInt32>.size, options: .storageModeShared) {
+                    widths[kernel] = (buffer, buffer.contents().assumingMemoryBound(to: UInt32.self))
+                }
+                if let buffer = metalDevice.makeBuffer(length: MemoryLayout<UInt32>.size, options: .storageModeShared) {
+                    heights[kernel] = (buffer, buffer.contents().assumingMemoryBound(to: UInt32.self))
+                }
+                // calculating optimum threadgroup and grid sizes
+                let w = pipeline.threadExecutionWidth
+                let h = pipeline.maxTotalThreadsPerThreadgroup / w
+                threads[kernel] = MTLSize(width: w, height: h, depth: 1)
             }
             catch {
                 LOG("Could not create compute pipeline state", level: .error)
@@ -97,9 +109,9 @@ private actor FrameTinkerer {
             width = preset.width
             height = preset.height
         }
-        threadGroups = MTLSize(
-            width: (width + threadGroupSize.width - 1) / threadGroupSize.width,
-            height: (height + threadGroupSize.height - 1) / threadGroupSize.height,
+        threadsPerGrid = MTLSize(
+            width: width,
+            height: height,
             depth: 1
         )
     }
@@ -171,8 +183,24 @@ private actor FrameTinkerer {
             frameNumberPointer.pointee = frameNumber
             encoder.setBuffer(frameNumberBuffer, offset: 0, index: 1)
         }
-
-        encoder.dispatchThreadgroups(threadGroups, threadsPerThreadgroup: threadGroupSize)
+        guard let threadsPerThreadgroup = threads[kernel] else {
+            LOG("Threads per threadgroup has not been determined", level: .error)
+            return
+        }
+        guard let (widthBuffer, widthPointer) = widths[kernel] else {
+            LOG("Unable to bind the width buffer", level: .error)
+            return
+        }
+        widthPointer.pointee = UInt32(threadsPerThreadgroup.width)
+        encoder.setBuffer(widthBuffer, offset: 0, index: 2)
+        guard let (heightBuffer, heightPointer) = heights[kernel] else {
+            LOG("Unable to bind the height buffer", level: .error)
+            return
+        }
+        heightPointer.pointee = UInt32(threadsPerThreadgroup.height)
+        encoder.setBuffer(heightBuffer, offset: 0, index: 3)
+        
+        encoder.dispatchThreads(threadsPerGrid, threadsPerThreadgroup: threadsPerThreadgroup)
         encoder.endEncoding()
         commandBuffer.commit()
     }

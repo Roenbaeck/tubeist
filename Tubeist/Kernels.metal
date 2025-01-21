@@ -1,15 +1,10 @@
 #include <metal_stdlib>
 using namespace metal;
 
-// we need these to adress the problem of reading neighboring pixel values already overwritten by another thread
-constant uint THREADGROUP_WIDTH = 16 * 16;
-constant uint THREADGROUP_HEIGHT = 9 * 9;
-
 /* -------------=============== STYLES ===============------------- */
 kernel void saturation(texture2d<float, access::read_write> yTexture [[texture(0)]],
                        texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
                        constant float &strength [[buffer(0)]],
-                       constant uint &frame [[buffer(1)]],
                        uint2 gid [[thread_position_in_grid]]) {
     float4 luma = yTexture.read(gid);
     float4 chroma = cbcrTexture.read(gid);
@@ -29,7 +24,6 @@ kernel void saturation(texture2d<float, access::read_write> yTexture [[texture(0
 kernel void warmth(texture2d<float, access::read_write> yTexture [[texture(0)]],
                    texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
                    constant float &strength [[buffer(0)]],
-                   constant uint &frame [[buffer(1)]],
                    uint2 gid [[thread_position_in_grid]]) {
     float4 luma = yTexture.read(gid);
     float4 chroma = cbcrTexture.read(gid);
@@ -53,7 +47,6 @@ kernel void warmth(texture2d<float, access::read_write> yTexture [[texture(0)]],
 kernel void film(texture2d<float, access::read_write> yTexture [[texture(0)]],
                  texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
                  constant float &strength [[buffer(0)]],
-                 constant uint &frame [[buffer(1)]],
                  uint2 gid [[thread_position_in_grid]]) {
     float4 luma = yTexture.read(gid);
     float4 chroma = cbcrTexture.read(gid);
@@ -99,7 +92,6 @@ kernel void film(texture2d<float, access::read_write> yTexture [[texture(0)]],
 kernel void blackbright(texture2d<float, access::read_write> yTexture [[texture(0)]],
                         texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
                         constant float &strength [[buffer(0)]],
-                        constant uint &frame [[buffer(1)]],
                         uint2 gid [[thread_position_in_grid]]) {
     float4 luma = yTexture.read(gid);
     
@@ -118,7 +110,6 @@ kernel void blackbright(texture2d<float, access::read_write> yTexture [[texture(
 kernel void space(texture2d<float, access::read_write> yTexture [[texture(0)]],
                   texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
                   constant float &strength [[buffer(0)]],
-                  constant uint &frame [[buffer(1)]],
                   uint2 gid [[thread_position_in_grid]]) {
     float4 luma = yTexture.read(gid);
     float4 chroma = cbcrTexture.read(gid);
@@ -149,7 +140,8 @@ float quantizeNonLinear(float value, float numSteps) {
 kernel void rotoscope(texture2d<float, access::read_write> yTexture [[texture(0)]],
                       texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
                       constant float &strength [[buffer(0)]],
-                      constant uint &frame [[buffer(1)]],
+                      constant uint &threadgroupWidth [[buffer(2)]],
+                      constant uint &threadgroupHeight [[buffer(3)]],
                       uint2 gid [[thread_position_in_grid]]) {
     
     float edgeThreshold = 0.1;
@@ -175,8 +167,8 @@ kernel void rotoscope(texture2d<float, access::read_write> yTexture [[texture(0)
 
     // Improved edge detection with reduced thread group boundary artifacts
     float2 gradient;
-    gradient.x = (gid.x % THREADGROUP_WIDTH == 0) ? 0.0 : lumaRight - lumaLeft;
-    gradient.y = (gid.y % THREADGROUP_HEIGHT == 0) ? 0.0 : lumaDown - lumaUp;
+    gradient.x = (gid.x % threadgroupWidth == 0) ? 0.0 : lumaRight - lumaLeft;
+    gradient.y = (gid.y % threadgroupHeight == 0) ? 0.0 : lumaDown - lumaUp;
     float edgeStrength = length(gradient);
     
     // Posterization on luma with EDR handling
@@ -243,7 +235,6 @@ kernel void rotoscope(texture2d<float, access::read_write> yTexture [[texture(0)
 kernel void sky(texture2d<float, access::read_write> yTexture [[texture(0)]],
                 texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
                 constant float &strength [[buffer(0)]],
-                constant uint &frame [[buffer(1)]],
                 uint2 gid [[thread_position_in_grid]]) {
     float4 luma = yTexture.read(gid);
     float y = luma.r;
@@ -288,7 +279,6 @@ kernel void sky(texture2d<float, access::read_write> yTexture [[texture(0)]],
 kernel void vignette(texture2d<float, access::read_write> yTexture [[texture(0)]],
                      texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
                      constant float &strength [[buffer(0)]],
-                     constant uint &frame [[buffer(1)]],
                      uint2 gid [[thread_position_in_grid]]) {
     float4 luma = yTexture.read(gid);
     float y = luma.r;
@@ -332,7 +322,6 @@ kernel void vignette(texture2d<float, access::read_write> yTexture [[texture(0)]
 kernel void pixelate(texture2d<float, access::read_write> yTexture [[texture(0)]],
                      texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
                      constant float &strength [[buffer(0)]],
-                     constant uint &frame [[buffer(1)]],
                      uint2 gid [[thread_position_in_grid]]) {
 
     uint width = yTexture.get_width();
