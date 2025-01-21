@@ -2,48 +2,6 @@
 using namespace metal;
 
 /* -------------=============== STYLES ===============------------- */
-kernel void saturation(texture2d<float, access::read_write> yTexture [[texture(0)]],
-                       texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
-                       constant float &strength [[buffer(0)]],
-                       uint2 gid [[thread_position_in_grid]]) {
-    float4 luma = yTexture.read(gid);
-    float4 chroma = cbcrTexture.read(gid);
-    
-    float y = luma.r;
-    float cb = chroma.r;
-    float cr = chroma.g;
-    
-    float newY = y;
-    float newCb = mix(cb, 0.5, strength);
-    float newCr = mix(cr, 0.5, strength);
-    
-    yTexture.write(float4(newY, 0, 0, 0), gid);
-    cbcrTexture.write(float4(newCb, newCr, 0, 0), gid);
-}
-
-kernel void warmth(texture2d<float, access::read_write> yTexture [[texture(0)]],
-                   texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
-                   constant float &strength [[buffer(0)]],
-                   uint2 gid [[thread_position_in_grid]]) {
-    float4 luma = yTexture.read(gid);
-    float4 chroma = cbcrTexture.read(gid);
-    
-    float y = luma.r;
-    float cb = chroma.r;
-    float cr = chroma.g;
-    
-    float  yFactor = 1.03; // Add a touch of brightness
-    float cbFactor = 0.90; // Decrease blue
-    float crFactor = 1.05; // Slightly increase red
-    
-    float newY = mix(y, y * yFactor, strength);
-    float newCb = mix(cb, cb * cbFactor, strength);
-    float newCr = mix(cr, cr * crFactor, strength);
-    
-    yTexture.write(float4(newY, 0, 0, 0), gid);
-    cbcrTexture.write(float4(newCb, newCr, 0, 0), gid);
-}
-
 kernel void film(texture2d<float, access::read_write> yTexture [[texture(0)]],
                  texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
                  constant float &strength [[buffer(0)]],
@@ -319,6 +277,48 @@ kernel void vignette(texture2d<float, access::read_write> yTexture [[texture(0)]
     yTexture.write(float4(darkenedY, 0, 0, 0), gid);
 }
 
+kernel void saturation(texture2d<float, access::read_write> yTexture [[texture(0)]],
+                       texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
+                       constant float &strength [[buffer(0)]],
+                       uint2 gid [[thread_position_in_grid]]) {
+    float4 luma = yTexture.read(gid);
+    float4 chroma = cbcrTexture.read(gid);
+    
+    float y = luma.r;
+    float cb = chroma.r;
+    float cr = chroma.g;
+    
+    float newY = y;
+    float newCb = mix(cb, 0.5, strength);
+    float newCr = mix(cr, 0.5, strength);
+    
+    yTexture.write(float4(newY, 0, 0, 0), gid);
+    cbcrTexture.write(float4(newCb, newCr, 0, 0), gid);
+}
+
+kernel void warmth(texture2d<float, access::read_write> yTexture [[texture(0)]],
+                   texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
+                   constant float &strength [[buffer(0)]],
+                   uint2 gid [[thread_position_in_grid]]) {
+    float4 luma = yTexture.read(gid);
+    float4 chroma = cbcrTexture.read(gid);
+    
+    float y = luma.r;
+    float cb = chroma.r;
+    float cr = chroma.g;
+    
+    float  yFactor = 1.03; // Add a touch of brightness
+    float cbFactor = 0.90; // Decrease blue
+    float crFactor = 1.05; // Slightly increase red
+    
+    float newY = mix(y, y * yFactor, strength);
+    float newCb = mix(cb, cb * cbFactor, strength);
+    float newCr = mix(cr, cr * crFactor, strength);
+    
+    yTexture.write(float4(newY, 0, 0, 0), gid);
+    cbcrTexture.write(float4(newCb, newCr, 0, 0), gid);
+}
+
 kernel void pixelate(texture2d<float, access::read_write> yTexture [[texture(0)]],
                      texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
                      constant float &strength [[buffer(0)]],
@@ -474,4 +474,23 @@ kernel void grain(texture2d<float, access::read_write> yTexture [[texture(0)]],
     newY = clamp(newY, 0.0, 2.0);
     
     yTexture.write(float4(newY, 0, 0, 0), gid);
+}
+
+kernel void push(texture2d<float, access::read_write> yTexture [[texture(0)]],
+                 texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
+                 constant float &strength [[buffer(0)]],
+                 uint2 gid [[thread_position_in_grid]]) {
+    float4 luma = yTexture.read(gid);
+    float4 chroma = cbcrTexture.read(gid);
+    
+    float y = luma.r;
+    float cb = chroma.r;
+    float cr = chroma.g;
+    
+    float newY = pow(y, 1 + strength);
+    float newCb = pow(cb + 0.5, 1.1 + strength) - 0.5;
+    float newCr = pow(cr + 0.5, 1.1 + strength) - 0.5;
+    
+    yTexture.write(float4(newY, 0, 0, 0), gid);
+    cbcrTexture.write(float4(newCb, newCr, 0, 0), gid);
 }
