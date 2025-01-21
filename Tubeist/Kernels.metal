@@ -329,7 +329,7 @@ kernel void pixelate(texture2d<float, access::read_write> yTexture [[texture(0)]
 
     // Calculate the size of the pixelated blocks based on strength.
     // Lower strength means larger blocks, so we invert and scale.
-    float blockSizeFloat = 1.0 + (1.0 - strength) * 31.0; // Adjust 31.0 for max block size
+    float blockSizeFloat = 1.0 + (1.0 - strength) * (width / 42);
     uint blockSize = uint(blockSizeFloat);
 
     // Calculate the top-left coordinate of the pixelated block for the current pixel.
