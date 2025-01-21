@@ -39,7 +39,7 @@ let CG_COLOR_SPACE: CGColorSpace = .init(name: CGColorSpace.itur_2100_HLG)!
 let AV_COLOR_SPACE: AVCaptureColorSpace = .HLG_BT2020
 let BRIGHTER_THAN_WHITE: Color = Color(red: 1.2, green: 1.2, blue: 1.2) // 1.5 was a bit too bright
 let NO_STYLE = "-none-"
-let AVAILABLE_STYLES = [NO_STYLE, "Film", "Blackbright", "Space", "Rotoscope"]
+let AVAILABLE_STYLES = [NO_STYLE, "Film", "Blackbright", "Space", "Rotoscope", "VHS"]
 let NO_EFFECT = "-none-"
 let AVAILABLE_EFFECTS = [NO_EFFECT, "Sky", "Vignette", "Grain", "Warmth", "Saturation", "Push", "Pixelate"]
 

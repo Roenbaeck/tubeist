@@ -487,10 +487,51 @@ kernel void push(texture2d<float, access::read_write> yTexture [[texture(0)]],
     float cb = chroma.r;
     float cr = chroma.g;
     
-    float newY = pow(y, 1 + strength);
-    float newCb = pow(cb + 0.5, 1.1 + strength) - 0.5;
-    float newCr = pow(cr + 0.5, 1.1 + strength) - 0.5;
+    float newY = pow(y, 1.1 + strength);
+    float newCb = pow(cb + 0.5, 1 + strength) - 0.5;
+    float newCr = pow(cr + 0.5, 1 + strength) - 0.5;
     
     yTexture.write(float4(newY, 0, 0, 0), gid);
     cbcrTexture.write(float4(newCb, newCr, 0, 0), gid);
+}
+
+kernel void vhs(texture2d<float, access::read_write> yTexture [[texture(0)]],
+                 texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
+                 constant float &strength [[buffer(0)]],
+                 constant uint &frame [[buffer(1)]],
+                 uint2 gid [[thread_position_in_grid]]) {
+
+    // Get texture dimensions
+    int yWidth = yTexture.get_width();
+    int yHeight = yTexture.get_height();
+    int cbcrWidth = cbcrTexture.get_width();
+    int cbcrHeight = cbcrTexture.get_height();
+
+    // Calculate width and height ratios
+    float widthRatio = (float)yWidth / (float)cbcrWidth;
+    float heightRatio = (float)yHeight / (float)cbcrHeight;
+
+    // Calculate offset in Y-space (same as before, based on Y-texture dimensions)
+    float2 offset = float2(0.01 * strength * yWidth, 0.01 * sin(M_PI_F * frame / 60.0) * yHeight);
+
+    // Convert gid to cbcrTexture coordinates
+    float2 cbcrGidFloat = float2(gid) / float2(widthRatio, heightRatio);
+    int2 cbcrGidBase = int2(floor(cbcrGidFloat)); // Use floor to get integer coordinates
+
+    // Apply offsets in CbCr texture space (you could scale offset too, but simpler to keep it in Y-space and apply to Y-space gid, then convert)
+    int2 cbGid_cbcr = cbcrGidBase + int2(offset.x / widthRatio, offset.y / heightRatio); // Scale offset to CbCr space
+    int2 crGid_cbcr = cbcrGidBase - int2(offset.x / widthRatio, offset.y / heightRatio);
+
+    // Clamp CbCr GIDs to CbCr texture bounds
+    cbGid_cbcr.x = clamp(cbGid_cbcr.x, 0, cbcrWidth - 1);
+    cbGid_cbcr.y = clamp(cbGid_cbcr.y, 0, cbcrHeight - 1);
+    crGid_cbcr.x = clamp(crGid_cbcr.x, 0, cbcrWidth - 1);
+    crGid_cbcr.y = clamp(crGid_cbcr.y, 0, cbcrHeight - 1);
+
+    // Sample Cb and Cr from cbcrTexture using CbCr-space coordinates
+    float4 cbcrSampleCb = cbcrTexture.read(uint2(cbGid_cbcr));
+    float4 cbcrSampleCr = cbcrTexture.read(uint2(crGid_cbcr));
+
+    // Write to cbcrTexture at the CbCr-space gid (corresponding to the original Y-space gid)
+    cbcrTexture.write(float4(cbcrSampleCb.r, cbcrSampleCr.g, 0.0, 0.0), uint2(cbcrGidBase));
 }
