@@ -124,6 +124,7 @@ struct TubeistView: View {
                         .frame(width: width, height: height)
                         .onAppear {
                             Task {
+                                await CameraMonitorView.createPreviewLayer()
                                 await Streamer.shared.startSessions()
                                 appState.refreshCameraView()
                                 updateCameraProperties()

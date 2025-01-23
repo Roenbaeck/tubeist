@@ -10,17 +10,11 @@ import SwiftUI
 struct CameraMonitorView: UIViewControllerRepresentable {
     @MainActor public static private(set) var previewLayer: AVCaptureVideoPreviewLayer?
 
-    init() {
-        Task { @MainActor in
-            if CameraMonitorView.previewLayer == nil {
-                CameraMonitorView.previewLayer = await CameraMonitorView.createPreviewLayer()
-                LOG("Created preview layer", level: .debug)
-            }
+    static func createPreviewLayer() async {
+        if CameraMonitorView.previewLayer == nil {
+            CameraMonitorView.previewLayer = await AVCaptureVideoPreviewLayer(session: CaptureDirector.shared.getSession())
+            LOG("Created video preview layer", level: .debug)
         }
-    }
-    
-    static func createPreviewLayer() async -> AVCaptureVideoPreviewLayer? {
-        await AVCaptureVideoPreviewLayer(session: CaptureDirector.shared.getSession())
     }
     
     func makeUIViewController(context: Context) -> UIViewController {
