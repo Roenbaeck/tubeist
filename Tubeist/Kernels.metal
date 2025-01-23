@@ -505,36 +505,72 @@ kernel void vhs(texture2d<float, access::read_write> yTexture [[texture(0)]],
     int yWidth = yTexture.get_width();
     int yHeight = yTexture.get_height();
 
-    // --- VHS Banding Implementation ---
-    float bandIntensity = strength; // Use strength to control banding intensity
-    int bandHeight = max(1, int(bandIntensity * 8.0)); // Adjust band height based on strength, minimum 1 pixel
+    // --- VHS Banding Implementation --- (Existing code, keeping it)
+    float bandIntensity = strength;
+    int bandHeight = max(1, int(bandIntensity * 8.0));
     int bandIndex = gid.y / bandHeight;
 
-    float bandingFactor = 1.0; // Default no change
+    float bandingFactor = 1.0;
 
-    // Introduce non-uniformity and frame-dependent variation
     float noise = fract(sin(dot(float2(gid) + float2(frame * 0.5), float2(12.9898, 78.233))) * 43758.5453);
-    float randomOffset = (noise - 0.5) * 0.1 * bandIntensity; // Small random offset, scaled by strength
+    float randomOffset = (noise - 0.5) * 0.1 * bandIntensity;
 
-    if (bandIndex % 2 == 0) { // Even bands - slightly darker
-        bandingFactor = max(0.7, 1.0 - (0.1 * bandIntensity) - randomOffset); // Darker, but not too dark, and with random offset
-    } else {             // Odd bands - slightly brighter or closer to original
-        bandingFactor = min(1.3, 1.0 + (0.05 * bandIntensity) + randomOffset); // Brighter, but capped, and with random offset
+    if (bandIndex % 2 == 0) {
+        bandingFactor = max(0.7, 1.0 - (0.1 * bandIntensity) - randomOffset);
+    } else {
+        bandingFactor = min(1.3, 1.0 + (0.05 * bandIntensity) + randomOffset);
     }
 
-    // Read the Y value
-    float4 ySample = yTexture.read(gid);
+    // --- VHS Horizontal Edge Distortion ---
+    float distortionAmplitude = strength * 50.0; // Control distortion amplitude with strength
+    float distortionFrequency = 0.02;        // Frequency of the sine wave for distortion
+    float distortionSpeed = 0.01;            // Speed of distortion animation
+
+    float verticalDistortionFactor = 0.0;
+    float verticalNoiseFactor = 0.0;        // Factor for vertical noise
+
+    // Define zones at the top and bottom where distortion and noise occurs (e.g., 4% height at top and bottom)
+    float distortionZoneHeight = yHeight * 0.05f;
+
+    if (gid.y < distortionZoneHeight) {
+        // Top distortion zone - increase distortion/noise towards the very top
+        verticalDistortionFactor = (distortionZoneHeight - gid.y) / distortionZoneHeight; // 1 at top, 0 at zone boundary
+        verticalNoiseFactor = verticalDistortionFactor; // Noise factor same as distortion factor for now - can adjust separately
+    } else if (gid.y > yHeight - distortionZoneHeight) {
+        // Bottom distortion zone - increase distortion/noise towards the very bottom
+        verticalDistortionFactor = (gid.y - (yHeight - distortionZoneHeight)) / distortionZoneHeight; // 0 at zone boundary, 1 at bottom
+        verticalNoiseFactor = verticalDistortionFactor; // Noise factor same as distortion factor for now - can adjust separately
+    }
+
+    // Calculate horizontal distortion offset using sine wave
+    float horizontalDistortion = sin(float(gid.x) * distortionFrequency + frame * distortionSpeed) * distortionAmplitude * verticalDistortionFactor;
+
+    // --- Apply effects to Y texture ---
+    float4 ySample;
+    int2 distortedGidY = int2(gid); // Initialize with original gid for Y texture
+
+    // Apply horizontal distortion to gid.x for Y texture read
+    distortedGidY.x = clamp(int(gid.x + horizontalDistortion), 0, yWidth - 1); // Clamp to texture bounds
+
+    ySample = yTexture.read(uint2(distortedGidY));
     float y = ySample.r;
 
     // Apply banding to the Y value
     y *= bandingFactor;
 
-    // Clamp Y to valid range [0, 1]
-    y = clamp(y, 0.0, 1.0);
+    // --- Add Luma Noise in Distortion Zones ---
+    float edgeNoiseAmount = strength * verticalNoiseFactor; // Control noise amount, scaled by vertical factor and strength
+    float edgeNoise = (fract(sin(dot(float2(gid) + float2(frame * 1.2), float2(54.123, 91.876))) * 43758.5453) - 0.5) * edgeNoiseAmount; // Different noise function for edge noise
+
+    y += edgeNoise;
+    
+    // add some black
+    y = (gid.x + frame) % 10 == 0 ? 0.0 : y;
 
     // Write the modified Y value back to the Y texture
     yTexture.write(float4(y, ySample.gba), gid);
 
+    // --- Apply effects to CbCr texture ---
     int cbcrWidth = cbcrTexture.get_width();
     int cbcrHeight = cbcrTexture.get_height();
 
@@ -542,16 +578,22 @@ kernel void vhs(texture2d<float, access::read_write> yTexture [[texture(0)]],
     float widthRatio = (float)yWidth / (float)cbcrWidth;
     float heightRatio = (float)yHeight / (float)cbcrHeight;
 
-    // Calculate offset in Y-space (same as before, based on Y-texture dimensions)
+    // Calculate offset in Y-space (same as before, based on strength and frame)
     float2 offset = float2(0.01 * strength * yWidth, 0.01 * sin(M_PI_F * frame / 60.0) * yHeight);
 
     // Convert gid to cbcrTexture coordinates
     float2 cbcrGidFloat = float2(gid) / float2(widthRatio, heightRatio);
-    int2 cbcrGidBase = int2(floor(cbcrGidFloat)); // Use floor to get integer coordinates
+    int2 cbcrGidBase = int2(floor(cbcrGidFloat));
 
-    // Apply offsets in CbCr texture space (you could scale offset too, but simpler to keep it in Y-space and apply to Y-space gid, then convert)
-    int2 cbGid_cbcr = cbcrGidBase + int2(offset.x / widthRatio, offset.y / heightRatio); // Scale offset to CbCr space
-    int2 crGid_cbcr = cbcrGidBase - int2(offset.x / widthRatio, offset.y / heightRatio);
+    // --- Apply horizontal distortion to CbCr as well ---
+    int2 distortedGidCbCr = cbcrGidBase; // Initialize with base CbCr gid
+
+    // Apply horizontal distortion (same as for Y, but in CbCr space)
+    distortedGidCbCr.x = clamp(int(cbcrGidBase.x + horizontalDistortion / widthRatio), 0, cbcrWidth - 1); // Scale distortion to CbCr space & clamp
+
+    // Apply offsets in CbCr texture space
+    int2 cbGid_cbcr = distortedGidCbCr + int2(offset.x / widthRatio, offset.y / heightRatio); // Use distorted GID here
+    int2 crGid_cbcr = distortedGidCbCr - int2(offset.x / widthRatio, offset.y / heightRatio); // Use distorted GID here
 
     // Clamp CbCr GIDs to CbCr texture bounds
     cbGid_cbcr.x = clamp(cbGid_cbcr.x, 0, cbcrWidth - 1);
@@ -559,10 +601,10 @@ kernel void vhs(texture2d<float, access::read_write> yTexture [[texture(0)]],
     crGid_cbcr.x = clamp(crGid_cbcr.x, 0, cbcrWidth - 1);
     crGid_cbcr.y = clamp(crGid_cbcr.y, 0, cbcrHeight - 1);
 
-    // Sample Cb and Cr from cbcrTexture using CbCr-space coordinates
+    // Sample Cb and Cr from cbcrTexture using distorted CbCr-space coordinates
     float4 cbcrSampleCb = cbcrTexture.read(uint2(cbGid_cbcr));
     float4 cbcrSampleCr = cbcrTexture.read(uint2(crGid_cbcr));
 
-    // Write to cbcrTexture at the CbCr-space gid (corresponding to the original Y-space gid)
-    cbcrTexture.write(float4(cbcrSampleCb.r, cbcrSampleCr.g, 0.0, 0.0), uint2(cbcrGidBase));
+    // Write to cbcrTexture at the original CbCr-space gid (non-distorted base)
+    cbcrTexture.write(float4(cbcrSampleCb.r, cbcrSampleCr.g, 0.0, 0.0), uint2(cbcrGidBase)); // Use non-distorted base for write
 }
