@@ -504,6 +504,37 @@ kernel void vhs(texture2d<float, access::read_write> yTexture [[texture(0)]],
     // Get texture dimensions
     int yWidth = yTexture.get_width();
     int yHeight = yTexture.get_height();
+
+    // --- VHS Banding Implementation ---
+    float bandIntensity = strength; // Use strength to control banding intensity
+    int bandHeight = max(1, int(bandIntensity * 8.0)); // Adjust band height based on strength, minimum 1 pixel
+    int bandIndex = gid.y / bandHeight;
+
+    float bandingFactor = 1.0; // Default no change
+
+    // Introduce non-uniformity and frame-dependent variation
+    float noise = fract(sin(dot(float2(gid) + float2(frame * 0.5), float2(12.9898, 78.233))) * 43758.5453);
+    float randomOffset = (noise - 0.5) * 0.1 * bandIntensity; // Small random offset, scaled by strength
+
+    if (bandIndex % 2 == 0) { // Even bands - slightly darker
+        bandingFactor = max(0.7, 1.0 - (0.1 * bandIntensity) - randomOffset); // Darker, but not too dark, and with random offset
+    } else {             // Odd bands - slightly brighter or closer to original
+        bandingFactor = min(1.3, 1.0 + (0.05 * bandIntensity) + randomOffset); // Brighter, but capped, and with random offset
+    }
+
+    // Read the Y value
+    float4 ySample = yTexture.read(gid);
+    float y = ySample.r;
+
+    // Apply banding to the Y value
+    y *= bandingFactor;
+
+    // Clamp Y to valid range [0, 1]
+    y = clamp(y, 0.0, 1.0);
+
+    // Write the modified Y value back to the Y texture
+    yTexture.write(float4(y, ySample.gba), gid);
+
     int cbcrWidth = cbcrTexture.get_width();
     int cbcrHeight = cbcrTexture.get_height();
 
