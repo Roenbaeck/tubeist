@@ -496,10 +496,10 @@ kernel void push(texture2d<float, access::read_write> yTexture [[texture(0)]],
 }
 
 kernel void vhs(texture2d<float, access::read_write> yTexture [[texture(0)]],
-                 texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
-                 constant float &strength [[buffer(0)]],
-                 constant uint &frame [[buffer(1)]],
-                 uint2 gid [[thread_position_in_grid]]) {
+                texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
+                constant float &strength [[buffer(0)]],
+                constant uint &frame [[buffer(1)]],
+                uint2 gid [[thread_position_in_grid]]) {
 
     // Get texture dimensions
     int yWidth = yTexture.get_width();
@@ -536,10 +536,6 @@ kernel void vhs(texture2d<float, access::read_write> yTexture [[texture(0)]],
         // Top distortion zone - increase distortion/noise towards the very top
         verticalDistortionFactor = (distortionZoneHeight - gid.y) / distortionZoneHeight; // 1 at top, 0 at zone boundary
         verticalNoiseFactor = verticalDistortionFactor; // Noise factor same as distortion factor for now - can adjust separately
-    } else if (gid.y > yHeight - distortionZoneHeight) {
-        // Bottom distortion zone - increase distortion/noise towards the very bottom
-        verticalDistortionFactor = (gid.y - (yHeight - distortionZoneHeight)) / distortionZoneHeight; // 0 at zone boundary, 1 at bottom
-        verticalNoiseFactor = verticalDistortionFactor; // Noise factor same as distortion factor for now - can adjust separately
     }
 
     // Calculate horizontal distortion offset using sine wave
@@ -560,12 +556,27 @@ kernel void vhs(texture2d<float, access::read_write> yTexture [[texture(0)]],
 
     // --- Add Luma Noise in Distortion Zones ---
     float edgeNoiseAmount = strength * verticalNoiseFactor; // Control noise amount, scaled by vertical factor and strength
-    float edgeNoise = (fract(sin(dot(float2(gid) + float2(frame * 1.2), float2(54.123, 91.876))) * 43758.5453) - 0.5) * edgeNoiseAmount; // Different noise function for edge noise
-
-    y += edgeNoise;
+    float edgeNoise = (fract(sin(dot(float2(gid) + float2(frame * 1.2), float2(54.123, 91.876))) * 43758.5453) - 0.5) * edgeNoiseAmount;
     
-    // add some black
-    y = (gid.x + frame) % 10 == 0 ? 0.0 : y;
+    y += edgeNoise * verticalDistortionFactor;
+
+    // --- Horizontal White Line Defects ---
+    float whiteLineProbability = strength * 0.001;  // Probability of a white line per row, adjust scale as needed
+    float whiteLineIntensity = 0.7;                 // Intensity of white lines (additive to luma)
+    float maxLineWidth = yWidth * 0.2;              // Maximum width of white lines in pixels
+
+    float rowRandom = fract(sin(float(gid.y * 13 + frame * 7)) * 43758.5453); // Random per row and frame
+    if (rowRandom < whiteLineProbability) {
+        // Draw a white line
+        float lineWidthRandom = fract(sin(float(gid.y * 31 + frame * 11)) * 43758.5453); // Different random for line width
+        uint lineWidth = max(1, int(lineWidthRandom * maxLineWidth)); // Line width between 1 and maxLineWidth
+        uint offset = min(uint(noise * yWidth), yWidth - lineWidth);
+
+        if (gid.x > offset && gid.x < lineWidth + offset)
+        {
+             y += whiteLineIntensity;
+        }
+    }
 
     // Write the modified Y value back to the Y texture
     yTexture.write(float4(y, ySample.gba), gid);
