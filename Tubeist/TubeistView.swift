@@ -62,6 +62,9 @@ struct TubeistView: View {
     @State private var isCameraReady = false
     @State private var showSplashScreen = true
     @State private var splashOpacity: Double = 1.0
+    @State private var fadeMessage: String?
+    @State private var fadeOpacity: Double = 1.0
+    @State private var fading: DispatchWorkItem?
     
     @State private var startMagnification: CGFloat?
     private var magnification: some Gesture {
@@ -88,7 +91,14 @@ struct TubeistView: View {
                 startMagnification = nil
             }
     }
-    
+
+    func fade(_ message: String) {
+        fading?.cancel()
+        fading?.wait()
+        fadeOpacity = 1.0
+        fadeMessage = message
+    }
+
     func updateCameraProperties() {
         Task {
             // Passing Binding<variable> to a singleton is fine
@@ -217,7 +227,7 @@ struct TubeistView: View {
                                 LOG("Viewing output monitor", level: .info)
                             }
                     }
-                                        
+                                                            
                     if showJournal {
                         JournalView()
                             .frame(width: width, height: height)
@@ -231,6 +241,23 @@ struct TubeistView: View {
                                 .font(.system(size: 30))
                                 .foregroundColor(Color.yellow)
                                 .fontWeight(.black)
+                        }
+                        if let fadeMessage {
+                            Text(fadeMessage)
+                                .fontWeight(.bold)
+                                .font(.system(size: 24))
+                                .foregroundColor(ULTRAYELLOW)
+                                .opacity(fadeOpacity)
+                                .onAppear {
+                                    fading = DispatchWorkItem {
+                                        withAnimation(.easeInOut(duration: 2.0).delay(4.0)) {
+                                            fadeOpacity = 0.0
+                                        } completion: {
+                                            self.fadeMessage = nil
+                                        }
+                                    }
+                                    fading?.perform()
+                                }
                         }
                         SystemMetricsView()
                             .offset(y: 3)
@@ -506,9 +533,9 @@ struct TubeistView: View {
                     }
                 }
                 .frame(width: width, height: height)
-
+                
                 // Vertical Small Button Column
-                VStack(spacing: 2) {
+                VStack(spacing: 5) {
 
                     Spacer()
 
@@ -524,9 +551,6 @@ struct TubeistView: View {
                     } message: {
                         Text(appState.isBatterySavingOn ? "Turning off battery saving will enable convenience features at the cost of higher battery consumption." : "Turning on battery saving will reduce everything not necessary for the streaming to a minimum.")
                     }
-                    Text("PWRSV")
-                        .font(.system(size: 8))
-                        .padding(.bottom, 3)
                     
                     SmallButton(imageName: appState.activeMonitor == .output ? "camera.fill" : "camera",
                                 foregroundColor: appState.activeMonitor == .output || showCameraPicker ? .yellow : .white) {
@@ -536,10 +560,6 @@ struct TubeistView: View {
                         }
                     }
                     
-                    Text("CAMRA")
-                        .font(.system(size: 8))
-                        .padding(.bottom, 3)
-
                     SmallButton(imageName: appState.isStabilizationOn ? "hand.raised.fill" : "hand.raised.slash",
                                 foregroundColor: showStabilizationPicker ? .yellow : .white) {
                         Task {
@@ -550,91 +570,78 @@ struct TubeistView: View {
                             }
                         }
                     }
-                    Text("STBZN")
-                        .font(.system(size: 8))
-                        .padding(.bottom, 3)
 
                     SmallButton(imageName: appState.isFocusLocked ? "viewfinder.circle.fill" : "viewfinder.circle",
                                 foregroundColor: appState.isFocusLocked ? .yellow : .white) {
                         appState.isFocusLocked.toggle()
                         enableFocusAndExposureTap = appState.isExposureLocked || appState.isFocusLocked
                         if appState.isFocusLocked {
+                            fade("Focus locked: tap to set focus")
                             Task {
                                 await CaptureDirector.shared.lockFocus()
                             }
                         }
                         else {
+                            fade("Focus unlocked: autofocusing")
                             Task {
                                 await CaptureDirector.shared.autoFocus()
                             }
                         }
                     }
-                    Text("FOCUS")
-                        .font(.system(size: 8))
-                        .padding(.bottom, 3)
 
                     SmallButton(imageName: appState.isExposureLocked ? "sun.max.fill" : "sun.max",
                                 foregroundColor: appState.isExposureLocked ? .yellow : .white) {
                         appState.isExposureLocked.toggle()
                         enableFocusAndExposureTap = appState.isExposureLocked || appState.isFocusLocked
                         if appState.isExposureLocked {
+                            fade("Exposure locked: tap to set exposure")
                             Task {
                                 await CaptureDirector.shared.lockExposure()
                             }
                         }
                         else {
+                            fade("Exposure unlocked: automatic exposure")
                             Task {
                                 await CaptureDirector.shared.autoExposure()
                             }
                         }
                     }
-                    Text("EXPSR")
-                        .font(.system(size: 8))
-                        .padding(.bottom, 3)
 
                     SmallButton(imageName: appState.isWhiteBalanceLocked ? "square.and.arrow.down.fill" : "square.and.arrow.down",
                                 foregroundColor: appState.isWhiteBalanceLocked ? .yellow : .white) {
                         appState.isWhiteBalanceLocked.toggle()
                         if appState.isWhiteBalanceLocked {
+                            fade("White balance locked at current value")
                             Task {
                                 await CaptureDirector.shared.lockWhiteBalance()
                             }
                         }
                         else {
+                            fade("Automatically adjusted white balance")
                             Task {
                                 await CaptureDirector.shared.autoWhiteBalance()
                             }
                         }
-                        
-                         
                     }
-                    Text("WHITE")
-                        .font(.system(size: 8))
-                        .padding(.bottom, 3)
 
                     SmallButton(imageName: appState.areOverlaysHidden ? "rectangle.on.rectangle" : "rectangle.on.rectangle.fill",
                                 foregroundColor: appState.areOverlaysHidden ? .yellow : .white) {
                         appState.areOverlaysHidden.toggle()
+                        fade(appState.areOverlaysHidden ? "Overlays are now hidden" : "Overlays are now visible")
                         Settings.hideOverlays = appState.areOverlaysHidden
                         OverlayBundler.shared.refreshCombinedImage()
                     }
-                    Text(appState.areOverlaysHidden ? "HIDDN" : "OVRLY")
-                        .font(.system(size: 8))
-                        .padding(.bottom, 3)
 
                     SmallButton(imageName: "text.quote",
                                 foregroundColor: showJournal ? .yellow : Journal.publisher.hasErrors ? .red : .white) {
                         showJournal.toggle()
                     }
-                    Text("JORNL")
-                        .font(.system(size: 8))
-                        .padding(.bottom, 3)
 
                     Spacer()
                 }
                 .frame(width: 30) // Width based on button size and padding
                 .padding(.leading, 10)
-                    
+                                    
                 Spacer().overlay {
                     if appState.isExposureLocked {
                         CameraControlSlider(

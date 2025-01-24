@@ -38,6 +38,7 @@ let AUDIO_SAMPLE_RATE: Double = 44_100 // enough given that we are using an iPho
 let CG_COLOR_SPACE: CGColorSpace = .init(name: CGColorSpace.itur_2100_HLG)!
 let AV_COLOR_SPACE: AVCaptureColorSpace = .HLG_BT2020
 let BRIGHTER_THAN_WHITE: Color = Color(red: 1.2, green: 1.2, blue: 1.2) // 1.5 was a bit too bright
+let ULTRAYELLOW: Color = Color(red: 1.2, green: 1.1, blue: 0)
 let NO_STYLE = "-none-"
 let AVAILABLE_STYLES = [NO_STYLE, "Film", "Blackbright", "Space", "Rotoscope", "VHS"] 
 let NO_EFFECT = "-none-"
