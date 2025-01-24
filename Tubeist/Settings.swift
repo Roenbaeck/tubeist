@@ -5,6 +5,7 @@
 //  Created by Lars Rönnbäck on 2024-12-04.
 //
 import SwiftUI
+import AVFoundation
 
 struct Preset: Codable, Equatable, Identifiable, Hashable {
     var id: String { name }
@@ -209,6 +210,15 @@ struct SettingsView: View {
     var body: some View {
         NavigationView {
             Form {
+                if !Settings.hasCameraPermission() || !Settings.hasMicrophonePermission() {
+                    Button("Click here and grant Camera and Microphone access in the settings to use the app") {
+                        Settings.openSystemSettings()
+                    }
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .multilineTextAlignment(.center)
+                    .foregroundColor(Color.red)
+                }
+
                 Section(header: Text("HLS Server and Credentials"), footer: Text("Enter the URI of the HLS relay server and corresponding login details. The server can be downloaded from https://github.com/Roenbaeck/hls-relay.")) {
                     TextField("HLS Server URI", text: $hlsServer)
                         .keyboardType(.URL)
@@ -433,7 +443,7 @@ struct SettingsView: View {
                         appState.activeMonitor = newValue
                     }
                 }
-                
+                                
                 if !Purchaser.shared.isProductPurchased("tubeist_lifetime_styling") {
                     if let product = appState.availableProducts["tubeist_lifetime_styling"] {
                         Section(header: Text("In-App Purchases"), footer: Text("This set of styles and effects is the only unlockable content in this app, made available at the lowest price possible. Once unlocked you have lifetime access to all styles and effects. It is a small contribution going toward continued app development.")) {
@@ -515,6 +525,47 @@ struct SettingsView: View {
 }
 
 final class Settings: Sendable {
+    static func hasCameraPermission() -> Bool {
+        let cameraAuthorizationStatus = AVCaptureDevice.authorizationStatus(for: .video)
+        switch cameraAuthorizationStatus {
+        case .authorized:
+            return true // Permission granted
+        case .denied, .restricted:
+            return false // Permission explicitly denied or restricted
+        case .notDetermined:
+            // Permission not yet requested (app first launch, or reset)
+            return false // Treat as denied for settings menu check
+        @unknown default:
+            return false // Handle future cases (best practice)
+        }
+    }
+
+    static func hasMicrophonePermission() -> Bool {
+        let microphoneAuthorizationStatus = AVCaptureDevice.authorizationStatus(for: .audio)
+        switch microphoneAuthorizationStatus {
+        case .authorized:
+            return true // Permission granted
+        case .denied, .restricted:
+            return false // Permission explicitly denied or restricted
+        case .notDetermined:
+            // Permission not yet requested
+            return false // Treat as denied for settings menu check
+        @unknown default:
+            return false // Handle future cases (best practice)
+        }
+    }
+
+    static func openSystemSettings() {
+        guard let settingsURL = URL(string: UIApplication.openSettingsURLString) else {
+            return // Settings URL is invalid (shouldn't happen but good to check)
+        }
+        Task { @MainActor in
+            if UIApplication.shared.canOpenURL(settingsURL) {
+                UIApplication.shared.open(settingsURL, options: [:], completionHandler: nil)
+            }
+        }
+    }
+    
     static var selectedPreset: Preset {
         var selectedPreset: Preset?
         if let selectedPresetData = UserDefaults.standard.data(forKey: "SelectedPreset") {

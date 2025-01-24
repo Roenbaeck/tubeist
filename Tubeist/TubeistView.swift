@@ -482,9 +482,14 @@ struct TubeistView: View {
                                         LOG("Stopped streaming engine", level: .info)
                                     }
                                 } else {
-                                    Task {
-                                        await Streamer.shared.startStream()
-                                        LOG("Started streaming engine", level: .info)
+                                    if Settings.hasCameraPermission() && Settings.hasMicrophonePermission() {
+                                        Task {
+                                            await Streamer.shared.startStream()
+                                            LOG("Started streaming engine", level: .info)
+                                        }
+                                    }
+                                    else {
+                                        Settings.openSystemSettings()
                                     }
                                 }
                             }) {
