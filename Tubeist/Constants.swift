@@ -15,6 +15,7 @@ import SwiftUI
 let YOU_HAVE_IT_ALL: Bool = false // quick override for in-app purchases
 let VERSION_BUILD = "\(Bundle.main.appVersion ?? "unknown") (build: \(Bundle.main.appBuild ?? "unknown"))"
 let DEFAULT_MONITOR: Monitor = .camera
+let BATTERY_SAVING_BRIGHTNESS: CGFloat = 0.1
 let CAMERA_CONTROL_QUEUE = DispatchQueue(label: "com.subside.Tubeist.CameraControlQueue", qos: .userInteractive)
 
 @globalActor actor PipelineActor: GlobalActor {

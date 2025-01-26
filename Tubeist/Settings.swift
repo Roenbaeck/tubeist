@@ -194,7 +194,6 @@ struct SettingsView: View {
     @AppStorage("Overlays") private var overlaysData: Data = Data()
     @State private var newOverlayURL: String = ""
     @State private var selectedPreset: Preset? = nil
-    @State private var activeMonitor: Monitor = DEFAULT_MONITOR
     @State private var streamKeyManager = StreamKeyManager()
     @State private var selectedOption: RecordingOption = .streamOnly
 
@@ -432,17 +431,6 @@ struct SettingsView: View {
                         }
                     }
                 }
-
-                Section(header: Text("Active Monitor"), footer: Text("Viewing the output will start half of the rendering pipeline and introduce a lag between what is displayed and what is happning in reality. Use this if you want to confirm that the processed video frames look as expected and see styles in action.")) {
-                    Picker("Select the active monitor", selection: $activeMonitor) {
-                        Text("Camera (view without delay, not styled)").tag(Monitor.camera)
-                        Text("Output (viewing is delayed, but styled)").tag(Monitor.output)
-                    }
-                    .pickerStyle(.segmented)
-                    .onChange(of: activeMonitor) { _, newValue in
-                        appState.activeMonitor = newValue
-                    }
-                }
                                 
                 if !Purchaser.shared.isProductPurchased("tubeist_lifetime_styling") {
                     if let product = appState.availableProducts["tubeist_lifetime_styling"] {
@@ -471,14 +459,12 @@ struct SettingsView: View {
                 Task {
                     await FrameGrabber.shared.resetTinkerer()
                     await Streamer.shared.cycleCamera()
-                    await Streamer.shared.setMonitor(activeMonitor)
                     OverlayBundler.shared.refreshCombinedImage()
                 }
                 presentationMode.wrappedValue.dismiss()
             }
             .buttonStyle(.borderedProminent))
             .onAppear {
-                activeMonitor = appState.activeMonitor
                 if let preset = try? JSONDecoder().decode(Preset.self, from: selectedPresetData) {
                     selectedPreset = preset
                 } else {

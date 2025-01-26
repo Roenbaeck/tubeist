@@ -29,6 +29,12 @@ class Interaction {
     }
 }
 
+// different views for the iPhone display
+enum Monitor {
+    case camera
+    case output
+}
+
 struct TubeistView: View {
     @Environment(AppState.self) var appState
     @State private var overlayManager = OverlaySettingsManager()
@@ -37,6 +43,7 @@ struct TubeistView: View {
     @State private var showBatterySavingConfirmation = false
     @State private var showFocusAndExposureArea = false
     @State private var showCameraPicker = false
+    @State private var showStylingPicker = false
     @State private var showStabilizationPicker = false
     @State private var showJournal = false
     @State private var enableFocusAndExposureTap = false
@@ -65,6 +72,7 @@ struct TubeistView: View {
     @State private var fadeMessage: String?
     @State private var fadeOpacity: Double = 1.0
     @State private var fading: DispatchWorkItem?
+    @State private var lastKnownBrightness: CGFloat = UIScreen.main.brightness
     
     @State private var startMagnification: CGFloat?
     private var magnification: some Gesture {
@@ -221,7 +229,7 @@ struct TubeistView: View {
                         }
                     }
 
-                    if appState.activeMonitor == .output {
+                    if activeMonitor == .output {
                         OutputMonitorView()
                             .onAppear {
                                 LOG("Viewing output monitor", level: .info)
@@ -270,103 +278,35 @@ struct TubeistView: View {
                         Spacer()
 
                         if showCameraPicker {
-                            if !appState.isStreamActive {
-                                HStack(alignment: .center, spacing: 10) {
-                                    Spacer()
-                                    
-                                    Text("Select Camera")
-                                    Picker("Camera Selection", selection: $selectedCamera) {
-                                        ForEach(cameras, id: \.self) { camera in
-                                            Text(camera)
-                                                .tag(camera)
-                                        }
-                                    }
-                                    .pickerStyle(MenuPickerStyle())
-                                    .background(
-                                        RoundedRectangle(cornerRadius: 10)
-                                            .fill(Color.black.opacity(0.6))
-                                    )
-                                    .onChange(of: selectedCamera) { _, newCamera in
-                                        LOG("Seletected camera: \(newCamera)", level: .debug)
-                                        Settings.selectedCamera = newCamera
-                                        Task {
-                                            await Streamer.shared.cycleCamera()
-                                        }
-                                    }
-                                }
-                                .padding(5)
-                                .background(
-                                    Rectangle()
-                                        .fill(Color.black.opacity(0.4))
-                                )
-                            }
-
-                            if Purchaser.shared.isProductPurchased("tubeist_lifetime_styling") {
-                                HStack(alignment: .center, spacing: 10) {
-                                    Spacer()
-                                    
-                                    Text("Select Style")
-                                    Picker("Style Selection", selection: $style) {
-                                        ForEach(AVAILABLE_STYLES, id: \.self) { style in
-                                            Text(style)
-                                                .tag(style)
-                                        }
-                                    }
-                                    .pickerStyle(MenuPickerStyle())
-                                    .background(
-                                        RoundedRectangle(cornerRadius: 10)
-                                            .fill(Color.black.opacity(0.6))
-                                    )
-                                    .onAppear {
-                                        style = Settings.style ?? NO_STYLE
-                                    }
-                                    .onChange(of: style) { _, newStyle in
-                                        LOG("Seletected style: \(newStyle)", level: .debug)
-                                        Settings.style = newStyle
-                                        Task {
-                                            await FrameGrabber.shared.refreshStyle()
-                                        }
-                                    }
-                                }
-                                .padding(5)
-                                .background(
-                                    Rectangle()
-                                        .fill(Color.black.opacity(0.4))
-                                )
+                            HStack(alignment: .center, spacing: 10) {
+                                Spacer()
                                 
-                                HStack(alignment: .center, spacing: 10) {
-                                    Spacer()
-                                    
-                                    Text("Select Effect")
-                                    Picker("Effect Selection", selection: $effect) {
-                                        ForEach(AVAILABLE_EFFECTS, id: \.self) { effect in
-                                            Text(effect)
-                                                .tag(effect)
-                                        }
-                                    }
-                                    .pickerStyle(MenuPickerStyle())
-                                    .background(
-                                        RoundedRectangle(cornerRadius: 10)
-                                            .fill(Color.black.opacity(0.6))
-                                    )
-                                    .onAppear {
-                                        effect = Settings.effect ?? NO_EFFECT
-                                    }
-                                    .onChange(of: effect) { _, newEffect in
-                                        LOG("Seletected effect: \(newEffect)", level: .debug)
-                                        Settings.effect = newEffect
-                                        Task {
-                                            await FrameGrabber.shared.refreshEffect()
-                                        }
+                                Text("Select Camera")
+                                Picker("Camera Selection", selection: $selectedCamera) {
+                                    ForEach(cameras, id: \.self) { camera in
+                                        Text(camera)
+                                            .tag(camera)
                                     }
                                 }
-                                .padding(5)
+                                .pickerStyle(MenuPickerStyle())
                                 .background(
-                                    Rectangle()
-                                        .fill(Color.black.opacity(0.4))
+                                    RoundedRectangle(cornerRadius: 10)
+                                        .fill(Color.black.opacity(0.6))
                                 )
+                                .onChange(of: selectedCamera) { _, newCamera in
+                                    LOG("Seletected camera: \(newCamera)", level: .debug)
+                                    Settings.selectedCamera = newCamera
+                                    Task {
+                                        await Streamer.shared.cycleCamera()
+                                    }
+                                }
                             }
-                            
+                            .padding(5)
+                            .background(
+                                Rectangle()
+                                    .fill(Color.black.opacity(0.4))
+                            )
+
                             HStack(alignment: .center, spacing: 10) {
                                 Spacer()
                                 
@@ -380,15 +320,6 @@ struct TubeistView: View {
                                     RoundedRectangle(cornerRadius: 10)
                                         .fill(Color.black.opacity(0.6))
                                 )
-                                .onAppear {
-                                    activeMonitor = appState.activeMonitor
-                                }
-                                .onChange(of: activeMonitor) { _, newMonitor in
-                                    appState.activeMonitor = newMonitor
-                                    Task {
-                                        await Streamer.shared.setMonitor(activeMonitor)
-                                    }
-                                }
                             }
                             .padding(5)
                             .background(
@@ -426,11 +357,79 @@ struct TubeistView: View {
                                     .fill(Color.black.opacity(0.4))
                             )
                         }
+                        if showStylingPicker {
+                            HStack(alignment: .center, spacing: 10) {
+                                Spacer()
+                                
+                                Text("Select Style")
+                                Picker("Style Selection", selection: $style) {
+                                    ForEach(AVAILABLE_STYLES, id: \.self) { style in
+                                        Text(style)
+                                            .tag(style)
+                                    }
+                                }
+                                .pickerStyle(MenuPickerStyle())
+                                .background(
+                                    RoundedRectangle(cornerRadius: 10)
+                                        .fill(Color.black.opacity(0.6))
+                                )
+                                .onAppear {
+                                    style = Settings.style ?? NO_STYLE
+                                    if activeMonitor == .camera {
+                                        fade("Switch to output viev to preview styling")
+                                    }
+                                }
+                                .onChange(of: style) { _, newStyle in
+                                    LOG("Seletected style: \(newStyle)", level: .debug)
+                                    Settings.style = newStyle
+                                    Task {
+                                        await FrameGrabber.shared.refreshStyle()
+                                    }
+                                }
+                            }
+                            .padding(5)
+                            .background(
+                                Rectangle()
+                                    .fill(Color.black.opacity(0.4))
+                            )
+                            
+                            HStack(alignment: .center, spacing: 10) {
+                                Spacer()
+                                
+                                Text("Select Effect")
+                                Picker("Effect Selection", selection: $effect) {
+                                    ForEach(AVAILABLE_EFFECTS, id: \.self) { effect in
+                                        Text(effect)
+                                            .tag(effect)
+                                    }
+                                }
+                                .pickerStyle(MenuPickerStyle())
+                                .background(
+                                    RoundedRectangle(cornerRadius: 10)
+                                        .fill(Color.black.opacity(0.6))
+                                )
+                                .onAppear {
+                                    effect = Settings.effect ?? NO_EFFECT
+                                }
+                                .onChange(of: effect) { _, newEffect in
+                                    LOG("Seletected effect: \(newEffect)", level: .debug)
+                                    Settings.effect = newEffect
+                                    Task {
+                                        await FrameGrabber.shared.refreshEffect()
+                                    }
+                                }
+                            }
+                            .padding(5)
+                            .background(
+                                Rectangle()
+                                    .fill(Color.black.opacity(0.4))
+                            )
+                        }
                         
                         Spacer()
                     }
                     
-                    if appState.activeMonitor == .output {
+                    if activeMonitor == .output {
                         HStack {
                             VStack {
                                 Spacer()
@@ -511,6 +510,7 @@ struct TubeistView: View {
                                 } else {
                                     if Settings.hasCameraPermission() && Settings.hasMicrophonePermission() {
                                         Task {
+                                            showCameraPicker = false
                                             await Streamer.shared.startStream()
                                             LOG("Started streaming engine", level: .info)
                                         }
@@ -552,11 +552,21 @@ struct TubeistView: View {
                         Text(appState.isBatterySavingOn ? "Turning off battery saving will enable convenience features at the cost of higher battery consumption." : "Turning on battery saving will reduce everything not necessary for the streaming to a minimum.")
                     }
                     
-                    SmallButton(imageName: appState.activeMonitor == .output ? "camera.fill" : "camera",
-                                foregroundColor: appState.activeMonitor == .output || showCameraPicker ? .yellow : .white) {
-                        showCameraPicker.toggle()
-                        if showCameraPicker && showStabilizationPicker {
-                            showStabilizationPicker = false
+                    SmallButton(imageName: appState.isStreamActive ? "camera.fill" : "camera",
+                                foregroundColor: appState.isStreamActive || showCameraPicker ? .yellow : .white) {
+                        if !appState.isStreamActive {
+                            showCameraPicker.toggle()
+                            if showCameraPicker && showStabilizationPicker {
+                                showStabilizationPicker = false
+                            }
+                        }
+                    }
+                    
+                    SmallButton(imageName: activeMonitor == .output ? "slider.horizontal.below.square.and.square.filled" : "slider.horizontal.below.square.filled.and.square",
+                                foregroundColor: activeMonitor == .output ? .yellow : .white) {
+                        activeMonitor = switch activeMonitor {
+                            case .output: .camera
+                            case .camera: .output
                         }
                     }
                     
@@ -568,6 +578,13 @@ struct TubeistView: View {
                             if showStabilizationPicker && showCameraPicker {
                                 showCameraPicker = false
                             }
+                        }
+                    }
+                    
+                    SmallButton(imageName: "camera.filters",
+                                foregroundColor: Purchaser.shared.isProductPurchased("tubeist_lifetime_styling") ? .white : .red) {
+                        if Purchaser.shared.isProductPurchased("tubeist_lifetime_styling") {
+                            showStylingPicker.toggle()
                         }
                     }
 
@@ -722,7 +739,13 @@ struct TubeistView: View {
         .persistentSystemOverlays(.hidden)
         .onChange(of: appState.isBatterySavingOn) { oldValue, newValue in
             appState.isAudioLevelRunning = !appState.isBatterySavingOn
-            UIScreen.main.brightness = appState.isBatterySavingOn ? 0.1 : 1.0
+            if newValue {
+                lastKnownBrightness = UIScreen.main.brightness
+                UIScreen.main.brightness = BATTERY_SAVING_BRIGHTNESS
+            }
+            else {
+                UIScreen.main.brightness = lastKnownBrightness
+            }
             LOG("Battery saving is \(appState.isBatterySavingOn ? "on" : "off")", level: .info)
         }
         .onChange(of: appState.justCameFromBackground) { oldValue, newValue in
@@ -735,6 +758,11 @@ struct TubeistView: View {
                 UNUserNotificationCenter.current().add(request)
                 
                 appState.hadToStopStreaming = false
+            }
+        }
+        .onChange(of: activeMonitor) { _, newMonitor in
+            Task {
+                await Streamer.shared.setMonitor(newMonitor)
             }
         }
         .onAppear {

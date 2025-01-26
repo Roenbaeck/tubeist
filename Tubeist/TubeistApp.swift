@@ -10,16 +10,9 @@ import Observation
 import AVFoundation
 import StoreKit
 
-// different views for the iPhone display
-enum Monitor {
-    case camera
-    case output
-}
-
 // these are my shared variables
 @Observable @MainActor
 final class AppState {
-    var activeMonitor: Monitor = .camera
     var isBatterySavingOn = false
     var isStreamActive = false
     var isAudioLevelRunning = true
@@ -81,6 +74,10 @@ struct TubeistApp: App {
                     appState.justCameFromBackground = true
                     appState.soonGoingToBackground = false
                     LOG("App is coming back from background", level: .debug)
+                    if appState.isBatterySavingOn {
+                        // TODO: This seemms to be undoable due to restrictions for now
+                        UIScreen.main.brightness = BATTERY_SAVING_BRIGHTNESS
+                    }
                 }
             default: break
             }

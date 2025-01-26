@@ -15,6 +15,7 @@ enum StreamHealth {
 
 actor StreamingActor {
     private var appState: AppState?
+    private var activeMonitor: Monitor = DEFAULT_MONITOR
     func setAppState(_ appState: AppState) {
         self.appState = appState
     }
@@ -29,6 +30,12 @@ actor StreamingActor {
             await appState?.isStreamActive = false
         }
     }
+    func setMonitor(_ monitor: Monitor) {
+        activeMonitor = monitor
+    }
+    func getMonitor() -> Monitor {
+        activeMonitor
+    }
     func setStreamHealth(_ health: StreamHealth) {
         Task { @MainActor in
             await appState?.streamHealth = health
@@ -36,9 +43,6 @@ actor StreamingActor {
     }
     func getStreamHealth() async -> StreamHealth {
         await appState?.streamHealth ?? .awaiting
-    }
-    func getMonitor() async -> Monitor {
-        await appState?.activeMonitor ?? .camera
     }
     func isStreaming() async -> Bool {
         await appState?.isStreamActive ?? false
@@ -107,6 +111,7 @@ final class Streamer: Sendable {
     
     func setMonitor(_ monitor: Monitor) async {
         LOG("Setting monitor to \(monitor)", level: .debug)
+        await streamingActor.setMonitor(monitor)
         if monitor == .output, await !isStreaming() {
             LOG("Starting half the streaming pipeline", level: .debug)
             await FrameGrabber.shared.commenceGrabbing()
