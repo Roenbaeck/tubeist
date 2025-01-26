@@ -577,7 +577,7 @@ struct TubeistView: View {
                     }
                     
                     SmallButton(imageName: "camera.filters",
-                                foregroundColor: Purchaser.shared.isProductPurchased("tubeist_lifetime_styling") ? .white : .red) {
+                                foregroundColor: Purchaser.shared.isProductPurchased("tubeist_lifetime_styling") ? showStylingPicker ? .yellow : .white : .red) {
                         if Purchaser.shared.isProductPurchased("tubeist_lifetime_styling") {
                             showStylingPicker.toggle()
                         }
