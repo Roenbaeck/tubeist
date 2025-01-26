@@ -562,7 +562,7 @@ struct TubeistView: View {
                         }
                     }
                     
-                    SmallButton(imageName: activeMonitor == .output ? "slider.horizontal.below.square.and.square.filled" : "slider.horizontal.below.square.filled.and.square",
+                    SmallButton(imageName: activeMonitor == .output ? "square.and.line.vertical.and.square.filled" : "square.filled.and.line.vertical.and.square",
                                 foregroundColor: activeMonitor == .output ? .yellow : .white) {
                         activeMonitor = switch activeMonitor {
                             case .output: .camera
