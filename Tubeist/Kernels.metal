@@ -46,7 +46,6 @@ kernel void film(texture2d<float, access::read_write> yTexture [[texture(0)]],
     cbcrTexture.write(float4(saturate(newCb), saturate(newCr), 0, 0), gid);
 }
 
-
 kernel void blackbright(texture2d<float, access::read_write> yTexture [[texture(0)]],
                         texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
                         constant float &strength [[buffer(0)]],

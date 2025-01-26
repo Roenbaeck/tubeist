@@ -244,6 +244,9 @@ final class Overlay: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         
         let script = """
             (function() {
+                // Ensure transparent background even if set to a specific color
+                document.body.style.backgroundColor = 'transparent';
+        
                 // Create a MutationObserver to watch for DOM changes
                 const observer = new MutationObserver(mutationsList => {
                     // Trigger a Swift callback when a change is detected

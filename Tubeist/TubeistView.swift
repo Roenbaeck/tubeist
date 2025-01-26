@@ -70,8 +70,7 @@ struct TubeistView: View {
     @State private var showSplashScreen = true
     @State private var splashOpacity: Double = 1.0
     @State private var fadeMessage: String?
-    @State private var fadeOpacity: Double = 1.0
-    @State private var fading: DispatchWorkItem?
+    @State private var fading: Bool = false
     @State private var lastKnownBrightness: CGFloat = UIScreen.main.brightness
     
     @State private var startMagnification: CGFloat?
@@ -101,10 +100,15 @@ struct TubeistView: View {
     }
 
     func fade(_ message: String) {
-        fading?.cancel()
-        fading?.wait()
-        fadeOpacity = 1.0
+        LOG(message, level: .debug)
+        fading = false
         fadeMessage = message
+        var transaction = Transaction(animation: .easeInOut(duration: 2.0).delay(1.0))
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            fading = true
+            fadeMessage = nil
+        }
     }
 
     func updateCameraProperties() {
@@ -250,22 +254,13 @@ struct TubeistView: View {
                                 .foregroundColor(Color.yellow)
                                 .fontWeight(.black)
                         }
-                        if let fadeMessage {
-                            Text(fadeMessage)
+                        if let message = fadeMessage {
+                            Text(message)
                                 .fontWeight(.bold)
                                 .font(.system(size: 24))
                                 .foregroundColor(ULTRAYELLOW)
-                                .opacity(fadeOpacity)
-                                .onAppear {
-                                    fading = DispatchWorkItem {
-                                        withAnimation(.easeInOut(duration: 2.0).delay(4.0)) {
-                                            fadeOpacity = 0.0
-                                        } completion: {
-                                            self.fadeMessage = nil
-                                        }
-                                    }
-                                    fading?.perform()
-                                }
+                                .opacity(fading ? 0 : 1)
+                                .animation(.easeInOut(duration: 0.5), value: message)
                         }
                         SystemMetricsView()
                             .offset(y: 3)
