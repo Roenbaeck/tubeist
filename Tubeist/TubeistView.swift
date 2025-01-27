@@ -71,7 +71,6 @@ struct TubeistView: View {
     @State private var splashOpacity: Double = 1.0
     @State private var fadeMessage: String?
     @State private var fading: Bool = false
-    @State private var lastKnownBrightness: CGFloat = UIScreen.main.brightness
     
     @State private var startMagnification: CGFloat?
     private var magnification: some Gesture {
@@ -735,11 +734,11 @@ struct TubeistView: View {
         .onChange(of: appState.isBatterySavingOn) { oldValue, newValue in
             appState.isAudioLevelRunning = !appState.isBatterySavingOn
             if newValue {
-                lastKnownBrightness = UIScreen.main.brightness
+                appState.lastKnownBrightness = UIScreen.main.brightness
                 UIScreen.main.brightness = BATTERY_SAVING_BRIGHTNESS
             }
             else {
-                UIScreen.main.brightness = lastKnownBrightness
+                UIScreen.main.brightness = appState.lastKnownBrightness
             }
             LOG("Battery saving is \(appState.isBatterySavingOn ? "on" : "off")", level: .info)
         }

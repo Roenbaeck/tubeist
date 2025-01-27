@@ -28,7 +28,8 @@ final class AppState {
     var streamHealth = StreamHealth.silenced
     var cameraMonitorId = UUID()
     var availableProducts: [String: Product] = [:]
-    
+    var lastKnownBrightness: CGFloat = UIScreen.main.brightness
+
     func refreshCameraView() {
         cameraMonitorId = UUID()
     }
@@ -73,11 +74,8 @@ struct TubeistApp: App {
                 if !appState.justCameFromBackground, !appState.isAppInitialization {
                     appState.justCameFromBackground = true
                     appState.soonGoingToBackground = false
+                    appState.isBatterySavingOn = false
                     LOG("App is coming back from background", level: .debug)
-                    if appState.isBatterySavingOn {
-                        // TODO: This seemms to be undoable due to restrictions for now
-                        UIScreen.main.brightness = BATTERY_SAVING_BRIGHTNESS
-                    }
                 }
             default: break
             }
