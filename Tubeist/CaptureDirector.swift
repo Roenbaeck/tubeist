@@ -37,6 +37,15 @@ private class DeviceActor {
     private var stabilizations: [String: AVCaptureVideoStabilizationMode] = [:]
     // guards
     private let setupLock = NSLock()
+    // states
+    private var isOutputting: Bool = false
+    
+    func setOutputting(_ isOutputting: Bool) {
+        self.isOutputting = isOutputting
+    }
+    func getOutputting() -> Bool {
+        return self.isOutputting
+    }
 
     init() {
         var cameraDevicesByName: [String: AVCaptureDevice.DeviceType] = [:]
@@ -663,10 +672,15 @@ final class CaptureDirector: NSObject, Sendable {
     func startOutput() async {
         await deviceActor.startAudioOutput() // start audio first, to ensure we get audio samples with the video
         await deviceActor.startVideoOutput()
+        await deviceActor.setOutputting(true)
     }
     func stopOutput() async {
+        await deviceActor.setOutputting(false)
         await deviceActor.stopVideoOutput()
         await deviceActor.stopAudioOutput()
+    }
+    func isOutputting() async -> Bool {
+        await deviceActor.getOutputting()
     }
     func getAudioChannels() async -> [AVCaptureAudioChannel] {
         return await deviceActor.getAudioChannels()
