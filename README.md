@@ -1,4 +1,4 @@
-<img src="https://github.com/Roenbaeck/tubeist/blob/8dc94e3895936ae2c1c6d8ac17cb4d7cbd5aedec/Tubeist/Assets.xcassets/AppIcon.appiconset/TubeistIcon.png" alt="Tubeist icon" width="110" height="110">
+<img src="https://github.com/Roenbaeck/tubeist/blob/8dc94e3895936ae2c1c6d8ac17cb4d7cbd5aedec/Tubeist/Assets.xcassets/AppIcon.appiconset/TubeistIcon.png" alt="Tubeist icon" width="110" height="110">&nbsp;&nbsp;&nbsp;<a href="https://apps.apple.com/us/app/tubeist/id6740208994"><img src="https://github.com/Roenbaeck/tubeist/blob/a706314e3155cb0dbda8ef6c0ac0965b5883a55b/Download_AppStore.svg"/></a>
 
 # Tubeist
 
