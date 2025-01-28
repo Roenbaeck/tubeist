@@ -571,6 +571,7 @@ struct TubeistView: View {
                             case .output: .camera
                             case .camera: .output
                         }
+                        fade("Switching to \(activeMonitor) monitor")
                     }
 
                     SmallButton(imageName: "camera.filters",
