@@ -14,6 +14,8 @@ private actor FrameTinkerer {
     private var metalDevice: MTLDevice?
     private var commandQueue: MTLCommandQueue?
     private var textureCache: CVMetalTextureCache?
+    private var lumaTexture: CVMetalTexture?
+    private var chromaTexture: CVMetalTexture?
     private var kernels: [String: MTLComputePipelineState] = [:]
     private var threads: [String: MTLSize] = [:]
     private var strengths: [String: (MTLBuffer, UnsafeMutablePointer<Float>)] = [:]
@@ -21,6 +23,11 @@ private actor FrameTinkerer {
     private var heights: [String: (MTLBuffer, UnsafeMutablePointer<UInt32>)] = [:]
     private var frameNumberBuffer: MTLBuffer?
     private var frameNumberPointer: UnsafeMutablePointer<UInt32>?
+    // overlay imprinting
+    private var combinedOverlay: MTLTexture?
+    private var imprintPipeline: MTLComputePipelineState?
+    private var boundingBoxData: [(MTLBuffer, MTLSize, MTLSize)] = []
+    
     // keeping one and the same render destination currently introduces flicker
     private var renderDestination: CIRenderDestination?
     // resettable
@@ -33,7 +40,7 @@ private actor FrameTinkerer {
 
     init() {
         guard let metalDevice = MTLCreateSystemDefaultDevice(),
-        let commandQueue = metalDevice.makeCommandQueue() else {
+              let commandQueue = metalDevice.makeCommandQueue() else {
             context = CIContext(
                 options: [
                     .useSoftwareRenderer: true,
@@ -52,7 +59,7 @@ private actor FrameTinkerer {
                 .memoryTarget: 512
             ])
         LOG("Created rendering context with Metal support", level: .info)
-
+        commandQueue.label = "FrameTinkerer"
         self.metalDevice = metalDevice
         self.commandQueue = commandQueue
         var textureCache: CVMetalTextureCache?
@@ -72,7 +79,7 @@ private actor FrameTinkerer {
                                                    
         for kernel in kernelNames {
             guard let function = library?.makeFunction(name: kernel.lowercased()) else {
-                LOG("Could not make function with the shader source provided", level: .error)
+                LOG("Could not make function out of kernel code '\(kernel)'", level: .error)
                 return
             }
             do {
@@ -93,9 +100,18 @@ private actor FrameTinkerer {
                 threads[kernel] = MTLSize(width: w, height: h, depth: 1)
             }
             catch {
-                LOG("Could not create compute pipeline state", level: .error)
+                LOG("Failed to create pipeline state: \(error)", level: .error)
                 return
             }
+        }
+        guard let function = library?.makeFunction(name: "imprint") else {
+            LOG("Could not make function out of imprint kernel", level: .error)
+            return
+        }
+        do {
+            imprintPipeline = try metalDevice.makeComputePipelineState(function: function)
+        } catch {
+            LOG("Failed to create pipeline state: \(error)", level: .error)
         }
     }
     
@@ -116,15 +132,92 @@ private actor FrameTinkerer {
         )
     }
     
-    func apply(kernel: String, strength: Float, onto sampleBuffer: CMSampleBuffer) {
-        frameNumber += 1
-        frameNumber = frameNumber % 600 // restart counter every 600 frames
+    func setCombinedOverlay(_ combinedOverlay: CombinedOverlay?) {
+        guard let combinedOverlay else {
+            self.combinedOverlay = nil
+            return
+        }
+        guard let metalDevice, let imprintPipeline else {
+            LOG("Metal device has not been initialized", level: .error)
+            return
+        }
+
+        boundingBoxData = [] // reset data and precalculate these again
+        let w = imprintPipeline.threadExecutionWidth
+        let h = imprintPipeline.maxTotalThreadsPerThreadgroup / w
+        let threadsPerThreadgroup = MTLSizeMake(w, h, 1)
+
+        if combinedOverlay.coverage > 0.75 {
+            let boxBuffer = metalDevice.makeBuffer(length: MemoryLayout<SIMD2<Float>>.size, options: .storageModeShared)
+            let boxPointer = boxBuffer?.contents().assumingMemoryBound(to: SIMD2<Float>.self)
+            boxPointer?.pointee = SIMD2<Float>(Float(0), Float(0))
+
+            let threadsPerGrid = MTLSize(
+                width: Int(combinedOverlay.image.extent.width),
+                height: Int(combinedOverlay.image.extent.height),
+                depth: 1
+            )
+            
+            if let boxBuffer {
+                boundingBoxData.append((boxBuffer, threadsPerGrid, threadsPerThreadgroup))
+            }
+            LOG("Created Metal buffer for the entire overlay", level: .debug)
+        }
+        else {
+            for box in combinedOverlay.boundingBoxes {
+                // Set buffer for bounding boxes
+                let boxBuffer = metalDevice.makeBuffer(length: MemoryLayout<SIMD2<Float>>.size, options: .storageModeShared)
+                let boxPointer = boxBuffer?.contents().assumingMemoryBound(to: SIMD2<Float>.self)
+                boxPointer?.pointee = SIMD2<Float>(Float(box.origin.x), Float(box.origin.y))
+                
+                let threadsPerGrid = MTLSize(
+                    width: Int(box.size.width),
+                    height: Int(box.size.height),
+                    depth: 1
+                )
+                
+                if let boxBuffer {
+                    boundingBoxData.append((boxBuffer, threadsPerGrid, threadsPerThreadgroup))
+                }
+            }
+            LOG("Created Metal buffers for \(boundingBoxData.count) bounding boxes in the overlay", level: .debug)
+        }
+        
+        let image = combinedOverlay.image
+        
+        // create a texture from the CIImage
+        let width = Int(image.extent.width)
+        let height = Int(image.extent.height)
+
+        // 3. Create a MTLTextureDescriptor
+        let textureDescriptor = MTLTextureDescriptor()
+        textureDescriptor.pixelFormat = .rgba16Unorm // Or choose the appropriate format based on your CIImage
+        textureDescriptor.width = width
+        textureDescriptor.height = height
+        textureDescriptor.usage = [.shaderRead, .shaderWrite, .renderTarget] // Adjust usage as needed
+
+        guard let texture = metalDevice.makeTexture(descriptor: textureDescriptor) else {
+            LOG("Could not create Metal texture from the combined overlay", level: .error)
+            return
+        }
+        guard let commandQueue, let commandBuffer = commandQueue.makeCommandBuffer() else {
+            LOG("Could not create command buffer to render the combined overlay", level: .error)
+            return
+        }
+        context.render(image, to: texture, commandBuffer: commandBuffer, bounds: image.extent, colorSpace: image.colorSpace ?? CG_COLOR_SPACE)
+
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
+
+        self.combinedOverlay = texture
+    }
+    
+    func updateTextures(from sampleBuffer: CMSampleBuffer) {
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer),
               let textureCache = textureCache else {
             LOG("Could not get pixel buffer from sample buffer", level: .error)
             return
         }
-        
         var lumaTexture: CVMetalTexture?
         CVMetalTextureCacheCreateTextureFromImage(
             kCFAllocatorDefault,
@@ -137,6 +230,7 @@ private actor FrameTinkerer {
             0,
             &lumaTexture
         )
+        self.lumaTexture = lumaTexture
 
         var chromaTexture: CVMetalTexture?
         CVMetalTextureCacheCreateTextureFromImage(
@@ -150,6 +244,12 @@ private actor FrameTinkerer {
             1,
             &chromaTexture
         )
+        self.chromaTexture = chromaTexture
+    }
+    
+    func apply(kernel: String, strength: Float, onto sampleBuffer: CMSampleBuffer) {
+        frameNumber += 1
+        frameNumber = frameNumber % 600 // restart counter every 600 frames
 
         guard let lumaTexture,
               let chromaTexture,
@@ -205,46 +305,39 @@ private actor FrameTinkerer {
         commandBuffer.commit()
     }
 
-    func imprint(overlay combinedOverlay: CombinedOverlay, onto sampleBuffer: CMSampleBuffer) {
-        guard let videoPixelBuffer = sampleBuffer.imageBuffer else {
-            LOG("Unable to get pixel buffer from sample buffer", level: .error)
+    func imprintOverlay(onto sampleBuffer: CMSampleBuffer) {
+        guard let combinedOverlay else {
+            return // quick return if there is no overlay to imprint
+        }
+
+        guard let lumaTexture,
+              let chromaTexture,
+              let yTexture = CVMetalTextureGetTexture(lumaTexture),
+              let cbcrTexture = CVMetalTextureGetTexture(chromaTexture)
+        else {
+            LOG("Could not create a texture from the pixel buffer planes", level: .error)
             return
         }
         
-        let destination = CIRenderDestination(pixelBuffer: videoPixelBuffer)
-        destination.blendKernel = CIBlendKernel.sourceOver
-        destination.blendsInDestinationColorSpace = true
-        destination.alphaMode = .unpremultiplied
-
-        do {
-            var renderTasks: [CIRenderTask] = []
-            // if more than 75% of the image has visuals, draw the entire image in one sweep
-            if combinedOverlay.coverage > 0.75 {
-                let task = try self.context.startTask(
-                    toRender: combinedOverlay.image,
-                    to: destination
-                )
-                renderTasks.append(task)
-            }
-            // otherwise draw each bounding box separately
-            else {
-                for boundingBox in combinedOverlay.boundingBoxes {
-                    let task = try self.context.startTask(
-                        toRender: combinedOverlay.image,
-                        from: boundingBox,
-                        to: destination,
-                        at: boundingBox.origin
-                    )
-                    renderTasks.append(task)
-                }
-            }
-            for renderTask in renderTasks {
-                try renderTask.waitUntilCompleted()
-            }
-        } catch {
-            LOG("Error rendering overlay: \(error)", level: .error)
+        guard let commandBuffer = commandQueue?.makeCommandBuffer(),
+              let encoder = commandBuffer.makeComputeCommandEncoder(),
+              let imprintPipeline else {
+            LOG("Could not create a commmand buffer, encoder, or imprint pipeline", level: .error)
+            return
         }
 
+        encoder.setComputePipelineState(imprintPipeline)
+        encoder.setTexture(yTexture, index: 0)
+        encoder.setTexture(cbcrTexture, index: 1)
+        encoder.setTexture(combinedOverlay, index: 2)
+
+        for (boxBuffer, threadsPerGrid, threadsPerThreadgroup) in boundingBoxData {
+            encoder.setBuffer(boxBuffer, offset: 0, index: 0)
+            encoder.dispatchThreads(threadsPerGrid, threadsPerThreadgroup: threadsPerThreadgroup)
+        }
+
+        encoder.endEncoding()
+        commandBuffer.commit()
     }
 }
 
@@ -332,6 +425,9 @@ final class FrameGrabber: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
     func setEffectStrength(to strength: Float) async {
         await frameGrabbing.setEffectStrength(strength)
     }
+    func setCombinedOverlay(_ combinedOverlay: CombinedOverlay?) async {
+        await frameTinkerer.setCombinedOverlay(combinedOverlay)
+    }
 
     nonisolated func captureOutput(_ output: AVCaptureOutput,
                        didOutput sampleBuffer: CMSampleBuffer,
@@ -341,15 +437,14 @@ final class FrameGrabber: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
             Task { @PipelineActor [sendableSampleBuffer] in
                 nonisolated(unsafe) let sendableSampleBuffer = sendableSampleBuffer // it's needed again here
                 if await self.frameGrabbing.isActive() {
+                    await self.frameTinkerer.updateTextures(from: sendableSampleBuffer)
                     if let style = await self.frameGrabbing.getStyle() {
                         await self.frameTinkerer.apply(kernel: style, strength: self.frameGrabbing.getStyleStrength(), onto: sendableSampleBuffer)
                     }
                     if let effect = await self.frameGrabbing.getEffect() {
                         await self.frameTinkerer.apply(kernel: effect, strength: self.frameGrabbing.getEffectStrength(), onto: sendableSampleBuffer)
                     }
-                    if let overlay = await OverlayBundler.shared.getOverlay() {
-                        await self.frameTinkerer.imprint(overlay: overlay, onto: sendableSampleBuffer)
-                    }
+                    await self.frameTinkerer.imprintOverlay(onto: sendableSampleBuffer)
                     if await Streamer.shared.isStreaming() {
                         await ContentPackager.shared.appendVideoSampleBuffer(sendableSampleBuffer)
                     }

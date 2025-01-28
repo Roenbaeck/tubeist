@@ -618,3 +618,64 @@ kernel void vhs(texture2d<float, access::read_write> yTexture [[texture(0)]],
     // Write to cbcrTexture at the original CbCr-space gid (non-distorted base)
     cbcrTexture.write(float4(cbcrSampleCb.r, cbcrSampleCr.g, 0.0, 0.0), uint2(cbcrGidBase)); // Use non-distorted base for write
 }
+
+// ----====================== IMPRINTER ======================----
+kernel void imprint(texture2d<float, access::read_write> yTexture [[texture(0)]],
+                    texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
+                    texture2d<float, access::read> overlayTexture [[texture(2)]],
+                    device const float2& offset [[buffer(0)]],  // x, y of bounding box
+                    uint2 gid [[thread_position_in_grid]]) {
+    
+    uint2 texturePosition = uint2(offset.x, offset.y) + gid;
+    float4 overlay = overlayTexture.read(texturePosition);
+    
+    if (overlay.a == 0) {
+        return;
+    }
+    
+    // Get texture dimensions
+    int yWidth = yTexture.get_width();
+    int yHeight = yTexture.get_height();
+    
+    int cbcrWidth = cbcrTexture.get_width();
+    int cbcrHeight = cbcrTexture.get_height();
+    
+    // Calculate width and height ratios
+    int widthRatio = yWidth / cbcrWidth;
+    int heightRatio = yHeight / cbcrHeight;
+        
+    // Read existing Y value from the video frame
+    float4 yPixel = yTexture.read(texturePosition);
+    
+    // BT.2020 RGB to YCbCr conversion https://en.wikipedia.org/wiki/YCbCr
+    float overlay_y  = 0.2627 * overlay.r + 0.6780 * overlay.g + 0.0593 * overlay.b;
+    float overlay_alpha = overlay.a;
+    float clamped_chroma_y = clamp(yPixel.r, 0.0, 1.0);
+
+    // Alpha blending (1.2 instead of 1.0 is gamma adjustment)
+    float blended_y  = (overlay_y * overlay_alpha) + (clamped_chroma_y * (1.2 - overlay_alpha));
+    
+    yTexture.write(float4(blended_y, 0.0, 0.0, 1.0), texturePosition);
+    
+    // Only perform chroma-related calculations and writes when necessary
+    if ((texturePosition.x % widthRatio == 0) && (texturePosition.y % heightRatio == 0)) {
+        // Convert gid to cbcrTexture coordinates
+        uint2 cbcrGid = texturePosition / uint2(widthRatio, heightRatio);
+
+        // Read existing CbCr values from the video frame
+        float4 cbcrPixel = cbcrTexture.read(cbcrGid);
+
+        // BT.2020 RGB to YCbCr conversion https://en.wikipedia.org/wiki/YCbCr
+        float overlay_cb = (overlay.b - overlay_y) / 1.8814 + 0.5;
+        float overlay_cr = (overlay.r - overlay_y) / 1.4746 + 0.5;
+
+        float clamped_chroma_cb = clamp(cbcrPixel.r, 0.0, 1.0);
+        float clamped_chroma_cr = clamp(cbcrPixel.g, 0.0, 1.0);
+
+        // Alpha blending
+        float blended_cb = (overlay_cb * overlay_alpha) + (clamped_chroma_cb * (1.0 - overlay_alpha));
+        float blended_cr = (overlay_cr * overlay_alpha) + (clamped_chroma_cr * (1.0 - overlay_alpha));
+        
+        cbcrTexture.write(float4(blended_cb, blended_cr, 0.0, 1.0), cbcrGid);
+    }
+}

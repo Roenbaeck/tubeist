@@ -133,7 +133,8 @@ extension UIImage {
         
         return CGRect(
             x: boxX,
-            y: originalHeight - boxY - boxHeight, // flip coordinate system
+            y: boxY,
+//            y: originalHeight - boxY - boxHeight, // flip coordinate system
             width: boxWidth,
             height: boxHeight
         )
@@ -343,28 +344,10 @@ struct CombinedOverlay {
     let coverage: Double
 }
 
-actor CombinedOverlayActor {
-    private var combinedOverlay: CombinedOverlay?
-    func setOverlay(_ image: CIImage, _ boundingBoxes: [CGRect] = []) {
-        var coverage: Double = 1.0
-        if !boundingBoxes.isEmpty {
-            coverage = boundingBoxes.map { $0.size.width * $0.size.height }.reduce(0, +) / (image.extent.width * image.extent.height)
-        }
-        combinedOverlay = CombinedOverlay(image: image, boundingBoxes: boundingBoxes, coverage: coverage)
-    }
-    func getOverlay() -> CombinedOverlay? {
-        combinedOverlay
-    }
-    func deleteOverlay() {
-        combinedOverlay = nil
-    }
-}
-
 final class OverlayBundler: Sendable {
     public static let shared = OverlayBundler()
     private let overlayBundle = OverlayBundleActor()
-    private let combinedOverlay = CombinedOverlayActor()
-
+    
     func addOverlay(url: URL, overlay: Overlay) async {
         await overlayBundle.addOverlay(url: url, overlay: overlay)
     }
@@ -379,7 +362,7 @@ final class OverlayBundler: Sendable {
     func removeAllOverlays() {
         Task {
             await overlayBundle.removeAllOverlays()
-            await combinedOverlay.deleteOverlay()
+            await FrameGrabber.shared.setCombinedOverlay(nil)
         }
     }
     
@@ -391,47 +374,50 @@ final class OverlayBundler: Sendable {
             }
         }
     }
-    
+
     func combineOverlayImages() async {
         if Settings.hideOverlays {
             LOG("Overlays are hidden so no images will be combined", level: .debug)
-            await combinedOverlay.deleteOverlay()
+            await FrameGrabber.shared.setCombinedOverlay(nil)
+            return
         }
+        var images: [UIImage] = []
+        for overlay in await overlayBundle.getOverlays() {
+            if let image = await overlay.getOverlayImage() {
+                images.append(image)
+            }
+        }
+        if images.isEmpty {
+            LOG("There are no images to combine", level: .debug)
+            return
+        }
+        var boundingBoxes: [CGRect] = []
+        for uiImage in images {
+            if let boundingBox = uiImage.roughBoundingBox(scaledWidth: BOUNDING_BOX_SEARCH_WIDTH) {
+                boundingBoxes.append(boundingBox)
+            }
+        }
+        guard let imageComposition = UIImage.composite(images: images),
+              let flippedCIImage = CIImage(image: imageComposition, options: [.expandToHDR: true, .colorSpace: CG_COLOR_SPACE])
         else {
-            var images: [UIImage] = []
-            for overlay in await overlayBundle.getOverlays() {
-                if let image = await overlay.getOverlayImage() {
-                    images.append(image)
-                }
-            }
-            if images.isEmpty {
-                LOG("There are no images to combine", level: .debug)
-                return
-            }
-            var boundingBoxes: [CGRect] = []
-            for uiImage in images {
-                if let boundingBox = uiImage.roughBoundingBox(scaledWidth: BOUNDING_BOX_SEARCH_WIDTH) {
-                    boundingBoxes.append(boundingBox)
-                }
-            }
-            guard let imageComposition = UIImage.composite(images: images),
-                  let ciImage = CIImage(image: imageComposition, options: [.expandToHDR: true, .colorSpace: CG_COLOR_SPACE])
-            else {
-                LOG("Images could not be combined", level: .error)
-                return
-            }
-            let colorSpace = (ciImage.colorSpace?.name as String?)?.replacingOccurrences(of: "kCGColorSpace", with: "")
-            await combinedOverlay.setOverlay(ciImage, boundingBoxes)
-            let combinedOverlay = await combinedOverlay.getOverlay()
-            LOG("Combined \(images.count) images to single overlay with color space: \(colorSpace ?? "unknown")", level: .debug)
-            let coveragePercentage = Int(100 * (combinedOverlay?.coverage ?? -1))
-            LOG("Bounding boxes: \(String(describing: combinedOverlay?.boundingBoxes)) covering \(coveragePercentage)%")
-            
+            LOG("Images could not be combined", level: .error)
+            return
         }
-    }
-    
-    func getOverlay() async -> CombinedOverlay? {
-        await combinedOverlay.getOverlay()
+        // need to flip this to match Metal coordinate space
+        let height = flippedCIImage.extent.height
+        let transform = CGAffineTransform(scaleX: 1, y: -1).translatedBy(x: 0, y: -CGFloat(height))
+        let ciImage = flippedCIImage.transformed(by: transform)
+        
+        var coverage: Double = 1.0
+        if !boundingBoxes.isEmpty {
+            coverage = boundingBoxes.map { $0.size.width * $0.size.height }.reduce(0, +) / (ciImage.extent.width * ciImage.extent.height)
+        }
+        let combinedOverlay = CombinedOverlay(image: ciImage, boundingBoxes: boundingBoxes, coverage: coverage)
+        let colorSpace = (ciImage.colorSpace?.name as String?)?.replacingOccurrences(of: "kCGColorSpace", with: "")
+        LOG("Combined \(images.count) images to single overlay with color space: \(colorSpace ?? "unknown")", level: .debug)
+        let coveragePercentage = Int(100 * (combinedOverlay.coverage))
+        LOG("Bounding boxes: \(String(describing: combinedOverlay.boundingBoxes)) covering \(coveragePercentage)%")
+        await FrameGrabber.shared.setCombinedOverlay(combinedOverlay)
     }
 }
 

@@ -529,9 +529,7 @@ struct TubeistView: View {
                 .frame(width: width, height: height)
                 
                 // Vertical Small Button Column
-                VStack(spacing: 5) {
-
-                    Spacer()
+                VStack {
 
                     SmallButton(imageName: appState.isBatterySavingOn ? "sunrise.fill" : "sunset",
                                 foregroundColor: appState.isBatterySavingOn ? .yellow : .white) {
@@ -555,15 +553,7 @@ struct TubeistView: View {
                             }
                         }
                     }
-                    
-                    SmallButton(imageName: activeMonitor == .output ? "square.and.line.vertical.and.square.filled" : "square.filled.and.line.vertical.and.square",
-                                foregroundColor: activeMonitor == .output ? .yellow : .white) {
-                        activeMonitor = switch activeMonitor {
-                            case .output: .camera
-                            case .camera: .output
-                        }
-                    }
-                    
+                                        
                     SmallButton(imageName: appState.isStabilizationOn ? "hand.raised.fill" : "hand.raised.slash",
                                 foregroundColor: showStabilizationPicker ? .yellow : .white) {
                         Task {
@@ -574,7 +564,15 @@ struct TubeistView: View {
                             }
                         }
                     }
-                    
+
+                    SmallButton(imageName: activeMonitor == .output ? "square.and.line.vertical.and.square.filled" : "square.filled.and.line.vertical.and.square",
+                                foregroundColor: activeMonitor == .output ? .yellow : .white) {
+                        activeMonitor = switch activeMonitor {
+                            case .output: .camera
+                            case .camera: .output
+                        }
+                    }
+
                     SmallButton(imageName: "camera.filters",
                                 foregroundColor: Purchaser.shared.isProductPurchased("tubeist_lifetime_styling") ? showStylingPicker ? .yellow : .white : .red) {
                         if Purchaser.shared.isProductPurchased("tubeist_lifetime_styling") {
@@ -647,8 +645,6 @@ struct TubeistView: View {
                                 foregroundColor: showJournal ? .yellow : Journal.publisher.hasErrors ? .red : .white) {
                         showJournal.toggle()
                     }
-
-                    Spacer()
                 }
                 .frame(width: 30) // Width based on button size and padding
                 .padding(.leading, 10)
