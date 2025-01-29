@@ -718,6 +718,7 @@ kernel void vhs(texture2d<float, access::read_write> yTexture [[texture(0)]],
 }
 
 // ----====================== IMPRINTER ======================----
+
 kernel void imprint(texture2d<float, access::read_write> yTexture [[texture(0)]],
                     texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
                     texture2d<float, access::read> overlayTexture [[texture(2)]],
@@ -750,8 +751,8 @@ kernel void imprint(texture2d<float, access::read_write> yTexture [[texture(0)]]
     float overlay_alpha = overlay.a;
     float clamped_chroma_y = clamp(yPixel.r, 0.0, 1.0);
 
-    // Alpha blending (1.2 instead of 1.0 is gamma adjustment)
-    float blended_y  = (overlay_y * overlay_alpha) + (clamped_chroma_y * (1.2 - overlay_alpha));
+    // Alpha blending ((2.2)^(1/4) = 1.2179 instead of 1.0 is HLG gamma adjustment)
+    float blended_y  = (overlay_y * overlay_alpha) + (clamped_chroma_y * (1.2179 - overlay_alpha));
     
     yTexture.write(float4(blended_y, 0.0, 0.0, 1.0), texturePosition);
     
