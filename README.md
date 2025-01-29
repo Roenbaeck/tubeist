@@ -6,7 +6,8 @@ Tubeist is an iPhone application for live streaming, leveraging the fMP4 format 
 
 The primary goal of Tubeist is to facilitate the streaming of high-fidelity HDR content, particularly targeted for platforms like YouTube. It's designed for scenarios where pristine visual quality is paramount, rather than ultra-low latency interaction. This makes it an ideal choice for streaming events, sporting competitions, educational content, or any other long-running stream where immediate audience interaction is not the primary focus. You can watch some [demos of Tubeist on YouTube](https://youtube.com/playlist?list=PLFnkPgO2HxdAp_YiFVSWVpyak--0y6m5U&si=b2vjD-jVe0FY2egZ).
 
-![IMG_1727](https://github.com/user-attachments/assets/7d7c5c97-024c-466d-9281-8a8acfd095a5)
+![IMG_1816](https://github.com/user-attachments/assets/c48ee5ce-86a9-49a1-b859-8c88c4a341d9)
+User interface, showing the "Blackbright" style with "Grain" effect, together with two web overlays.
 
 ## TestFlight
 A TestFlight version is publicly available here: https://testflight.apple.com/join/atDHXHWy
