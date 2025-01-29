@@ -4,7 +4,7 @@
 
 Tubeist is an iPhone application for live streaming, leveraging the fMP4 format over the HLS (HTTP Live Streaming) protocol. Built entirely in Swift 6, this project was initially conceived as a learning exercise to explore the Swift language, with significant early development aided by the capabilities of large language models.
 
-The primary goal of Tubeist is to facilitate the streaming of high-fidelity HDR content, particularly targeted for platforms like YouTube. It's designed for scenarios where pristine visual quality is paramount, rather than ultra-low latency interaction. This makes it an ideal choice for streaming events, sporting competitions, educational content, or any other long-running stream where immediate audience interaction is not the primary focus.
+The primary goal of Tubeist is to facilitate the streaming of high-fidelity HDR content, particularly targeted for platforms like YouTube. It's designed for scenarios where pristine visual quality is paramount, rather than ultra-low latency interaction. This makes it an ideal choice for streaming events, sporting competitions, educational content, or any other long-running stream where immediate audience interaction is not the primary focus. You can watch some [demos of Tubeist on YouTube](https://youtube.com/playlist?list=PLFnkPgO2HxdAp_YiFVSWVpyak--0y6m5U&si=b2vjD-jVe0FY2egZ).
 
 ![IMG_1727](https://github.com/user-attachments/assets/7d7c5c97-024c-466d-9281-8a8acfd095a5)
 
@@ -21,16 +21,15 @@ While still under active development, Tubeist aims to provide a robust set of fe
 * **Manual camera controls:** Staying true to common camera controls, made easily accessible.
 * **Web Overlay Support:** Integrate dynamic graphics and information into your stream.
 * **Bandwidth-Aware Presets:**  Optionally input your available bandwidth to receive recommendations for optimal streaming settings.
+* **Styling and Effects:** A number of styles and effects are available through an In-App purchase (kept at the lowest price possible).
 
 **Please note that this project is continuously evolving, and the availability and stability of specific features may vary.**
 
 ## Usage
 
-It's important to understand that in its current phase, Tubeist may still contain bugs. However, it is progressively becoming more stable and user-friendly. Using Xcode you can clone this repository and manually compile and install Tubeist on your iPhone. Tubeist also relies on a server infrastructure capable of ingesting fMP4 over HLS.
+It's important to understand that in its current phase, Tubeist may still contain bugs. However, it is progressively becoming more stable and user-friendly. Using Xcode you can clone this repository and manually compile and install Tubeist on your iPhone. Tubeist also relies on a server infrastructure capable of ingesting fMP4 over HLS. There is a playlist [available on YouTube](https://youtube.com/playlist?list=PLFnkPgO2HxdASltkwnLEGB2yuyhIS2RL8&si=-DYTXwvt9tNDtWgT) that explains how to set up an HLS relay and configure Tubeist to work with it. 
 
 For testing purposes, a rudimentary stream server is available as a separate project: [https://github.com/Roenbaeck/hls-relay](https://github.com/Roenbaeck/hls-relay). This is an HTTP server that accepts HLS input, which is forwarded to YouTube (or Twitch) using ffmpeg. You will need to configure Tubeist to point to your HLS relay server.
-
-**Detailed usage instructions will be provided as the app matures.**
 
 ## Getting Started (For Developers)
 
