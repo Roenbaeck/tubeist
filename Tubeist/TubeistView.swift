@@ -130,6 +130,30 @@ struct TubeistView: View {
         }
     }
     
+    func focusAndExposureTap(_ location: CGPoint) {
+        interaction.location = location
+        Task {
+            guard let previewLayer = CameraMonitorView.previewLayer else {
+                LOG("Cannot determine tap location because the preview layer is unavailable", level: .debug)
+                return
+            }
+            let normalizedLocation = previewLayer.captureDevicePointConverted(fromLayerPoint: location)
+            if appState.isExposureLocked {
+                await CaptureDirector.shared.setExposure(at: normalizedLocation)
+                LOG("Probing exposure at \(location)")
+            }
+            if appState.isFocusLocked {
+                await CaptureDirector.shared.setFocus(at: normalizedLocation)
+                LOG("Probing focus at \(location)")
+            }
+        }
+        showFocusAndExposureArea = true
+        // Schedule hide with a method that cancels and reschedules
+        interaction.scheduleAction {
+            showFocusAndExposureArea = false
+        }
+    }
+    
     var body: some View {
         GeometryReader { geometry in
             let height = geometry.size.height
@@ -169,26 +193,7 @@ struct TubeistView: View {
                         }
                         .onTapGesture { location in
                             if enableFocusAndExposureTap {
-                                interaction.location = location
-                                Task {
-                                    let normalizedLocation = CGPoint(
-                                        x: location.x / width,
-                                        y: location.y / height
-                                    )
-                                    if appState.isExposureLocked {
-                                        await CaptureDirector.shared.setExposure(at: normalizedLocation)
-                                        LOG("Probing exposure at \(location)")
-                                    }
-                                    if appState.isFocusLocked {
-                                        await CaptureDirector.shared.setFocus(at: normalizedLocation)
-                                        LOG("Probing focus at \(location)")
-                                    }
-                                }
-                                showFocusAndExposureArea = true
-                                // Schedule hide with a method that cancels and reschedules
-                                interaction.scheduleAction {
-                                    showFocusAndExposureArea = false
-                                }
+                                focusAndExposureTap(location)
                             }
                         }
 
@@ -214,14 +219,6 @@ struct TubeistView: View {
                         }
                     }
 
-                    if showFocusAndExposureArea {
-                        FocusExposureIndicator(
-                            position: interaction.location,
-                            isExposureLocked: appState.isExposureLocked,
-                            isFocusLocked: appState.isFocusLocked
-                        )
-                    }
-
                     ForEach(overlayManager.overlays) { overlay in
                         if let url = URL(string: overlay.url) {
                             OverlayView(url: url)
@@ -237,8 +234,21 @@ struct TubeistView: View {
                             .onAppear {
                                 LOG("Viewing output monitor", level: .info)
                             }
+                            .onTapGesture { location in
+                                if enableFocusAndExposureTap {
+                                    focusAndExposureTap(location)
+                                }
+                            }
                     }
-                                                            
+
+                    if showFocusAndExposureArea {
+                        FocusExposureIndicator(
+                            position: interaction.location,
+                            isExposureLocked: appState.isExposureLocked,
+                            isFocusLocked: appState.isFocusLocked
+                        )
+                    }
+
                     if showJournal {
                         JournalView()
                             .frame(width: width, height: height)
