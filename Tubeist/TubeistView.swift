@@ -234,6 +234,7 @@ struct TubeistView: View {
                             .onAppear {
                                 LOG("Viewing output monitor", level: .info)
                             }
+                            .gesture(magnification)
                             .onTapGesture { location in
                                 if enableFocusAndExposureTap {
                                     focusAndExposureTap(location)
