@@ -449,7 +449,7 @@ final class FrameGrabber: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
                         await ContentPackager.shared.appendVideoSampleBuffer(sendableSampleBuffer)
                     }
                     if await Streamer.shared.getMonitor() == .output {
-                        OutputMonitor.shared.enqueue(sendableSampleBuffer)
+                        await OutputMonitorView.enqueue(sendableSampleBuffer)
                     }
                 }
             }

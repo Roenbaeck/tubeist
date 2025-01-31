@@ -26,12 +26,16 @@ final class AppState {
     var justCameFromBackground = false
     var hadToStopStreaming = false
     var streamHealth = StreamHealth.silenced
-    var cameraMonitorId = UUID()
     var availableProducts: [String: Product] = [:]
     var lastKnownBrightness: CGFloat = UIScreen.main.brightness
 
+    var cameraMonitorId = UUID()
     func refreshCameraView() {
         cameraMonitorId = UUID()
+    }
+    var outputMonitorId = UUID()
+    func refreshOutputView() {
+        outputMonitorId = UUID()
     }
 }
 

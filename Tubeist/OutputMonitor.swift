@@ -8,31 +8,14 @@
 import SwiftUI
 @preconcurrency import AVFoundation
 
-final class OutputMonitor: Sendable {
-    public static let shared = OutputMonitor()
-    public let displayLayer: AVSampleBufferDisplayLayer
+struct OutputMonitorView: UIViewControllerRepresentable {
+    @MainActor public static private(set) var displayLayer: AVSampleBufferDisplayLayer?
     
-    init() {
-        displayLayer = AVSampleBufferDisplayLayer()
-        displayLayer.videoGravity = .resizeAspect
-    }
-    
-    func configurePreviewLayer(on viewController: UIViewController) {
-        Task { @MainActor in
-            let height = viewController.view.bounds.height
-            let width = height * (16.0/9.0)
-            let x: CGFloat = 0
-            let y: CGFloat = 0
-
-            CATransaction.begin()
-            CATransaction.setAnimationDuration(0)
-            displayLayer.frame = CGRect(x: x, y: y, width: width, height: height)
-            CATransaction.commit()
+    static func enqueue(_ sampleBuffer: CMSampleBuffer) {
+        guard let renderer = displayLayer?.sampleBufferRenderer else {
+            LOG("Cannot enque sample buffer: renderer not yet available", level: .warning)
+            return
         }
-    }
-    
-    func enqueue(_ sampleBuffer: CMSampleBuffer) {
-        let renderer = displayLayer.sampleBufferRenderer
         if renderer.status == .failed {
             renderer.flush()
         }
@@ -40,26 +23,36 @@ final class OutputMonitor: Sendable {
             renderer.enqueue(sampleBuffer)
         }
     }
-}
 
-// SwiftUI wrapper
-struct OutputMonitorView: UIViewControllerRepresentable {
-
+    static func createPreviewLayer() async {
+        if OutputMonitorView.displayLayer == nil {
+            OutputMonitorView.displayLayer = AVSampleBufferDisplayLayer()
+            LOG("Created output video display layer", level: .debug)
+        }
+    }
+    
     func makeUIViewController(context: Context) -> UIViewController {
         let viewController = UIViewController()
-        // Ensure view is loaded before configurations
         viewController.loadViewIfNeeded()
+        
+        guard let displayLayer = OutputMonitorView.displayLayer else {
+            LOG("Waiting for display layer to become available", level: .warning)
+            return viewController
+        }
+        
+        displayLayer.removeFromSuperlayer()
+        displayLayer.videoGravity = .resizeAspect
+        viewController.view.layer.addSublayer(displayLayer)
         return viewController
     }
     
     func updateUIViewController(_ uiViewController: UIViewController, context: Context) {
-        let outputMonitor = OutputMonitor.shared
-
-        // Add the displayLayer to the view's layer if it's not already there
-        if outputMonitor.displayLayer.superlayer != uiViewController.view.layer {
-            uiViewController.view.layer.addSublayer(outputMonitor.displayLayer)
-        }
-        
-        OutputMonitor.shared.configurePreviewLayer(on: uiViewController)
+        CATransaction.begin()
+        CATransaction.setAnimationDuration(0)
+        let height = uiViewController.view.bounds.height
+        let width = height * (16.0/9.0)
+        OutputMonitorView.displayLayer?.frame = CGRect(x: 0, y: 0, width: width, height: height)
+        CATransaction.commit()
     }
 }
+

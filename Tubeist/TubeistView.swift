@@ -174,6 +174,7 @@ struct TubeistView: View {
                                 appState.refreshCameraView()
                                 updateCameraProperties()
                                 isCameraReady = true
+                                LOG("Viewing camera monitor", level: .info)
                             }
                         }
                         .onDisappear {
@@ -231,10 +232,16 @@ struct TubeistView: View {
 
                     if activeMonitor == .output {
                         OutputMonitorView()
-                            .onAppear {
-                                LOG("Viewing output monitor", level: .info)
-                            }
+                            .id(appState.outputMonitorId)
                             .gesture(magnification)
+                            .frame(width: width, height: height)
+                            .onAppear {
+                                Task {
+                                    await OutputMonitorView.createPreviewLayer()
+                                    appState.refreshOutputView()
+                                    LOG("Viewing output monitor", level: .info)
+                                }
+                            }
                             .onTapGesture { location in
                                 if enableFocusAndExposureTap {
                                     focusAndExposureTap(location)
