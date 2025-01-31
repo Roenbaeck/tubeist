@@ -619,7 +619,7 @@ final class CaptureDirector: NSObject, Sendable {
     func getSessionTime() async -> CMTime? {
         await session.synchronizationClock?.time
     }
-    func cycleSession() async {
+    func cycleSessions() async {
         if await session.isRunning {
             await session.stopRunning()
             await detachAll()

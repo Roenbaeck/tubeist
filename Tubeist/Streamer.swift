@@ -66,9 +66,18 @@ final class Streamer: Sendable {
     func setAppState(_ appState: AppState) async {
         await self.streamingActor.setAppState(appState)
     }
-    func cycleCamera() async {
-        await CaptureDirector.shared.cycleSession()
+    func cycleSessions() async {
+        let outputting = await CaptureDirector.shared.isOutputting()
+        if outputting {
+            await CaptureDirector.shared.stopOutput()
+        }
+        await FrameGrabber.shared.resetTinkerer()
+        await CaptureDirector.shared.cycleSessions()
         await streamingActor.refreshCameraView()
+        OverlayBundler.shared.refreshCombinedImage()
+        if outputting {
+            await CaptureDirector.shared.startOutput()
+        }
     }
     func startSessions() async {
         await CaptureDirector.shared.startSessions()

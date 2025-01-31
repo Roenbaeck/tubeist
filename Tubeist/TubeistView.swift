@@ -302,7 +302,7 @@ struct TubeistView: View {
                                     LOG("Seletected camera: \(newCamera)", level: .debug)
                                     Settings.selectedCamera = newCamera
                                     Task {
-                                        await Streamer.shared.cycleCamera()
+                                        await Streamer.shared.cycleSessions()
                                     }
                                 }
                             }

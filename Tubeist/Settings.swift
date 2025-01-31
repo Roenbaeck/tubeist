@@ -457,16 +457,7 @@ struct SettingsView: View {
                     saveCustomPreset()
                 }
                 Task {
-                    let outputting = await CaptureDirector.shared.isOutputting()
-                    if outputting {
-                        await CaptureDirector.shared.stopOutput()
-                    }
-                    await FrameGrabber.shared.resetTinkerer()
-                    await Streamer.shared.cycleCamera()
-                    OverlayBundler.shared.refreshCombinedImage()
-                    if outputting {
-                        await CaptureDirector.shared.startOutput()
-                    }
+                    await Streamer.shared.cycleSessions()
                 }
                 presentationMode.wrappedValue.dismiss()
             }
