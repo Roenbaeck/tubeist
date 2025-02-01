@@ -555,7 +555,9 @@ struct TubeistView: View {
                     }
                     .confirmationDialog("Change Battery Saving Mode?", isPresented: $showBatterySavingConfirmation) {
                         Button(appState.isBatterySavingOn ? "Turn Off" : "Turn On") {
-                            appState.isBatterySavingOn.toggle()
+                            Task {
+                                await Streamer.shared.toggleBatterySaving()
+                            }
                         }
                         Button("Cancel", role: .cancel) {} // Do nothing
                     } message: {

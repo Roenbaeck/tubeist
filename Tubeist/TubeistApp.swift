@@ -79,6 +79,7 @@ struct TubeistApp: App {
                     appState.justCameFromBackground = true
                     appState.soonGoingToBackground = false
                     appState.isBatterySavingOn = false
+                    OutputMonitorView.isBatterySavingOn = false
                     LOG("App is coming back from background", level: .debug)
                 }
             default: break

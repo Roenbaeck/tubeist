@@ -8,19 +8,27 @@
 import SwiftUI
 @preconcurrency import AVFoundation
 
+@MainActor
 struct OutputMonitorView: UIViewControllerRepresentable {
-    @MainActor public static private(set) var displayLayer: AVSampleBufferDisplayLayer?
+    private static var frameNumber: UInt32 = 0
+    public static var isBatterySavingOn: Bool = false
+    public static private(set) var displayLayer: AVSampleBufferDisplayLayer?
     
     static func enqueue(_ sampleBuffer: CMSampleBuffer) {
         guard let renderer = displayLayer?.sampleBufferRenderer else {
             LOG("Cannot enque sample buffer: renderer not yet available", level: .warning)
             return
         }
-        if renderer.status == .failed {
-            renderer.flush()
+        frameNumber += 1
+        frameNumber %= 600
+        if isBatterySavingOn && frameNumber % 6 != 0 {
+            return
         }
         if renderer.isReadyForMoreMediaData {
             renderer.enqueue(sampleBuffer)
+        }
+        else if renderer.status == .failed {
+            renderer.flush()
         }
     }
 

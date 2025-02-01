@@ -7,8 +7,9 @@
 import SwiftUI
 @preconcurrency import AVFoundation
 
+@MainActor 
 struct CameraMonitorView: UIViewControllerRepresentable {
-    @MainActor public static private(set) var previewLayer: AVCaptureVideoPreviewLayer?
+    public static private(set) var previewLayer: AVCaptureVideoPreviewLayer?
 
     static func createPreviewLayer() async {
         if CameraMonitorView.previewLayer == nil {

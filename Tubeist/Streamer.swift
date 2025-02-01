@@ -50,6 +50,7 @@ actor StreamingActor {
     func toggleBatterySaving() {
         Task { @MainActor in
             await appState?.isBatterySavingOn.toggle()
+            OutputMonitorView.isBatterySavingOn = await appState?.isBatterySavingOn ?? false
         }
     }
     func refreshCameraView() {
