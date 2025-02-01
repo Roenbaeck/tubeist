@@ -635,7 +635,7 @@ struct TubeistView: View {
                         }
                     }
 
-                    SmallButton(imageName: appState.isWhiteBalanceLocked ? "square.and.arrow.down.fill" : "square.and.arrow.down",
+                    SmallButton(imageName: appState.isWhiteBalanceLocked ? "lightbulb.fill" : "lightbulb",
                                 foregroundColor: appState.isWhiteBalanceLocked ? .yellow : .white) {
                         appState.isWhiteBalanceLocked.toggle()
                         if appState.isWhiteBalanceLocked {
