@@ -748,11 +748,10 @@ kernel void imprint(texture2d<float, access::read_write> yTexture [[texture(0)]]
     
     // BT.2020 RGB to YCbCr conversion https://en.wikipedia.org/wiki/YCbCr
     float overlay_y  = 0.2627 * overlay.r + 0.6780 * overlay.g + 0.0593 * overlay.b;
-    float log_overlay_y = log(1.0 + overlay_y);
-    float pow_overlay_a = pow(overlay.a, 1.2);
+    float pow_overlay_a = pow(overlay.a, 2.2); // Linearize alpha
     
-    float blended_log_y  = (log_overlay_y * overlay.a) + (y * (1.0 - pow_overlay_a));
-    float blended_y = exp(blended_log_y) - 1;
+    // This is what works, but by trial and error, and likely not 100% correct
+    float blended_y  = (overlay_y * overlay.a) + (y * (1.0 - pow_overlay_a));
     
     yTexture.write(float4(blended_y, 0.0, 0.0, 1.0), texturePosition);
     
