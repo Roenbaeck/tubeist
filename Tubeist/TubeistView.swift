@@ -198,6 +198,16 @@ struct TubeistView: View {
                             }
                         }
 
+                    ForEach(overlayManager.overlays) { overlay in
+                        if let url = URL(string: overlay.url) {
+                            OverlayView(url: url)
+                                .opacity(appState.areOverlaysHidden ? 0 : 1)
+                                .onDisappear {
+                                    OverlayBundler.shared.removeOverlay(url: url)
+                                }
+                        }
+                    }
+
                     if showSplashScreen {
                         ZStack {
                             Image("SplashScreen")
@@ -217,16 +227,6 @@ struct TubeistView: View {
                                     showSplashScreen = false // Hide the splash screen after animation
                                 }
                             }
-                        }
-                    }
-
-                    ForEach(overlayManager.overlays) { overlay in
-                        if let url = URL(string: overlay.url) {
-                            OverlayView(url: url)
-                                .opacity(appState.areOverlaysHidden ? 0 : 1)
-                                .onDisappear {
-                                    OverlayBundler.shared.removeOverlay(url: url)
-                                }
                         }
                     }
 
@@ -459,217 +459,220 @@ struct TubeistView: View {
                         }
                     }
                     
-                    // Controls now positioned relative to 16:9 frame
-                    HStack {
-                        Spacer()
-                        
-                        VStack(alignment: .center, spacing: 0) {
-
-                            Button(action: {
-                                if(!appState.isStreamActive) {
-                                    showSettings = true
-                                }
-                            }) {
-                                Image(systemName: "gear")
-                                    .font(.system(size: 24))
-                                    .foregroundColor(appState.isStreamActive ? .yellow.opacity(0.5) : .white)
-                                    .frame(width: 50, height: 50)
-                            }
-                            .background(Color.black.opacity(0.5))
-                            .cornerRadius(25)
-                            .sheet(isPresented: $showSettings) {
-                                SettingsView(overlayManager: overlayManager)
-                            }
-                            .padding(.bottom, 10)
-                            
-                            let zoom = totalZoom + currentZoom
-                            
-                            Text(String(format: zoom == 1 || zoom > 10 ? "%.0f" : "%.1f", zoom) + "×")
-                                .font(.system(size: 17))
-                                .fontWeight(.semibold)
-                                .foregroundColor(zoom > opticalZoom ? .yellow : zoom > 1 ? .white : .white.opacity(0.5))
-                            
+                    if !showSplashScreen {
+                        // Controls now positioned relative to 16:9 frame
+                        HStack {
                             Spacer()
-
-                            // Computed property to determine the color based on streamHealth
-                            var streamHealthColor: Color {
-                                switch appState.streamHealth {
-                                case .silenced:
-                                    return .white.opacity(0.5)
-                                case .awaiting:
-                                    return .white
-                                case .unusable:
-                                    return .red
-                                case .degraded:
-                                    return .yellow
-                                case .pristine:
-                                    return .green
-                                }
-                            }
                             
-                            Image(systemName: "dot.radiowaves.right")
-                                .rotationEffect(.degrees(-90)) // Rotate the symbol by 90 degrees
-                                .foregroundColor(streamHealthColor)
-                                .font(.system(size: 25)) // Adjust the size as needed
-                                .padding(.bottom, 10)
-                            
-                            Button(action: {
-                                if appState.isStreamActive {
-                                    Task {
-                                        await Streamer.shared.endStream()
-                                        LOG("Stopped streaming engine", level: .info)
+                            VStack(alignment: .center, spacing: 0) {
+                                
+                                Button(action: {
+                                    if(!appState.isStreamActive) {
+                                        showSettings = true
                                     }
-                                } else {
-                                    if Settings.hasCameraPermission() && Settings.hasMicrophonePermission() {
+                                }) {
+                                    Image(systemName: "gear")
+                                        .font(.system(size: 24))
+                                        .foregroundColor(appState.isStreamActive ? .yellow.opacity(0.5) : .white)
+                                        .frame(width: 50, height: 50)
+                                }
+                                .background(Color.black.opacity(0.5))
+                                .cornerRadius(25)
+                                .sheet(isPresented: $showSettings) {
+                                    SettingsView(overlayManager: overlayManager)
+                                }
+                                .padding(.bottom, 10)
+                                
+                                let zoom = totalZoom + currentZoom
+                                
+                                Text(String(format: zoom == 1 || zoom > 10 ? "%.0f" : "%.1f", zoom) + "×")
+                                    .font(.system(size: 17))
+                                    .fontWeight(.semibold)
+                                    .foregroundColor(zoom > opticalZoom ? .yellow : zoom > 1 ? .white : .white.opacity(0.5))
+                                
+                                Spacer()
+                                
+                                // Computed property to determine the color based on streamHealth
+                                var streamHealthColor: Color {
+                                    switch appState.streamHealth {
+                                    case .silenced:
+                                        return .white.opacity(0.5)
+                                    case .awaiting:
+                                        return .white
+                                    case .unusable:
+                                        return .red
+                                    case .degraded:
+                                        return .yellow
+                                    case .pristine:
+                                        return .green
+                                    }
+                                }
+                                
+                                Image(systemName: "dot.radiowaves.right")
+                                    .rotationEffect(.degrees(-90)) // Rotate the symbol by 90 degrees
+                                    .foregroundColor(streamHealthColor)
+                                    .font(.system(size: 25)) // Adjust the size as needed
+                                    .padding(.bottom, 10)
+                                
+                                Button(action: {
+                                    if appState.isStreamActive {
                                         Task {
-                                            showCameraPicker = false
-                                            await Streamer.shared.startStream()
-                                            LOG("Started streaming engine", level: .info)
+                                            await Streamer.shared.endStream()
+                                            LOG("Stopped streaming engine", level: .info)
+                                        }
+                                    } else {
+                                        if Settings.hasCameraPermission() && Settings.hasMicrophonePermission() {
+                                            Task {
+                                                showCameraPicker = false
+                                                await Streamer.shared.startStream()
+                                                LOG("Started streaming engine", level: .info)
+                                            }
+                                        }
+                                        else {
+                                            Settings.openSystemSettings()
                                         }
                                     }
-                                    else {
-                                        Settings.openSystemSettings()
-                                    }
+                                }) {
+                                    Image(systemName: appState.isStreamActive ? "record.circle.fill" : "record.circle")
+                                        .font(.system(size: 24))
+                                        .foregroundColor(appState.isStreamActive ? .red : .white)
+                                        .frame(width: 50, height: 50)
                                 }
-                            }) {
-                                Image(systemName: appState.isStreamActive ? "record.circle.fill" : "record.circle")
-                                    .font(.system(size: 24))
-                                    .foregroundColor(appState.isStreamActive ? .red : .white)
-                                    .frame(width: 50, height: 50)
+                                .background(Color.black.opacity(0.5))
+                                .cornerRadius(25)
+                                
                             }
-                            .background(Color.black.opacity(0.5))
-                            .cornerRadius(25)
-                            
+                            .padding()
                         }
-                        .padding()
                     }
                 }
                 .frame(width: width, height: height)
                 
-                // Vertical Small Button Column
-                VStack {
-
-                    SmallButton(imageName: appState.isBatterySavingOn ? "sunrise.fill" : "sunset",
-                                foregroundColor: appState.isBatterySavingOn ? .yellow : .white) {
-                        showBatterySavingConfirmation = true
-                    }
-                    .confirmationDialog("Change Battery Saving Mode?", isPresented: $showBatterySavingConfirmation) {
-                        Button(appState.isBatterySavingOn ? "Turn Off" : "Turn On") {
+                if !showSplashScreen {
+                    // Vertical Small Button Column
+                    VStack {
+                        
+                        SmallButton(imageName: appState.isBatterySavingOn ? "sunrise.fill" : "sunset",
+                                    foregroundColor: appState.isBatterySavingOn ? .yellow : .white) {
+                            showBatterySavingConfirmation = true
+                        }
+                                    .confirmationDialog("Change Battery Saving Mode?", isPresented: $showBatterySavingConfirmation) {
+                                        Button(appState.isBatterySavingOn ? "Turn Off" : "Turn On") {
+                                            Task {
+                                                await Streamer.shared.toggleBatterySaving()
+                                            }
+                                        }
+                                        Button("Cancel", role: .cancel) {} // Do nothing
+                                    } message: {
+                                        Text(appState.isBatterySavingOn ? "Turning off battery saving will enable convenience features at the cost of higher battery consumption." : "Turning on battery saving will reduce everything not necessary for the streaming to a minimum.")
+                                    }
+                        
+                        SmallButton(imageName: appState.isStreamActive ? "camera.fill" : "camera",
+                                    foregroundColor: appState.isStreamActive || showCameraPicker ? .yellow : .white) {
+                            if !appState.isStreamActive {
+                                showCameraPicker.toggle()
+                                if showCameraPicker && showStabilizationPicker {
+                                    showStabilizationPicker = false
+                                }
+                            }
+                        }
+                        
+                        SmallButton(imageName: appState.isStabilizationOn ? "hand.raised.fill" : "hand.raised.slash",
+                                    foregroundColor: showStabilizationPicker ? .yellow : .white) {
                             Task {
-                                await Streamer.shared.toggleBatterySaving()
+                                stabilizations = await CaptureDirector.shared.getStabilizations()
+                                showStabilizationPicker.toggle()
+                                if showStabilizationPicker && showCameraPicker {
+                                    showCameraPicker = false
+                                }
                             }
                         }
-                        Button("Cancel", role: .cancel) {} // Do nothing
-                    } message: {
-                        Text(appState.isBatterySavingOn ? "Turning off battery saving will enable convenience features at the cost of higher battery consumption." : "Turning on battery saving will reduce everything not necessary for the streaming to a minimum.")
-                    }
-                    
-                    SmallButton(imageName: appState.isStreamActive ? "camera.fill" : "camera",
-                                foregroundColor: appState.isStreamActive || showCameraPicker ? .yellow : .white) {
-                        if !appState.isStreamActive {
-                            showCameraPicker.toggle()
-                            if showCameraPicker && showStabilizationPicker {
-                                showStabilizationPicker = false
-                            }
-                        }
-                    }
-                                        
-                    SmallButton(imageName: appState.isStabilizationOn ? "hand.raised.fill" : "hand.raised.slash",
-                                foregroundColor: showStabilizationPicker ? .yellow : .white) {
-                        Task {
-                            stabilizations = await CaptureDirector.shared.getStabilizations()
-                            showStabilizationPicker.toggle()
-                            if showStabilizationPicker && showCameraPicker {
-                                showCameraPicker = false
-                            }
-                        }
-                    }
-
-                    SmallButton(imageName: activeMonitor == .output ? "square.and.line.vertical.and.square.filled" : "square.filled.and.line.vertical.and.square",
-                                foregroundColor: activeMonitor == .output ? .yellow : .white) {
-                        activeMonitor = switch activeMonitor {
+                        
+                        SmallButton(imageName: activeMonitor == .output ? "square.and.line.vertical.and.square.filled" : "square.filled.and.line.vertical.and.square",
+                                    foregroundColor: activeMonitor == .output ? .yellow : .white) {
+                            activeMonitor = switch activeMonitor {
                             case .output: .camera
                             case .camera: .output
+                            }
+                            fade("Switching to \(activeMonitor) monitor")
                         }
-                        fade("Switching to \(activeMonitor) monitor")
-                    }
-
-                    SmallButton(imageName: "camera.filters",
-                                foregroundColor: Purchaser.shared.isProductPurchased("tubeist_lifetime_styling") ? showStylingPicker ? .yellow : .white : .red) {
-                        if Purchaser.shared.isProductPurchased("tubeist_lifetime_styling") {
-                            showStylingPicker.toggle()
-                        }
-                    }
-
-                    SmallButton(imageName: appState.isFocusLocked ? "viewfinder.circle.fill" : "viewfinder.circle",
-                                foregroundColor: appState.isFocusLocked ? .yellow : .white) {
-                        appState.isFocusLocked.toggle()
-                        enableFocusAndExposureTap = appState.isExposureLocked || appState.isFocusLocked
-                        if appState.isFocusLocked {
-                            fade("Focus locked: tap to set focus")
-                            Task {
-                                await CaptureDirector.shared.lockFocus()
+                        
+                        SmallButton(imageName: "camera.filters",
+                                    foregroundColor: Purchaser.shared.isProductPurchased("tubeist_lifetime_styling") ? showStylingPicker ? .yellow : .white : .red) {
+                            if Purchaser.shared.isProductPurchased("tubeist_lifetime_styling") {
+                                showStylingPicker.toggle()
                             }
                         }
-                        else {
-                            fade("Focus unlocked: autofocusing")
-                            Task {
-                                await CaptureDirector.shared.autoFocus()
+                        
+                        SmallButton(imageName: appState.isFocusLocked ? "viewfinder.circle.fill" : "viewfinder.circle",
+                                    foregroundColor: appState.isFocusLocked ? .yellow : .white) {
+                            appState.isFocusLocked.toggle()
+                            enableFocusAndExposureTap = appState.isExposureLocked || appState.isFocusLocked
+                            if appState.isFocusLocked {
+                                fade("Focus locked: tap to set focus")
+                                Task {
+                                    await CaptureDirector.shared.lockFocus()
+                                }
+                            }
+                            else {
+                                fade("Focus unlocked: autofocusing")
+                                Task {
+                                    await CaptureDirector.shared.autoFocus()
+                                }
                             }
                         }
-                    }
-
-                    SmallButton(imageName: appState.isExposureLocked ? "sun.max.fill" : "sun.max",
-                                foregroundColor: appState.isExposureLocked ? .yellow : .white) {
-                        appState.isExposureLocked.toggle()
-                        enableFocusAndExposureTap = appState.isExposureLocked || appState.isFocusLocked
-                        if appState.isExposureLocked {
-                            fade("Exposure locked: tap to set exposure")
-                            Task {
-                                await CaptureDirector.shared.lockExposure()
+                        
+                        SmallButton(imageName: appState.isExposureLocked ? "sun.max.fill" : "sun.max",
+                                    foregroundColor: appState.isExposureLocked ? .yellow : .white) {
+                            appState.isExposureLocked.toggle()
+                            enableFocusAndExposureTap = appState.isExposureLocked || appState.isFocusLocked
+                            if appState.isExposureLocked {
+                                fade("Exposure locked: tap to set exposure")
+                                Task {
+                                    await CaptureDirector.shared.lockExposure()
+                                }
+                            }
+                            else {
+                                fade("Exposure unlocked: automatic exposure")
+                                Task {
+                                    await CaptureDirector.shared.autoExposure()
+                                }
                             }
                         }
-                        else {
-                            fade("Exposure unlocked: automatic exposure")
-                            Task {
-                                await CaptureDirector.shared.autoExposure()
+                        
+                        SmallButton(imageName: appState.isWhiteBalanceLocked ? "lightbulb.fill" : "lightbulb",
+                                    foregroundColor: appState.isWhiteBalanceLocked ? .yellow : .white) {
+                            appState.isWhiteBalanceLocked.toggle()
+                            if appState.isWhiteBalanceLocked {
+                                fade("White balance locked at current value")
+                                Task {
+                                    await CaptureDirector.shared.lockWhiteBalance()
+                                }
+                            }
+                            else {
+                                fade("Automatically adjusted white balance")
+                                Task {
+                                    await CaptureDirector.shared.autoWhiteBalance()
+                                }
                             }
                         }
-                    }
-
-                    SmallButton(imageName: appState.isWhiteBalanceLocked ? "lightbulb.fill" : "lightbulb",
-                                foregroundColor: appState.isWhiteBalanceLocked ? .yellow : .white) {
-                        appState.isWhiteBalanceLocked.toggle()
-                        if appState.isWhiteBalanceLocked {
-                            fade("White balance locked at current value")
-                            Task {
-                                await CaptureDirector.shared.lockWhiteBalance()
-                            }
+                        
+                        SmallButton(imageName: appState.areOverlaysHidden ? "rectangle.on.rectangle" : "rectangle.on.rectangle.fill",
+                                    foregroundColor: appState.areOverlaysHidden ? .yellow : .white) {
+                            appState.areOverlaysHidden.toggle()
+                            fade(appState.areOverlaysHidden ? "Overlays are now hidden" : "Overlays are now visible")
+                            Settings.hideOverlays = appState.areOverlaysHidden
+                            OverlayBundler.shared.refreshCombinedImage()
                         }
-                        else {
-                            fade("Automatically adjusted white balance")
-                            Task {
-                                await CaptureDirector.shared.autoWhiteBalance()
-                            }
+                        
+                        SmallButton(imageName: "text.quote",
+                                    foregroundColor: showJournal ? .yellow : Journal.publisher.hasErrors ? .red : .white) {
+                            showJournal.toggle()
                         }
                     }
-
-                    SmallButton(imageName: appState.areOverlaysHidden ? "rectangle.on.rectangle" : "rectangle.on.rectangle.fill",
-                                foregroundColor: appState.areOverlaysHidden ? .yellow : .white) {
-                        appState.areOverlaysHidden.toggle()
-                        fade(appState.areOverlaysHidden ? "Overlays are now hidden" : "Overlays are now visible")
-                        Settings.hideOverlays = appState.areOverlaysHidden
-                        OverlayBundler.shared.refreshCombinedImage()
-                    }
-
-                    SmallButton(imageName: "text.quote",
-                                foregroundColor: showJournal ? .yellow : Journal.publisher.hasErrors ? .red : .white) {
-                        showJournal.toggle()
-                    }
+                    .frame(width: 30) // Width based on button size and padding
+                    .padding(.leading, 10)
                 }
-                .frame(width: 30) // Width based on button size and padding
-                .padding(.leading, 10)
-                                    
                 Spacer().overlay {
                     if appState.isExposureLocked {
                         CameraControlSlider(
