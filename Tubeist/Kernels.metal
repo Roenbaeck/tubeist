@@ -744,15 +744,15 @@ kernel void imprint(texture2d<float, access::read_write> yTexture [[texture(0)]]
     int heightRatio = yHeight / cbcrHeight;
         
     // Read existing Y value from the video frame
-    float4 yPixel = yTexture.read(texturePosition);
+    float y = yTexture.read(texturePosition).r;
     
     // BT.2020 RGB to YCbCr conversion https://en.wikipedia.org/wiki/YCbCr
     float overlay_y  = 0.2627 * overlay.r + 0.6780 * overlay.g + 0.0593 * overlay.b;
-    float overlay_alpha = overlay.a;
-    float clamped_chroma_y = clamp(yPixel.r, 0.0, 1.0);
-
-    // Alpha blending ((2.2)^(1/4) = 1.2179 instead of 1.0 is HLG gamma adjustment)
-    float blended_y  = (overlay_y * overlay_alpha) + (clamped_chroma_y * (1.2179 - overlay_alpha));
+    float log_overlay_y = log(1.0 + overlay_y);
+    float pow_overlay_a = pow(overlay.a, 1.2);
+    
+    float blended_log_y  = (log_overlay_y * overlay.a) + (y * (1.0 - pow_overlay_a));
+    float blended_y = exp(blended_log_y) - 1;
     
     yTexture.write(float4(blended_y, 0.0, 0.0, 1.0), texturePosition);
     
@@ -768,12 +768,9 @@ kernel void imprint(texture2d<float, access::read_write> yTexture [[texture(0)]]
         float overlay_cb = (overlay.b - overlay_y) / 1.8814 + 0.5;
         float overlay_cr = (overlay.r - overlay_y) / 1.4746 + 0.5;
 
-        float clamped_chroma_cb = clamp(cbcrPixel.r, 0.0, 1.0);
-        float clamped_chroma_cr = clamp(cbcrPixel.g, 0.0, 1.0);
-
         // Alpha blending
-        float blended_cb = (overlay_cb * overlay_alpha) + (clamped_chroma_cb * (1.0 - overlay_alpha));
-        float blended_cr = (overlay_cr * overlay_alpha) + (clamped_chroma_cr * (1.0 - overlay_alpha));
+        float blended_cb = (overlay_cb * overlay.a) + (cbcrPixel.r * (1.0 - overlay.a));
+        float blended_cr = (overlay_cr * overlay.a) + (cbcrPixel.g * (1.0 - overlay.a));
         
         cbcrTexture.write(float4(blended_cb, blended_cr, 0.0, 1.0), cbcrGid);
     }

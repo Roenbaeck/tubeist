@@ -297,9 +297,9 @@ private class DeviceActor {
             }
             
             // custom controls must be added in a nonisolated context
-            Task {
+            Task.detached {
                 if await Purchaser.shared.isProductPurchased("tubeist_lifetime_styling") {
-                    addCustomCameraControls(to: session)
+                    self.addCustomCameraControls(to: session)
                 }
             }
             
@@ -319,8 +319,8 @@ private class DeviceActor {
         stylePicker.setActionQueue(CAMERA_CONTROL_QUEUE) { index in
             let style = AVAILABLE_STYLES[index]
             Settings.style = style
-            Task {
-                await self.style?.wrappedValue = style
+            Task { @PipelineActor in
+                self.style?.wrappedValue = style
                 await FrameGrabber.shared.refreshStyle()
             }
         }
@@ -342,8 +342,8 @@ private class DeviceActor {
         effectPicker.setActionQueue(CAMERA_CONTROL_QUEUE) { index in
             let effect = AVAILABLE_EFFECTS[index]
             Settings.effect = effect
-            Task {
-                await self.effect?.wrappedValue = effect
+            Task { @PipelineActor in
+                self.effect?.wrappedValue = effect
                 await FrameGrabber.shared.refreshEffect()
             }
         }
