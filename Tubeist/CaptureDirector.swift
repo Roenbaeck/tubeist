@@ -35,8 +35,6 @@ private class DeviceActor {
     private let cameras: [String: AVCaptureDevice.DeviceType]
     private let microphones: [String: AVCaptureDevice.DeviceType]
     private var stabilizations: [String: AVCaptureVideoStabilizationMode] = [:]
-    // guards
-    private let setupLock = NSLock()
     // states
     private var isOutputting: Bool = false
     
@@ -126,9 +124,6 @@ private class DeviceActor {
     }
     
     func setup(cameraType: AVCaptureDevice.DeviceType, microphoneType: AVCaptureDevice.DeviceType, session: AVCaptureSession) {
-        setupLock.lock()
-        defer { setupLock.unlock() }
-
         // Fetch frame rate from settings
         self.frameRate = Settings.selectedPreset.frameRate
         
@@ -591,6 +586,56 @@ private class DeviceActor {
 
 }
 
+actor SessionController {
+    private var isControllingSession = false
+    private var session: AVCaptureSession
+    
+    init(session: AVCaptureSession) {
+        self.session = session
+    }
+    
+    func startSessions() async {
+        guard !isControllingSession else { return }
+        
+        isControllingSession = true
+        defer { isControllingSession = false }
+        
+        if !session.isRunning {
+            await CaptureDirector.shared.attachAll()
+            session.startRunning()
+        }
+    }
+    
+    func stopSessions() async {
+        guard !isControllingSession else { return }
+        
+        isControllingSession = true
+        defer { isControllingSession = false }
+        
+        if session.isRunning {
+            session.stopRunning()
+            await CaptureDirector.shared.detachAll()
+        }
+    }
+    
+    func cycleSessions() async {
+        guard !isControllingSession else { return }
+        
+        isControllingSession = true
+        defer { isControllingSession = false }
+        
+        if session.isRunning {
+            session.stopRunning()
+            await CaptureDirector.shared.detachAll()
+        }
+        if !session.isRunning {
+            await CaptureDirector.shared.attachAll()
+            session.startRunning()
+        }
+    }
+
+}
+
 extension CaptureDirector: AVCaptureSessionControlsDelegate {
     // minimal AVCaptureSessionControlsDelegate compliance
     func sessionControlsDidBecomeActive(_ session: AVCaptureSession) { return }
@@ -601,8 +646,9 @@ extension CaptureDirector: AVCaptureSessionControlsDelegate {
 
 final class CaptureDirector: NSObject, Sendable {
     @PipelineActor public static let shared = CaptureDirector()
-    @PipelineActor private let session = AVCaptureSession()
+    @PipelineActor private static let session = AVCaptureSession()
     @PipelineActor private let deviceActor = DeviceActor()
+    @PipelineActor private let sessionController = SessionController(session: CaptureDirector.session)
 
     func bind(totalZoom: Binding<Double>, currentZoom: Binding<Double>, exposureBias: Binding<Float>, style: Binding<String>, effect: Binding<String>) async {
         await deviceActor.bind(totalZoom: totalZoom, currentZoom: currentZoom, exposureBias: exposureBias, style: style, effect: effect)
@@ -614,25 +660,17 @@ final class CaptureDirector: NSObject, Sendable {
         return await deviceActor.getCameras()
     }
     func getSession() async -> AVCaptureSession {
-        await session
+        await CaptureDirector.session
     }
     func getSessionTime() async -> CMTime? {
-        await session.synchronizationClock?.time
-    }
-    func cycleSessions() async {
-        if await session.isRunning {
-            await session.stopRunning()
-            await detachAll()
-            await attachAll()
-            await session.startRunning()
-        }
+        await CaptureDirector.session.synchronizationClock?.time
     }
     func detachAll() async {
-        for output in await session.outputs {
-            await session.removeOutput(output)
+        for output in await CaptureDirector.session.outputs {
+            await CaptureDirector.session.removeOutput(output)
         }
-        for input in await session.inputs {
-            await session.removeInput(input)
+        for input in await CaptureDirector.session.inputs {
+            await CaptureDirector.session.removeInput(input)
         }
     }
     func attachAll() async {
@@ -648,26 +686,20 @@ final class CaptureDirector: NSObject, Sendable {
             return
         }
 
-        await deviceActor.setup(cameraType: cameraType, microphoneType: microphoneType, session: session)
-        await deviceActor.addCameraControls(session: session)
+        await deviceActor.setup(cameraType: cameraType, microphoneType: microphoneType, session: CaptureDirector.session)
+        await deviceActor.addCameraControls(session: CaptureDirector.session)
         await deviceActor.findSupportedStabilizationModes()
         let selectedStabilization = Settings.cameraStabilization ?? "Off"
         await setCameraStabilization(to: selectedStabilization)
     }
     func startSessions() async {
-        if await !isRunning() {
-            await attachAll()
-            await session.startRunning()
-        }
+        await sessionController.startSessions()
     }
     func stopSessions() async {
-        if await isRunning() {
-            await session.stopRunning()
-            await detachAll()
-        }
+        await sessionController.stopSessions()
     }
-    func isRunning() async -> Bool {
-        await session.isRunning
+    func cycleSessions() async {
+        await sessionController.cycleSessions()
     }
     func startOutput() async {
         await deviceActor.startAudioOutput() // start audio first, to ensure we get audio samples with the video
