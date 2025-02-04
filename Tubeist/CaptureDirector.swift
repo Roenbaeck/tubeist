@@ -48,7 +48,7 @@ private class DeviceActor {
     init() {
         var cameraDevicesByName: [String: AVCaptureDevice.DeviceType] = [:]
         
-        let cameraDiscoverySession = AVCaptureDevice.DiscoverySession(
+        let backCameraDiscoverySession = AVCaptureDevice.DiscoverySession(
             deviceTypes: [
                 .builtInWideAngleCamera,
                 .builtInTelephotoCamera,
@@ -58,7 +58,21 @@ private class DeviceActor {
             position: .back
         )
       
-        for device in cameraDiscoverySession.devices {
+        for device in backCameraDiscoverySession.devices {
+            let name = device.localizedName
+            cameraDevicesByName[name] = device.deviceType
+        }
+        
+        // preparing for USB-C capture cards (if and when they become supported by Apple)
+        let externalCameraDiscoverySession = AVCaptureDevice.DiscoverySession(
+            deviceTypes: [
+                .external
+            ],
+            mediaType: .video,
+            position: .unspecified
+        )
+      
+        for device in externalCameraDiscoverySession.devices {
             let name = device.localizedName
             cameraDevicesByName[name] = device.deviceType
         }
@@ -69,7 +83,10 @@ private class DeviceActor {
         var microphoneDevicesByName: [String: AVCaptureDevice.DeviceType] = [:]
         
         let microphoneDiscoverySession = AVCaptureDevice.DiscoverySession(
-            deviceTypes: [.microphone, .external],
+            deviceTypes: [
+                .microphone,
+                .external
+            ],
             mediaType: .audio,
             position: .unspecified
         )
@@ -95,6 +112,10 @@ private class DeviceActor {
     func getCameraType(_ camera: String) -> AVCaptureDevice.DeviceType? {
         cameras[camera]
     }
+    func getFirstCameraType() -> AVCaptureDevice.DeviceType? {
+        return cameras.values.first
+    }
+        
     func findSupportedStabilizationModes() {
         guard let format = videoDevice?.activeFormat else { return }
         var supportedModes: [String: AVCaptureVideoStabilizationMode] = [:]
@@ -128,24 +149,15 @@ private class DeviceActor {
         self.frameRate = Settings.selectedPreset.frameRate
         
         // Get devices
-        guard let videoDevice = AVCaptureDevice.default(cameraType, for: .video, position: .back) else {
+        guard let videoDevice = AVCaptureDevice.default(cameraType, for: .video, position: .unspecified) else {
             LOG("Could not create video capture device", level: .error)
             return
         }
         self.videoDevice = videoDevice
         
-        guard let defaultAudioDevice = AVCaptureDevice.default(for: .audio) else {
+        guard let audioDevice = AVCaptureDevice.default(microphoneType, for: .audio, position: .unspecified) else {
             LOG("Could not create audio capture device", level: .error)
             return
-        }
-
-        let audioDevice: AVCaptureDevice
-        if let selectedAudioDevice = AVCaptureDevice.default(microphoneType, for: .audio, position: .unspecified) {
-            LOG("Using selected microphone: \(selectedAudioDevice.localizedName)", level: .debug)
-            audioDevice = selectedAudioDevice
-        }
-        else {
-            audioDevice = defaultAudioDevice
         }
         self.audioDevice = audioDevice
         
@@ -573,6 +585,9 @@ private class DeviceActor {
     func getMicrophoneType(_ microphone: String) -> AVCaptureDevice.DeviceType? {
         microphones[microphone]
     }
+    func getFirstMicrophoneType() -> AVCaptureDevice.DeviceType? {
+        microphones.values.first
+    }
 
     func getAudioChannels() -> [AVCaptureAudioChannel] {
         guard let audioOutput = audioOutput,
@@ -674,16 +689,27 @@ final class CaptureDirector: NSObject, Sendable {
     func attachAll() async {
         // set up video and audio session
         let camera = Settings.selectedCamera
-        guard let cameraType = await deviceActor.getCameraType(camera) else {
-            LOG("Cannot find camera \(camera)", level: .error)
+        var cameraType = await deviceActor.getCameraType(camera)
+        if cameraType == nil {
+            LOG("Cannot find desired camera \(camera), using any available camera", level: .warning)
+            cameraType = await deviceActor.getFirstCameraType()
+        }
+        guard let cameraType else {
+            LOG("No camera found, cannot start capture", level: .error)
             return
         }
+        
         let microphone = DEFAULT_MICROPHONE
-        guard let microphoneType = await deviceActor.getMicrophoneType(microphone) else {
-            LOG("Cannot find microphone \(microphone)", level: .error)
+        var microphoneType = await deviceActor.getMicrophoneType(microphone)
+        if microphoneType == nil {
+            LOG("Cannot find desired microphone \(microphone), using any available microphone", level: .warning)
+            microphoneType = await deviceActor.getFirstMicrophoneType()
+        }
+        guard let microphoneType else {
+            LOG("No microphone found, cannot start capture", level: .error)
             return
         }
-
+        
         await deviceActor.setup(cameraType: cameraType, microphoneType: microphoneType, session: CaptureDirector.session)
         await deviceActor.addCameraControls(session: CaptureDirector.session)
         await deviceActor.findSupportedStabilizationModes()
