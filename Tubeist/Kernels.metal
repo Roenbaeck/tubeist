@@ -620,12 +620,12 @@ kernel void vhs(texture2d<float, access::read_write> yTexture [[texture(0)]],
     }
 
     // --- VHS Horizontal Edge Distortion ---
-    float distortionAmplitude = strength * 50.0; // Control distortion amplitude with strength
-    float distortionFrequency = 0.02;        // Frequency of the sine wave for distortion
-    float distortionSpeed = 0.01;            // Speed of distortion animation
+    float distortionAmplitude = strength * 50.0;            // Control distortion amplitude with strength
+    float distortionFrequency = 0.02 + 0.02 * randomOffset; // Frequency of the sine wave for distortion
+    float distortionSpeed = 0.1;                            // Speed of distortion animation
 
     float verticalDistortionFactor = 0.0;
-    float verticalNoiseFactor = 0.0;        // Factor for vertical noise
+    float verticalNoiseFactor = 0.0;        
 
     // Define zones at the top and bottom where distortion and noise occurs (e.g., 4% height at top and bottom)
     float distortionZoneHeight = yHeight * 0.05f;
@@ -636,8 +636,9 @@ kernel void vhs(texture2d<float, access::read_write> yTexture [[texture(0)]],
         verticalNoiseFactor = verticalDistortionFactor; // Noise factor same as distortion factor for now - can adjust separately
     }
 
-    // Calculate horizontal distortion offset using sine wave
-    float horizontalDistortion = sin(float(gid.x) * distortionFrequency + frame * distortionSpeed) * distortionAmplitude * verticalDistortionFactor;
+    // Calculate horizontal distortion offset using sine wave WITH ERRATIC MODULATION
+    float baseSine = -abs(sin(float(gid.x) * distortionFrequency + frame * distortionSpeed));  // Base sine wave
+    float horizontalDistortion = (baseSine + randomOffset) * distortionAmplitude * verticalDistortionFactor;
 
     // --- Apply effects to Y texture ---
     float4 ySample;
@@ -645,7 +646,7 @@ kernel void vhs(texture2d<float, access::read_write> yTexture [[texture(0)]],
 
     // Apply horizontal distortion to gid.x for Y texture read
     distortedGidY.x = clamp(int(gid.x + horizontalDistortion), 0, yWidth - 1); // Clamp to texture bounds
-
+    
     ySample = yTexture.read(uint2(distortedGidY));
     float y = ySample.r;
 
