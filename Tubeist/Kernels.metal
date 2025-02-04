@@ -748,9 +748,10 @@ kernel void imprint(texture2d<float, access::read_write> yTexture [[texture(0)]]
     
     // BT.2020 RGB to YCbCr conversion https://en.wikipedia.org/wiki/YCbCr
     float overlay_y  = 0.2627 * overlay.r + 0.6780 * overlay.g + 0.0593 * overlay.b;
-    float pow_overlay_a = pow(overlay.a, 2.2); // Linearize alpha
+    float pow_overlay_a = pow(overlay.a, 2.0); // Delinearize alpha
     
-    // This is what works, but by trial and error, and likely not 100% correct
+    // This is what works, but by trial and error, and likely not 100% correct since
+    // it does not adhere fully to the "standard" formula and uses the delinearized alpha
     float blended_y  = (overlay_y * overlay.a) + (y * (1.0 - pow_overlay_a));
     
     yTexture.write(float4(blended_y, 0.0, 0.0, 1.0), texturePosition);
@@ -768,8 +769,8 @@ kernel void imprint(texture2d<float, access::read_write> yTexture [[texture(0)]]
         float overlay_cr = (overlay.r - overlay_y) / 1.4746 + 0.5;
 
         // Alpha blending
-        float blended_cb = (overlay_cb * overlay.a) + (cbcrPixel.r * (1.0 - overlay.a));
-        float blended_cr = (overlay_cr * overlay.a) + (cbcrPixel.g * (1.0 - overlay.a));
+        float blended_cb = (overlay_cb * pow_overlay_a) + (cbcrPixel.r * (1.0 - pow_overlay_a));
+        float blended_cr = (overlay_cr * pow_overlay_a) + (cbcrPixel.g * (1.0 - pow_overlay_a));
         
         cbcrTexture.write(float4(blended_cb, blended_cr, 0.0, 1.0), cbcrGid);
     }

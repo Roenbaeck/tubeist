@@ -263,7 +263,7 @@ private class DeviceActor {
         self.effect = effect
     }
     
-    func addCameraControls(session: AVCaptureSession) {
+    func addCameraControls(session: AVCaptureSession) async {
         if session.supportsControls {
             // remove controls so they don't get added over and over
             session.controls.forEach({ session.removeControl($0) })
@@ -292,10 +292,8 @@ private class DeviceActor {
             }
             
             // custom controls must be added in a nonisolated context
-            Task.detached {
-                if await Purchaser.shared.isProductPurchased("tubeist_lifetime_styling") {
-                    self.addCustomCameraControls(to: session)
-                }
+            if await Purchaser.shared.isProductPurchased("tubeist_lifetime_styling") {
+                self.addCustomCameraControls(to: session)
             }
             
             Task { @PipelineActor in

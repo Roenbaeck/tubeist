@@ -68,7 +68,7 @@ private class AssetWriterActor {
                 AVVideoAverageBitRateKey: selectedVideoBitrate,
                 AVVideoExpectedSourceFrameRateKey: selectedFrameRate,
                 AVVideoMaxKeyFrameIntervalKey: frameIntervalKey,
-                AVVideoAllowFrameReorderingKey: true,
+                AVVideoAllowFrameReorderingKey: false, // leaving this as true (default) can become computationally expensive
                 kVTCompressionPropertyKey_HDRMetadataInsertionMode: kVTHDRMetadataInsertionMode_Auto
             ]
         ]
@@ -292,7 +292,8 @@ actor RecordingActor {
                 LOG("Appended fragment \(fragment.sequence) to file: \(filename ?? "<none>")", level: .debug)
             }
             catch {
-                LOG("Recording error: \(error)", level: .error)
+                // TODO: warning, until I figure out why sometimes additional fragments arrive after closing the file
+                LOG("Appending fragment failed: \(error)", level: .warning)
             }
             if fragment.type == .finalization {
                 LOG("Stopping recording", level: .debug)
