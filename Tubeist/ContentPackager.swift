@@ -176,7 +176,12 @@ private class AssetWriterActor {
     
     func appendSampleBuffer(_ sampleBuffer: CMSampleBuffer, to input: AVAssetWriterInput?) {
         guard let input = input, input.isReadyForMoreMediaData else {
-            LOG("Asset writer input not ready for more media data", level: .warning)
+            let inputType = switch input {
+            case videoInput: "video"
+            case audioInput: "audio"
+            default: "unknown"
+            }
+            LOG("Asset writer \(inputType) input not ready for more media data", level: .warning)
             return
         }
         if !input.append(sampleBuffer) {
@@ -191,26 +196,6 @@ private class AssetWriterActor {
     func appendAudioSampleBuffer(_ sampleBuffer: CMSampleBuffer) async {
         appendSampleBuffer(sampleBuffer, to: audioInput)
     }
-
-    /*
-    var interleaveTo: MediaType = .audio
-        
-    func appendVideoSampleBuffer(_ sampleBuffer: CMSampleBuffer) async {
-        while interleaveTo != .video && !finalizing {
-            await Task.yield()
-        }
-        appendSampleBuffer(sampleBuffer, to: videoInput)
-        interleaveTo = .audio
-    }
-    
-    func appendAudioSampleBuffer(_ sampleBuffer: CMSampleBuffer) async {
-        while interleaveTo != .audio && !finalizing {
-            await Task.yield()
-        }
-        appendSampleBuffer(sampleBuffer, to: audioInput)
-        interleaveTo = .video
-    }
-     */
 
     func status() -> AVAssetWriter.Status? {
         fragmentAssetWriter?.status

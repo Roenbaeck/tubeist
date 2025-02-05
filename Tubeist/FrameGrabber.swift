@@ -14,8 +14,8 @@ private actor FrameTinkerer {
     private var metalDevice: MTLDevice?
     private var commandQueue: MTLCommandQueue?
     private var textureCache: CVMetalTextureCache?
-    private var lumaTexture: CVMetalTexture?
-    private var chromaTexture: CVMetalTexture?
+    private var lumaTexture: MTLTexture?
+    private var chromaTexture: MTLTexture?
     private var kernels: [String: MTLComputePipelineState] = [:]
     private var threads: [String: MTLSize] = [:]
     private var strengths: [String: (MTLBuffer, UnsafeMutablePointer<Float>)] = [:]
@@ -214,7 +214,7 @@ private actor FrameTinkerer {
     
     func updateTextures(from sampleBuffer: CMSampleBuffer) {
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer),
-              let textureCache = textureCache else {
+              let textureCache else {
             LOG("Could not get pixel buffer from sample buffer", level: .error)
             return
         }
@@ -230,8 +230,10 @@ private actor FrameTinkerer {
             0,
             &lumaTexture
         )
-        self.lumaTexture = lumaTexture
-
+        if let lumaTexture {
+            self.lumaTexture = CVMetalTextureGetTexture(lumaTexture)
+        }
+        
         var chromaTexture: CVMetalTexture?
         CVMetalTextureCacheCreateTextureFromImage(
             kCFAllocatorDefault,
@@ -244,7 +246,9 @@ private actor FrameTinkerer {
             1,
             &chromaTexture
         )
-        self.chromaTexture = chromaTexture
+        if let chromaTexture {
+            self.chromaTexture = CVMetalTextureGetTexture(chromaTexture)
+        }
     }
     
     func apply(kernel: String, strength: Float, onto sampleBuffer: CMSampleBuffer) {
@@ -252,9 +256,7 @@ private actor FrameTinkerer {
         frameNumber %= 600 // restart counter every 600 frames
 
         guard let lumaTexture,
-              let chromaTexture,
-              let yTexture = CVMetalTextureGetTexture(lumaTexture),
-              let cbcrTexture = CVMetalTextureGetTexture(chromaTexture)
+              let chromaTexture
         else {
             LOG("Could not create a texture from the pixel buffer planes", level: .error)
             return
@@ -271,8 +273,8 @@ private actor FrameTinkerer {
             return
         }
         encoder.setComputePipelineState(pipelineState)
-        encoder.setTexture(yTexture, index: 0)
-        encoder.setTexture(cbcrTexture, index: 1)
+        encoder.setTexture(lumaTexture, index: 0)
+        encoder.setTexture(chromaTexture, index: 1)
         guard let (strengthBuffer, strengthPointer) = strengths[kernel] else {
             LOG("Unable to bind the strength buffer", level: .error)
             return
@@ -311,9 +313,7 @@ private actor FrameTinkerer {
         }
 
         guard let lumaTexture,
-              let chromaTexture,
-              let yTexture = CVMetalTextureGetTexture(lumaTexture),
-              let cbcrTexture = CVMetalTextureGetTexture(chromaTexture)
+              let chromaTexture
         else {
             LOG("Could not create a texture from the pixel buffer planes", level: .error)
             return
@@ -327,8 +327,8 @@ private actor FrameTinkerer {
         }
 
         encoder.setComputePipelineState(imprintPipeline)
-        encoder.setTexture(yTexture, index: 0)
-        encoder.setTexture(cbcrTexture, index: 1)
+        encoder.setTexture(lumaTexture, index: 0)
+        encoder.setTexture(chromaTexture, index: 1)
         encoder.setTexture(combinedOverlay, index: 2)
 
         for (boxBuffer, threadsPerGrid, threadsPerThreadgroup) in boundingBoxData {
@@ -429,7 +429,7 @@ final class FrameGrabber: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
         await frameTinkerer.setCombinedOverlay(combinedOverlay)
     }
 
-    nonisolated func captureOutput(_ output: AVCaptureOutput,
+    func captureOutput(_ output: AVCaptureOutput,
                        didOutput sampleBuffer: CMSampleBuffer,
                        from connection: AVCaptureConnection) {
         nonisolated(unsafe) let sendableSampleBuffer = sampleBuffer // removes the need for @preconcurrency
