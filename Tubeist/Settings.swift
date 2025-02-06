@@ -514,10 +514,15 @@ final class Settings: Sendable {
         switch cameraAuthorizationStatus {
         case .authorized:
             return true // Permission granted
-        case .denied, .restricted:
-            return false // Permission explicitly denied or restricted
+        case .denied:
+            LOG("User has explicitly denied camera access", level: .warning)
+            return false // Permission explicitly denied
+        case .restricted:
+            LOG("This phone is restricted from using the camera", level: .error)
+            return false // Restricted by Mobile Device Management (corporate)
         case .notDetermined:
             // Permission not yet requested (app first launch, or reset)
+            LOG("Camera permissions have never been set", level: .debug)
             return false // Treat as denied for settings menu check
         @unknown default:
             return false // Handle future cases (best practice)
@@ -529,10 +534,15 @@ final class Settings: Sendable {
         switch microphoneAuthorizationStatus {
         case .authorized:
             return true // Permission granted
-        case .denied, .restricted:
+        case .denied:
+            LOG("User has explicitly denied microphone access", level: .warning)
             return false // Permission explicitly denied or restricted
+        case .restricted:
+            LOG("This phone is restricted from using the microphone", level: .error)
+            return false // Restricted by Mobile Device Management (corporate)
         case .notDetermined:
             // Permission not yet requested
+            LOG("Microphone permissions have never been set", level: .debug)
             return false // Treat as denied for settings menu check
         @unknown default:
             return false // Handle future cases (best practice)
