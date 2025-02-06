@@ -59,7 +59,6 @@ struct TubeistView: View {
     @State private var selectedStabilization = "Off"
     @State private var cameras: [String] = []
     @State private var stabilizations: [String] = []
-    @State private var activeMonitor: Monitor = DEFAULT_MONITOR
     @State private var style: String = Settings.style ?? NO_STYLE
     @State private var styleStrength: Float = 1.0
     @State private var effect: String = Settings.effect ?? NO_EFFECT
@@ -230,7 +229,7 @@ struct TubeistView: View {
                         }
                     }
                     
-                    if activeMonitor == .output {
+                    if appState.activeMonitor == .output {
                         OutputMonitorView()
                             .id(appState.outputMonitorId)
                             .gesture(magnification)
@@ -323,7 +322,10 @@ struct TubeistView: View {
                                 Spacer()
                                 
                                 Text("Select Monitor")
-                                Picker("Monitor Selection", selection: $activeMonitor) {
+                                Picker("Monitor Selection", selection: Binding(
+                                    get: { appState.activeMonitor },
+                                    set: { appState.activeMonitor = $0 }
+                                )) {
                                     Text("Camera (view without delay, not styled)").tag(Monitor.camera)
                                     Text("Output (viewing is delayed, but styled)").tag(Monitor.output)
                                 }
@@ -387,7 +389,7 @@ struct TubeistView: View {
                                 )
                                 .onAppear {
                                     style = Settings.style ?? NO_STYLE
-                                    if activeMonitor == .camera {
+                                    if appState.activeMonitor == .camera {
                                         fade("Switch to output viev to preview styling")
                                     }
                                 }
@@ -441,7 +443,7 @@ struct TubeistView: View {
                         Spacer()
                     }
                     
-                    if activeMonitor == .output {
+                    if appState.activeMonitor == .output {
                         HStack {
                             VStack {
                                 Spacer()
@@ -587,13 +589,13 @@ struct TubeistView: View {
                         }
                     }
                     
-                    SmallButton(imageName: activeMonitor == .output ? "square.and.line.vertical.and.square.filled" : "square.filled.and.line.vertical.and.square",
-                                foregroundColor: activeMonitor == .output ? .yellow : .white) {
-                        activeMonitor = switch activeMonitor {
+                    SmallButton(imageName: appState.activeMonitor == .output ? "square.and.line.vertical.and.square.filled" : "square.filled.and.line.vertical.and.square",
+                                foregroundColor: appState.activeMonitor == .output ? .yellow : .white) {
+                        appState.activeMonitor = switch appState.activeMonitor {
                         case .output: .camera
                         case .camera: .output
                         }
-                        fade("Switching to \(activeMonitor) monitor")
+                        fade("Switching to \(appState.activeMonitor) monitor")
                     }
                     
                     SmallButton(imageName: "camera.filters",
@@ -778,7 +780,7 @@ struct TubeistView: View {
                 appState.hadToStopStreaming = false
             }
         }
-        .onChange(of: activeMonitor) { _, newMonitor in
+        .onChange(of: appState.activeMonitor) { _, newMonitor in
             Task {
                 await Streamer.shared.setMonitor(newMonitor)
             }

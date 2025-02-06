@@ -32,11 +32,17 @@ struct OutputMonitorView: UIViewControllerRepresentable {
         }
     }
 
-    static func createPreviewLayer() async {
+    static func createPreviewLayer() {
         if OutputMonitorView.displayLayer == nil {
-            OutputMonitorView.displayLayer = AVSampleBufferDisplayLayer()
+            let displayLayer = AVSampleBufferDisplayLayer()
+            displayLayer.preventsDisplaySleepDuringVideoPlayback = true
+            OutputMonitorView.displayLayer = displayLayer
             LOG("Created output video display layer", level: .debug)
         }
+    }
+
+    static func deletePreviewLayer() {
+        OutputMonitorView.displayLayer = nil
     }
     
     func makeUIViewController(context: Context) -> UIViewController {

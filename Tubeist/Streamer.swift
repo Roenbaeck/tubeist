@@ -15,7 +15,6 @@ enum StreamHealth {
 
 actor StreamingActor {
     private var appState: AppState?
-    private var activeMonitor: Monitor = DEFAULT_MONITOR
     func setAppState(_ appState: AppState) {
         self.appState = appState
     }
@@ -29,12 +28,6 @@ actor StreamingActor {
         Task { @MainActor in
             await appState?.isStreamActive = false
         }
-    }
-    func setMonitor(_ monitor: Monitor) {
-        activeMonitor = monitor
-    }
-    func getMonitor() -> Monitor {
-        activeMonitor
     }
     func setStreamHealth(_ health: StreamHealth) {
         Task { @MainActor in
@@ -57,6 +50,9 @@ actor StreamingActor {
         Task { @MainActor in
             await appState?.refreshCameraView()
         }
+    }
+    func getMonitor() async -> Monitor {
+        await appState?.activeMonitor ?? DEFAULT_MONITOR
     }
 }
 
@@ -96,7 +92,7 @@ final class Streamer: Sendable {
     }
     func endStream() async {
         await streamingActor.pause()
-        if await getMonitor() == .camera {
+        if await streamingActor.getMonitor() == .camera {
             await CaptureDirector.shared.stopOutput()
             await FrameGrabber.shared.terminateGrabbing()
         }
@@ -118,10 +114,11 @@ final class Streamer: Sendable {
     func toggleBatterySaving() async {
         await streamingActor.toggleBatterySaving()
     }
-    
+    func getMonitor() async -> Monitor {
+        await streamingActor.getMonitor()
+    }
     func setMonitor(_ monitor: Monitor) async {
         LOG("Setting monitor to \(monitor)", level: .debug)
-        await streamingActor.setMonitor(monitor)
         if monitor == .output, await !isStreaming() {
             LOG("Starting half the streaming pipeline", level: .debug)
             await FrameGrabber.shared.commenceGrabbing()
@@ -132,8 +129,5 @@ final class Streamer: Sendable {
             await CaptureDirector.shared.stopOutput()
             await FrameGrabber.shared.terminateGrabbing()
         }
-    }
-    func getMonitor() async -> Monitor {
-        await streamingActor.getMonitor()
     }
 }

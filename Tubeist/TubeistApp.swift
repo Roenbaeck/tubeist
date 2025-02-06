@@ -29,6 +29,7 @@ final class AppState {
     var availableProducts: [String: Product] = [:]
     var lastKnownBrightness: CGFloat = UIScreen.main.brightness
 
+    var activeMonitor: Monitor = DEFAULT_MONITOR
     var cameraMonitorId = UUID()
     func refreshCameraView() {
         cameraMonitorId = UUID()
@@ -66,6 +67,7 @@ struct TubeistApp: App {
                     appState.soonGoingToBackground = true
                     appState.justCameFromBackground = false
                     LOG("App is entering background", level: .debug)
+                    OutputMonitorView.deletePreviewLayer()
                     Task {
                         if await Streamer.shared.isStreaming() {
                             LOG("Stopping stream due to background state", level: .warning)
@@ -81,6 +83,13 @@ struct TubeistApp: App {
                     appState.isBatterySavingOn = false
                     OutputMonitorView.isBatterySavingOn = false
                     LOG("App is coming back from background", level: .debug)
+                    Task {
+                        if appState.activeMonitor == .output {
+                            OutputMonitorView.createPreviewLayer()
+                            appState.refreshOutputView()
+                        }
+                        await Streamer.shared.setMonitor(appState.activeMonitor)
+                    }
                 }
             default: break
             }

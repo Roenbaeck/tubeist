@@ -13,7 +13,8 @@ struct CameraMonitorView: UIViewControllerRepresentable {
 
     static func createPreviewLayer() async {
         if CameraMonitorView.previewLayer == nil {
-            CameraMonitorView.previewLayer = await AVCaptureVideoPreviewLayer(session: CaptureDirector.shared.getSession())
+            let previewLayer = await AVCaptureVideoPreviewLayer(session: CaptureDirector.shared.getSession())
+            CameraMonitorView.previewLayer = previewLayer
             LOG("Created camera video preview layer", level: .debug)
         }
     }
