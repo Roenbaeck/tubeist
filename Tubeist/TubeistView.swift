@@ -713,7 +713,7 @@ struct TubeistView: View {
                                 Image(systemName: "camera.filters")
                                     .resizable()
                                     .frame(width: 20, height: 20)
-                                    .padding(.leading, 10)
+                                    .padding(.leading, 15)
                                     .foregroundColor(.yellow)
                                 Spacer()
                             }
@@ -722,10 +722,11 @@ struct TubeistView: View {
                                     value: $styleStrength,
                                     range: -1.0...1.0,
                                     step: 0.1,
-                                    format: nil
+                                    format: "%.1f ST"
                                 )
                                 .frame(height: geometry.size.height * 0.33)
                                 .padding(.leading, 10)
+                                .padding(.bottom, 15)
                                 .onChange(of: styleStrength) { _, newValue in
                                     Task {
                                         await FrameGrabber.shared.setStyleStrength(to: newValue)
@@ -737,10 +738,11 @@ struct TubeistView: View {
                                     value: $effectStrength,
                                     range: -1.0...1.0,
                                     step: 0.1,
-                                    format: nil
+                                    format: "%.1f EF"
                                 )
                                 .frame(height: geometry.size.height * 0.33)
                                 .padding(.leading, 10)
+                                .padding(.bottom, 15)
                                 .onChange(of: effectStrength) { _, newValue in
                                     Task {
                                         await FrameGrabber.shared.setEffectStrength(to: newValue)
@@ -911,7 +913,7 @@ struct CameraControlSlider: View {
     var format: String?
     
     var body: some View {
-        VStack {
+        VStack(spacing: 0) {
             if format != nil {
                 HStack {
                     Text("\(String(format: format!, value))")
