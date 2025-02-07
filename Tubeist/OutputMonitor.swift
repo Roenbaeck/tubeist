@@ -32,7 +32,7 @@ struct OutputMonitorView: UIViewControllerRepresentable {
         }
     }
 
-    static func createPreviewLayer() {
+    static func createDisplayLayer() {
         if OutputMonitorView.displayLayer == nil {
             let displayLayer = AVSampleBufferDisplayLayer()
             displayLayer.preventsDisplaySleepDuringVideoPlayback = true
@@ -41,7 +41,8 @@ struct OutputMonitorView: UIViewControllerRepresentable {
         }
     }
 
-    static func deletePreviewLayer() {
+    static func deleteDisplayLayer() {
+        OutputMonitorView.displayLayer?.removeFromSuperlayer()
         OutputMonitorView.displayLayer = nil
     }
     

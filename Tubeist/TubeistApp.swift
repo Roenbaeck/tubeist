@@ -67,7 +67,8 @@ struct TubeistApp: App {
                     appState.soonGoingToBackground = true
                     appState.justCameFromBackground = false
                     LOG("App is entering background", level: .debug)
-                    OutputMonitorView.deletePreviewLayer()
+                    OutputMonitorView.deleteDisplayLayer()
+                    CameraMonitorView.deletePreviewLayer()
                     Task {
                         if await Streamer.shared.isStreaming() {
                             LOG("Stopping stream due to background state", level: .warning)
@@ -85,8 +86,12 @@ struct TubeistApp: App {
                     LOG("App is coming back from background", level: .debug)
                     Task {
                         if appState.activeMonitor == .output {
-                            OutputMonitorView.createPreviewLayer()
+                            OutputMonitorView.createDisplayLayer()
                             appState.refreshOutputView()
+                        }
+                        else if appState.activeMonitor == .camera {
+                            await CameraMonitorView.createPreviewLayer()
+                            appState.refreshCameraView()
                         }
                         await Streamer.shared.setMonitor(appState.activeMonitor)
                     }

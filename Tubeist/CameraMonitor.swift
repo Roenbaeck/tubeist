@@ -18,7 +18,12 @@ struct CameraMonitorView: UIViewControllerRepresentable {
             LOG("Created camera video preview layer", level: .debug)
         }
     }
-    
+
+    static func deletePreviewLayer() {
+        CameraMonitorView.previewLayer?.removeFromSuperlayer()
+        CameraMonitorView.previewLayer = nil
+    }
+
     func makeUIViewController(context: Context) -> UIViewController {
         let viewController = UIViewController()
         viewController.loadViewIfNeeded()

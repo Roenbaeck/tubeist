@@ -236,7 +236,7 @@ struct TubeistView: View {
                             .frame(width: width, height: height)
                             .onAppear {
                                 Task {
-                                    await OutputMonitorView.createPreviewLayer()
+                                    OutputMonitorView.createDisplayLayer()
                                     appState.refreshOutputView()
                                     LOG("Viewing output monitor", level: .info)
                                 }
