@@ -24,7 +24,7 @@ private actor FrameTinkerer {
     private var frameNumberBuffer: MTLBuffer?
     private var frameNumberPointer: UnsafeMutablePointer<UInt32>?
     // overlay imprinting
-    private var combinedOverlay: MTLTexture?
+    private var overlayTexture: MTLTexture?
     private var imprintPipeline: MTLComputePipelineState?
     private var boundingBoxData: [(MTLBuffer, MTLSize, MTLSize)] = []
     
@@ -134,7 +134,7 @@ private actor FrameTinkerer {
     
     func setCombinedOverlay(_ combinedOverlay: CombinedOverlay?) {
         guard let combinedOverlay else {
-            self.combinedOverlay = nil
+            self.overlayTexture = nil
             return
         }
         guard let metalDevice, let imprintPipeline else {
@@ -209,7 +209,7 @@ private actor FrameTinkerer {
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
 
-        self.combinedOverlay = texture
+        self.overlayTexture = texture
     }
     
     func updateTextures(from sampleBuffer: CMSampleBuffer) {
@@ -308,7 +308,7 @@ private actor FrameTinkerer {
     }
 
     func imprintOverlay(onto sampleBuffer: CMSampleBuffer) {
-        guard let combinedOverlay else {
+        guard let overlayTexture else {
             return // quick return if there is no overlay to imprint
         }
 
@@ -329,7 +329,7 @@ private actor FrameTinkerer {
         encoder.setComputePipelineState(imprintPipeline)
         encoder.setTexture(lumaTexture, index: 0)
         encoder.setTexture(chromaTexture, index: 1)
-        encoder.setTexture(combinedOverlay, index: 2)
+        encoder.setTexture(overlayTexture, index: 2)
 
         for (boxBuffer, threadsPerGrid, threadsPerThreadgroup) in boundingBoxData {
             encoder.setBuffer(boxBuffer, offset: 0, index: 0)
