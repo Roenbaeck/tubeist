@@ -28,8 +28,6 @@ private actor FrameTinkerer {
     private var imprintPipeline: MTLComputePipelineState?
     private var boundingBoxData: [(MTLBuffer, MTLSize, MTLSize)] = []
     
-    // keeping one and the same render destination currently introduces flicker
-    private var renderDestination: CIRenderDestination?
     // resettable
     private var frameNumber: UInt32 = 0
     private var threadsPerGrid: MTLSize = MTLSize(
@@ -116,7 +114,6 @@ private actor FrameTinkerer {
     }
     
     func reset() {
-        renderDestination = nil
         frameNumber = 0
         var width = DEFAULT_CAPTURE_WIDTH
         var height = DEFAULT_CAPTURE_HEIGHT
