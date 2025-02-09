@@ -682,7 +682,7 @@ struct TubeistView: View {
                             value: $exposureBias,
                             range: -2.0...2.0,
                             step: 0.1,
-                            format: "%.1f EV"
+                            format: "%+.1f\u{202F}EV"
                         )
                         .frame(height: geometry.size.height * 0.50)
                         .padding(.leading, 10)
@@ -697,7 +697,7 @@ struct TubeistView: View {
                             value: $lensPosition,
                             range: 0...1.0,
                             step: 0.02,
-                            format: "%.2f"
+                            format: "%+.2f"
                         )
                         .frame(height: geometry.size.height * 0.50)
                         .padding(.leading, 10)
@@ -722,7 +722,7 @@ struct TubeistView: View {
                                     value: $styleStrength,
                                     range: -1.0...1.0,
                                     step: 0.1,
-                                    format: "%.1f ST"
+                                    format: "%+.1f\u{202F}ST"
                                 )
                                 .frame(height: geometry.size.height * 0.33)
                                 .padding(.leading, 10)
@@ -738,7 +738,7 @@ struct TubeistView: View {
                                     value: $effectStrength,
                                     range: -1.0...1.0,
                                     step: 0.1,
-                                    format: "%.1f EF"
+                                    format: "%+.1f\u{202F}EF"
                                 )
                                 .frame(height: geometry.size.height * 0.33)
                                 .padding(.leading, 10)
@@ -917,7 +917,7 @@ struct CameraControlSlider: View {
             if format != nil {
                 HStack {
                     Text("\(String(format: format!, value))")
-                        .font(.system(size: 10))
+                        .font(.system(size: 10)).monospacedDigit()
                         .foregroundColor(.yellow)
                     Spacer()
                 }
