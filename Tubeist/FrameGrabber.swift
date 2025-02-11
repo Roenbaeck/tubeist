@@ -9,20 +9,40 @@ import AVFoundation
 import CoreImage
 import Metal
 
+// this is not 1-1 with the Metal struct, since textures are set differently
+struct KernelArguments {
+    var strength: Float = 0
+    var frame: UInt32 = 0
+    var threadgroupWidth: UInt32 = 0
+    var threadgroupHeight: UInt32 = 0
+}
+
+struct KernelSettings {
+    var pipeline: MTLComputePipelineState
+    var threads: MTLSize
+    var argumentEncoder: MTLArgumentEncoder
+    var argumentBuffer: MTLBuffer
+    var kernelArgumentsPointer: UnsafeMutablePointer<KernelArguments>
+}
+
 private actor FrameTinkerer {
+    // frame grabbing settings
+    private var grabbingFrames: Bool = false
+    private var style: String?
+    private var styleStrength: Float = 1.0
+    private var effect: String?
+    private var effectStrength: Float = 1.0
+
+    // metal stuff
     private let context: CIContext
     private var metalDevice: MTLDevice?
+    private var library: MTLLibrary?
     private var commandQueue: MTLCommandQueue?
     private var textureCache: CVMetalTextureCache?
-    private var lumaTexture: MTLTexture?
-    private var chromaTexture: MTLTexture?
-    private var kernels: [String: MTLComputePipelineState] = [:]
-    private var threads: [String: MTLSize] = [:]
-    private var strengths: [String: (MTLBuffer, UnsafeMutablePointer<Float>)] = [:]
-    private var widths: [String: (MTLBuffer, UnsafeMutablePointer<UInt32>)] = [:]
-    private var heights: [String: (MTLBuffer, UnsafeMutablePointer<UInt32>)] = [:]
-    private var frameNumberBuffer: MTLBuffer?
-    private var frameNumberPointer: UnsafeMutablePointer<UInt32>?
+    private var kernels: [String: KernelSettings] = [:]
+    private var lumaTexture: CVMetalTexture?
+    private var chromaTexture: CVMetalTexture?
+
     // overlay imprinting
     private var overlayTexture: MTLTexture?
     private var imprintPipeline: MTLComputePipelineState?
@@ -36,6 +56,40 @@ private actor FrameTinkerer {
         depth: 1
     )
 
+    func start() {
+        grabbingFrames = true
+    }
+    func stop() {
+        grabbingFrames = false
+    }
+    func isActive() -> Bool {
+        grabbingFrames
+    }
+    func refreshStyle() {
+        style = Settings.style
+    }
+    func getStyle() -> String? {
+        style
+    }
+    func setStyleStrength(_ strength: Float) {
+        self.styleStrength = strength
+    }
+    func getStyleStrength() -> Float {
+        styleStrength
+    }
+    func refreshEffect() {
+        effect = Settings.effect
+    }
+    func getEffect() -> String? {
+        effect
+    }
+    func setEffectStrength(_ strength: Float) {
+        self.effectStrength = strength
+    }
+    func getEffectStrength() -> Float {
+        effectStrength
+    }
+    
     init() {
         guard let metalDevice = MTLCreateSystemDefaultDevice(),
               let commandQueue = metalDevice.makeCommandQueue() else {
@@ -69,9 +123,8 @@ private actor FrameTinkerer {
             &textureCache
         )
         self.textureCache = textureCache
-        let library = metalDevice.makeDefaultLibrary()
-        self.frameNumberBuffer = metalDevice.makeBuffer(length: MemoryLayout<UInt32>.size, options: .storageModeShared)
-        self.frameNumberPointer = frameNumberBuffer?.contents().assumingMemoryBound(to: UInt32.self)
+        library = metalDevice.makeDefaultLibrary()
+
         var kernelNames = AVAILABLE_STYLES.filter( { $0 != NO_STYLE } )
         kernelNames.append(contentsOf: AVAILABLE_EFFECTS.filter( { $0 != NO_EFFECT } ))
                                                    
@@ -82,34 +135,49 @@ private actor FrameTinkerer {
             }
             do {
                 let pipeline = try metalDevice.makeComputePipelineState(function: function)
-                kernels[kernel] = pipeline
-                if let buffer = metalDevice.makeBuffer(length: MemoryLayout<Float>.size, options: .storageModeShared) {
-                    strengths[kernel] = (buffer, buffer.contents().assumingMemoryBound(to: Float.self))
-                }
-                if let buffer = metalDevice.makeBuffer(length: MemoryLayout<UInt32>.size, options: .storageModeShared) {
-                    widths[kernel] = (buffer, buffer.contents().assumingMemoryBound(to: UInt32.self))
-                }
-                if let buffer = metalDevice.makeBuffer(length: MemoryLayout<UInt32>.size, options: .storageModeShared) {
-                    heights[kernel] = (buffer, buffer.contents().assumingMemoryBound(to: UInt32.self))
-                }
                 // calculating optimum threadgroup and grid sizes
                 let w = pipeline.threadExecutionWidth
                 let h = pipeline.maxTotalThreadsPerThreadgroup / w
-                threads[kernel] = MTLSize(width: w, height: h, depth: 1)
+                let threads = MTLSize(width: w, height: h, depth: 1)
+
+                let argumentEncoder = function.makeArgumentEncoder(bufferIndex: 0)
+                let argumentBuffer = metalDevice.makeBuffer(length: argumentEncoder.encodedLength, options: [.storageModeShared])
+
+                guard let argumentBuffer else {
+                    LOG("Unable to create argument buffer for kernel '\(kernel)'", level: .error)
+                    continue
+                }
+                // Bind the allocated buffer to the encoder.
+                argumentEncoder.setArgumentBuffer(argumentBuffer, offset: 0)
+                
+                // Get a pointer to the constant data in the argument buffer.
+                let constantDataPtr = argumentEncoder.constantData(at: 2)
+                let kernelArgumentsPointer = constantDataPtr.bindMemory(to: KernelArguments.self, capacity: 1)
+                kernelArgumentsPointer.pointee = KernelArguments()
+                kernelArgumentsPointer.pointee.threadgroupWidth = UInt32(threads.width)
+                kernelArgumentsPointer.pointee.threadgroupHeight = UInt32(threads.height)
+                
+                kernels[kernel] = KernelSettings(
+                    pipeline: pipeline,
+                    threads: threads,
+                    argumentEncoder: argumentEncoder,
+                    argumentBuffer: argumentBuffer,
+                    kernelArgumentsPointer: kernelArgumentsPointer
+                )
             }
             catch {
-                LOG("Failed to create pipeline state: \(error)", level: .error)
+                LOG("Failed to create pipeline state for kernels: \(error)", level: .error)
                 return
             }
-        }
-        guard let function = library?.makeFunction(name: "imprint") else {
-            LOG("Could not make function out of imprint kernel", level: .error)
-            return
-        }
-        do {
-            imprintPipeline = try metalDevice.makeComputePipelineState(function: function)
-        } catch {
-            LOG("Failed to create pipeline state: \(error)", level: .error)
+            guard let function = library?.makeFunction(name: "imprint") else {
+                LOG("Could not make function out of imprint kernel", level: .error)
+                return
+            }
+            do {
+                imprintPipeline = try metalDevice.makeComputePipelineState(function: function)
+            } catch {
+                LOG("Failed to create pipeline state: \(error)", level: .error)
+            }
         }
     }
     
@@ -209,13 +277,20 @@ private actor FrameTinkerer {
         self.overlayTexture = texture
     }
     
-    func updateTextures(from sampleBuffer: CMSampleBuffer) {
-        guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer),
-              let textureCache else {
-            LOG("Could not get pixel buffer from sample buffer", level: .error)
+    func deleteTextures() {
+        lumaTexture = nil
+        chromaTexture = nil
+    }
+    
+    func createTextures(from sampleBuffer: CMSampleBuffer) {
+        guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {
+            LOG("Cannot get pixel buffer from sample buffer", level: .error)
             return
         }
-        var lumaTexture: CVMetalTexture?
+        guard let textureCache else {
+            LOG("The texture cache has not been initialized", level: .error)
+            return
+        }
         CVMetalTextureCacheCreateTextureFromImage(
             kCFAllocatorDefault,
             textureCache,
@@ -227,11 +302,7 @@ private actor FrameTinkerer {
             0,
             &lumaTexture
         )
-        if let lumaTexture {
-            self.lumaTexture = CVMetalTextureGetTexture(lumaTexture)
-        }
         
-        var chromaTexture: CVMetalTexture?
         CVMetalTextureCacheCreateTextureFromImage(
             kCFAllocatorDefault,
             textureCache,
@@ -243,75 +314,42 @@ private actor FrameTinkerer {
             1,
             &chromaTexture
         )
-        if let chromaTexture {
-            self.chromaTexture = CVMetalTextureGetTexture(chromaTexture)
-        }
     }
     
-    func apply(kernel: String, strength: Float, onto sampleBuffer: CMSampleBuffer) {
+    func apply(kernel: String, strength: Float) {
         frameNumber += 1
         frameNumber %= 600 // restart counter every 600 frames
-
-        guard let lumaTexture,
-              let chromaTexture
-        else {
-            LOG("Could not create a texture from the pixel buffer planes", level: .error)
-            return
-        }
 
         guard let commandBuffer = commandQueue?.makeCommandBuffer(),
               let encoder = commandBuffer.makeComputeCommandEncoder() else {
             LOG("Could not create a commmand buffer or encoder", level: .error)
             return
         }
+        guard let kernelSettings = kernels[kernel] else {
+            LOG("The kernel settinga have not been initialized", level: .error)
+            return
+        }
         
-        guard let pipelineState = kernels[kernel] else {
-            LOG("The pipeline state is not initialized", level: .error)
-            return
+        encoder.setComputePipelineState(kernelSettings.pipeline)
+        if let lumaTexture {
+            kernelSettings.argumentEncoder.setTexture(CVMetalTextureGetTexture(lumaTexture), index: 0)
         }
-        encoder.setComputePipelineState(pipelineState)
-        encoder.setTexture(lumaTexture, index: 0)
-        encoder.setTexture(chromaTexture, index: 1)
-        guard let (strengthBuffer, strengthPointer) = strengths[kernel] else {
-            LOG("Unable to bind the strength buffer", level: .error)
-            return
+        if let chromaTexture {
+            kernelSettings.argumentEncoder.setTexture(CVMetalTextureGetTexture(chromaTexture), index: 1)
         }
-        strengthPointer.pointee = strength
-        encoder.setBuffer(strengthBuffer, offset: 0, index: 0)
-        if let frameNumberPointer = frameNumberPointer {
-            frameNumberPointer.pointee = frameNumber
-            encoder.setBuffer(frameNumberBuffer, offset: 0, index: 1)
-        }
-        guard let threadsPerThreadgroup = threads[kernel] else {
-            LOG("Threads per threadgroup has not been determined", level: .error)
-            return
-        }
-        guard let (widthBuffer, widthPointer) = widths[kernel] else {
-            LOG("Unable to bind the width buffer", level: .error)
-            return
-        }
-        widthPointer.pointee = UInt32(threadsPerThreadgroup.width)
-        encoder.setBuffer(widthBuffer, offset: 0, index: 2)
-        guard let (heightBuffer, heightPointer) = heights[kernel] else {
-            LOG("Unable to bind the height buffer", level: .error)
-            return
-        }
-        heightPointer.pointee = UInt32(threadsPerThreadgroup.height)
-        encoder.setBuffer(heightBuffer, offset: 0, index: 3)
-        
-        encoder.dispatchThreads(threadsPerGrid, threadsPerThreadgroup: threadsPerThreadgroup)
+
+        kernelSettings.kernelArgumentsPointer.pointee.strength = strength
+        kernelSettings.kernelArgumentsPointer.pointee.frame = frameNumber
+
+        encoder.setBuffer(kernelSettings.argumentBuffer, offset: 0, index: 0)
+        encoder.dispatchThreads(threadsPerGrid, threadsPerThreadgroup: kernelSettings.threads)
         encoder.endEncoding()
         commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
     }
 
-    func imprintOverlay(onto sampleBuffer: CMSampleBuffer) {
-        guard let overlayTexture else {
-            return // quick return if there is no overlay to imprint
-        }
-
-        guard let lumaTexture,
-              let chromaTexture
-        else {
+    func imprintOverlay() {
+        guard let lumaTexture, let chromaTexture else {
             LOG("Could not create a texture from the pixel buffer planes", level: .error)
             return
         }
@@ -324,8 +362,8 @@ private actor FrameTinkerer {
         }
 
         encoder.setComputePipelineState(imprintPipeline)
-        encoder.setTexture(lumaTexture, index: 0)
-        encoder.setTexture(chromaTexture, index: 1)
+        encoder.setTexture(CVMetalTextureGetTexture(lumaTexture), index: 0)
+        encoder.setTexture(CVMetalTextureGetTexture(chromaTexture), index: 1)
         encoder.setTexture(overlayTexture, index: 2)
 
         for (boxBuffer, threadsPerGrid, threadsPerThreadgroup) in boundingBoxData {
@@ -336,65 +374,46 @@ private actor FrameTinkerer {
         encoder.endEncoding()
         commandBuffer.commit()
     }
-}
+    
+    func processFrame(sampleBuffer: CMSampleBuffer) async {
+        nonisolated(unsafe) let sendableSampleBuffer = sampleBuffer // removes the need for @preconcurrency
+        if grabbingFrames {
+            createTextures(from: sendableSampleBuffer)
+            if let style {
+                apply(kernel: style, strength: styleStrength)
+            }
+            if let effect {
+                apply(kernel: effect, strength: effectStrength)
+            }
+            if overlayTexture != nil {
+                imprintOverlay()
+            }
+            if await Streamer.shared.isStreaming() {
+                await ContentPackager.shared.appendVideoSampleBuffer(sendableSampleBuffer)
+            }
+            if await Streamer.shared.getMonitor() == .output {
+                await OutputMonitorView.enqueue(sendableSampleBuffer)
+            }
+            deleteTextures()
+        }
+    }
 
-private actor FrameGrabbingActor {
-    private var grabbingFrames: Bool = false
-    private var style: String?
-    private var styleStrength: Float = 1.0
-    private var effect: String?
-    private var effectStrength: Float = 1.0
-
-    func start() {
-        grabbingFrames = true
-    }
-    func stop() {
-        grabbingFrames = false
-    }
-    func isActive() -> Bool {
-        grabbingFrames
-    }
-    func refreshStyle() {
-        style = Settings.style
-    }
-    func getStyle() -> String? {
-        style
-    }
-    func setStyleStrength(_ strength: Float) {
-        self.styleStrength = strength
-    }
-    func getStyleStrength() -> Float {
-        styleStrength
-    }
-    func refreshEffect() {
-        effect = Settings.effect
-    }
-    func getEffect() -> String? {
-        effect
-    }
-    func setEffectStrength(_ strength: Float) {
-        self.effectStrength = strength
-    }
-    func getEffectStrength() -> Float {
-        effectStrength
-    }
 }
 
 final class FrameGrabber: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, Sendable {
     @PipelineActor public static let shared = FrameGrabber()
     private let frameTinkerer = FrameTinkerer()
-    private let frameGrabbing = FrameGrabbingActor()
 
     func resetTinkerer() async {
         await frameTinkerer.reset()
     }
     
     func commenceGrabbing() async {
-        if await !frameGrabbing.isActive() {
+        if await !frameTinkerer.isActive() {
             await frameTinkerer.reset()
-            await frameGrabbing.refreshStyle()
-            await frameGrabbing.refreshEffect()
-            await frameGrabbing.start()
+            await frameTinkerer.refreshStyle()
+            await frameTinkerer.refreshEffect()
+            await frameTinkerer.start()
             LOG("Started grabbing frames", level: .debug)
         }
         else {
@@ -402,8 +421,8 @@ final class FrameGrabber: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
         }
     }
     func terminateGrabbing() async {
-        if await frameGrabbing.isActive() {
-            await frameGrabbing.stop()
+        if await frameTinkerer.isActive() {
+            await frameTinkerer.stop()
             LOG("Stopped grabbing frames", level: .debug)
         }
         else {
@@ -411,16 +430,16 @@ final class FrameGrabber: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
         }
     }
     func refreshStyle() async {
-        await frameGrabbing.refreshStyle()
+        await frameTinkerer.refreshStyle()
     }
     func setStyleStrength(to strength: Float) async {
-        await frameGrabbing.setStyleStrength(strength)
+        await frameTinkerer.setStyleStrength(strength)
     }
     func refreshEffect() async {
-        await frameGrabbing.refreshEffect()
+        await frameTinkerer.refreshEffect()
     }
     func setEffectStrength(to strength: Float) async {
-        await frameGrabbing.setEffectStrength(strength)
+        await frameTinkerer.setEffectStrength(strength)
     }
     func setCombinedOverlay(_ combinedOverlay: CombinedOverlay?) async {
         await frameTinkerer.setCombinedOverlay(combinedOverlay)
@@ -429,28 +448,13 @@ final class FrameGrabber: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
     func captureOutput(_ output: AVCaptureOutput,
                        didOutput sampleBuffer: CMSampleBuffer,
                        from connection: AVCaptureConnection) {
-        nonisolated(unsafe) let sendableSampleBuffer = sampleBuffer // removes the need for @preconcurrency
-        PipelineActor.queue.async {
-            Task { @PipelineActor [sendableSampleBuffer] in
-                nonisolated(unsafe) let sendableSampleBuffer = sendableSampleBuffer // it's needed again here
-                if await self.frameGrabbing.isActive() {
-                    await self.frameTinkerer.updateTextures(from: sendableSampleBuffer)
-                    if let style = await self.frameGrabbing.getStyle() {
-                        await self.frameTinkerer.apply(kernel: style, strength: self.frameGrabbing.getStyleStrength(), onto: sendableSampleBuffer)
-                    }
-                    if let effect = await self.frameGrabbing.getEffect() {
-                        await self.frameTinkerer.apply(kernel: effect, strength: self.frameGrabbing.getEffectStrength(), onto: sendableSampleBuffer)
-                    }
-                    await self.frameTinkerer.imprintOverlay(onto: sendableSampleBuffer)
-                    if await Streamer.shared.isStreaming() {
-                        await ContentPackager.shared.appendVideoSampleBuffer(sendableSampleBuffer)
-                    }
-                    if await Streamer.shared.getMonitor() == .output {
-                        await OutputMonitorView.enqueue(sendableSampleBuffer)
-                    }
-                }
-            }
+        let semaphore = DispatchSemaphore(value: 0)
+        nonisolated(unsafe) let sendableSampleBuffer = sampleBuffer
+        Task { @PipelineActor in
+            await frameTinkerer.processFrame(sampleBuffer: sendableSampleBuffer)
+            semaphore.signal()
         }
+        semaphore.wait()
     }
 }
 

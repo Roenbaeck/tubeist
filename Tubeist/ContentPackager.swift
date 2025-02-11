@@ -68,7 +68,8 @@ private class AssetWriterActor {
                 AVVideoAverageBitRateKey: selectedVideoBitrate,
                 AVVideoExpectedSourceFrameRateKey: selectedFrameRate,
                 AVVideoMaxKeyFrameIntervalKey: frameIntervalKey,
-                AVVideoAllowFrameReorderingKey: false, // leaving this as true (default) can become computationally expensive
+                // I believe we need this since we are async and frames can potentially arrive out of order
+                AVVideoAllowFrameReorderingKey: true,
                 kVTCompressionPropertyKey_HDRMetadataInsertionMode: kVTHDRMetadataInsertionMode_Auto
             ]
         ]

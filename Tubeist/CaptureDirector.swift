@@ -253,6 +253,9 @@ private class DeviceActor {
             videoDevice.activeColorSpace = AV_COLOR_SPACE
             videoDevice.unlockForConfiguration()
             
+            // Drop frames in case the rendering is not quick enough
+            videoOutput.alwaysDiscardsLateVideoFrames = true
+            
             self.minZoomFactor = videoDevice.minAvailableVideoZoomFactor
             self.maxZoomFactor = videoDevice.maxAvailableVideoZoomFactor
             self.opticalZoomFactor = videoDevice.activeFormat.secondaryNativeResolutionZoomFactors.first ?? 1.0

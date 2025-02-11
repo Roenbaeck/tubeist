@@ -65,7 +65,7 @@ struct SystemMetricsView: View {
             }
         }()
         
-        await MainActor.run {
+        Task { @MainActor in
             self.cpuUsage = cpuUsage
             self.batteryLevel = batteryLevel
             self.thermalLevel = thermalLevel
