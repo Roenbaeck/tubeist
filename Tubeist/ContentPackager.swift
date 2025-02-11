@@ -234,7 +234,10 @@ actor RecordingActor {
     private var filename: String?
     private var fileHandle: FileHandle?
     private let recordingFolder: URL?
+    private var fragmentQueue: [Fragment]
+    private var isWriting: Bool = false
     init() {
+        fragmentQueue = []
         // Use a shared container that's accessible in Files app
         if let recordingFolder = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
             self.recordingFolder = recordingFolder
@@ -249,6 +252,8 @@ actor RecordingActor {
             LOG("The folder where recordings are supposed to be stored is not available", level: .error)
             return
         }
+        fragmentQueue = []
+        isWriting = false
         let dateFormatter = DateFormatter()
         dateFormatter.dateFormat = "yyyyMMdd_HHmmss"
         let timestamp = dateFormatter.string(from: Date())
@@ -263,28 +268,48 @@ actor RecordingActor {
             fileHandle = nil
         }
     }
-    func writeFragment(_ fragment: Fragment) {
+    
+    func enqueueFragment(_ fragment: Fragment) {
+        fragmentQueue.append(fragment)
+        startProcessingQueue()
+    }
+
+    private func startProcessingQueue() {
+        guard !isWriting else { return }
+        isWriting = true
         Task {
-            if fragment.type == .initialization {
-                LOG("Starting recording", level: .debug)
-                new()
-            }
-            guard let fileHandle else {
-                LOG("File handle is not initialized", level: .error)
-                return
-            }
-            do {
-                try fileHandle.write(contentsOf: fragment.segment)
-                LOG("Appended fragment \(fragment.sequence) to file: \(filename ?? "<none>")", level: .debug)
-            }
-            catch {
-                // TODO: warning, until I figure out why sometimes additional fragments arrive after closing the file
-                LOG("Appending fragment failed: \(error)", level: .warning)
-            }
-            if fragment.type == .finalization {
-                LOG("Stopping recording", level: .debug)
-                try? fileHandle.close()
-            }
+            await processQueue()
+        }
+    }
+
+    private func processQueue() async {
+        while let fragment = fragmentQueue.first {
+            fragmentQueue.removeFirst()
+            writeFragment(fragment)
+        }
+        isWriting = false
+    }
+    
+    func writeFragment(_ fragment: Fragment) {
+        if fragment.type == .initialization {
+            LOG("Starting recording", level: .debug)
+            new()
+        }
+        guard let fileHandle else {
+            LOG("File handle is not initialized", level: .error)
+            return
+        }
+        do {
+            try fileHandle.write(contentsOf: fragment.segment)
+            try fileHandle.synchronize()
+            LOG("Appended fragment \(fragment.sequence) to file: \(filename ?? "<none>")", level: .debug)
+        }
+        catch {
+            LOG("Appending fragment failed: \(error)", level: .warning)
+        }
+        if fragment.type == .finalization {
+            LOG("Stopping recording", level: .debug)
+            try? fileHandle.close()
         }
     }
     deinit {
@@ -303,6 +328,7 @@ final class ContentPackager: NSObject, AVAssetWriterDelegate, Sendable {
             LOG("Asset writer had already started intercepting sample buffers", level: .debug)
             return
         }
+        await self.fragmentSequenceNumber.reset()
         await ContentPackager.assetWriter.setupFragmentAssetWriter()
         LOG("Asset writer is now intercepting sample buffers", level: .debug)
     }
@@ -312,7 +338,6 @@ final class ContentPackager: NSObject, AVAssetWriterDelegate, Sendable {
             return
         }
         await ContentPackager.assetWriter.finishWriting()
-        await self.fragmentSequenceNumber.reset()
         LOG("Asset writer is no longer intercepting sample buffers", level: .debug)
     }
     
@@ -350,7 +375,7 @@ final class ContentPackager: NSObject, AVAssetWriterDelegate, Sendable {
                 await FragmentPusher.shared.uploadFragment(attempt: 1)
             }
             if ContentPackager.assetWriter.shouldRecord() {
-                await recording.writeFragment(fragment)
+                await recording.enqueueFragment(fragment)
             }
         }
     }
