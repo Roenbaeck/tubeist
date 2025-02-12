@@ -20,9 +20,6 @@ struct KernelArguments {
 struct KernelSettings {
     var pipeline: MTLComputePipelineState
     var threads: MTLSize
-    var argumentEncoder: MTLArgumentEncoder
-    var argumentBuffer: MTLBuffer
-    var kernelArgumentsPointer: UnsafeMutablePointer<KernelArguments>
 }
 
 private actor FrameTinkerer {
@@ -42,6 +39,8 @@ private actor FrameTinkerer {
     private var kernels: [String: KernelSettings] = [:]
     private var lumaTexture: CVMetalTexture?
     private var chromaTexture: CVMetalTexture?
+    private var kernelArguments = KernelArguments()
+    private var argumentBuffer: MTLBuffer?
 
     // overlay imprinting
     private var overlayTexture: MTLTexture?
@@ -140,29 +139,11 @@ private actor FrameTinkerer {
                 let h = pipeline.maxTotalThreadsPerThreadgroup / w
                 let threads = MTLSize(width: w, height: h, depth: 1)
 
-                let argumentEncoder = function.makeArgumentEncoder(bufferIndex: 0)
-                let argumentBuffer = metalDevice.makeBuffer(length: argumentEncoder.encodedLength, options: [.storageModeShared])
+                argumentBuffer = metalDevice.makeBuffer(bytes: &kernelArguments, length: MemoryLayout<KernelArguments>.size, options: [])
 
-                guard let argumentBuffer else {
-                    LOG("Unable to create argument buffer for kernel '\(kernel)'", level: .error)
-                    continue
-                }
-                // Bind the allocated buffer to the encoder.
-                argumentEncoder.setArgumentBuffer(argumentBuffer, offset: 0)
-                
-                // Get a pointer to the constant data in the argument buffer.
-                let constantDataPtr = argumentEncoder.constantData(at: 2)
-                let kernelArgumentsPointer = constantDataPtr.bindMemory(to: KernelArguments.self, capacity: 1)
-                kernelArgumentsPointer.pointee = KernelArguments()
-                kernelArgumentsPointer.pointee.threadgroupWidth = UInt32(threads.width)
-                kernelArgumentsPointer.pointee.threadgroupHeight = UInt32(threads.height)
-                
                 kernels[kernel] = KernelSettings(
                     pipeline: pipeline,
-                    threads: threads,
-                    argumentEncoder: argumentEncoder,
-                    argumentBuffer: argumentBuffer,
-                    kernelArgumentsPointer: kernelArgumentsPointer
+                    threads: threads
                 )
             }
             catch {
@@ -291,6 +272,7 @@ private actor FrameTinkerer {
             LOG("The texture cache has not been initialized", level: .error)
             return
         }
+
         CVMetalTextureCacheCreateTextureFromImage(
             kCFAllocatorDefault,
             textureCache,
@@ -317,31 +299,33 @@ private actor FrameTinkerer {
     }
     
     func apply(kernel: String, strength: Float) {
-        frameNumber += 1
-        frameNumber %= 600 // restart counter every 600 frames
+        guard let lumaTexture, let chromaTexture else {
+            LOG("Could not create a texture from the pixel buffer planes", level: .error)
+            return
+        }
 
         guard let commandBuffer = commandQueue?.makeCommandBuffer(),
-              let encoder = commandBuffer.makeComputeCommandEncoder() else {
-            LOG("Could not create a commmand buffer or encoder", level: .error)
+              let encoder = commandBuffer.makeComputeCommandEncoder(),
+              let argumentBuffer else {
+            LOG("Could not create necessary Metal objects to apply styles or effects", level: .error)
             return
         }
         guard let kernelSettings = kernels[kernel] else {
             LOG("The kernel settinga have not been initialized", level: .error)
             return
         }
+
+        kernelArguments.threadgroupWidth = UInt32(kernelSettings.threads.width)
+        kernelArguments.threadgroupHeight = UInt32(kernelSettings.threads.height)
+        kernelArguments.strength = strength
+        kernelArguments.frame = frameNumber
+
+        argumentBuffer.contents().copyMemory(from: &kernelArguments, byteCount: MemoryLayout<KernelArguments>.size)
         
         encoder.setComputePipelineState(kernelSettings.pipeline)
-        if let lumaTexture {
-            kernelSettings.argumentEncoder.setTexture(CVMetalTextureGetTexture(lumaTexture), index: 0)
-        }
-        if let chromaTexture {
-            kernelSettings.argumentEncoder.setTexture(CVMetalTextureGetTexture(chromaTexture), index: 1)
-        }
-
-        kernelSettings.kernelArgumentsPointer.pointee.strength = strength
-        kernelSettings.kernelArgumentsPointer.pointee.frame = frameNumber
-
-        encoder.setBuffer(kernelSettings.argumentBuffer, offset: 0, index: 0)
+        encoder.setTexture(CVMetalTextureGetTexture(lumaTexture), index: 0)
+        encoder.setTexture(CVMetalTextureGetTexture(chromaTexture), index: 1)
+        encoder.setBuffer(argumentBuffer, offset: 0, index: 0)
         encoder.dispatchThreads(threadsPerGrid, threadsPerThreadgroup: kernelSettings.threads)
         encoder.endEncoding()
         commandBuffer.commit()
@@ -378,7 +362,11 @@ private actor FrameTinkerer {
     func processFrame(sampleBuffer: CMSampleBuffer) async {
         nonisolated(unsafe) let sendableSampleBuffer = sampleBuffer // removes the need for @preconcurrency
         if grabbingFrames {
-            createTextures(from: sendableSampleBuffer)
+            if style != nil || effect != nil || overlayTexture != nil {
+                frameNumber += 1
+                frameNumber %= 600 // restart counter every 600 frames
+                createTextures(from: sendableSampleBuffer)
+            }
             if let style {
                 apply(kernel: style, strength: styleStrength)
             }

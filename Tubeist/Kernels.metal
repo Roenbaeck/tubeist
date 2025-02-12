@@ -3,8 +3,6 @@ using namespace metal;
 
 // Create an argument buffer to provide a layer of indirection and thereby improve performance
 struct KernelArguments {
-    texture2d<float, access::read_write> lumaTexture    [[id(0)]];
-    texture2d<float, access::read_write> chromaTexture  [[id(1)]];
     float strength;
     uint frame;
     uint threadgroupWidth;
@@ -13,20 +11,22 @@ struct KernelArguments {
 
 /* -------------=============== STYLES ===============------------- */
 kernel void film(constant KernelArguments &args [[buffer(0)]],
+                 texture2d<float, access::read_write> yTexture [[texture(0)]],
+                 texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
                  uint2 gid [[thread_position_in_grid]]) {
 
     // Get texture dimensions
-    int yWidth = args.lumaTexture.get_width();
-    int yHeight = args.lumaTexture.get_height();
+    int yWidth = yTexture.get_width();
+    int yHeight = yTexture.get_height();
     
-    int cbcrWidth = args.chromaTexture.get_width();
-    int cbcrHeight = args.chromaTexture.get_height();
+    int cbcrWidth = cbcrTexture.get_width();
+    int cbcrHeight = cbcrTexture.get_height();
     
     // Calculate width and height ratios
     int widthRatio = yWidth / cbcrWidth;
     int heightRatio = yHeight / cbcrHeight;
     
-    float4 luma = args.lumaTexture.read(gid);
+    float4 luma = yTexture.read(gid);
     
     float y = luma.r;
 
@@ -40,11 +40,11 @@ kernel void film(constant KernelArguments &args [[buffer(0)]],
     adjustedY = mix(adjustedY, sCurveY, abs(1 - args.strength) / 2);
 
     // Write back (saturate for final output)
-    args.lumaTexture.write(float4(adjustedY, 0, 0, 0), gid);
+    yTexture.write(float4(adjustedY, 0, 0, 0), gid);
     
     if ((gid.x % widthRatio == 0) && (gid.y % heightRatio == 0)) {
         uint2 cbcrGid = gid / uint2(widthRatio, heightRatio);
-        float4 chroma = args.chromaTexture.read(cbcrGid);
+        float4 chroma = cbcrTexture.read(cbcrGid);
 
         float cb = chroma.r;
         float cr = chroma.g;
@@ -57,25 +57,27 @@ kernel void film(constant KernelArguments &args [[buffer(0)]],
         cb += hueShift * warmCoolBlend;
         cr -= hueShift * warmCoolBlend;
 
-        args.chromaTexture.write(float4(cb, cr, 0, 0), cbcrGid);
+        cbcrTexture.write(float4(cb, cr, 0, 0), cbcrGid);
     }
 }
 
 kernel void blackbright(constant KernelArguments &args [[buffer(0)]],
-                 uint2 gid [[thread_position_in_grid]]) {
+                        texture2d<float, access::read_write> yTexture [[texture(0)]],
+                        texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
+                        uint2 gid [[thread_position_in_grid]]) {
 
     // Get texture dimensions
-    int yWidth = args.lumaTexture.get_width();
-    int yHeight = args.lumaTexture.get_height();
+    int yWidth = yTexture.get_width();
+    int yHeight = yTexture.get_height();
     
-    int cbcrWidth = args.chromaTexture.get_width();
-    int cbcrHeight = args.chromaTexture.get_height();
+    int cbcrWidth = cbcrTexture.get_width();
+    int cbcrHeight = cbcrTexture.get_height();
     
     // Calculate width and height ratios
     int widthRatio = yWidth / cbcrWidth;
     int heightRatio = yHeight / cbcrHeight;
 
-    float4 luma = args.lumaTexture.read(gid);
+    float4 luma = yTexture.read(gid);
     
     float y = luma.r;
     
@@ -85,35 +87,37 @@ kernel void blackbright(constant KernelArguments &args [[buffer(0)]],
     float normalizedY = (y - midPoint);
     float contrastedY = midPoint + (normalizedY * contrast);
     
-    args.lumaTexture.write(float4(contrastedY, 0, 0, 0), gid);
+    yTexture.write(float4(contrastedY, 0, 0, 0), gid);
 
     uint2 cbcrGid = gid / uint2(widthRatio, heightRatio);
-    args.chromaTexture.write(float4(0.5, 0.5, 0, 0), cbcrGid);
+    cbcrTexture.write(float4(0.5, 0.5, 0, 0), cbcrGid);
 }
 
 kernel void space(constant KernelArguments &args [[buffer(0)]],
-                 uint2 gid [[thread_position_in_grid]]) {
+                  texture2d<float, access::read_write> yTexture [[texture(0)]],
+                  texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
+                  uint2 gid [[thread_position_in_grid]]) {
 
     // Get texture dimensions
-    int yWidth = args.lumaTexture.get_width();
-    int yHeight = args.lumaTexture.get_height();
+    int yWidth = yTexture.get_width();
+    int yHeight = yTexture.get_height();
     
-    int cbcrWidth = args.chromaTexture.get_width();
-    int cbcrHeight = args.chromaTexture.get_height();
+    int cbcrWidth = cbcrTexture.get_width();
+    int cbcrHeight = cbcrTexture.get_height();
     
     // Calculate width and height ratios
     int widthRatio = yWidth / cbcrWidth;
     int heightRatio = yHeight / cbcrHeight;
 
-    float4 luma = args.lumaTexture.read(gid);
+    float4 luma = yTexture.read(gid);
 
     float y = luma.r;
 
-    args.lumaTexture.write(float4(y, 0, 0, 0), gid);
+    yTexture.write(float4(y, 0, 0, 0), gid);
     
     if ((gid.x % widthRatio == 0) && (gid.y % heightRatio == 0)) {
         uint2 cbcrGid = gid / uint2(widthRatio, heightRatio);
-        float4 chroma = args.chromaTexture.read(cbcrGid);
+        float4 chroma = cbcrTexture.read(cbcrGid);
 
         float cb = chroma.r;
         float cr = chroma.g;
@@ -121,7 +125,7 @@ kernel void space(constant KernelArguments &args [[buffer(0)]],
         float newCr = mix(1.0 - cb, 1.0 - cr, args.strength);
         float newCb = mix(1.0 - cr, 1.0 - cb, args.strength);
 
-        args.chromaTexture.write(float4(newCb, newCr, 0, 0), cbcrGid);
+        cbcrTexture.write(float4(newCb, newCr, 0, 0), cbcrGid);
     }
 }
 
@@ -133,24 +137,26 @@ float quantizeNonLinear(float value, float numSteps) {
 }
 
 kernel void rotoscope(constant KernelArguments &args [[buffer(0)]],
-                 uint2 gid [[thread_position_in_grid]]) {
+                      texture2d<float, access::read_write> yTexture [[texture(0)]],
+                      texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
+                      uint2 gid [[thread_position_in_grid]]) {
 
     float edgeThreshold = 0.1;
     uint numColorShades = 8;
 
     // Get texture dimensions
-    int yWidth = args.lumaTexture.get_width();
-    int yHeight = args.lumaTexture.get_height();
+    int yWidth = yTexture.get_width();
+    int yHeight = yTexture.get_height();
     
-    int cbcrWidth = args.chromaTexture.get_width();
-    int cbcrHeight = args.chromaTexture.get_height();
+    int cbcrWidth = cbcrTexture.get_width();
+    int cbcrHeight = cbcrTexture.get_height();
 
     // Calculate width and height ratios
     int widthRatio = yWidth / cbcrWidth;
     int heightRatio = yHeight / cbcrHeight;
     
     // Get center pixel values
-    float4 lumaCenter = args.lumaTexture.read(gid);
+    float4 lumaCenter = yTexture.read(gid);
     
     // Sample neighboring pixels for edge detection (Y plane only)
     uint2 textureSize = uint2(yWidth, yHeight);
@@ -161,10 +167,10 @@ kernel void rotoscope(constant KernelArguments &args [[buffer(0)]],
     uint2 upPos = uint2(gid.x, gid.y > 0 ? gid.y - 1 : gid.y);
     uint2 downPos = uint2(gid.x, gid.y < textureSize.y - 1 ? gid.y + 1 : gid.y);
     
-    float lumaLeft = args.lumaTexture.read(leftPos).r;
-    float lumaRight = args.lumaTexture.read(rightPos).r;
-    float lumaUp = args.lumaTexture.read(upPos).r;
-    float lumaDown = args.lumaTexture.read(downPos).r;
+    float lumaLeft = yTexture.read(leftPos).r;
+    float lumaRight = yTexture.read(rightPos).r;
+    float lumaUp = yTexture.read(upPos).r;
+    float lumaDown = yTexture.read(downPos).r;
 
     // Improved edge detection with reduced thread group boundary artifacts
     float2 gradient;
@@ -198,12 +204,12 @@ kernel void rotoscope(constant KernelArguments &args [[buffer(0)]],
     finalY = adjustedFinalY * normalizationFactor;
 
     // Write results
-    args.lumaTexture.write(float4(finalY, 0, 0, 0), gid);
+    yTexture.write(float4(finalY, 0, 0, 0), gid);
 
     if ((gid.x % widthRatio == 0) && (gid.y % heightRatio == 0)) {
         uint2 cbcrGid = gid / uint2(widthRatio, heightRatio);
         
-        float4 chromaCenter = args.chromaTexture.read(cbcrGid);
+        float4 chromaCenter = cbcrTexture.read(cbcrGid);
         
         // Get chroma values
         float cb = chromaCenter.r;
@@ -235,16 +241,18 @@ kernel void rotoscope(constant KernelArguments &args [[buffer(0)]],
         float quantizedCr = chromaDist.y + 0.5;
         
         // Write results
-        args.chromaTexture.write(float4(quantizedCb, quantizedCr, 0, 0), cbcrGid);
+        cbcrTexture.write(float4(quantizedCb, quantizedCr, 0, 0), cbcrGid);
     }
 }
 
 kernel void vhs(constant KernelArguments &args [[buffer(0)]],
-                 uint2 gid [[thread_position_in_grid]]) {
+                texture2d<float, access::read_write> yTexture [[texture(0)]],
+                texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
+                uint2 gid [[thread_position_in_grid]]) {
 
     // Get texture dimensions
-    int yWidth = args.lumaTexture.get_width();
-    int yHeight = args.lumaTexture.get_height();
+    int yWidth = yTexture.get_width();
+    int yHeight = yTexture.get_height();
 
     // --- VHS Banding Implementation --- (Existing code, keeping it)
     float bandIntensity = args.strength;
@@ -290,7 +298,7 @@ kernel void vhs(constant KernelArguments &args [[buffer(0)]],
     // Apply horizontal distortion to gid.x for Y texture read
     distortedGidY.x = clamp(int(gid.x + horizontalDistortion), 0, yWidth - 1); // Clamp to texture bounds
     
-    ySample = args.lumaTexture.read(uint2(distortedGidY));
+    ySample = yTexture.read(uint2(distortedGidY));
     float y = ySample.r;
 
     // Apply banding to the Y value
@@ -321,11 +329,11 @@ kernel void vhs(constant KernelArguments &args [[buffer(0)]],
     }
 
     // Write the modified Y value back to the Y texture
-    args.lumaTexture.write(float4(y, ySample.gba), gid);
+    yTexture.write(float4(y, ySample.gba), gid);
 
     // --- Apply effects to CbCr texture ---
-    int cbcrWidth = args.chromaTexture.get_width();
-    int cbcrHeight = args.chromaTexture.get_height();
+    int cbcrWidth = cbcrTexture.get_width();
+    int cbcrHeight = cbcrTexture.get_height();
 
     // Calculate width and height ratios
     int widthRatio = yWidth / cbcrWidth;
@@ -354,24 +362,26 @@ kernel void vhs(constant KernelArguments &args [[buffer(0)]],
     crGid_cbcr.y = clamp(int(crGid_cbcr.y), 0, cbcrHeight - 1);
 
     // Sample Cb and Cr from cbcrTexture using distorted CbCr-space coordinates
-    float4 cbcrSampleCb = args.chromaTexture.read(uint2(cbGid_cbcr));
-    float4 cbcrSampleCr = args.chromaTexture.read(uint2(crGid_cbcr));
+    float4 cbcrSampleCb = cbcrTexture.read(uint2(cbGid_cbcr));
+    float4 cbcrSampleCr = cbcrTexture.read(uint2(crGid_cbcr));
 
     // Write to cbcrTexture at the original CbCr-space gid (non-distorted base)
-    args.chromaTexture.write(float4(cbcrSampleCb.r, cbcrSampleCr.g, 0.0, 0.0), cbcrGid); // Use non-distorted base for write
+    cbcrTexture.write(float4(cbcrSampleCb.r, cbcrSampleCr.g, 0.0, 0.0), cbcrGid); // Use non-distorted base for write
 }
 
 
 
 /* -------------=============== EFFECTS ===============------------- */
 kernel void sky(constant KernelArguments &args [[buffer(0)]],
-                 uint2 gid [[thread_position_in_grid]]) {
+                texture2d<float, access::read_write> yTexture [[texture(0)]],
+                texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
+                uint2 gid [[thread_position_in_grid]]) {
 
-    float4 luma = args.lumaTexture.read(gid);
+    float4 luma = yTexture.read(gid);
     float y = luma.r;
     
     // Get the height of the texture (assuming the dispatch size matches the texture size)
-    uint textureHeight = args.lumaTexture.get_height();
+    uint textureHeight = yTexture.get_height();
     
     // Calculate the vertical position as a normalized value (0.0 at the top, 1.0 at the bottom)
     float normalizedY = (float)gid.y / (float)(textureHeight - 1.0); // Subtract 1 to handle 0-based indexing
@@ -404,17 +414,19 @@ kernel void sky(constant KernelArguments &args [[buffer(0)]],
     // Clamp the value to ensure it stays within the valid range (0.0 to 1.0)
     darkenedY = clamp(darkenedY, 0.0, 1.0);
     
-    args.lumaTexture.write(float4(darkenedY, 0, 0, 0), gid);
+    yTexture.write(float4(darkenedY, 0, 0, 0), gid);
 }
 
 kernel void vignette(constant KernelArguments &args [[buffer(0)]],
-                 uint2 gid [[thread_position_in_grid]]) {
+                     texture2d<float, access::read_write> yTexture [[texture(0)]],
+                     texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
+                     uint2 gid [[thread_position_in_grid]]) {
 
-    float4 luma = args.lumaTexture.read(gid);
+    float4 luma = yTexture.read(gid);
     float y = luma.r;
 
-    uint width = args.lumaTexture.get_width();
-    uint height = args.lumaTexture.get_height();
+    uint width = yTexture.get_width();
+    uint height = yTexture.get_height();
 
     // Calculate the center of the texture
     float2 center = float2(width / 2.0, height / 2.0);
@@ -446,18 +458,20 @@ kernel void vignette(constant KernelArguments &args [[buffer(0)]],
     // Apply the darkening effect. Strength controls the intensity.
     float darkenedY = y * (1.0 - (vignetteFactor * args.strength));
 
-    args.lumaTexture.write(float4(darkenedY, 0, 0, 0), gid);
+    yTexture.write(float4(darkenedY, 0, 0, 0), gid);
 }
 
 kernel void saturation(constant KernelArguments &args [[buffer(0)]],
-                 uint2 gid [[thread_position_in_grid]]) {
+                       texture2d<float, access::read_write> yTexture [[texture(0)]],
+                       texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
+                       uint2 gid [[thread_position_in_grid]]) {
 
     // Get texture dimensions
-    int yWidth = args.lumaTexture.get_width();
-    int yHeight = args.lumaTexture.get_height();
+    int yWidth = yTexture.get_width();
+    int yHeight = yTexture.get_height();
     
-    int cbcrWidth = args.chromaTexture.get_width();
-    int cbcrHeight = args.chromaTexture.get_height();
+    int cbcrWidth = cbcrTexture.get_width();
+    int cbcrHeight = cbcrTexture.get_height();
     
     // Calculate width and height ratios
     int widthRatio = yWidth / cbcrWidth;
@@ -466,7 +480,7 @@ kernel void saturation(constant KernelArguments &args [[buffer(0)]],
     if ((gid.x % widthRatio == 0) && (gid.y % heightRatio == 0)) {
         uint2 cbcrGid = gid / uint2(widthRatio, heightRatio);
         
-        float4 chroma = args.chromaTexture.read(cbcrGid);
+        float4 chroma = cbcrTexture.read(cbcrGid);
         
         float cb = chroma.r;
         float cr = chroma.g;
@@ -474,25 +488,27 @@ kernel void saturation(constant KernelArguments &args [[buffer(0)]],
         float newCb = mix(cb, 0.5, args.strength);
         float newCr = mix(cr, 0.5, args.strength);
         
-        args.chromaTexture.write(float4(newCb, newCr, 0, 0), cbcrGid);
+        cbcrTexture.write(float4(newCb, newCr, 0, 0), cbcrGid);
     }
 }
 
 kernel void warmth(constant KernelArguments &args [[buffer(0)]],
-                 uint2 gid [[thread_position_in_grid]]) {
+                   texture2d<float, access::read_write> yTexture [[texture(0)]],
+                   texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
+                   uint2 gid [[thread_position_in_grid]]) {
     
     // Get texture dimensions
-    int yWidth = args.lumaTexture.get_width();
-    int yHeight = args.lumaTexture.get_height();
+    int yWidth = yTexture.get_width();
+    int yHeight = yTexture.get_height();
     
-    int cbcrWidth = args.chromaTexture.get_width();
-    int cbcrHeight = args.chromaTexture.get_height();
+    int cbcrWidth = cbcrTexture.get_width();
+    int cbcrHeight = cbcrTexture.get_height();
     
     // Calculate width and height ratios
     int widthRatio = yWidth / cbcrWidth;
     int heightRatio = yHeight / cbcrHeight;
 
-    float4 luma = args.lumaTexture.read(gid);
+    float4 luma = yTexture.read(gid);
     
     float y = luma.r;
     
@@ -500,11 +516,11 @@ kernel void warmth(constant KernelArguments &args [[buffer(0)]],
     
     float newY = mix(y, y * yFactor, args.strength);
     
-    args.lumaTexture.write(float4(newY, 0, 0, 0), gid);
+    yTexture.write(float4(newY, 0, 0, 0), gid);
     
     if ((gid.x % widthRatio == 0) && (gid.y % heightRatio == 0)) {
         uint2 cbcrGid = gid / uint2(widthRatio, heightRatio);
-        float4 chroma = args.chromaTexture.read(cbcrGid);
+        float4 chroma = cbcrTexture.read(cbcrGid);
         
         float cb = chroma.r;
         float cr = chroma.g;
@@ -515,15 +531,17 @@ kernel void warmth(constant KernelArguments &args [[buffer(0)]],
         float newCb = mix(cb, cb * cbFactor, args.strength);
         float newCr = mix(cr, cr * crFactor, args.strength);
         
-        args.chromaTexture.write(float4(newCb, newCr, 0, 0), cbcrGid);
+        cbcrTexture.write(float4(newCb, newCr, 0, 0), cbcrGid);
     }
 }
 
 kernel void pixelate(constant KernelArguments &args [[buffer(0)]],
-                 uint2 gid [[thread_position_in_grid]]) {
+                     texture2d<float, access::read_write> yTexture [[texture(0)]],
+                     texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
+                     uint2 gid [[thread_position_in_grid]]) {
 
-    uint width = args.lumaTexture.get_width();
-    uint height = args.lumaTexture.get_height();
+    uint width = yTexture.get_width();
+    uint height = yTexture.get_height();
 
     // Calculate the size of the pixelated blocks based on strength.
     // Lower strength means larger blocks, so we invert and scale.
@@ -539,11 +557,11 @@ kernel void pixelate(constant KernelArguments &args [[buffer(0)]],
 
     // Ensure the sample coordinate is within the texture bounds.
     if (sampleCoord.x < width && sampleCoord.y < height) {
-        float4 sampledY = args.lumaTexture.read(sampleCoord);
-        float4 sampledCbCr = args.chromaTexture.read(sampleCoord);
+        float4 sampledY = yTexture.read(sampleCoord);
+        float4 sampledCbCr = cbcrTexture.read(sampleCoord);
 
-        args.lumaTexture.write(sampledY, gid);
-        args.chromaTexture.write(sampledCbCr, gid);
+        yTexture.write(sampledY, gid);
+        cbcrTexture.write(sampledCbCr, gid);
     }
 }
 
@@ -624,14 +642,16 @@ float snoise(float2 p, float time) {
 }
 
 kernel void grain(constant KernelArguments &args [[buffer(0)]],
-                 uint2 gid [[thread_position_in_grid]]) {
+                  texture2d<float, access::read_write> yTexture [[texture(0)]],
+                  texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
+                  uint2 gid [[thread_position_in_grid]]) {
     
     float normalizedStrength = (args.strength + 1.0) * 0.5;
     
-    float4 color = args.lumaTexture.read(gid);
+    float4 color = yTexture.read(gid);
     float y = color.r;
     
-    float2 resolution = float2(args.lumaTexture.get_width(), args.lumaTexture.get_height());
+    float2 resolution = float2(yTexture.get_width(), yTexture.get_height());
     float2 uv = float2(gid) / resolution;
     
     float noise = 0.0;
@@ -668,34 +688,36 @@ kernel void grain(constant KernelArguments &args [[buffer(0)]],
     float newY = y * (1.0 + grainStrength);
     newY = clamp(newY, 0.0, 2.0);
     
-    args.lumaTexture.write(float4(newY, 0, 0, 0), gid);
+    yTexture.write(float4(newY, 0, 0, 0), gid);
 }
 
 kernel void push(constant KernelArguments &args [[buffer(0)]],
+                 texture2d<float, access::read_write> yTexture [[texture(0)]],
+                 texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
                  uint2 gid [[thread_position_in_grid]]) {
 
     // Get texture dimensions
-    int yWidth = args.lumaTexture.get_width();
-    int yHeight = args.lumaTexture.get_height();
+    int yWidth = yTexture.get_width();
+    int yHeight = yTexture.get_height();
     
-    int cbcrWidth = args.chromaTexture.get_width();
-    int cbcrHeight = args.chromaTexture.get_height();
+    int cbcrWidth = cbcrTexture.get_width();
+    int cbcrHeight = cbcrTexture.get_height();
     
     // Calculate width and height ratios
     int widthRatio = yWidth / cbcrWidth;
     int heightRatio = yHeight / cbcrHeight;
 
-    float4 luma = args.lumaTexture.read(gid);
+    float4 luma = yTexture.read(gid);
     
     float y = luma.r;
     
     float newY = pow(y, 1.1 + args.strength);
     
-    args.lumaTexture.write(float4(newY, 0, 0, 0), gid);
+    yTexture.write(float4(newY, 0, 0, 0), gid);
     
     if ((gid.x % widthRatio == 0) && (gid.y % heightRatio == 0)) {
         uint2 cbcrGid = gid / uint2(widthRatio, heightRatio);
-        float4 chroma = args.chromaTexture.read(cbcrGid);
+        float4 chroma = cbcrTexture.read(cbcrGid);
 
         float cb = chroma.r;
         float cr = chroma.g;
@@ -703,7 +725,7 @@ kernel void push(constant KernelArguments &args [[buffer(0)]],
         float newCb = pow(cb + 0.5, 1 + args.strength) - 0.5;
         float newCr = pow(cr + 0.5, 1 + args.strength) - 0.5;
 
-        args.chromaTexture.write(float4(newCb, newCr, 0, 0), cbcrGid);
+        cbcrTexture.write(float4(newCb, newCr, 0, 0), cbcrGid);
     }
 }
 
