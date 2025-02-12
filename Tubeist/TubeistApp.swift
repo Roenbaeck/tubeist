@@ -85,13 +85,11 @@ struct TubeistApp: App {
                     OutputMonitorView.isBatterySavingOn = false
                     LOG("App is coming back from background", level: .debug)
                     Task {
+                        await CameraMonitorView.createPreviewLayer()
+                        appState.refreshCameraView()
                         if appState.activeMonitor == .output {
                             OutputMonitorView.createDisplayLayer()
                             appState.refreshOutputView()
-                        }
-                        else if appState.activeMonitor == .camera {
-                            await CameraMonitorView.createPreviewLayer()
-                            appState.refreshCameraView()
                         }
                         await Streamer.shared.setMonitor(appState.activeMonitor)
                     }
