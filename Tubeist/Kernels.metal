@@ -357,9 +357,13 @@ kernel void vhs(constant KernelArguments &args [[buffer(0)]],
 
     // Clamp CbCr GIDs to CbCr texture bounds
     cbGid_cbcr.x = clamp(int(cbGid_cbcr.x), 0, cbcrWidth - 1);
+    cbGid_cbcr.x = cbGid_cbcr.x % args.threadgroupWidth == 0 ? cbcrGid.x : cbGid_cbcr.x;
     cbGid_cbcr.y = clamp(int(cbGid_cbcr.y), 0, cbcrHeight - 1);
+    cbGid_cbcr.y = cbGid_cbcr.y % args.threadgroupHeight == 0 ? cbcrGid.y : cbGid_cbcr.y;
     crGid_cbcr.x = clamp(int(crGid_cbcr.x), 0, cbcrWidth - 1);
+    crGid_cbcr.x = crGid_cbcr.x % args.threadgroupWidth == 0 ? cbcrGid.x : crGid_cbcr.x;
     crGid_cbcr.y = clamp(int(crGid_cbcr.y), 0, cbcrHeight - 1);
+    crGid_cbcr.y = crGid_cbcr.y % args.threadgroupHeight == 0 ? cbcrGid.y : crGid_cbcr.y;
 
     // Sample Cb and Cr from cbcrTexture using distorted CbCr-space coordinates
     float4 cbcrSampleCb = cbcrTexture.read(uint2(cbGid_cbcr));
