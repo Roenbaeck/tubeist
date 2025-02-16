@@ -48,6 +48,7 @@ private actor FrameTinkerer {
     private var boundingBoxData: [(MTLBuffer, MTLSize, MTLSize)] = []
     
     // resettable
+    private var currentSampleBuffer: CMSampleBuffer?
     private var frameNumber: UInt32 = 0
     private var threadsPerGrid: MTLSize = MTLSize(
         width: DEFAULT_CAPTURE_WIDTH,
@@ -163,6 +164,7 @@ private actor FrameTinkerer {
     }
     
     func reset() {
+        currentSampleBuffer = nil
         frameNumber = 0
         var width = DEFAULT_CAPTURE_WIDTH
         var height = DEFAULT_CAPTURE_HEIGHT
@@ -176,6 +178,10 @@ private actor FrameTinkerer {
             height: height,
             depth: 1
         )
+    }
+    
+    func getCurrentPresentationTimestamp() -> CMTime? {
+        currentSampleBuffer?.presentationTimeStamp
     }
     
     func setCombinedOverlay(_ combinedOverlay: CombinedOverlay?) {
@@ -360,6 +366,7 @@ private actor FrameTinkerer {
     }
     
     func processFrame(sampleBuffer: CMSampleBuffer) async {
+        currentSampleBuffer = sampleBuffer
         nonisolated(unsafe) let sendableSampleBuffer = sampleBuffer // removes the need for @preconcurrency
         if grabbingFrames {
             if style != nil || effect != nil || overlayTexture != nil {
@@ -431,6 +438,9 @@ final class FrameGrabber: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
     }
     func setCombinedOverlay(_ combinedOverlay: CombinedOverlay?) async {
         await frameTinkerer.setCombinedOverlay(combinedOverlay)
+    }
+    func getCurrentPresentationTimestamp() async -> CMTime? {
+        await frameTinkerer.getCurrentPresentationTimestamp()
     }
 
     func captureOutput(_ output: AVCaptureOutput,

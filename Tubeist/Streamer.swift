@@ -4,6 +4,7 @@
 //
 //  Created by Lars Rönnbäck on 2024-12-06.
 //
+import CoreMedia
 
 enum StreamHealth {
     case silenced   // When stream is not running
@@ -91,6 +92,23 @@ final class Streamer: Sendable {
         await streamingActor.run()
     }
     func endStream() async {
+        // session time is close to real time
+        // presentation time can be earlier because of camera stabilization
+        if let sessionTime = await CaptureDirector.shared.getSessionTime(),
+           let presentationTime = await FrameGrabber.shared.getCurrentPresentationTimestamp() {
+            let difference = CMTimeSubtract(sessionTime, presentationTime)
+            let duration = CMTimeGetSeconds(difference)
+            LOG("Sleeping \(duration) seconds to await late frames", level: .debug)
+            if duration > 0 {
+                do {
+                    try await Task.sleep(for: .seconds(duration))
+                }
+                catch {
+                    LOG("Sleeping to await late frames interrupted", level: .warning)
+                }
+            }
+        }
+        
         await streamingActor.pause()
         if await streamingActor.getMonitor() == .camera {
             await CaptureDirector.shared.stopOutput()

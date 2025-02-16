@@ -765,7 +765,7 @@ kernel void imprint(texture2d<float, access::read_write> yTexture [[texture(0)]]
     
     // BT.2020 RGB to YCbCr conversion https://en.wikipedia.org/wiki/YCbCr
     float overlay_y  = 0.2627 * overlay.r + 0.6780 * overlay.g + 0.0593 * overlay.b;
-    float pow_overlay_a = pow(overlay.a, 2.0); // Delinearize alpha
+    float pow_overlay_a = pow(overlay.a, 1.42); // Delinearize alpha (1 + 1/2.4)
     
     // This is what works, but by trial and error, and likely not 100% correct since
     // it does not adhere fully to the "standard" formula and uses the delinearized alpha
