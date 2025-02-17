@@ -14,7 +14,7 @@ func LOG(_ message: String, level: LogLevel = .info) {
     Journal.shared.log(message, level: level)
 }
 
-enum LogLevel {
+enum LogLevel: Hashable {
     case debug
     case info
     case warning
@@ -41,9 +41,11 @@ struct LogEntry: Identifiable {
 actor JournalActor {
     // Observable property for tracking error presence
     public var hasErrors = false
+    private var levels: Set<LogLevel> = []
     private var messageOrder: [String] = []
     private var journal: [String: LogEntry] = [:]
     func log(message: String, level: LogLevel) {
+        guard isLogging(level: level) else { return }
         messageOrder.append(message)
         if var existingEntry = journal[message] {
             existingEntry.timestamp = Date()
@@ -68,6 +70,15 @@ actor JournalActor {
     func clearJournal() {
         journal.removeAll()
         hasErrors = false
+    }
+    func enable(level: LogLevel) {
+        levels.insert(level)
+    }
+    func disable(level: LogLevel) {
+        levels.remove(level)
+    }
+    func isLogging(level: LogLevel) -> Bool {
+        levels.contains(level)
     }
 }
 
@@ -116,6 +127,13 @@ final class Journal: Sendable {
         Task {
             await journal.clearJournal()
         }
+    }
+    
+    func enable(level: LogLevel) async {
+        await journal.enable(level: level)
+    }
+    func disable(level: LogLevel) async {
+        await journal.disable(level: level)
     }
 }
 

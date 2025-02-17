@@ -100,6 +100,7 @@ struct TubeistApp: App {
     }
     
     init() {
+        Settings.configureJournal()
         appState.isAppInitialization = true
         LOG("Starting Tubeist version \(VERSION_BUILD)", level: .info)
         UIApplication.shared.isIdleTimerDisabled = true

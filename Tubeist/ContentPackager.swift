@@ -99,7 +99,7 @@ private class AssetWriterActor {
         
         fragmentAssetWriter.add(videoInput)
         fragmentAssetWriter.add(audioInput)
-
+        
         guard fragmentAssetWriter.startWriting() else {
             LOG("Error starting writing: \(fragmentAssetWriter.error?.localizedDescription ?? "Unknown error")", level: .error)
             return

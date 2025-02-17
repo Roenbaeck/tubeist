@@ -192,6 +192,10 @@ struct SettingsView: View {
     @AppStorage("CameraPosition") private var cameraPosition: String = "stationary"
     @AppStorage("SelectedPreset") private var selectedPresetData: Data = Data()
     @AppStorage("Overlays") private var overlaysData: Data = Data()
+    @AppStorage("JournalError") private var journalError: Bool = true
+    @AppStorage("JournalWarning") private var journalWarning: Bool = true
+    @AppStorage("JournalInfo") private var journalInfo: Bool = true
+    @AppStorage("JournalDebug") private var journalDebug: Bool = false
     @State private var newOverlayURL: String = ""
     @State private var selectedPreset: Preset? = nil
     @State private var streamKeyManager = StreamKeyManager()
@@ -431,7 +435,23 @@ struct SettingsView: View {
                         }
                     }
                 }
-                                
+                
+                Section(header: Text("Journal"), footer: Text("Configure which types of messages to record in the journal")) {
+                    HStack {
+                        Toggle("Test", isOn: $journalError).labelsHidden()
+                        Text("Error").font(.caption).multilineTextAlignment(.center)
+                        Spacer()
+                        Toggle("Test", isOn: $journalWarning).labelsHidden()
+                        Text("Warning").font(.caption).multilineTextAlignment(.center)
+                        Spacer()
+                        Toggle("Test", isOn: $journalInfo).labelsHidden()
+                        Text("Info").font(.caption).multilineTextAlignment(.center)
+                        Spacer()
+                        Toggle("Test", isOn: $journalDebug).labelsHidden()
+                        Text("Debug").font(.caption).multilineTextAlignment(.center)
+                    }
+                }
+
                 if !Purchaser.shared.isProductPurchased("tubeist_lifetime_styling") {
                     if let product = appState.availableProducts["tubeist_lifetime_styling"] {
                         Section(header: Text("In-App Purchases"), footer: Text("This set of styles and effects is the only unlockable content in this app, made available at the lowest price possible. Once unlocked you have lifetime access to all styles and effects. It is a small contribution going toward continued app development.")) {
@@ -452,6 +472,7 @@ struct SettingsView: View {
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
             .navigationBarItems(trailing: Button("Save") {
+                Settings.configureJournal()
                 if cameraPosition == "custom" {
                     LOG("Saving custom settings", level: .debug)
                     saveCustomPreset()
@@ -509,6 +530,20 @@ struct SettingsView: View {
 }
 
 final class Settings: Sendable {
+    static func configureJournal() {
+        let defs = UserDefaults.standard
+        let journalError = defs.object(forKey: "JournalError") != nil ? defs.bool(forKey: "JournalError") : true
+        let journalWarning = defs.object(forKey: "JournalWarning") != nil ? defs.bool(forKey: "JournalWarning") : true
+        let journalInfo = defs.object(forKey: "JournalInfo") != nil ? defs.bool(forKey: "JournalInfo") : true
+        let journalDebug = defs.object(forKey: "JournalDebug") != nil ? defs.bool(forKey: "JournalDebug") : false
+        Task {
+            await journalError ? Journal.shared.enable(level: .error) : Journal.shared.disable(level: .error)
+            await journalWarning ? Journal.shared.enable(level: .warning) : Journal.shared.disable(level: .warning)
+            await journalInfo ? Journal.shared.enable(level: .info) : Journal.shared.disable(level: .info)
+            await journalDebug ? Journal.shared.enable(level: .debug) : Journal.shared.disable(level: .debug)
+        }
+    }
+    
     static func hasCameraPermission() -> Bool {
         let cameraAuthorizationStatus = AVCaptureDevice.authorizationStatus(for: .video)
         switch cameraAuthorizationStatus {
