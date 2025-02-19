@@ -661,30 +661,26 @@ kernel void push(constant KernelArguments &args [[buffer(0)]],
 
 // ----====================== IMPRINTER ======================----
 
-kernel void imprint(texture2d<float, access::read_write> yTexture [[texture(0)]],
+struct ImprintArguments {
+    uint offsetX;
+    uint offsetY;
+    uint widthRatio;
+    uint heightRatio;
+};
+
+kernel void imprint(constant ImprintArguments &args [[buffer(0)]],
+                    texture2d<float, access::read_write> yTexture [[texture(0)]],
                     texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
                     texture2d<float, access::read> overlayTexture [[texture(2)]],
-                    device const float2& offset [[buffer(0)]],  // x, y of bounding box
                     uint2 gid [[thread_position_in_grid]]) {
     
-    uint2 texturePosition = uint2(offset.x, offset.y) + gid;
+    uint2 texturePosition = uint2(args.offsetX, args.offsetY) + gid;
     float4 overlay = overlayTexture.read(texturePosition);
     
     if (overlay.a == 0) {
         return;
     }
-    
-    // Get texture dimensions
-    int yWidth = yTexture.get_width();
-    int yHeight = yTexture.get_height();
-    
-    int cbcrWidth = cbcrTexture.get_width();
-    int cbcrHeight = cbcrTexture.get_height();
-    
-    // Calculate width and height ratios
-    int widthRatio = yWidth / cbcrWidth;
-    int heightRatio = yHeight / cbcrHeight;
-        
+            
     // Read existing Y value from the video frame
     float y = yTexture.read(texturePosition).r;
     
@@ -699,9 +695,9 @@ kernel void imprint(texture2d<float, access::read_write> yTexture [[texture(0)]]
     yTexture.write(float4(blended_y, 0.0, 0.0, 1.0), texturePosition);
     
     // Only perform chroma-related calculations and writes when necessary
-    if ((texturePosition.x % widthRatio == 0) && (texturePosition.y % heightRatio == 0)) {
+    if ((texturePosition.x % args.widthRatio == 0) && (texturePosition.y % args.heightRatio == 0)) {
         // Convert gid to cbcrTexture coordinates
-        uint2 cbcrGid = texturePosition / uint2(widthRatio, heightRatio);
+        uint2 cbcrGid = texturePosition / uint2(args.widthRatio, args.heightRatio);
 
         // Read existing CbCr values from the video frame
         float4 cbcrPixel = cbcrTexture.read(cbcrGid);

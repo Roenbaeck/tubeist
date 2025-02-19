@@ -22,6 +22,14 @@ struct KernelArguments {
 struct KernelSettings {
     var pipeline: MTLComputePipelineState
     var threads: MTLSize
+    var args: MTLBuffer // of type KernelArguments
+}
+
+struct ImprintArguments {
+    var offsetX: UInt32 = 0
+    var offsetY: UInt32 = 0
+    var widthRatio: UInt32 = 1
+    var heightRatio: UInt32 = 1
 }
 
 private actor FrameTinkerer {
@@ -41,8 +49,6 @@ private actor FrameTinkerer {
     private var kernels: [String: KernelSettings] = [:]
     private var lumaTexture: CVMetalTexture?
     private var chromaTexture: CVMetalTexture?
-    private var kernelArguments = KernelArguments()
-    private var argumentBuffer: MTLBuffer?
 
     // overlay imprinting
     private var overlayTexture: MTLTexture?
@@ -148,12 +154,27 @@ private actor FrameTinkerer {
                 let w = pipeline.threadExecutionWidth
                 let h = pipeline.maxTotalThreadsPerThreadgroup / w
                 let threads = MTLSize(width: w, height: h, depth: 1)
-
-                argumentBuffer = metalDevice.makeBuffer(bytes: &kernelArguments, length: MemoryLayout<KernelArguments>.size, options: [])
+                
+                var kernelArguments = KernelArguments()
+                kernelArguments.threadgroupWidth = UInt32(w)
+                kernelArguments.threadgroupHeight = UInt32(h)
+                kernelArguments.widthRatio = lumaChromaWidthRatio
+                kernelArguments.heightRatio = lumaChromaHeightRatio
+                
+                guard let kernelArgumentBuffer = metalDevice.makeBuffer(
+                    bytes: &kernelArguments,
+                    length: MemoryLayout<KernelArguments>.size,
+                    options: [.cpuCacheModeWriteCombined]
+                )
+                else {
+                    LOG("Could not create kernel argument buffer", level: .error)
+                    return
+                }
 
                 kernels[kernel] = KernelSettings(
                     pipeline: pipeline,
-                    threads: threads
+                    threads: threads,
+                    args: kernelArgumentBuffer
                 )
             }
             catch {
@@ -210,36 +231,47 @@ private actor FrameTinkerer {
         let threadsPerThreadgroup = MTLSizeMake(w, h, 1)
 
         if combinedOverlay.coverage > 0.75 {
-            let boxBuffer = metalDevice.makeBuffer(length: MemoryLayout<SIMD2<Float>>.size, options: .storageModeShared)
-            let boxPointer = boxBuffer?.contents().assumingMemoryBound(to: SIMD2<Float>.self)
-            boxPointer?.pointee = SIMD2<Float>(Float(0), Float(0))
+            var imprintArguments = ImprintArguments()
+            imprintArguments.widthRatio = lumaChromaWidthRatio
+            imprintArguments.heightRatio = lumaChromaHeightRatio
+            imprintArguments.offsetX = 0
+            imprintArguments.offsetY = 0
 
+            let imprintArgumentBuffer = metalDevice.makeBuffer(
+                bytes: &imprintArguments,
+                length: MemoryLayout<ImprintArguments>.size,
+                options: [.cpuCacheModeWriteCombined]
+            )
             let threadsPerGrid = MTLSize(
                 width: Int(combinedOverlay.image.extent.width),
                 height: Int(combinedOverlay.image.extent.height),
                 depth: 1
             )
-            
-            if let boxBuffer {
-                boundingBoxData.append((boxBuffer, threadsPerGrid, threadsPerThreadgroup))
+            if let imprintArgumentBuffer {
+                boundingBoxData.append((imprintArgumentBuffer, threadsPerGrid, threadsPerThreadgroup))
             }
             LOG("Created Metal buffer for the entire overlay", level: .debug)
         }
         else {
             for box in combinedOverlay.boundingBoxes {
-                // Set buffer for bounding boxes
-                let boxBuffer = metalDevice.makeBuffer(length: MemoryLayout<SIMD2<Float>>.size, options: .storageModeShared)
-                let boxPointer = boxBuffer?.contents().assumingMemoryBound(to: SIMD2<Float>.self)
-                boxPointer?.pointee = SIMD2<Float>(Float(box.origin.x), Float(box.origin.y))
-                
+                var imprintArguments = ImprintArguments()
+                imprintArguments.widthRatio = lumaChromaWidthRatio
+                imprintArguments.heightRatio = lumaChromaHeightRatio
+                imprintArguments.offsetX = UInt32(box.origin.x)
+                imprintArguments.offsetY = UInt32(box.origin.y)
+
+                let imprintArgumentBuffer = metalDevice.makeBuffer(
+                    bytes: &imprintArguments,
+                    length: MemoryLayout<ImprintArguments>.size,
+                    options: [.cpuCacheModeWriteCombined]
+                )
                 let threadsPerGrid = MTLSize(
                     width: Int(box.size.width),
                     height: Int(box.size.height),
                     depth: 1
                 )
-                
-                if let boxBuffer {
-                    boundingBoxData.append((boxBuffer, threadsPerGrid, threadsPerThreadgroup))
+                if let imprintArgumentBuffer {
+                    boundingBoxData.append((imprintArgumentBuffer, threadsPerGrid, threadsPerThreadgroup))
                 }
             }
             LOG("Created Metal buffers for \(boundingBoxData.count) bounding boxes in the overlay", level: .debug)
@@ -296,6 +328,19 @@ private actor FrameTinkerer {
             chromaHeight = CVPixelBufferGetHeightOfPlane(pixelBuffer, 1)
             lumaChromaWidthRatio = UInt32(lumaWidth / chromaWidth)
             lumaChromaHeightRatio = UInt32(lumaHeight / chromaHeight)
+            
+            for kernel in kernels.keys {
+                let args = kernels[kernel]!.args
+                let argsPointer = args.contents().bindMemory(to: KernelArguments.self, capacity: 1)
+                argsPointer.pointee.widthRatio = lumaChromaWidthRatio
+                argsPointer.pointee.heightRatio = lumaChromaHeightRatio
+            }
+            for (args, _, _) in boundingBoxData {
+                let argsPointer = args.contents().bindMemory(to: ImprintArguments.self, capacity: 1)
+                argsPointer.pointee.widthRatio = lumaChromaWidthRatio
+                argsPointer.pointee.heightRatio = lumaChromaHeightRatio
+            }
+            
             measureTextures = false
         }
         
@@ -331,29 +376,26 @@ private actor FrameTinkerer {
         }
 
         guard let commandBuffer = commandQueue?.makeCommandBuffer(),
-              let encoder = commandBuffer.makeComputeCommandEncoder(),
-              let argumentBuffer else {
+              let encoder = commandBuffer.makeComputeCommandEncoder()
+        else {
             LOG("Could not create necessary Metal objects to apply styles or effects", level: .error)
             return
         }
-        guard let kernelSettings = kernels[kernel] else {
+        guard let kernelSettings = kernels[kernel]
+        else {
+            
             LOG("The kernel settinga have not been initialized", level: .error)
             return
         }
-
-        kernelArguments.threadgroupWidth = UInt32(kernelSettings.threads.width)
-        kernelArguments.threadgroupHeight = UInt32(kernelSettings.threads.height)
-        kernelArguments.widthRatio = lumaChromaWidthRatio
-        kernelArguments.heightRatio = lumaChromaHeightRatio
-        kernelArguments.strength = strength
-        kernelArguments.frame = frameNumber
-
-        argumentBuffer.contents().copyMemory(from: &kernelArguments, byteCount: MemoryLayout<KernelArguments>.size)
         
+        let argsPointer = kernelSettings.args.contents().bindMemory(to: KernelArguments.self, capacity: 1)
+        argsPointer.pointee.strength = strength
+        argsPointer.pointee.frame = frameNumber
+                
         encoder.setComputePipelineState(kernelSettings.pipeline)
         encoder.setTexture(CVMetalTextureGetTexture(lumaTexture), index: 0)
         encoder.setTexture(CVMetalTextureGetTexture(chromaTexture), index: 1)
-        encoder.setBuffer(argumentBuffer, offset: 0, index: 0)
+        encoder.setBuffer(kernelSettings.args, offset: 0, index: 0)
         encoder.dispatchThreads(threadsPerGrid, threadsPerThreadgroup: kernelSettings.threads)
         encoder.endEncoding()
         commandBuffer.commit()
@@ -378,8 +420,8 @@ private actor FrameTinkerer {
         encoder.setTexture(CVMetalTextureGetTexture(chromaTexture), index: 1)
         encoder.setTexture(overlayTexture, index: 2)
 
-        for (boxBuffer, threadsPerGrid, threadsPerThreadgroup) in boundingBoxData {
-            encoder.setBuffer(boxBuffer, offset: 0, index: 0)
+        for (imprintArgumentBuffer, threadsPerGrid, threadsPerThreadgroup) in boundingBoxData {
+            encoder.setBuffer(imprintArgumentBuffer, offset: 0, index: 0)
             encoder.dispatchThreads(threadsPerGrid, threadsPerThreadgroup: threadsPerThreadgroup)
         }
 
