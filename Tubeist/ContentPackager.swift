@@ -153,8 +153,10 @@ private class AssetWriterActor {
             var formatName = "Unknown"
             
             switch format {
-            case kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange: formatName = "420YpCbCr10BiPlanarVideoRange (x420)"
             case kCVPixelFormatType_422YpCbCr10BiPlanarVideoRange: formatName = "422YpCbCr10BiPlanarVideoRange (x422)"
+            case kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange: formatName = "420YpCbCr10BiPlanarVideoRange (x420)"
+            case kCVPixelFormatType_422YpCbCr10BiPlanarFullRange: formatName = "422YpCbCr10BiPlanarFullRange (xf22)"
+            case kCVPixelFormatType_420YpCbCr10BiPlanarFullRange: formatName = "420YpCbCr10BiPlanarFullRange (xf20)"
             default: formatName = String(format: "0x%08x", format)
             }
             

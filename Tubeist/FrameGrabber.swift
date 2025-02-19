@@ -15,6 +15,8 @@ struct KernelArguments {
     var frame: UInt32 = 0
     var threadgroupWidth: UInt32 = 0
     var threadgroupHeight: UInt32 = 0
+    var widthRatio: UInt32 = 1
+    var heightRatio: UInt32 = 1
 }
 
 struct KernelSettings {
@@ -48,6 +50,13 @@ private actor FrameTinkerer {
     private var boundingBoxData: [(MTLBuffer, MTLSize, MTLSize)] = []
     
     // resettable
+    private var measureTextures: Bool = true
+    private var lumaWidth: Int = DEFAULT_CAPTURE_WIDTH
+    private var lumaHeight: Int = DEFAULT_CAPTURE_HEIGHT
+    private var chromaWidth: Int = DEFAULT_CAPTURE_WIDTH
+    private var chromaHeight: Int = DEFAULT_CAPTURE_HEIGHT
+    private var lumaChromaWidthRatio: UInt32 = 1
+    private var lumaChromaHeightRatio: UInt32 = 1
     private var currentSampleBuffer: CMSampleBuffer?
     private var frameNumber: UInt32 = 0
     private var threadsPerGrid: MTLSize = MTLSize(
@@ -164,6 +173,7 @@ private actor FrameTinkerer {
     }
     
     func reset() {
+        measureTextures = true
         currentSampleBuffer = nil
         frameNumber = 0
         var width = DEFAULT_CAPTURE_WIDTH
@@ -279,14 +289,24 @@ private actor FrameTinkerer {
             return
         }
 
+        if measureTextures {
+            lumaWidth = CVPixelBufferGetWidthOfPlane(pixelBuffer, 0)
+            lumaHeight = CVPixelBufferGetHeightOfPlane(pixelBuffer, 0)
+            chromaWidth = CVPixelBufferGetWidthOfPlane(pixelBuffer, 1)
+            chromaHeight = CVPixelBufferGetHeightOfPlane(pixelBuffer, 1)
+            lumaChromaWidthRatio = UInt32(lumaWidth / chromaWidth)
+            lumaChromaHeightRatio = UInt32(lumaHeight / chromaHeight)
+            measureTextures = false
+        }
+        
         CVMetalTextureCacheCreateTextureFromImage(
             kCFAllocatorDefault,
             textureCache,
             pixelBuffer,
             nil,
             .r16Unorm,
-            CVPixelBufferGetWidthOfPlane(pixelBuffer, 0),
-            CVPixelBufferGetHeightOfPlane(pixelBuffer, 0),
+            lumaWidth,
+            lumaHeight,
             0,
             &lumaTexture
         )
@@ -297,8 +317,8 @@ private actor FrameTinkerer {
             pixelBuffer,
             nil,
             .rg16Unorm,
-            CVPixelBufferGetWidthOfPlane(pixelBuffer, 1),
-            CVPixelBufferGetHeightOfPlane(pixelBuffer, 1),
+            chromaWidth,
+            chromaHeight,
             1,
             &chromaTexture
         )
@@ -323,6 +343,8 @@ private actor FrameTinkerer {
 
         kernelArguments.threadgroupWidth = UInt32(kernelSettings.threads.width)
         kernelArguments.threadgroupHeight = UInt32(kernelSettings.threads.height)
+        kernelArguments.widthRatio = lumaChromaWidthRatio
+        kernelArguments.heightRatio = lumaChromaHeightRatio
         kernelArguments.strength = strength
         kernelArguments.frame = frameNumber
 

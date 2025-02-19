@@ -7,6 +7,8 @@ struct KernelArguments {
     uint frame;
     uint threadgroupWidth;
     uint threadgroupHeight;
+    uint widthRatio;
+    uint heightRatio;
 };
 
 /* -------------=============== STYLES ===============------------- */
@@ -14,17 +16,6 @@ kernel void film(constant KernelArguments &args [[buffer(0)]],
                  texture2d<float, access::read_write> yTexture [[texture(0)]],
                  texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
                  uint2 gid [[thread_position_in_grid]]) {
-
-    // Get texture dimensions
-    int yWidth = yTexture.get_width();
-    int yHeight = yTexture.get_height();
-    
-    int cbcrWidth = cbcrTexture.get_width();
-    int cbcrHeight = cbcrTexture.get_height();
-    
-    // Calculate width and height ratios
-    int widthRatio = yWidth / cbcrWidth;
-    int heightRatio = yHeight / cbcrHeight;
     
     float4 luma = yTexture.read(gid);
     
@@ -42,8 +33,8 @@ kernel void film(constant KernelArguments &args [[buffer(0)]],
     // Write back (saturate for final output)
     yTexture.write(float4(adjustedY, 0, 0, 0), gid);
     
-    if ((gid.x % widthRatio == 0) && (gid.y % heightRatio == 0)) {
-        uint2 cbcrGid = gid / uint2(widthRatio, heightRatio);
+    if ((gid.x % args.widthRatio == 0) && (gid.y % args.heightRatio == 0)) {
+        uint2 cbcrGid = gid / uint2(args.widthRatio, args.heightRatio);
         float4 chroma = cbcrTexture.read(cbcrGid);
 
         float cb = chroma.r;
@@ -66,17 +57,6 @@ kernel void blackbright(constant KernelArguments &args [[buffer(0)]],
                         texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
                         uint2 gid [[thread_position_in_grid]]) {
 
-    // Get texture dimensions
-    int yWidth = yTexture.get_width();
-    int yHeight = yTexture.get_height();
-    
-    int cbcrWidth = cbcrTexture.get_width();
-    int cbcrHeight = cbcrTexture.get_height();
-    
-    // Calculate width and height ratios
-    int widthRatio = yWidth / cbcrWidth;
-    int heightRatio = yHeight / cbcrHeight;
-
     float4 luma = yTexture.read(gid);
     
     float y = luma.r;
@@ -89,7 +69,7 @@ kernel void blackbright(constant KernelArguments &args [[buffer(0)]],
     
     yTexture.write(float4(contrastedY, 0, 0, 0), gid);
 
-    uint2 cbcrGid = gid / uint2(widthRatio, heightRatio);
+    uint2 cbcrGid = gid / uint2(args.widthRatio, args.heightRatio);
     cbcrTexture.write(float4(0.5, 0.5, 0, 0), cbcrGid);
 }
 
@@ -98,25 +78,14 @@ kernel void space(constant KernelArguments &args [[buffer(0)]],
                   texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
                   uint2 gid [[thread_position_in_grid]]) {
 
-    // Get texture dimensions
-    int yWidth = yTexture.get_width();
-    int yHeight = yTexture.get_height();
-    
-    int cbcrWidth = cbcrTexture.get_width();
-    int cbcrHeight = cbcrTexture.get_height();
-    
-    // Calculate width and height ratios
-    int widthRatio = yWidth / cbcrWidth;
-    int heightRatio = yHeight / cbcrHeight;
-
     float4 luma = yTexture.read(gid);
 
     float y = luma.r;
 
     yTexture.write(float4(y, 0, 0, 0), gid);
     
-    if ((gid.x % widthRatio == 0) && (gid.y % heightRatio == 0)) {
-        uint2 cbcrGid = gid / uint2(widthRatio, heightRatio);
+    if ((gid.x % args.widthRatio == 0) && (gid.y % args.heightRatio == 0)) {
+        uint2 cbcrGid = gid / uint2(args.widthRatio, args.heightRatio);
         float4 chroma = cbcrTexture.read(cbcrGid);
 
         float cb = chroma.r;
@@ -147,13 +116,6 @@ kernel void rotoscope(constant KernelArguments &args [[buffer(0)]],
     // Get texture dimensions
     int yWidth = yTexture.get_width();
     int yHeight = yTexture.get_height();
-    
-    int cbcrWidth = cbcrTexture.get_width();
-    int cbcrHeight = cbcrTexture.get_height();
-
-    // Calculate width and height ratios
-    int widthRatio = yWidth / cbcrWidth;
-    int heightRatio = yHeight / cbcrHeight;
     
     // Get center pixel values
     float4 lumaCenter = yTexture.read(gid);
@@ -206,8 +168,8 @@ kernel void rotoscope(constant KernelArguments &args [[buffer(0)]],
     // Write results
     yTexture.write(float4(finalY, 0, 0, 0), gid);
 
-    if ((gid.x % widthRatio == 0) && (gid.y % heightRatio == 0)) {
-        uint2 cbcrGid = gid / uint2(widthRatio, heightRatio);
+    if ((gid.x % args.widthRatio == 0) && (gid.y % args.heightRatio == 0)) {
+        uint2 cbcrGid = gid / uint2(args.widthRatio, args.heightRatio);
         
         float4 chromaCenter = cbcrTexture.read(cbcrGid);
         
@@ -335,25 +297,21 @@ kernel void vhs(constant KernelArguments &args [[buffer(0)]],
     int cbcrWidth = cbcrTexture.get_width();
     int cbcrHeight = cbcrTexture.get_height();
 
-    // Calculate width and height ratios
-    int widthRatio = yWidth / cbcrWidth;
-    int heightRatio = yHeight / cbcrHeight;
-
     // Calculate offset in Y-space (same as before, based on strength and frame)
     float2 offset = float2(0.01 * args.strength * yWidth, 0.01 * sin(M_PI_F * args.frame / 60.0) * yHeight);
 
     // Convert gid to cbcrTexture coordinates
-    uint2 cbcrGid = gid / uint2(widthRatio, heightRatio);
+    uint2 cbcrGid = gid / uint2(args.widthRatio, args.heightRatio);
 
     // --- Apply horizontal distortion to CbCr as well ---
     uint2 distortedGidCbCr = cbcrGid; // Initialize with base CbCr gid
 
     // Apply horizontal distortion (same as for Y, but in CbCr space)
-    distortedGidCbCr.x = clamp(int(cbcrGid.x + horizontalDistortion / widthRatio), 0, cbcrWidth - 1); // Scale distortion to CbCr space & clamp
+    distortedGidCbCr.x = clamp(int(cbcrGid.x + horizontalDistortion / args.widthRatio), 0, cbcrWidth - 1); // Scale distortion to CbCr space & clamp
 
     // Apply offsets in CbCr texture space
-    uint2 cbGid_cbcr = distortedGidCbCr + uint2(offset.x / widthRatio, offset.y / heightRatio); // Use distorted GID here
-    uint2 crGid_cbcr = distortedGidCbCr - uint2(offset.x / widthRatio, offset.y / heightRatio); // Use distorted GID here
+    uint2 cbGid_cbcr = distortedGidCbCr + uint2(offset.x / args.widthRatio, offset.y / args.heightRatio); // Use distorted GID here
+    uint2 crGid_cbcr = distortedGidCbCr - uint2(offset.x / args.widthRatio, offset.y / args.heightRatio); // Use distorted GID here
 
     // Clamp CbCr GIDs to CbCr texture bounds
     cbGid_cbcr.x = clamp(int(cbGid_cbcr.x), 0, cbcrWidth - 1);
@@ -470,19 +428,8 @@ kernel void saturation(constant KernelArguments &args [[buffer(0)]],
                        texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
                        uint2 gid [[thread_position_in_grid]]) {
 
-    // Get texture dimensions
-    int yWidth = yTexture.get_width();
-    int yHeight = yTexture.get_height();
-    
-    int cbcrWidth = cbcrTexture.get_width();
-    int cbcrHeight = cbcrTexture.get_height();
-    
-    // Calculate width and height ratios
-    int widthRatio = yWidth / cbcrWidth;
-    int heightRatio = yHeight / cbcrHeight;
-
-    if ((gid.x % widthRatio == 0) && (gid.y % heightRatio == 0)) {
-        uint2 cbcrGid = gid / uint2(widthRatio, heightRatio);
+    if ((gid.x % args.widthRatio == 0) && (gid.y % args.heightRatio == 0)) {
+        uint2 cbcrGid = gid / uint2(args.widthRatio, args.heightRatio);
         
         float4 chroma = cbcrTexture.read(cbcrGid);
         
@@ -500,17 +447,6 @@ kernel void warmth(constant KernelArguments &args [[buffer(0)]],
                    texture2d<float, access::read_write> yTexture [[texture(0)]],
                    texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
                    uint2 gid [[thread_position_in_grid]]) {
-    
-    // Get texture dimensions
-    int yWidth = yTexture.get_width();
-    int yHeight = yTexture.get_height();
-    
-    int cbcrWidth = cbcrTexture.get_width();
-    int cbcrHeight = cbcrTexture.get_height();
-    
-    // Calculate width and height ratios
-    int widthRatio = yWidth / cbcrWidth;
-    int heightRatio = yHeight / cbcrHeight;
 
     float4 luma = yTexture.read(gid);
     
@@ -522,8 +458,8 @@ kernel void warmth(constant KernelArguments &args [[buffer(0)]],
     
     yTexture.write(float4(newY, 0, 0, 0), gid);
     
-    if ((gid.x % widthRatio == 0) && (gid.y % heightRatio == 0)) {
-        uint2 cbcrGid = gid / uint2(widthRatio, heightRatio);
+    if ((gid.x % args.widthRatio == 0) && (gid.y % args.heightRatio == 0)) {
+        uint2 cbcrGid = gid / uint2(args.widthRatio, args.heightRatio);
         float4 chroma = cbcrTexture.read(cbcrGid);
         
         float cb = chroma.r;
@@ -700,17 +636,6 @@ kernel void push(constant KernelArguments &args [[buffer(0)]],
                  texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
                  uint2 gid [[thread_position_in_grid]]) {
 
-    // Get texture dimensions
-    int yWidth = yTexture.get_width();
-    int yHeight = yTexture.get_height();
-    
-    int cbcrWidth = cbcrTexture.get_width();
-    int cbcrHeight = cbcrTexture.get_height();
-    
-    // Calculate width and height ratios
-    int widthRatio = yWidth / cbcrWidth;
-    int heightRatio = yHeight / cbcrHeight;
-
     float4 luma = yTexture.read(gid);
     
     float y = luma.r;
@@ -719,8 +644,8 @@ kernel void push(constant KernelArguments &args [[buffer(0)]],
     
     yTexture.write(float4(newY, 0, 0, 0), gid);
     
-    if ((gid.x % widthRatio == 0) && (gid.y % heightRatio == 0)) {
-        uint2 cbcrGid = gid / uint2(widthRatio, heightRatio);
+    if ((gid.x % args.widthRatio == 0) && (gid.y % args.heightRatio == 0)) {
+        uint2 cbcrGid = gid / uint2(args.widthRatio, args.heightRatio);
         float4 chroma = cbcrTexture.read(cbcrGid);
 
         float cb = chroma.r;
