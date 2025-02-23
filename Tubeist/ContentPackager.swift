@@ -118,7 +118,7 @@ private class AssetWriterActor {
         
         // starting the asset writer here seems to give it enough spin up time to avoid issues like no audio in the first fragment
         fragmentAssetWriter.startSession(atSourceTime: sessionTimeInFragmentTimescale)
-        LOG("Asset writing started at time: \(sessionTime.value) | \(sessionTime.timescale) ticks")
+        LOG("Asset writing started at time: \(sessionTime.value) | \(sessionTime.timescale) ticks", level: .debug)
     }
     
     func finishWriting() async {
@@ -136,7 +136,7 @@ private class AssetWriterActor {
                 if sendableAssetWriter.status != .completed {
                     LOG("Failed to finish writing: \(String(describing: sendableAssetWriter.error))", level: .warning)
                 } else {
-                    LOG("Finished writing successfully", level: .info)
+                    LOG("Finished writing successfully", level: .debug)
                 }
                 continuation.resume() // Resume after `finishWriting` completes
             }

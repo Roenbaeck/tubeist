@@ -51,7 +51,7 @@ struct OutputMonitorView: UIViewControllerRepresentable {
         viewController.loadViewIfNeeded()
         
         guard let displayLayer = OutputMonitorView.displayLayer else {
-            LOG("Waiting for display layer to become available", level: .warning)
+            LOG("Waiting for display layer to become available", level: .debug) // can happen naturally
             return viewController
         }
         

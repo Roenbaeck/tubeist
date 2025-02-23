@@ -104,7 +104,7 @@ final class Streamer: Sendable {
                     try await Task.sleep(for: .seconds(duration))
                 }
                 catch {
-                    LOG("Sleeping to await late frames interrupted", level: .warning)
+                    LOG("The sleep intended to await late frames was interrupted", level: .warning)
                 }
             }
         }

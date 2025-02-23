@@ -66,7 +66,7 @@ actor Purchaser {
     
     @MainActor
     private func savePurchase(productID: String) {
-        LOG("Entitled for \(productID)", level: .info)
+        LOG("Entitled for \(productID)", level: .debug)
         purchasedProductIDs.insert(productID)
     }
     

@@ -29,7 +29,7 @@ struct CameraMonitorView: UIViewControllerRepresentable {
         viewController.loadViewIfNeeded()
 
         guard let previewLayer = CameraMonitorView.previewLayer else {
-            LOG("Waiting for preivew layer to become available", level: .warning)
+            LOG("Waiting for preivew layer to become available", level: .debug) // This normally happens once
             return viewController
         }
         

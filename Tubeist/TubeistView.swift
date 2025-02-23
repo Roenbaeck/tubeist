@@ -139,11 +139,11 @@ struct TubeistView: View {
             let normalizedLocation = previewLayer.captureDevicePointConverted(fromLayerPoint: location)
             if appState.isExposureLocked {
                 await CaptureDirector.shared.setExposure(at: normalizedLocation)
-                LOG("Probing exposure at \(location)")
+                LOG("Probing exposure at \(location)", level: .debug)
             }
             if appState.isFocusLocked {
                 await CaptureDirector.shared.setFocus(at: normalizedLocation)
-                LOG("Probing focus at \(location)")
+                LOG("Probing focus at \(location)", level: .debug)
             }
         }
         showFocusAndExposureArea = true
@@ -173,7 +173,7 @@ struct TubeistView: View {
                                 appState.refreshCameraView()
                                 updateCameraProperties()
                                 isCameraReady = true
-                                LOG("Viewing camera monitor", level: .info)
+                                LOG("Viewing camera monitor", level: .debug)
                             }
                         }
                         .onDisappear {
@@ -238,7 +238,7 @@ struct TubeistView: View {
                                 Task {
                                     OutputMonitorView.createDisplayLayer()
                                     appState.refreshOutputView()
-                                    LOG("Viewing output monitor", level: .info)
+                                    LOG("Viewing output monitor", level: .debug)
                                 }
                             }
                             .onTapGesture { location in
@@ -768,7 +768,7 @@ struct TubeistView: View {
             else {
                 UIScreen.main.brightness = appState.lastKnownBrightness
             }
-            LOG("Battery saving is \(appState.isBatterySavingOn ? "on" : "off")", level: .info)
+            LOG("Battery saving is \(appState.isBatterySavingOn ? "on" : "off")", level: .debug)
         }
         .onChange(of: appState.justCameFromBackground) { oldValue, newValue in
             if newValue && appState.hadToStopStreaming {

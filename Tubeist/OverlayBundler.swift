@@ -235,11 +235,11 @@ final class Overlay: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     }
     
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        LOG("Web view finished loading", level: .info)
+        LOG("Web view finished loading", level: .debug)
         captureWebViewImageOrSchedule()
         
         guard let mimeType, mimeType.hasSuffix("html") else {
-            LOG("Not detecting DOM changes for non-HTML content")
+            LOG("Not detecting DOM changes for non-HTML content", level: .debug)
             return
         }
         
@@ -416,7 +416,7 @@ final class OverlayBundler: Sendable {
         let colorSpace = (ciImage.colorSpace?.name as String?)?.replacingOccurrences(of: "kCGColorSpace", with: "")
         LOG("Combined \(images.count) images to single overlay with color space: \(colorSpace ?? "unknown")", level: .debug)
         let coveragePercentage = Int(100 * (combinedOverlay.coverage))
-        LOG("Bounding boxes: \(String(describing: combinedOverlay.boundingBoxes)) covering \(coveragePercentage)%")
+        LOG("Bounding boxes: \(String(describing: combinedOverlay.boundingBoxes)) covering \(coveragePercentage)%", level: .debug)
         await FrameGrabber.shared.setCombinedOverlay(combinedOverlay)
     }
 }

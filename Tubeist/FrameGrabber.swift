@@ -125,7 +125,7 @@ private actor FrameTinkerer {
                 .cacheIntermediates: true,
                 .memoryTarget: 512
             ])
-        LOG("Created rendering context with Metal support", level: .info)
+        LOG("Created rendering context with Metal support", level: .debug)
         commandQueue.label = "FrameTinkerer"
         self.metalDevice = metalDevice
         self.commandQueue = commandQueue

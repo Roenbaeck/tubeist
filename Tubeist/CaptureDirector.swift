@@ -78,7 +78,7 @@ private class DeviceActor {
         }
         
         cameras = cameraDevicesByName
-        LOG("Cameras: \(cameras.keys)", level: .debug)
+        LOG("Cameras: \(cameras.keys)", level: .info)
         
         var microphoneDevicesByName: [String: AVCaptureDevice.DeviceType] = [:]
         
@@ -97,7 +97,7 @@ private class DeviceActor {
         }
         
         microphones = microphoneDevicesByName
-        LOG("Microphones: \(microphones.keys)", level: .debug)
+        LOG("Microphones: \(microphones.keys)", level: .info)
     }
 
     func getStabilizations() -> [String] {
@@ -243,7 +243,7 @@ private class DeviceActor {
                 LOG("Desired format not found", level: .error)
                 return
             }
-            LOG("Found format:\n\(String(describing: format))")
+            LOG("Found format:\n\(String(describing: format))", level: .debug)
             
             // Apply the format to the video device
             try videoDevice.lockForConfiguration()
@@ -694,7 +694,7 @@ final class CaptureDirector: NSObject, Sendable {
         let camera = Settings.selectedCamera
         var cameraType = await deviceActor.getCameraType(camera)
         if cameraType == nil {
-            LOG("Cannot find desired camera \(camera), using any available camera", level: .warning)
+            LOG("Cannot find designated camera \(camera), using first available camera", level: .warning)
             cameraType = await deviceActor.getFirstCameraType()
         }
         guard let cameraType else {
@@ -705,7 +705,7 @@ final class CaptureDirector: NSObject, Sendable {
         let microphone = DEFAULT_MICROPHONE
         var microphoneType = await deviceActor.getMicrophoneType(microphone)
         if microphoneType == nil {
-            LOG("Cannot find desired microphone \(microphone), using any available microphone", level: .warning)
+            LOG("Cannot find designated microphone \(microphone), using first available microphone", level: .warning)
             microphoneType = await deviceActor.getFirstMicrophoneType()
         }
         guard let microphoneType else {
@@ -838,7 +838,7 @@ extension AVCaptureDevice {
         let width = (Settings.isInputSyncedWithOutput ? Settings.selectedPreset.width : DEFAULT_CAPTURE_WIDTH)
         let height = (Settings.isInputSyncedWithOutput ? Settings.selectedPreset.height : DEFAULT_CAPTURE_HEIGHT)
         let frameRate = Settings.selectedPreset.frameRate 
-        LOG("Searching for best capture format with resolution \(width)x\(height) and \(frameRate) FPS.")
+        LOG("Searching for best capture format with resolution \(width)x\(height) and \(frameRate) FPS.", level: .debug)
         var candidates: [CaptureFormatCandidate] = []
         let pixelFormats = [
             // Prefer 'x422' for HDR capture, since 4:2:2 gives the best possible color fidelity on current phones
@@ -870,7 +870,7 @@ extension AVCaptureDevice {
                 }
             }
             if !candidates.isEmpty {
-                LOG("Found \(candidates.count) pixel format candidates")
+                LOG("Found \(candidates.count) pixel format candidates", level: .debug)
                 candidates.sort {
                     if $0.width != $1.width {
                         return $0.width < $1.width          // Sort by width primarily

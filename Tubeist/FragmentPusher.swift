@@ -172,7 +172,7 @@ actor URLSessionActor {
     }
     private static func createBaseUploadRequest() -> URLRequest? {
         guard let hlsServer = Settings.hlsServer else {
-            LOG("No HLS server specified", level: .debug)
+            LOG("No HLS server specified", level: .warning)
             return nil
         }
         if let url = URL(string: hlsServer) {
@@ -346,7 +346,7 @@ final class FragmentPusher: Sendable {
         self.uploadQueue = OperationQueue()
         self.uploadQueue.maxConcurrentOperationCount = MAX_CONCURRENT_UPLOADS
         self.urlSession = URLSessionActor(queue: uploadQueue, delegate: networkPerformance)
-        LOG("The FragmentPusher is initialized", level: .info)
+        LOG("The FragmentPusher is initialized", level: .debug)
     }
     
     func immediatePreparation() async {
