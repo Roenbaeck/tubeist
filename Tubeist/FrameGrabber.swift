@@ -306,18 +306,9 @@ private actor FrameTinkerer {
         self.overlayTexture = texture
     }
     
-    func deleteTextures() {
-        lumaTexture = nil
-        chromaTexture = nil
-    }
-    
     func createTextures(from sampleBuffer: CMSampleBuffer) {
-        guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {
+        guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer), let textureCache else {
             LOG("Cannot get pixel buffer from sample buffer", level: .error)
-            return
-        }
-        guard let textureCache else {
-            LOG("The texture cache has not been initialized", level: .error)
             return
         }
 
@@ -343,7 +334,7 @@ private actor FrameTinkerer {
             
             measureTextures = false
         }
-        
+        var newLumaTexture: CVMetalTexture?
         CVMetalTextureCacheCreateTextureFromImage(
             kCFAllocatorDefault,
             textureCache,
@@ -353,9 +344,9 @@ private actor FrameTinkerer {
             lumaWidth,
             lumaHeight,
             0,
-            &lumaTexture
+            &newLumaTexture
         )
-        
+        var newChromaTexture: CVMetalTexture?
         CVMetalTextureCacheCreateTextureFromImage(
             kCFAllocatorDefault,
             textureCache,
@@ -365,26 +356,15 @@ private actor FrameTinkerer {
             chromaWidth,
             chromaHeight,
             1,
-            &chromaTexture
+            &newChromaTexture
         )
+        lumaTexture = newLumaTexture
+        chromaTexture = newChromaTexture
     }
     
-    func apply(kernel: String, strength: Float) {
-        guard let lumaTexture, let chromaTexture else {
+    func apply(kernel: String, strength: Float, encoder: MTLComputeCommandEncoder) {
+        guard let lumaTexture, let chromaTexture, let kernelSettings = kernels[kernel] else {
             LOG("Could not create a texture from the pixel buffer planes", level: .error)
-            return
-        }
-
-        guard let commandBuffer = commandQueue?.makeCommandBuffer(),
-              let encoder = commandBuffer.makeComputeCommandEncoder()
-        else {
-            LOG("Could not create necessary Metal objects to apply styles or effects", level: .error)
-            return
-        }
-        guard let kernelSettings = kernels[kernel]
-        else {
-            
-            LOG("The kernel settinga have not been initialized", level: .error)
             return
         }
         
@@ -397,24 +377,14 @@ private actor FrameTinkerer {
         encoder.setTexture(CVMetalTextureGetTexture(chromaTexture), index: 1)
         encoder.setBuffer(kernelSettings.args, offset: 0, index: 0)
         encoder.dispatchThreads(threadsPerGrid, threadsPerThreadgroup: kernelSettings.threads)
-        encoder.endEncoding()
-        commandBuffer.commit()
-        commandBuffer.waitUntilCompleted()
     }
 
-    func imprintOverlay() {
-        guard let lumaTexture, let chromaTexture else {
+    func imprintOverlay(encoder: MTLComputeCommandEncoder) {
+        guard let lumaTexture, let chromaTexture, let imprintPipeline else {
             LOG("Could not create a texture from the pixel buffer planes", level: .error)
             return
         }
         
-        guard let commandBuffer = commandQueue?.makeCommandBuffer(),
-              let encoder = commandBuffer.makeComputeCommandEncoder(),
-              let imprintPipeline else {
-            LOG("Could not create a commmand buffer, encoder, or imprint pipeline", level: .error)
-            return
-        }
-
         encoder.setComputePipelineState(imprintPipeline)
         encoder.setTexture(CVMetalTextureGetTexture(lumaTexture), index: 0)
         encoder.setTexture(CVMetalTextureGetTexture(chromaTexture), index: 1)
@@ -424,9 +394,6 @@ private actor FrameTinkerer {
             encoder.setBuffer(imprintArgumentBuffer, offset: 0, index: 0)
             encoder.dispatchThreads(threadsPerGrid, threadsPerThreadgroup: threadsPerThreadgroup)
         }
-
-        encoder.endEncoding()
-        commandBuffer.commit()
     }
     
     func processFrame(sampleBuffer: CMSampleBuffer) async {
@@ -437,15 +404,22 @@ private actor FrameTinkerer {
                 frameNumber += 1
                 frameNumber %= 600 // restart counter every 600 frames
                 createTextures(from: sendableSampleBuffer)
-            }
-            if let style {
-                apply(kernel: style, strength: styleStrength)
-            }
-            if let effect {
-                apply(kernel: effect, strength: effectStrength)
-            }
-            if overlayTexture != nil {
-                imprintOverlay()
+                guard let commandBuffer = commandQueue?.makeCommandBuffer(),
+                      let encoder = commandBuffer.makeComputeCommandEncoder() else {
+                    LOG("Could not create Metal objects", level: .error)
+                    return
+                }
+                if let style {
+                    apply(kernel: style, strength: styleStrength, encoder: encoder)
+                }
+                if let effect {
+                    apply(kernel: effect, strength: effectStrength, encoder: encoder)
+                }
+                if overlayTexture != nil {
+                    imprintOverlay(encoder: encoder)
+                }
+                encoder.endEncoding()
+                commandBuffer.commit()
             }
             if await Streamer.shared.isStreaming() {
                 await ContentPackager.shared.appendVideoSampleBuffer(sendableSampleBuffer)
@@ -453,7 +427,6 @@ private actor FrameTinkerer {
             if await Streamer.shared.getMonitor() == .output {
                 await OutputMonitorView.enqueue(sendableSampleBuffer)
             }
-            deleteTextures()
         }
     }
 

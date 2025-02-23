@@ -17,38 +17,27 @@ kernel void film(constant KernelArguments &args [[buffer(0)]],
                  texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
                  uint2 gid [[thread_position_in_grid]]) {
     
-    float4 luma = yTexture.read(gid);
-    
-    float y = luma.r;
+    float y = yTexture.read(gid).r;
 
     // Lift Blacks and Tone Down Whites (film-like base tone)
     float blackLift = 0.04 * (args.strength + 1);
-    float whiteToneDown = 1.00 - 0.04 * (args.strength + 1);
+    float whiteToneDown = 1.0 - blackLift;
     float adjustedY = y * whiteToneDown + blackLift * (1.0 - y);
         
     // Filmic S-Curve for contrast
     float sCurveY = adjustedY / (adjustedY + 0.5 * (1.0 - adjustedY));
-    adjustedY = mix(adjustedY, sCurveY, abs(1 - args.strength) / 2);
+    adjustedY = mix(adjustedY, sCurveY, abs(1.0 - args.strength) / 2.0);
 
     // Write back (saturate for final output)
-    yTexture.write(float4(adjustedY, 0, 0, 0), gid);
+    yTexture.write(adjustedY, gid); // Single-channel write
     
     if ((gid.x % args.widthRatio == 0) && (gid.y % args.heightRatio == 0)) {
         uint2 cbcrGid = gid / uint2(args.widthRatio, args.heightRatio);
         float4 chroma = cbcrTexture.read(cbcrGid);
-
-        float cb = chroma.r;
-        float cr = chroma.g;
-
-        // Warm shadows and cool highlights
-        float warmCoolBlend = 0.15 + 0.10 * args.strength;
-        float shadowTint = 0.04; // warm tone
-        float highlightTint = -0.04; // cool tone
-        float hueShift = (adjustedY < 0.5) ? shadowTint : highlightTint;
-        cb += hueShift * warmCoolBlend;
-        cr -= hueShift * warmCoolBlend;
-
-        cbcrTexture.write(float4(cb, cr, 0, 0), cbcrGid);
+        
+        float hueShift = (adjustedY < 0.5) ? 0.04 : -0.04; // Inline constants
+        float blend = 0.15 + 0.10 * args.strength;
+        cbcrTexture.write(float4(chroma.r + hueShift * blend, chroma.g - hueShift * blend, 0, 0), cbcrGid);
     }
 }
 
@@ -56,44 +45,31 @@ kernel void blackbright(constant KernelArguments &args [[buffer(0)]],
                         texture2d<float, access::read_write> yTexture [[texture(0)]],
                         texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
                         uint2 gid [[thread_position_in_grid]]) {
-
-    float4 luma = yTexture.read(gid);
-    
-    float y = luma.r;
-    
-    // Apply a contrast adjustment
-    float contrast = 1.85;
+    float y = yTexture.read(gid).r;
     float midPoint = 0.5 * args.strength;
-    float normalizedY = (y - midPoint);
-    float contrastedY = midPoint + (normalizedY * contrast);
+    float contrastedY = midPoint + (y - midPoint) * 1.85;
     
-    yTexture.write(float4(contrastedY, 0, 0, 0), gid);
-
-    uint2 cbcrGid = gid / uint2(args.widthRatio, args.heightRatio);
-    cbcrTexture.write(float4(0.5, 0.5, 0, 0), cbcrGid);
+    yTexture.write(contrastedY, gid);
+    
+    if ((gid.x % args.widthRatio == 0) && (gid.y % args.heightRatio == 0)) {
+        uint2 cbcrGid = gid / uint2(args.widthRatio, args.heightRatio);
+        cbcrTexture.write(float4(0.5, 0.5, 0, 0), cbcrGid);
+    }
 }
 
 kernel void space(constant KernelArguments &args [[buffer(0)]],
                   texture2d<float, access::read_write> yTexture [[texture(0)]],
                   texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
                   uint2 gid [[thread_position_in_grid]]) {
-
-    float4 luma = yTexture.read(gid);
-
-    float y = luma.r;
-
-    yTexture.write(float4(y, 0, 0, 0), gid);
-    
     if ((gid.x % args.widthRatio == 0) && (gid.y % args.heightRatio == 0)) {
         uint2 cbcrGid = gid / uint2(args.widthRatio, args.heightRatio);
         float4 chroma = cbcrTexture.read(cbcrGid);
-
+        
         float cb = chroma.r;
         float cr = chroma.g;
-        
         float newCr = mix(1.0 - cb, 1.0 - cr, args.strength);
         float newCb = mix(1.0 - cr, 1.0 - cb, args.strength);
-
+        
         cbcrTexture.write(float4(newCb, newCr, 0, 0), cbcrGid);
     }
 }
@@ -339,8 +315,7 @@ kernel void sky(constant KernelArguments &args [[buffer(0)]],
                 texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
                 uint2 gid [[thread_position_in_grid]]) {
 
-    float4 luma = yTexture.read(gid);
-    float y = luma.r;
+    float y = yTexture.read(gid).r;
     
     // Get the height of the texture (assuming the dispatch size matches the texture size)
     uint textureHeight = yTexture.get_height();
@@ -376,7 +351,7 @@ kernel void sky(constant KernelArguments &args [[buffer(0)]],
     // Clamp the value to ensure it stays within the valid range (0.0 to 1.0)
     darkenedY = clamp(darkenedY, 0.0, 1.0);
     
-    yTexture.write(float4(darkenedY, 0, 0, 0), gid);
+    yTexture.write(darkenedY, gid);
 }
 
 kernel void vignette(constant KernelArguments &args [[buffer(0)]],
@@ -384,8 +359,7 @@ kernel void vignette(constant KernelArguments &args [[buffer(0)]],
                      texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
                      uint2 gid [[thread_position_in_grid]]) {
 
-    float4 luma = yTexture.read(gid);
-    float y = luma.r;
+    float y = yTexture.read(gid).r;
 
     uint width = yTexture.get_width();
     uint height = yTexture.get_height();
@@ -420,7 +394,7 @@ kernel void vignette(constant KernelArguments &args [[buffer(0)]],
     // Apply the darkening effect. Strength controls the intensity.
     float darkenedY = y * (1.0 - (vignetteFactor * args.strength));
 
-    yTexture.write(float4(darkenedY, 0, 0, 0), gid);
+    yTexture.write(darkenedY, gid);
 }
 
 kernel void saturation(constant KernelArguments &args [[buffer(0)]],
@@ -448,15 +422,13 @@ kernel void warmth(constant KernelArguments &args [[buffer(0)]],
                    texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
                    uint2 gid [[thread_position_in_grid]]) {
 
-    float4 luma = yTexture.read(gid);
-    
-    float y = luma.r;
+    float y = yTexture.read(gid).r;
     
     float yFactor = 1.03; // Add a touch of brightness
     
     float newY = mix(y, y * yFactor, args.strength);
     
-    yTexture.write(float4(newY, 0, 0, 0), gid);
+    yTexture.write(newY, gid);
     
     if ((gid.x % args.widthRatio == 0) && (gid.y % args.heightRatio == 0)) {
         uint2 cbcrGid = gid / uint2(args.widthRatio, args.heightRatio);
@@ -673,43 +645,30 @@ kernel void imprint(constant ImprintArguments &args [[buffer(0)]],
                     texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
                     texture2d<float, access::read> overlayTexture [[texture(2)]],
                     uint2 gid [[thread_position_in_grid]]) {
+    uint2 pos = uint2(args.offsetX, args.offsetY) + gid;
+    float4 overlay = overlayTexture.read(pos);
+    if (overlay.a == 0) return;
     
-    uint2 texturePosition = uint2(args.offsetX, args.offsetY) + gid;
-    float4 overlay = overlayTexture.read(texturePosition);
-    
-    if (overlay.a == 0) {
-        return;
-    }
-            
-    // Read existing Y value from the video frame
-    float y = yTexture.read(texturePosition).r;
-    
+    float y = yTexture.read(pos).r;
     // BT.2020 RGB to YCbCr conversion https://en.wikipedia.org/wiki/YCbCr
-    float overlay_y  = 0.2627 * overlay.r + 0.6780 * overlay.g + 0.0593 * overlay.b;
-    float pow_overlay_a = pow(overlay.a, 1.42); // Delinearize alpha (1 + 1/2.4)
+    float overlayY = dot(overlay.rgb, float3(0.2627, 0.6780, 0.0593));
     
-    // This is what works, but by trial and error, and likely not 100% correct since
-    // it does not adhere fully to the "standard" formula and uses the delinearized alpha
-    float blended_y  = (overlay_y * overlay.a) + (y * (1.0 - pow_overlay_a));
+    float alpha = overlay.a;
+    // This is a simplified "delinearization" of alpha, where 0.42 = 1 / 2.4 (gamma)
+    float adjustedAlpha = alpha * (alpha + (0.42 * (1.0 - alpha)));
+    float blendedY = overlayY * alpha + y * (1.0 - adjustedAlpha);
     
-    yTexture.write(float4(blended_y, 0.0, 0.0, 1.0), texturePosition);
+    yTexture.write(blendedY, pos);
     
-    // Only perform chroma-related calculations and writes when necessary
-    if ((texturePosition.x % args.widthRatio == 0) && (texturePosition.y % args.heightRatio == 0)) {
-        // Convert gid to cbcrTexture coordinates
-        uint2 cbcrGid = texturePosition / uint2(args.widthRatio, args.heightRatio);
-
-        // Read existing CbCr values from the video frame
-        float4 cbcrPixel = cbcrTexture.read(cbcrGid);
-
-        // BT.2020 RGB to YCbCr conversion https://en.wikipedia.org/wiki/YCbCr
-        float overlay_cb = (overlay.b - overlay_y) / 1.8814 + 0.5;
-        float overlay_cr = (overlay.r - overlay_y) / 1.4746 + 0.5;
-
-        // Alpha blending
-        float blended_cb = (overlay_cb * pow_overlay_a) + (cbcrPixel.r * (1.0 - pow_overlay_a));
-        float blended_cr = (overlay_cr * pow_overlay_a) + (cbcrPixel.g * (1.0 - pow_overlay_a));
-        
-        cbcrTexture.write(float4(blended_cb, blended_cr, 0.0, 1.0), cbcrGid);
+    if ((pos.x % args.widthRatio == 0) && (pos.y % args.heightRatio == 0)) {
+        uint2 cbcrGid = pos / uint2(args.widthRatio, args.heightRatio);
+        float4 cbcr = cbcrTexture.read(cbcrGid);
+        float overlayCb = (overlay.b - overlayY) / 1.8814 + 0.5;
+        float overlayCr = (overlay.r - overlayY) / 1.4746 + 0.5;
+        cbcrTexture.write(float4(
+            mix(cbcr.r, overlayCb, adjustedAlpha),
+            mix(cbcr.g, overlayCr, adjustedAlpha),
+            0, 0), cbcrGid);
     }
 }
+
