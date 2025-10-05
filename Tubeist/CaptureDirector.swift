@@ -10,6 +10,10 @@
 import SwiftUI
 import AVKit
 
+#if canImport(AVFoundation)
+extension AVCaptureAudioChannel: @unchecked Sendable {}
+#endif
+
 @PipelineActor
 private class DeviceActor {
     // video device
@@ -884,6 +888,7 @@ extension AVCaptureDevice {
         return nil
     }
 }
+
 
 
 
