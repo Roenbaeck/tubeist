@@ -22,6 +22,10 @@ private class AssetWriterActor {
     private var stream: Bool = Settings.stream
     private var record: Bool = Settings.record
     private var finalizing: Bool = false
+    private var hasStartedSession: Bool = false
+    private var baseVideoPTS: CMTime? = nil
+    private let writerTimeScale: CMTimeScale = 90000
+    private var pendingAudio: [CMSampleBuffer] = []
     
     func setupFragmentAssetWriter() async {
         finalizing = false
@@ -50,7 +54,7 @@ private class AssetWriterActor {
         fragmentAssetWriter.shouldOptimizeForNetworkUse = true
         fragmentAssetWriter.outputFileTypeProfile = .mpeg4AppleHLS
         fragmentAssetWriter.preferredOutputSegmentInterval = CMTime(seconds: adjustedFragmentDuration, preferredTimescale: FRAGMENT_TIMESCALE)
-        fragmentAssetWriter.movieTimeScale = FRAGMENT_TIMESCALE
+        fragmentAssetWriter.movieTimeScale = writerTimeScale
         fragmentAssetWriter.initialSegmentStartTime = .zero
         fragmentAssetWriter.delegate = ContentPackager.shared
         
@@ -80,7 +84,7 @@ private class AssetWriterActor {
             return
         }
         videoInput.expectsMediaDataInRealTime = true
-        videoInput.mediaTimeScale = FRAGMENT_TIMESCALE
+        // Removed line: videoInput.mediaTimeScale = FRAGMENT_TIMESCALE
         
         let audioSettings: [String: Any] = [
             AVFormatIDKey: kAudioFormatMPEG4AAC,
@@ -105,20 +109,13 @@ private class AssetWriterActor {
             return
         }
         
+        hasStartedSession = false
+        baseVideoPTS = nil
+        pendingAudio.removeAll()
+        
         // fetch whether to stream or record or both
         stream = Settings.stream
         record = Settings.record
-
-        guard let sessionTime = await CaptureDirector.shared.getSessionTime() else {
-            LOG("Error getting session time", level: .error)
-            return
-        }
-
-        let sessionTimeInFragmentTimescale = CMTimeConvertScale(sessionTime, timescale: FRAGMENT_TIMESCALE, method: .roundTowardZero)
-        
-        // starting the asset writer here seems to give it enough spin up time to avoid issues like no audio in the first fragment
-        fragmentAssetWriter.startSession(atSourceTime: sessionTimeInFragmentTimescale)
-        LOG("Asset writing started at time: \(sessionTime.value) | \(sessionTime.timescale) ticks", level: .debug)
     }
     
     func finishWriting() async {
@@ -191,13 +188,95 @@ private class AssetWriterActor {
             LOG("Failed to append sample buffer", level: .error)
         }
     }
+    
+    private func makeSampleBuffer(withNormalizedPTS sampleBuffer: CMSampleBuffer,
+                                  basePTS: CMTime,
+                                  timeScale: CMTimeScale) -> CMSampleBuffer? {
+        var timingCount: CMItemCount = 0
+        guard CMSampleBufferGetSampleTimingInfoArray(sampleBuffer,
+                                                     entryCount: 0,
+                                                     arrayToFill: nil,
+                                                     entriesNeededOut: &timingCount) == noErr,
+              timingCount > 0 else { return nil }
+
+        var timingInfo = Array(repeating: CMSampleTimingInfo(duration: .invalid,
+                                                             presentationTimeStamp: .invalid,
+                                                             decodeTimeStamp: .invalid),
+                               count: timingCount)
+        guard CMSampleBufferGetSampleTimingInfoArray(sampleBuffer,
+                                                     entryCount: timingCount,
+                                                     arrayToFill: &timingInfo,
+                                                     entriesNeededOut: &timingCount) == noErr else {
+            return nil
+        }
+
+        for i in 0..<timingInfo.count {
+            let pts = timingInfo[i].presentationTimeStamp
+            let dts = timingInfo[i].decodeTimeStamp
+
+            var newPTS = CMTimeSubtract(pts, basePTS)
+            var newDTS = dts.isValid ? CMTimeSubtract(dts, basePTS) : .invalid
+
+            newPTS = CMTimeConvertScale(newPTS, timescale: timeScale, method: .roundHalfAwayFromZero)
+            if newDTS.isValid {
+                newDTS = CMTimeConvertScale(newDTS, timescale: timeScale, method: .roundHalfAwayFromZero)
+            }
+
+            timingInfo[i].presentationTimeStamp = newPTS
+            timingInfo[i].decodeTimeStamp = newDTS
+        }
+
+        var normalizedBuffer: CMSampleBuffer?
+        let status = CMSampleBufferCreateCopyWithNewTiming(allocator: kCFAllocatorDefault,
+                                                           sampleBuffer: sampleBuffer,
+                                                           sampleTimingEntryCount: timingInfo.count,
+                                                           sampleTimingArray: &timingInfo,
+                                                           sampleBufferOut: &normalizedBuffer)
+        return status == noErr ? normalizedBuffer : nil
+    }
         
     func appendVideoSampleBuffer(_ sampleBuffer: CMSampleBuffer) async {
-        appendSampleBuffer(sampleBuffer, to: videoInput)
+        let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+
+        if baseVideoPTS == nil {
+            baseVideoPTS = pts
+            fragmentAssetWriter?.startSession(atSourceTime: .zero)
+            hasStartedSession = true
+            LOG("Asset writing started at .zero; baseVideoPTS: \(pts.value)/\(pts.timescale)", level: .debug)
+            // Flush any pending audio that normalizes to >= .zero
+            if !pendingAudio.isEmpty, let basePTS = baseVideoPTS {
+                for audioBuf in pendingAudio {
+                    if let normalized = makeSampleBuffer(withNormalizedPTS: audioBuf, basePTS: basePTS, timeScale: writerTimeScale) {
+                        let firstPTS = CMSampleBufferGetPresentationTimeStamp(normalized)
+                        if CMTimeCompare(firstPTS, .zero) >= 0 {
+                            appendSampleBuffer(normalized, to: audioInput)
+                        }
+                    }
+                }
+                pendingAudio.removeAll()
+            }
+        }
+
+        if let basePTS = baseVideoPTS,
+           let normalized = makeSampleBuffer(withNormalizedPTS: sampleBuffer, basePTS: basePTS, timeScale: writerTimeScale) {
+            appendSampleBuffer(normalized, to: videoInput)
+        } else {
+            appendSampleBuffer(sampleBuffer, to: videoInput)
+        }
     }
     
     func appendAudioSampleBuffer(_ sampleBuffer: CMSampleBuffer) async {
-        appendSampleBuffer(sampleBuffer, to: audioInput)
+        // Buffer audio until the video session has started to ensure aligned timelines
+        guard hasStartedSession, let basePTS = baseVideoPTS else {
+            pendingAudio.append(sampleBuffer)
+            return
+        }
+
+        if let normalized = makeSampleBuffer(withNormalizedPTS: sampleBuffer, basePTS: basePTS, timeScale: writerTimeScale) {
+            appendSampleBuffer(normalized, to: audioInput)
+        } else {
+            appendSampleBuffer(sampleBuffer, to: audioInput)
+        }
     }
 
     func status() -> AVAssetWriter.Status? {
@@ -382,3 +461,4 @@ final class ContentPackager: NSObject, AVAssetWriterDelegate, Sendable {
         }
     }
 }
+
