@@ -186,6 +186,7 @@ struct SettingsView: View {
     @AppStorage("Target") private var target: String = DEFAULT_TARGET
     @AppStorage("Stream") private var stream: Bool = true
     @AppStorage("Record") private var record: Bool = false
+    @AppStorage("UseTransportStream") private var useTransportStream: Bool = false
     @AppStorage("InputSyncsWithOutput") private var inputSyncsWithOutput: Bool = true // assume energy efficiency is top priority
     @AppStorage("MeasuredBandwidth") private var measuredBandwidth: Int = 1_000 // in kbit/s
     @AppStorage("NetworkSharing") private var networkSharing: String = "many"
@@ -237,6 +238,8 @@ struct SettingsView: View {
                         .autocapitalization(.none)
                         .disableAutocorrection(true)
                         .textContentType(.password)
+                    
+                    Toggle("Use MPEG-TS segments", isOn: $useTransportStream)
                 }
                 
                 Section(header: Text("Target Platform with Recording Options"), footer: Text("Select the target platform and provide its related stream details. You can also select to save a copy of the stream locally on the phone, which can later be transferred to your computer.")) {
@@ -747,6 +750,14 @@ final class Settings: Sendable {
             else {
                 UserDefaults.standard.set(newValue, forKey: "Effect")
             }
+        }
+    }
+    static var useTransportStream: Bool {
+        get {
+            UserDefaults.standard.bool(forKey: "UseTransportStream")
+        }
+        set {
+            UserDefaults.standard.set(newValue, forKey: "UseTransportStream")
         }
     }
 }

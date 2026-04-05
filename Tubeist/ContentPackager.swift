@@ -401,34 +401,75 @@ actor RecordingActor {
 final class ContentPackager: NSObject, AVAssetWriterDelegate, Sendable {
     @PipelineActor public static let shared = ContentPackager()
     @PipelineActor private static let assetWriter = AssetWriterActor()
+    @PipelineActor private static let tsPackager = TSContentPackager.shared
     private let fragmentSequenceNumber = FragmentSequenceNumberActor()
     private let recording = RecordingActor()
+    @PipelineActor private var useTS: Bool = false
 
     func beginPackaging() async {
-        guard await ContentPackager.assetWriter.status() != .writing else {
-            LOG("Asset writer had already started intercepting sample buffers", level: .debug)
-            return
+        useTS = Settings.useTransportStream
+        if useTS {
+            guard !TSContentPackager.shared.isPackaging() else {
+                LOG("TS packager had already started intercepting sample buffers", level: .debug)
+                return
+            }
+            await TSContentPackager.shared.beginPackaging()
+            // Also start AVAssetWriter if recording is enabled (for MP4 recording)
+            if Settings.record {
+                await self.fragmentSequenceNumber.reset()
+                await ContentPackager.assetWriter.setupFragmentAssetWriter()
+            }
+            LOG("TS pipeline is now intercepting sample buffers", level: .debug)
+        } else {
+            guard await ContentPackager.assetWriter.status() != .writing else {
+                LOG("Asset writer had already started intercepting sample buffers", level: .debug)
+                return
+            }
+            await self.fragmentSequenceNumber.reset()
+            await ContentPackager.assetWriter.setupFragmentAssetWriter()
+            LOG("Asset writer is now intercepting sample buffers", level: .debug)
         }
-        await self.fragmentSequenceNumber.reset()
-        await ContentPackager.assetWriter.setupFragmentAssetWriter()
-        LOG("Asset writer is now intercepting sample buffers", level: .debug)
     }
     func endPackaging() async {
-        guard await ContentPackager.assetWriter.status() == .writing else {
-            LOG("Asset writer had already stopped intercepting sample buffers", level: .debug)
-            return
+        if useTS {
+            await TSContentPackager.shared.endPackaging()
+            if Settings.record {
+                await ContentPackager.assetWriter.finishWriting()
+            }
+            LOG("TS pipeline is no longer intercepting sample buffers", level: .debug)
+        } else {
+            guard await ContentPackager.assetWriter.status() == .writing else {
+                LOG("Asset writer had already stopped intercepting sample buffers", level: .debug)
+                return
+            }
+            await ContentPackager.assetWriter.finishWriting()
+            LOG("Asset writer is no longer intercepting sample buffers", level: .debug)
         }
-        await ContentPackager.assetWriter.finishWriting()
-        LOG("Asset writer is no longer intercepting sample buffers", level: .debug)
     }
     
     func appendVideoSampleBuffer(_ sampleBuffer: CMSampleBuffer) async {
         nonisolated(unsafe) let sendableSampleBuffer = sampleBuffer
-        await ContentPackager.assetWriter.appendVideoSampleBuffer(sendableSampleBuffer)
+        if useTS {
+            TSContentPackager.shared.appendVideoSampleBuffer(sendableSampleBuffer)
+            // Also feed AVAssetWriter if recording
+            if Settings.record {
+                await ContentPackager.assetWriter.appendVideoSampleBuffer(sendableSampleBuffer)
+            }
+        } else {
+            await ContentPackager.assetWriter.appendVideoSampleBuffer(sendableSampleBuffer)
+        }
     }
     func appendAudioSampleBuffer(_ sampleBuffer: CMSampleBuffer) async {
         nonisolated(unsafe) let sendableSampleBuffer = sampleBuffer
-        await ContentPackager.assetWriter.appendAudioSampleBuffer(sendableSampleBuffer)
+        if useTS {
+            TSContentPackager.shared.appendAudioSampleBuffer(sendableSampleBuffer)
+            // Also feed AVAssetWriter if recording
+            if Settings.record {
+                await ContentPackager.assetWriter.appendAudioSampleBuffer(sendableSampleBuffer)
+            }
+        } else {
+            await ContentPackager.assetWriter.appendAudioSampleBuffer(sendableSampleBuffer)
+        }
     }
     func assetWriter(_ writer: AVAssetWriter,
                      didOutputSegmentData segmentData: Data,
