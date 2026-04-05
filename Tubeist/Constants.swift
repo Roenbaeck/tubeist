@@ -22,6 +22,10 @@ let CAMERA_CONTROL_QUEUE = DispatchQueue(label: "com.subside.Tubeist.CameraContr
     static let shared = PipelineActor()
     static let queue = DispatchQueue(label: "com.subside.Tubeist.PipelineQueue", qos: .userInitiated)
 }
+@globalActor actor AudioActor: GlobalActor {
+    static let shared = AudioActor()
+    static let queue = DispatchQueue(label: "com.subside.Tubeist.AudioQueue", qos: .userInitiated)
+}
 @globalActor actor UploadActor: GlobalActor {
     static let shared = UploadActor()
 }

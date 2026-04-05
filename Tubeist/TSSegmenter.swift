@@ -27,22 +27,29 @@ final class TSSegmenter {
     private var segmentStartPTS: Int64 = 0   // 90kHz PTS of the first video frame in this segment
     private var lastVideoPTS: Int64 = 0      // 90kHz PTS of the most recent video frame
     private var sequenceNumber: Int = -1     // Incremented each time a segment is emitted
-    private var sampleRate: Double = AUDIO_SAMPLE_RATE
     private var audioChannels: Int = DEFAULT_AUDIO_CHANNELS
     private var isActive: Bool = false
+    
+    /// Temporary buffer for audio frames that arrive while video frames are being
+    /// processed. Since audio frames now arrive from a separate actor (AudioActor)
+    /// to prevent deadlocks, they must be stored and drained strictly within 
+    /// PipelineActor to keep the MPEG-TS stream valid.
+    private var pendingAudioFrames: [EncodedAudioFrame] = []
     
     private var onSegment: ((Fragment) -> Void)?
     
     /// Configures the segmenter and resets all state. Must be called before any frames are added.
     /// - Parameters:
     ///   - segmentDuration: Target segment duration in seconds (may be adjusted for frame alignment).
-    ///   - sampleRate: Audio sample rate, needed to build ADTS headers.
     ///   - audioChannels: Number of audio channels, needed to build ADTS headers.
     ///   - onSegment: Called whenever a complete segment is ready. Runs on PipelineActor.
-    func setup(segmentDuration: Double, sampleRate: Double, audioChannels: Int,
+    ///
+    /// The audio sample rate is NOT set here. It is detected lazily from the first live
+    /// capture buffer (device hardware can differ from `AUDIO_SAMPLE_RATE`) and carried
+    /// in `EncodedAudioFrame.sampleRate`, which `addAudioFrame` uses for ADTS headers.
+    func setup(segmentDuration: Double, audioChannels: Int,
                onSegment: @escaping (Fragment) -> Void) {
         self.segmentDuration = segmentDuration
-        self.sampleRate = sampleRate
         self.audioChannels = audioChannels
         self.onSegment = onSegment
         self.muxer.reset()
@@ -51,7 +58,7 @@ final class TSSegmenter {
         self.segmentStartPTS = 0
         self.lastVideoPTS = 0
         self.isActive = true
-        LOG("TSSegmenter configured: segment duration \(segmentDuration)s", level: .debug)
+        LOG("TSSegmenter configured: segment duration \(segmentDuration)s, \(audioChannels)ch", level: .debug)
     }
     
     /// Accepts an encoded video frame and appends it to the current segment.
@@ -82,6 +89,12 @@ final class TSSegmenter {
                                            dts: frame.dts, isKeyFrame: frame.isKeyFrame)
         currentSegment.append(videoPackets)
         lastVideoPTS = frame.pts
+        
+        // Drain any audio frames that arrived since the last video frame. Audio frames
+        // are received on AudioActor and bridged to PipelineActor; we process them
+        // only here to ensure they are muxed into the stream strictly interwoven
+        // with video frames, preventing buffer overflows in decoders.
+        drainAudioFrames()
     }
     
     /// Accepts an encoded audio frame and appends it to the current segment.
@@ -94,19 +107,15 @@ final class TSSegmenter {
         // Discard audio arriving before the first video keyframe opens a segment
         guard !currentSegment.isEmpty else { return }
         
-        // Wrap the raw AAC frame in a 7-byte ADTS header so decoders can parse it
-        var adtsFrame = adtsHeader(frameLength: frame.data.count,
-                                   sampleRate: sampleRate, channels: audioChannels)
-        adtsFrame.append(frame.data)
-        
-        let audioPackets = muxer.muxAudio(data: adtsFrame, pts: frame.pts)
-        currentSegment.append(audioPackets)
+        pendingAudioFrames.append(frame)
     }
     
     /// Flushes any buffered data as a final segment and stops accepting new frames.
     func finalize() {
         guard isActive else { return }
         isActive = false
+        
+        drainAudioFrames()
         
         if !currentSegment.isEmpty {
             let duration = Double(lastVideoPTS - segmentStartPTS) / 90000.0
@@ -117,8 +126,23 @@ final class TSSegmenter {
     
     // MARK: - Private
     
+    /// Muxes any waiting audio frames into the current TS segment.
+    private func drainAudioFrames() {
+        for frame in pendingAudioFrames {
+            // Wrap the raw AAC frame in a 7-byte ADTS header.
+            var adtsFrame = adtsHeader(frameLength: frame.data.count,
+                                       sampleRate: frame.sampleRate, channels: audioChannels)
+            adtsFrame.append(frame.data)
+            
+            let audioPackets = muxer.muxAudio(data: adtsFrame, pts: frame.pts)
+            currentSegment.append(audioPackets)
+        }
+        pendingAudioFrames.removeAll()
+    }
+    
     /// Emits the accumulated bytes as a Fragment and resets state for the next segment.
     private func emitSegment(duration: Double, isFinal: Bool) {
+        drainAudioFrames()
         sequenceNumber += 1
         let type: Fragment.SegmentType = isFinal ? .finalization : .separable
         let fragment = Fragment(sequence: sequenceNumber, segment: currentSegment,

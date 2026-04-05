@@ -404,12 +404,10 @@ final class ContentPackager: NSObject, AVAssetWriterDelegate, Sendable {
     @PipelineActor private static let tsPackager = TSContentPackager.shared
     private let fragmentSequenceNumber = FragmentSequenceNumberActor()
     private let recording = RecordingActor()
-    @PipelineActor private var useTS: Bool = false
 
     func beginPackaging() async {
-        useTS = Settings.useTransportStream
-        if useTS {
-            guard !TSContentPackager.shared.isPackaging() else {
+        if Settings.useTransportStream {
+            guard await !TSContentPackager.shared.isPackaging() else {
                 LOG("TS packager had already started intercepting sample buffers", level: .debug)
                 return
             }
@@ -431,7 +429,7 @@ final class ContentPackager: NSObject, AVAssetWriterDelegate, Sendable {
         }
     }
     func endPackaging() async {
-        if useTS {
+        if Settings.useTransportStream {
             await TSContentPackager.shared.endPackaging()
             if Settings.record {
                 await ContentPackager.assetWriter.finishWriting()
@@ -449,8 +447,8 @@ final class ContentPackager: NSObject, AVAssetWriterDelegate, Sendable {
     
     func appendVideoSampleBuffer(_ sampleBuffer: CMSampleBuffer) async {
         nonisolated(unsafe) let sendableSampleBuffer = sampleBuffer
-        if useTS {
-            TSContentPackager.shared.appendVideoSampleBuffer(sendableSampleBuffer)
+        if Settings.useTransportStream {
+            await TSContentPackager.shared.appendVideoSampleBuffer(sendableSampleBuffer)
             // Also feed AVAssetWriter if recording
             if Settings.record {
                 await ContentPackager.assetWriter.appendVideoSampleBuffer(sendableSampleBuffer)
@@ -461,8 +459,8 @@ final class ContentPackager: NSObject, AVAssetWriterDelegate, Sendable {
     }
     func appendAudioSampleBuffer(_ sampleBuffer: CMSampleBuffer) async {
         nonisolated(unsafe) let sendableSampleBuffer = sampleBuffer
-        if useTS {
-            TSContentPackager.shared.appendAudioSampleBuffer(sendableSampleBuffer)
+        if Settings.useTransportStream {
+            await TSContentPackager.shared.appendAudioSampleBuffer(sendableSampleBuffer)
             // Also feed AVAssetWriter if recording
             if Settings.record {
                 await ContentPackager.assetWriter.appendAudioSampleBuffer(sendableSampleBuffer)

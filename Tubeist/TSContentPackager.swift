@@ -26,7 +26,7 @@ final class TSContentPackager {
     static let shared = TSContentPackager()
     
     private let videoEncoder = VideoEncoder()
-    private let audioEncoder = AudioEncoder()
+    private var audioEncoder: AudioEncoder?
     private let segmenter = TSSegmenter()
     private var isActive = false
     private var stream: Bool = false
@@ -40,8 +40,26 @@ final class TSContentPackager {
             LOG("TS packager already active", level: .debug)
             return
         }
+
+        // Initialize here; although AudioEncoder is @AudioActor, 
+        // the reference itself can be held by PipelineActor.
+        let encoder = AudioEncoder()
+        self.audioEncoder = encoder
         
         let preset = Settings.selectedPreset
+
+        // Setup within the actor context to capture the weak self reference correctly.
+        // The closure bridges from @AudioActor (where it's called) back to @PipelineActor.
+        await encoder.setup(
+            sampleRate: AUDIO_SAMPLE_RATE,
+            channels: preset.audioChannels,
+            bitrate: preset.audioBitrate
+        ) { [weak self] frame in
+            Task { @PipelineActor in
+                self?.segmenter.addAudioFrame(frame)
+            }
+        }
+        
         let frameRate = preset.frameRate
         let keyframeInterval = preset.keyframeInterval
         // Match the segment duration logic used by AVAssetWriter to keep the
@@ -52,9 +70,11 @@ final class TSContentPackager {
         
         // Wire the segmenter first: its closure is called by the encoders' callbacks
         // which may fire on PipelineActor before setup() returns.
+        // sampleRate is intentionally omitted: TSSegmenter reads it from each
+        // EncodedAudioFrame, which AudioEncoder populates with the device's
+        // actual native rate (detected lazily on the first capture buffer).
         segmenter.setup(
             segmentDuration: adjustedFragmentDuration,
-            sampleRate: AUDIO_SAMPLE_RATE,
             audioChannels: preset.audioChannels
         ) { [weak self] fragment in
             // Already on PipelineActor (TSSegmenter is @PipelineActor)
@@ -80,13 +100,16 @@ final class TSContentPackager {
         }
         
         // Encoded audio frames are forwarded directly into the segmenter.
-        // The converter callback fires synchronously on PipelineActor.
+        // The converter callback fires synchronously on AudioActor.
         audioEncoder.setup(
             sampleRate: AUDIO_SAMPLE_RATE,
             channels: preset.audioChannels,
             bitrate: preset.audioBitrate
         ) { [weak self] frame in
-            self?.segmenter.addAudioFrame(frame)
+            // Bridge from AudioActor to PipelineActor
+            Task { @PipelineActor in
+                self?.segmenter.addAudioFrame(frame)
+            }
         }
         
         isActive = true
@@ -101,8 +124,8 @@ final class TSContentPackager {
         }
         isActive = false
         // Flush all pending encoded frames before finalizing the segment
-        videoEncoder.teardown()
-        audioEncoder.teardown()
+        await videoEncoder.teardown()
+        await audioEncoder.teardown()
         segmenter.finalize()
         LOG("TS content packager stopped", level: .debug)
     }
@@ -120,10 +143,12 @@ final class TSContentPackager {
         videoEncoder.encode(pixelBuffer: pixelBuffer, presentationTimeStamp: pts)
     }
     
-    /// Accepts a raw PCM audio buffer for encoding.
     func appendAudioSampleBuffer(_ sampleBuffer: CMSampleBuffer) {
-        guard isActive else { return }
-        audioEncoder.encode(sampleBuffer: sampleBuffer)
+        guard isActive, let encoder = audioEncoder else { return }
+        nonisolated(unsafe) let sendableBuffer = sampleBuffer
+        Task { @AudioActor in
+            await encoder.encode(sampleBuffer: sendableBuffer)
+        }
     }
     
     /// Returns whether the packager is currently accepting sample buffers.
@@ -131,3 +156,4 @@ final class TSContentPackager {
         isActive
     }
 }
+

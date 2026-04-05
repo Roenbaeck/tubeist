@@ -34,8 +34,8 @@ struct EncodedVideoFrame {
 /// - Automatic HDR SEI metadata insertion
 ///
 /// VTCompressionSession delivers encoded frames on an internal thread. The output
-/// handler bridges back to `@PipelineActor` using `PipelineActor.queue.async`
-/// with `nonisolated(unsafe)` — the same pattern used in FrameGrabber.swift.
+/// handler calls a static callback function which then safely bridges back to
+/// `@PipelineActor` context using `Task { @PipelineActor in }`.
 @PipelineActor
 final class VideoEncoder {
     private var session: VTCompressionSession?
@@ -71,6 +71,8 @@ final class VideoEncoder {
         ]
         
         var sessionRef: VTCompressionSession?
+        // The refcon parameter is used to associate this VideoEncoder instance with the VTCompressionSession.
+        // This pointer is passed back in the compressionOutputCallback so the callback can refer to this instance.
         let status = VTCompressionSessionCreate(
             allocator: kCFAllocatorDefault,
             width: Int32(width),
@@ -79,22 +81,8 @@ final class VideoEncoder {
             encoderSpecification: nil,
             imageBufferAttributes: pixelBufferAttributes as CFDictionary,
             compressedDataAllocator: nil,
-            outputHandler: { [weak self] status, flags, sampleBuffer in
-                guard status == noErr, let sampleBuffer else {
-                    LOG("Video encoding error: \(status)", level: .error)
-                    return
-                }
-                // VTCompressionSession fires this handler on an internal thread that
-                // is not @PipelineActor. The `nonisolated(unsafe)` annotation allows
-                // the weak-self capture to escape the VT thread; the Task immediately
-                // re-enters the PipelineActor before touching any isolated state.
-                nonisolated(unsafe) let unsafeSelf = self
-                PipelineActor.queue.async {
-                    Task { @PipelineActor in
-                        unsafeSelf?.handleEncodedSample(sampleBuffer)
-                    }
-                }
-            },
+            outputCallback: VideoEncoder.compressionOutputCallback,
+            refcon: Unmanaged.passUnretained(self).toOpaque(),
             compressionSessionOut: &sessionRef
         )
         
@@ -167,6 +155,7 @@ final class VideoEncoder {
             presentationTimeStamp: normalizedPTS,
             duration: .invalid,
             frameProperties: nil,
+            sourceFrameRefcon: nil,
             infoFlagsOut: nil
         )
         
@@ -266,4 +255,39 @@ final class VideoEncoder {
         let frame = EncodedVideoFrame(data: fullData, pts: pts90k, dts: dts90k, isKeyFrame: isKeyFrame)
         onEncodedFrame?(frame)
     }
+    
+    /// VTCompressionOutputCallback function called by VTCompressionSession when an encoded frame is ready.
+    /// Bridges back to @PipelineActor context using Task to safely use actor-isolated properties.
+    private static let compressionOutputCallback: VTCompressionOutputCallback = { 
+        outputCallback, 
+        refcon, 
+        status, 
+        infoFlags, 
+        sampleBuffer in
+        
+        guard status == noErr else {
+            if let refcon = refcon {
+                let encoder = Unmanaged<VideoEncoder>.fromOpaque(refcon).takeUnretainedValue()
+                LOG("Video encoding error: \(status)", level: .error)
+            } else {
+                LOG("Video encoding error with nil refcon: \(status)", level: .error)
+            }
+            return
+        }
+        
+        guard let sampleBuffer = sampleBuffer, let refcon = refcon else {
+            // If status == noErr but sampleBuffer or refcon is nil, do nothing.
+            return
+        }
+        
+        let encoder = Unmanaged<VideoEncoder>.fromOpaque(refcon).takeUnretainedValue()
+        
+        // Retain sampleBuffer to ensure it stays valid during async Task execution
+        nonisolated(unsafe) let sendableSampleBuffer = sampleBuffer // removes the need for @preconcurrency
+
+        Task { @PipelineActor in
+            encoder.handleEncodedSample(sendableSampleBuffer)
+        }
+    }
 }
+

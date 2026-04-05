@@ -19,6 +19,10 @@ struct EncodedAudioFrame {
     let data: Data
     /// Presentation timestamp in 90kHz ticks, normalized to start from zero.
     let pts: Int64
+    /// The sample rate of the encoded AAC stream, in Hz. Detected from the first
+    /// live capture buffer and carried with every frame so that the ADTS header
+    /// written by TSSegmenter always matches the actual encoded rate.
+    let sampleRate: Double
 }
 
 // MARK: - AudioEncoder
@@ -36,10 +40,13 @@ struct EncodedAudioFrame {
 /// `CMSampleBuffer` can contain more samples than one 1024-frame AAC window.
 /// The encoder iterates in 1024-frame chunks and emits one `EncodedAudioFrame`
 /// per chunk with its own interpolated PTS.
-@PipelineActor
+@AudioActor
 final class AudioEncoder {
     private var converter: AudioConverterRef?
-    private var onEncodedFrame: ((EncodedAudioFrame) -> Void)?
+    private var onEncodedFrame: (@Sendable (EncodedAudioFrame) -> Void)?
+    /// The sample rate actually used for encoding. Starts as the configured
+    /// value but is updated in `createConverter` to match the hardware's native
+    /// rate, avoiding any sample-rate conversion in AudioConverter.
     private var sampleRate: Double = AUDIO_SAMPLE_RATE
     private var channels: Int = DEFAULT_AUDIO_CHANNELS
     private var bitrate: Int = DEFAULT_AUDIO_BITRATE
@@ -63,7 +70,7 @@ final class AudioEncoder {
     ///   - bitrate: Per-channel target bitrate in bits per second.
     ///   - onEncodedFrame: Closure called on `@PipelineActor` for each AAC frame.
     func setup(sampleRate: Double, channels: Int, bitrate: Int,
-               onEncodedFrame: @escaping (EncodedAudioFrame) -> Void) {
+               onEncodedFrame: @escaping @Sendable (EncodedAudioFrame) -> Void) {
         self.onEncodedFrame = onEncodedFrame
         self.sampleRate = sampleRate
         self.channels = channels
@@ -159,13 +166,14 @@ final class AudioEncoder {
             )
             
             var outputPacketCount: UInt32 = 1
+            let aacBufferCount = aacBuffer.count
             
             aacBuffer.withUnsafeMutableBytes { rawBufferPointer in
                 var outputBufferList = AudioBufferList(
                     mNumberBuffers: 1,
                     mBuffers: AudioBuffer(
                         mNumberChannels: UInt32(channels),
-                        mDataByteSize: UInt32(aacBuffer.count),
+                        mDataByteSize: UInt32(aacBufferCount),
                         mData: rawBufferPointer.baseAddress
                     )
                 )
@@ -198,7 +206,8 @@ final class AudioEncoder {
                     // 1024 samples advanced the clock by (1024 / sampleRate) seconds.
                     let chunkPTS = pts90k + Int64(Double(pcmOffset) / sampleRate * 90000.0)
                     
-                    onEncodedFrame?(EncodedAudioFrame(data: encodedData, pts: chunkPTS))
+                    onEncodedFrame?(EncodedAudioFrame(data: encodedData, pts: chunkPTS,
+                                                       sampleRate: self.sampleRate))
                 }
             }
             
@@ -222,9 +231,17 @@ final class AudioEncoder {
         }
         inputFormat = inputASBD
         
-        // Target: AAC-LC with the requested sample rate, channel count, and bitrate.
+        // Use the device's native sample rate for the AAC output. This avoids
+        // a software sample-rate conversion inside AudioConverter, which on iOS
+        // can hold internal AVAudioSession locks and deadlock against the audio
+        // capture pipeline. Common devices deliver 48 000 Hz; using that rate
+        // directly keeps the HW AAC encoder in the fast path.
+        let outputSampleRate = inputASBD.mSampleRate
+        sampleRate = outputSampleRate   // propagate to encode() for PTS math
+        
+        // Target: AAC-LC at the device's native rate.
         var outputFormat = AudioStreamBasicDescription(
-            mSampleRate: sampleRate,
+            mSampleRate: outputSampleRate,
             mFormatID: kAudioFormatMPEG4AAC,
             mFormatFlags: 0,
             mBytesPerPacket: 0,       // variable — filled in by AudioConverter
