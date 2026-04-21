@@ -56,6 +56,11 @@ struct YouTubePlaylist: Identifiable {
     let title: String
 }
 
+private struct YouTubeStream {
+    let id: String
+    let streamName: String
+}
+
 enum YouTubeError: LocalizedError {
     case notSignedIn
     case noClientId
@@ -103,6 +108,114 @@ final class YouTubeService {
 
     init() {
         isSignedIn = Settings.youtubeRefreshToken != nil
+    }
+
+    private func parseBroadcast(from broadcast: [String: Any]) -> YouTubeBroadcast? {
+        guard let id = broadcast["id"] as? String,
+              let snippet = broadcast["snippet"] as? [String: Any] else {
+            return nil
+        }
+
+        let title = snippet["title"] as? String ?? ""
+        let scheduledStartTime = snippet["scheduledStartTime"] as? String
+        let status = broadcast["status"] as? [String: Any]
+        let privacyStatus = status?["privacyStatus"] as? String ?? "public"
+        let lifeCycleStatus = status?["lifeCycleStatus"] as? String
+        let contentDetails = broadcast["contentDetails"] as? [String: Any]
+        let boundStreamId = contentDetails?["boundStreamId"] as? String
+
+        return YouTubeBroadcast(
+            id: id,
+            title: title,
+            privacyStatus: privacyStatus,
+            boundStreamId: boundStreamId,
+            scheduledStartTime: scheduledStartTime,
+            lifeCycleStatus: lifeCycleStatus
+        )
+    }
+
+    private func findStream(for streamKey: String, token: String) async throws -> YouTubeStream {
+        let streamsURL = "\(YOUTUBE_API_BASE)/liveStreams?part=cdn,snippet&mine=true&maxResults=50"
+        let streamsData = try await apiGet(url: streamsURL, token: token)
+        guard let streamsJson = try JSONSerialization.jsonObject(with: streamsData) as? [String: Any],
+              let items = streamsJson["items"] as? [[String: Any]] else {
+            throw YouTubeError.invalidResponse
+        }
+
+        for item in items {
+            if let cdn = item["cdn"] as? [String: Any],
+               let ingestionInfo = cdn["ingestionInfo"] as? [String: Any],
+               let streamName = ingestionInfo["streamName"] as? String,
+               streamName == streamKey,
+               let id = item["id"] as? String {
+                return YouTubeStream(id: id, streamName: streamName)
+            }
+        }
+
+        throw YouTubeError.noStreamFound
+    }
+
+    private func listBroadcasts(boundTo streamId: String, token: String) async throws -> [YouTubeBroadcast] {
+        let broadcastsURL = "\(YOUTUBE_API_BASE)/liveBroadcasts?part=snippet,contentDetails,status&mine=true&maxResults=50"
+        let broadcastsData = try await apiGet(url: broadcastsURL, token: token)
+        guard let broadcastsJson = try JSONSerialization.jsonObject(with: broadcastsData) as? [String: Any],
+              let broadcasts = broadcastsJson["items"] as? [[String: Any]] else {
+            throw YouTubeError.invalidResponse
+        }
+
+        return broadcasts.compactMap { broadcast in
+            guard let contentDetails = broadcast["contentDetails"] as? [String: Any],
+                  let boundStreamId = contentDetails["boundStreamId"] as? String,
+                  boundStreamId == streamId else {
+                return nil
+            }
+
+            return parseBroadcast(from: broadcast)
+        }
+    }
+
+    private func successorScheduledStartTime(from broadcast: YouTubeBroadcast) -> String {
+        if let scheduledStartTime = broadcast.scheduledStartTime,
+           let scheduledDate = ISO8601DateFormatter().date(from: scheduledStartTime),
+           scheduledDate > Date() {
+            return scheduledStartTime
+        }
+
+        return ISO8601DateFormatter().string(from: Date().addingTimeInterval(5))
+    }
+
+    private func createSuccessorBroadcast(from broadcast: YouTubeBroadcast, streamId: String, token: String) async throws -> YouTubeBroadcast {
+        let insertURL = "\(YOUTUBE_API_BASE)/liveBroadcasts?part=snippet,status,contentDetails"
+        let body: [String: Any] = [
+            "snippet": [
+                "title": broadcast.title,
+                "scheduledStartTime": successorScheduledStartTime(from: broadcast),
+            ],
+            "status": [
+                "privacyStatus": broadcast.privacyStatus,
+            ],
+            "contentDetails": [
+                "enableAutoStart": true,
+                "enableAutoStop": true,
+            ],
+        ]
+
+        let insertData = try JSONSerialization.data(withJSONObject: body)
+        let insertResponse = try await apiPost(url: insertURL, token: token, jsonBody: insertData)
+        guard let insertJson = try JSONSerialization.jsonObject(with: insertResponse) as? [String: Any],
+              let insertedBroadcast = parseBroadcast(from: insertJson) else {
+            throw YouTubeError.invalidResponse
+        }
+
+        let bindURL = "\(YOUTUBE_API_BASE)/liveBroadcasts/bind?id=\(insertedBroadcast.id)&part=snippet,contentDetails,status&streamId=\(streamId)"
+        let bindResponse = try await apiPost(url: bindURL, token: token, jsonBody: Data())
+        guard let bindJson = try JSONSerialization.jsonObject(with: bindResponse) as? [String: Any],
+              let boundBroadcast = parseBroadcast(from: bindJson) else {
+            throw YouTubeError.invalidResponse
+        }
+
+        LOG("Created successor YouTube broadcast \(boundBroadcast.id) for stream \(streamId)", level: .info)
+        return boundBroadcast
     }
 
     // MARK: - OAuth2 Authentication
@@ -253,62 +366,8 @@ final class YouTubeService {
 
         let token = try await getValidAccessToken()
 
-        // Step 1: Find the stream matching the key
-        let streamsURL = "\(YOUTUBE_API_BASE)/liveStreams?part=cdn,snippet&mine=true&maxResults=50"
-        let streamsData = try await apiGet(url: streamsURL, token: token)
-        guard let streamsJson = try JSONSerialization.jsonObject(with: streamsData) as? [String: Any],
-              let items = streamsJson["items"] as? [[String: Any]] else {
-            throw YouTubeError.invalidResponse
-        }
-
-        var matchedStreamId: String?
-        for item in items {
-            if let cdn = item["cdn"] as? [String: Any],
-               let ingestionInfo = cdn["ingestionInfo"] as? [String: Any],
-               let streamName = ingestionInfo["streamName"] as? String,
-               streamName == streamKey,
-               let id = item["id"] as? String {
-                matchedStreamId = id
-                break
-            }
-        }
-
-        guard let streamId = matchedStreamId else {
-            throw YouTubeError.noStreamFound
-        }
-
-        // Step 2: Find the broadcast bound to this stream
-        let broadcastsURL = "\(YOUTUBE_API_BASE)/liveBroadcasts?part=snippet,contentDetails,status&mine=true&maxResults=50"
-        let broadcastsData = try await apiGet(url: broadcastsURL, token: token)
-        guard let broadcastsJson = try JSONSerialization.jsonObject(with: broadcastsData) as? [String: Any],
-              let broadcasts = broadcastsJson["items"] as? [[String: Any]] else {
-            throw YouTubeError.invalidResponse
-        }
-
-        let matchingBroadcasts: [YouTubeBroadcast] = broadcasts.compactMap { broadcast in
-            guard let contentDetails = broadcast["contentDetails"] as? [String: Any],
-                  let boundStreamId = contentDetails["boundStreamId"] as? String,
-                  boundStreamId == streamId,
-                  let id = broadcast["id"] as? String,
-                  let snippet = broadcast["snippet"] as? [String: Any] else {
-                return nil
-            }
-
-            let title = snippet["title"] as? String ?? ""
-            let scheduledStartTime = snippet["scheduledStartTime"] as? String
-            let status = broadcast["status"] as? [String: Any]
-            let privacyStatus = status?["privacyStatus"] as? String ?? "public"
-            let lifeCycleStatus = status?["lifeCycleStatus"] as? String
-
-            return YouTubeBroadcast(
-                id: id,
-                title: title,
-                privacyStatus: privacyStatus,
-                boundStreamId: boundStreamId,
-                scheduledStartTime: scheduledStartTime,
-                lifeCycleStatus: lifeCycleStatus
-            )
-        }
+        let stream = try await findStream(for: streamKey, token: token)
+        let matchingBroadcasts = try await listBroadcasts(boundTo: stream.id, token: token)
 
         guard let selectedBroadcast = matchingBroadcasts.sorted(by: { lhs, rhs in
             let lhsPriority = Self.broadcastStatusPriority(lhs.lifeCycleStatus)
@@ -320,6 +379,10 @@ final class YouTubeService {
             return (lhs.scheduledStartTime ?? "") > (rhs.scheduledStartTime ?? "")
         }).first else {
             throw YouTubeError.noBroadcastFound
+        }
+
+        if selectedBroadcast.lifeCycleStatus == "complete" {
+            return try await createSuccessorBroadcast(from: selectedBroadcast, streamId: stream.id, token: token)
         }
 
         return selectedBroadcast
