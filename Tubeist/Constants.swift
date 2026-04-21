@@ -26,6 +26,15 @@ let CAMERA_CONTROL_QUEUE = DispatchQueue(label: "com.subside.Tubeist.CameraContr
     static let shared = UploadActor()
 }
 
+// YouTube Data API v3 settings
+let YOUTUBE_CLIENT_ID = "417360709076-6golrsu19ipsvdbsgce4e9fml9bru8dr.apps.googleusercontent.com"
+let YOUTUBE_REDIRECT_SCHEME = "com.googleusercontent.apps.417360709076-6golrsu19ipsvdbsgce4e9fml9bru8dr"
+let YOUTUBE_REDIRECT_URI = "\(YOUTUBE_REDIRECT_SCHEME):/oauthredirect"
+let YOUTUBE_API_BASE = "https://www.googleapis.com/youtube/v3"
+let YOUTUBE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
+let YOUTUBE_TOKEN_URL = "https://oauth2.googleapis.com/token"
+let YOUTUBE_SCOPES = "https://www.googleapis.com/auth/youtube"
+
 // CaptureDirector settings
 let DEFAULT_CAMERA = "Back Camera" // available on most (all?) devices
 let DEFAULT_MICROPHONE = "iPhone Microphone"
@@ -43,7 +52,7 @@ let ULTRAYELLOW: Color = Color(red: 1.2, green: 1.1, blue: 0)
 let NO_STYLE = "-none-"
 let AVAILABLE_STYLES = [NO_STYLE, "Film", "Blackbright", "Space", "Rotoscope", "VHS"] 
 let NO_EFFECT = "-none-"
-let AVAILABLE_EFFECTS = [NO_EFFECT, "Sky", "Vignette", "Grain", "Warmth", "Saturation", "Push", "Pixelate"]
+let AVAILABLE_EFFECTS = [NO_EFFECT, "Sky", "Vignette", "Grain", "Warmth", "Saturation", "Push", "Pixelate", "Bleachpass", "Chromalag", "Splittone", "Scanlines", "Solarize", "Newsprint", "Halation"]
 
 // OverlayBundler settings
 let BOUNDING_BOX_SEARCH_WIDTH: Int = 160 // needs to be a divisor of possible output widths (960, 1280, 1920, 2560, 3840)

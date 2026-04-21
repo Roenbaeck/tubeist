@@ -6,6 +6,7 @@
 //
 import SwiftUI
 import AVFoundation
+import PhotosUI
 
 struct Preset: Codable, Equatable, Identifiable, Hashable {
     var id: String { name }
@@ -123,6 +124,24 @@ class OverlaySettingsManager {
         overlays.remove(atOffsets: offsets)
         saveOverlays()
     }
+
+    func updateOverlay(id: String, url: String) {
+        guard let index = overlays.firstIndex(where: { $0.id == id }) else {
+            return
+        }
+
+        let trimmedURL = url.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmedURL.isEmpty {
+            return
+        }
+
+        if overlays.contains(where: { $0.id != id && $0.url == trimmedURL }) {
+            return
+        }
+
+        overlays[index].url = trimmedURL
+        saveOverlays()
+    }
 }
 
 @Observable
@@ -209,6 +228,20 @@ struct SettingsView: View {
     @State private var customAudioBitrate: Int = DEFAULT_AUDIO_BITRATE
     @State private var customVideoBitrate: Int = DEFAULT_VIDEO_BITRATE
     @State private var maxFrameRate: Double = DEFAULT_FRAMERATE
+    @State private var youtubeService = YouTubeService()
+    @State private var broadcastTitle: String = ""
+    @State private var broadcastVisibility: String = "public"
+    @State private var playlists: [YouTubePlaylist] = []
+    @State private var selectedPlaylistId: String? = Settings.youtubeSelectedPlaylistId
+    @State private var selectedPhotoItem: PhotosPickerItem? = nil
+    @State private var thumbnailImage: UIImage? = nil
+    @State private var broadcastId: String? = nil
+    @State private var broadcastScheduledStartTime: String? = nil
+    @State private var broadcastLifeCycleStatus: String? = nil
+    @State private var youtubeConfigLoaded: Bool = false
+    @State private var isYouTubeRefreshCoolingDown: Bool = false
+    @State private var editingOverlay: OverlaySetting? = nil
+    @State private var editedOverlayURL: String = ""
         
     var body: some View {
         NavigationView {
@@ -286,6 +319,150 @@ struct SettingsView: View {
                         selectedOption = .recordOnly
                     } else {
                         selectedOption = .streamOnly
+                    }
+                }
+
+                if stream && target == "youtube" && !streamKeyManager.currentKey.isEmpty {
+                    Section(header: Text("YouTube Stream Configuration"), footer: Text(youtubeService.isSignedIn ? "Configure the YouTube broadcast tied to your stream key. Changes here are sent to YouTube when you tap Save." : "Sign in with your Google account to configure YouTube broadcast settings for the current stream key.")) {
+                        if !youtubeService.isSignedIn {
+                            Button("Sign in with Google") {
+                                Task {
+                                    await youtubeService.signIn()
+                                    if youtubeService.isSignedIn {
+                                        await loadYouTubeBroadcast()
+                                    }
+                                }
+                            }
+                        } else {
+                            if youtubeService.isLoading {
+                                HStack {
+                                    ProgressView()
+                                    Text("Loading...")
+                                        .foregroundColor(.secondary)
+                                }
+                            } else if broadcastId != nil {
+                                HStack {
+                                    Text("Status")
+                                    Spacer()
+                                    Button {
+                                        Task {
+                                            await refreshYouTubeBroadcast()
+                                        }
+                                    } label: {
+                                        Image(systemName: "arrow.clockwise")
+                                            .foregroundColor(.secondary)
+                                    }
+                                    .disabled(youtubeService.isLoading || isYouTubeRefreshCoolingDown)
+                                    Circle()
+                                        .fill(broadcastLifeCycleStatus == "live" ? Color.red :
+                                              broadcastLifeCycleStatus == "testing" ? Color.orange :
+                                              broadcastLifeCycleStatus == "ready" ? Color.green : Color.gray)
+                                        .frame(width: 10, height: 10)
+                                    Text(YouTubeBroadcast.label(for: broadcastLifeCycleStatus))
+                                        .foregroundColor(.secondary)
+                                }
+
+                                if broadcastLifeCycleStatus == "live" || broadcastLifeCycleStatus == "testing" {
+                                    Button("Stop YouTube Stream", role: .destructive) {
+                                        Task {
+                                            guard let broadcastId else { return }
+                                            do {
+                                                try await youtubeService.stopBroadcast(id: broadcastId)
+                                                await loadYouTubeBroadcast()
+                                            } catch {
+                                                youtubeService.errorMessage = error.localizedDescription
+                                                LOG("Failed to stop broadcast: \(error.localizedDescription)", level: .error)
+                                            }
+                                        }
+                                    }
+                                    .buttonStyle(.bordered)
+                                }
+
+                                TextField("Stream Title", text: $broadcastTitle)
+                                    .autocapitalization(.sentences)
+
+                                Picker("Visibility", selection: $broadcastVisibility) {
+                                    Text("Public").tag("public")
+                                    Text("Unlisted").tag("unlisted")
+                                    Text("Private").tag("private")
+                                }
+
+                                PhotosPicker(selection: $selectedPhotoItem, matching: .images) {
+                                    HStack {
+                                        Text("Thumbnail")
+                                        Spacer()
+                                        if let thumbnailImage {
+                                            Image(uiImage: thumbnailImage)
+                                                .resizable()
+                                                .scaledToFill()
+                                                .frame(width: 64, height: 36)
+                                                .clipped()
+                                                .cornerRadius(4)
+                                        } else {
+                                            Text("Select image")
+                                                .foregroundColor(.secondary)
+                                        }
+                                    }
+                                }
+                                .onChange(of: selectedPhotoItem) { _, newItem in
+                                    Task { @MainActor in
+                                        if let data = try? await newItem?.loadTransferable(type: Data.self),
+                                           let image = UIImage(data: data) {
+                                            thumbnailImage = image
+                                        }
+                                    }
+                                }
+
+                                Picker("Playlist", selection: $selectedPlaylistId) {
+                                    Text("None").tag(String?.none)
+                                    ForEach(playlists) { playlist in
+                                        Text(playlist.title).tag(Optional(playlist.id))
+                                    }
+                                }
+                                .onChange(of: selectedPlaylistId) { _, newValue in
+                                    Settings.youtubeSelectedPlaylistId = newValue
+                                }
+
+                            } else if let errorMessage = youtubeService.errorMessage {
+                                Text(errorMessage)
+                                    .foregroundColor(.red)
+                                Button("Retry") {
+                                    Task {
+                                        await loadYouTubeBroadcast()
+                                    }
+                                }
+                            } else if youtubeConfigLoaded {
+                                Text("No broadcast found for the current stream key. Make sure you have a scheduled or active broadcast on YouTube.")
+                                    .foregroundColor(.secondary)
+                                    .font(.caption)
+                                Button("Retry") {
+                                    Task {
+                                        await loadYouTubeBroadcast()
+                                    }
+                                }
+                            }
+
+                            Button("Sign out of YouTube", role: .destructive) {
+                                youtubeService.signOut()
+                                broadcastId = nil
+                                broadcastTitle = ""
+                                playlists = []
+                                selectedPlaylistId = nil
+                                thumbnailImage = nil
+                                youtubeConfigLoaded = false
+                                Settings.youtubeSelectedPlaylistId = nil
+                                appState.youtubeStatus = nil
+                                appState.youtubeBroadcastId = nil
+                            }
+                            .buttonStyle(.bordered)
+                        }
+                    }
+                    .onAppear {
+                        if youtubeService.isSignedIn && !youtubeConfigLoaded {
+                            Task {
+                                await loadYouTubeBroadcast()
+                            }
+                        }
                     }
                 }
 
@@ -421,7 +598,19 @@ struct SettingsView: View {
                 
                 Section(header: Text("Overlays"), footer: Text("Add multiple web overlay URLs that will be imprinted onto the video frames. Overlays are updated on content changes and at most once per second. Audio is captured from the last playing overlay if audio from multiple overlays overlap.")) {
                     ForEach(overlayManager.overlays) { overlay in
-                        Text(overlay.url)
+                        Button {
+                            editingOverlay = overlay
+                            editedOverlayURL = overlay.url
+                        } label: {
+                            HStack {
+                                Text(overlay.url)
+                                    .foregroundColor(.primary)
+                                    .multilineTextAlignment(.leading)
+                                Spacer()
+                                Image(systemName: "pencil")
+                                    .foregroundColor(.secondary)
+                            }
+                        }
                     }
                     .onDelete(perform: overlayManager.deleteOverlay)
                     
@@ -471,7 +660,9 @@ struct SettingsView: View {
             }
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
-            .navigationBarItems(trailing: Button("Save") {
+            .navigationBarItems(leading: Button("Close") {
+                presentationMode.wrappedValue.dismiss()
+            }, trailing: Button("Save") {
                 Settings.configureJournal()
                 if cameraPosition == "custom" {
                     LOG("Saving custom settings", level: .debug)
@@ -479,6 +670,9 @@ struct SettingsView: View {
                 }
                 Task {
                     await Streamer.shared.cycleSessions()
+                    if broadcastId != nil && youtubeService.isSignedIn {
+                        await applyYouTubeChanges()
+                    }
                 }
                 presentationMode.wrappedValue.dismiss()
             }
@@ -496,6 +690,28 @@ struct SettingsView: View {
                     customAudioChannels = preset.audioChannels
                     customAudioBitrate = preset.audioBitrate
                     customVideoBitrate = preset.videoBitrate
+                }
+            }
+            .sheet(item: $editingOverlay) { overlay in
+                NavigationView {
+                    Form {
+                        Section(footer: Text("Update the existing overlay URL. Swipe left on the overlay row to delete it instead.")) {
+                            TextField("Overlay URL", text: $editedOverlayURL)
+                                .keyboardType(.URL)
+                                .autocapitalization(.none)
+                                .disableAutocorrection(true)
+                        }
+                    }
+                    .navigationTitle("Edit Overlay")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .navigationBarItems(
+                        leading: Button("Cancel") {
+                            editingOverlay = nil
+                        },
+                        trailing: Button("Save") {
+                            saveOverlayEdit(for: overlay)
+                        }
+                    )
                 }
             }
         }
@@ -527,9 +743,112 @@ struct SettingsView: View {
         newOverlayURL = ""
     }
 
+    func saveOverlayEdit(for overlay: OverlaySetting) {
+        let trimmedURL = editedOverlayURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let url = URL(string: trimmedURL), UIApplication.shared.canOpenURL(url) else {
+            return
+        }
+
+        overlayManager.updateOverlay(id: overlay.id, url: trimmedURL)
+        editingOverlay = nil
+        editedOverlayURL = ""
+    }
+
+    func refreshYouTubeBroadcast() async {
+        guard !youtubeService.isLoading, !isYouTubeRefreshCoolingDown else {
+            return
+        }
+
+        isYouTubeRefreshCoolingDown = true
+        defer {
+            Task { @MainActor in
+                try? await Task.sleep(for: .seconds(2))
+                isYouTubeRefreshCoolingDown = false
+            }
+        }
+
+        await loadYouTubeBroadcast()
+    }
+
+    func loadYouTubeBroadcast() async {
+        do {
+            let broadcast = try await youtubeService.findBroadcastForStreamKey(streamKeyManager.currentKey)
+            broadcastId = broadcast.id
+            broadcastTitle = broadcast.title
+            broadcastVisibility = broadcast.privacyStatus
+            broadcastScheduledStartTime = broadcast.scheduledStartTime
+            broadcastLifeCycleStatus = broadcast.lifeCycleStatus
+            appState.youtubeBroadcastId = broadcast.id
+            appState.youtubeStatus = broadcast.lifeCycleStatus
+            playlists = try await youtubeService.listPlaylists()
+            if let selectedPlaylistId, !playlists.contains(where: { $0.id == selectedPlaylistId }) {
+                self.selectedPlaylistId = nil
+                Settings.youtubeSelectedPlaylistId = nil
+            }
+            youtubeConfigLoaded = true
+            youtubeService.errorMessage = nil
+            LOG("Loaded YouTube broadcast: \(broadcast.title)", level: .info)
+        } catch {
+            youtubeService.errorMessage = error.localizedDescription
+            youtubeConfigLoaded = true
+            LOG("Failed to load YouTube broadcast: \(error.localizedDescription)", level: .error)
+        }
+    }
+
+    func applyYouTubeChanges() async {
+        guard let broadcastId else { return }
+
+        do {
+            try await youtubeService.updateBroadcast(
+                id: broadcastId,
+                title: broadcastTitle,
+                privacyStatus: broadcastVisibility,
+                scheduledStartTime: broadcastScheduledStartTime
+            )
+        } catch {
+            youtubeService.errorMessage = error.localizedDescription
+            LOG("Failed to update broadcast: \(error.localizedDescription)", level: .error)
+        }
+
+        if let thumbnailImage,
+           let resized = thumbnailImage.scaledToFit(maxWidth: 1280, maxHeight: 720),
+           let imageData = resized.jpegDataWithinLimit(maxBytes: 2_000_000) {
+            do {
+                LOG("Uploading thumbnail (\(imageData.count) bytes, \(Int(resized.size.width))x\(Int(resized.size.height)))", level: .debug)
+                try await youtubeService.uploadThumbnail(videoId: broadcastId, imageData: imageData)
+            } catch {
+                youtubeService.errorMessage = error.localizedDescription
+                LOG("Failed to upload thumbnail: \(error.localizedDescription)", level: .error)
+            }
+        }
+
+        if let playlistId = selectedPlaylistId {
+            do {
+                LOG("Adding broadcast to playlist \(playlistId)", level: .debug)
+                try await youtubeService.addToPlaylist(playlistId: playlistId, videoId: broadcastId)
+                Settings.youtubeSelectedPlaylistId = playlistId
+            } catch {
+                youtubeService.errorMessage = error.localizedDescription
+                LOG("Failed to add to playlist: \(error.localizedDescription)", level: .error)
+            }
+        }
+
+        if youtubeService.errorMessage == nil {
+            LOG("YouTube broadcast settings applied successfully", level: .info)
+        }
+    }
+
 }
 
 final class Settings: Sendable {
+    private static func bool(forKey key: String, default defaultValue: Bool) -> Bool {
+        let defaults = UserDefaults.standard
+        guard defaults.object(forKey: key) != nil else {
+            return defaultValue
+        }
+        return defaults.bool(forKey: key)
+    }
+
     static func configureJournal() {
         let defs = UserDefaults.standard
         let journalError = defs.object(forKey: "JournalError") != nil ? defs.bool(forKey: "JournalError") : true
@@ -619,7 +938,7 @@ final class Settings: Sendable {
     
     static var isInputSyncedWithOutput: Bool {
         get {
-            UserDefaults.standard.bool(forKey: "InputSyncsWithOutput")
+            bool(forKey: "InputSyncsWithOutput", default: true)
         }
         set {
             UserDefaults.standard.set(newValue, forKey: "InputSyncsWithOutput")
@@ -627,7 +946,7 @@ final class Settings: Sendable {
     }
     static var stream: Bool {
         get {
-            UserDefaults.standard.bool(forKey: "Stream")
+            bool(forKey: "Stream", default: true)
         }
         set {
             UserDefaults.standard.set(newValue, forKey: "Stream")
@@ -697,6 +1016,14 @@ final class Settings: Sendable {
             UserDefaults.standard.set(newValue, forKey: "HideOverlays")
         }
     }
+    static var areSystemMetricsAtTop: Bool {
+        get {
+            bool(forKey: "SystemMetricsAtTop", default: false)
+        }
+        set {
+            UserDefaults.standard.set(newValue, forKey: "SystemMetricsAtTop")
+        }
+    }
     static var overlaysData: Data? {
         get {
             UserDefaults.standard.data(forKey: "Overlays")
@@ -747,6 +1074,38 @@ final class Settings: Sendable {
             else {
                 UserDefaults.standard.set(newValue, forKey: "Effect")
             }
+        }
+    }
+    static var youtubeAccessToken: String? {
+        get {
+            UserDefaults.standard.string(forKey: "YouTubeAccessToken")
+        }
+        set {
+            UserDefaults.standard.set(newValue, forKey: "YouTubeAccessToken")
+        }
+    }
+    static var youtubeRefreshToken: String? {
+        get {
+            UserDefaults.standard.string(forKey: "YouTubeRefreshToken")
+        }
+        set {
+            UserDefaults.standard.set(newValue, forKey: "YouTubeRefreshToken")
+        }
+    }
+    static var youtubeTokenExpiry: Date? {
+        get {
+            UserDefaults.standard.object(forKey: "YouTubeTokenExpiry") as? Date
+        }
+        set {
+            UserDefaults.standard.set(newValue, forKey: "YouTubeTokenExpiry")
+        }
+    }
+    static var youtubeSelectedPlaylistId: String? {
+        get {
+            UserDefaults.standard.string(forKey: "YouTubeSelectedPlaylistId")
+        }
+        set {
+            UserDefaults.standard.set(newValue, forKey: "YouTubeSelectedPlaylistId")
         }
     }
 }

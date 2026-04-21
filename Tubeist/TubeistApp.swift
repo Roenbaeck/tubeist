@@ -26,6 +26,8 @@ final class AppState {
     var justCameFromBackground = false
     var hadToStopStreaming = false
     var streamHealth = StreamHealth.silenced
+    var youtubeStatus: String? = nil
+    var youtubeBroadcastId: String? = nil
     var availableProducts: [String: Product] = [:]
     var lastKnownBrightness: CGFloat = UIScreen.main.brightness
 
