@@ -43,7 +43,7 @@ let ULTRAYELLOW: Color = Color(red: 1.2, green: 1.1, blue: 0)
 let NO_STYLE = "-none-"
 let AVAILABLE_STYLES = [NO_STYLE, "Film", "Blackbright", "Space", "Rotoscope", "VHS"] 
 let NO_EFFECT = "-none-"
-let AVAILABLE_EFFECTS = [NO_EFFECT, "Sky", "Vignette", "Grain", "Warmth", "Saturation", "Push", "Pixelate"]
+let AVAILABLE_EFFECTS = [NO_EFFECT, "Sky", "Vignette", "Grain", "Warmth", "Saturation", "Push", "Pixelate", "Bleachpass", "Chromalag", "Splittone", "Scanlines", "Solarize", "Newsprint", "Halation"]
 
 // OverlayBundler settings
 let BOUNDING_BOX_SEARCH_WIDTH: Int = 160 // needs to be a divisor of possible output widths (960, 1280, 1920, 2560, 3840)

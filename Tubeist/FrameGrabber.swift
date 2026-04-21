@@ -197,16 +197,9 @@ private actor FrameTinkerer {
         measureTextures = true
         currentPresentationTimestamp = nil
         frameNumber = 0
-        var width = DEFAULT_CAPTURE_WIDTH
-        var height = DEFAULT_CAPTURE_HEIGHT
-        if Settings.isInputSyncedWithOutput {
-            let preset = Settings.selectedPreset
-            width = preset.width
-            height = preset.height
-        }
         threadsPerGrid = MTLSize(
-            width: width,
-            height: height,
+            width: DEFAULT_CAPTURE_WIDTH,
+            height: DEFAULT_CAPTURE_HEIGHT,
             depth: 1
         )
     }
@@ -331,6 +324,12 @@ private actor FrameTinkerer {
                 argsPointer.pointee.widthRatio = lumaChromaWidthRatio
                 argsPointer.pointee.heightRatio = lumaChromaHeightRatio
             }
+
+            threadsPerGrid = MTLSize(
+                width: lumaWidth,
+                height: lumaHeight,
+                depth: 1
+            )
             
             measureTextures = false
         }

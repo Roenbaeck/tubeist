@@ -630,6 +630,147 @@ kernel void push(constant KernelArguments &args [[buffer(0)]],
     }
 }
 
+kernel void bleachpass(constant KernelArguments &args [[buffer(0)]],
+                       texture2d<float, access::read_write> yTexture [[texture(0)]],
+                       texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
+                       uint2 gid [[thread_position_in_grid]]) {
+
+    float y = yTexture.read(gid).r;
+    float contrast = 1.0 + args.strength * 0.55;
+    float bleachY = clamp((y - 0.5) * contrast + 0.5, 0.0, 2.0);
+    bleachY = mix(y, bleachY, 0.85);
+    yTexture.write(float4(bleachY, 0, 0, 0), gid);
+
+    if ((gid.x % args.widthRatio == 0) && (gid.y % args.heightRatio == 0)) {
+        uint2 cbcrGid = gid / uint2(args.widthRatio, args.heightRatio);
+        float2 chroma = cbcrTexture.read(cbcrGid).rg;
+        float2 neutral = float2(0.5, 0.5);
+        float desaturated = 0.55 + 0.35 * args.strength;
+        float2 newChroma = mix(chroma, neutral, desaturated);
+        cbcrTexture.write(float4(newChroma, 0, 0), cbcrGid);
+    }
+}
+
+kernel void chromalag(constant KernelArguments &args [[buffer(0)]],
+                      texture2d<float, access::read_write> yTexture [[texture(0)]],
+                      texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
+                      uint2 gid [[thread_position_in_grid]]) {
+
+    if ((gid.x % args.widthRatio == 0) && (gid.y % args.heightRatio == 0)) {
+        uint2 cbcrGid = gid / uint2(args.widthRatio, args.heightRatio);
+        int cbcrWidth = cbcrTexture.get_width();
+        int lag = int((2.0 + args.strength * 10.0) * sin(float(args.frame) * 0.08));
+        int smear = max(1, int(1.0 + args.strength * 5.0));
+        int leftX = clamp(int(cbcrGid.x) - lag, 0, cbcrWidth - 1);
+        int rightX = clamp(leftX - smear, 0, cbcrWidth - 1);
+
+        float2 lead = cbcrTexture.read(uint2(leftX, int(cbcrGid.y))).rg;
+        float2 trail = cbcrTexture.read(uint2(rightX, int(cbcrGid.y))).rg;
+        float2 blended = mix(lead, trail, 0.45 + 0.25 * args.strength);
+        cbcrTexture.write(float4(blended, 0, 0), cbcrGid);
+    }
+}
+
+kernel void splittone(constant KernelArguments &args [[buffer(0)]],
+                      texture2d<float, access::read_write> yTexture [[texture(0)]],
+                      texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
+                      uint2 gid [[thread_position_in_grid]]) {
+
+    float y = yTexture.read(gid).r;
+    float pivot = 0.48;
+    float balance = smoothstep(pivot - 0.18, pivot + 0.18, clamp(y, 0.0, 1.0));
+
+    if ((gid.x % args.widthRatio == 0) && (gid.y % args.heightRatio == 0)) {
+        uint2 cbcrGid = gid / uint2(args.widthRatio, args.heightRatio);
+        float2 chroma = cbcrTexture.read(cbcrGid).rg;
+        float2 shadowTone = float2(0.56, 0.46);
+        float2 highlightTone = float2(0.46, 0.57);
+        float2 target = mix(shadowTone, highlightTone, balance);
+        float2 toned = mix(chroma, target, 0.18 + 0.32 * args.strength);
+        cbcrTexture.write(float4(toned, 0, 0), cbcrGid);
+    }
+}
+
+kernel void scanlines(constant KernelArguments &args [[buffer(0)]],
+                      texture2d<float, access::read_write> yTexture [[texture(0)]],
+                      texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
+                      uint2 gid [[thread_position_in_grid]]) {
+
+    float y = yTexture.read(gid).r;
+    float linePhase = float(gid.y + args.frame) * 0.5;
+    float modulation = 0.5 + 0.5 * sin(linePhase * M_PI_F);
+    float darkening = (0.08 + 0.24 * args.strength) * modulation;
+    float boostedY = y * (1.0 - darkening) + (darkening * 0.03);
+    yTexture.write(float4(boostedY, 0, 0, 0), gid);
+}
+
+kernel void solarize(constant KernelArguments &args [[buffer(0)]],
+                     texture2d<float, access::read_write> yTexture [[texture(0)]],
+                     texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
+                     uint2 gid [[thread_position_in_grid]]) {
+
+    float y = yTexture.read(gid).r;
+    float threshold = mix(0.7, 0.35, args.strength);
+    float inverted = 1.2 - y;
+    float blend = smoothstep(threshold - 0.08, threshold + 0.08, clamp(y, 0.0, 1.2));
+    float finalY = mix(y, inverted, blend);
+    yTexture.write(float4(clamp(finalY, 0.0, 2.0), 0, 0, 0), gid);
+
+    if ((gid.x % args.widthRatio == 0) && (gid.y % args.heightRatio == 0)) {
+        uint2 cbcrGid = gid / uint2(args.widthRatio, args.heightRatio);
+        float2 chroma = cbcrTexture.read(cbcrGid).rg;
+        float2 invertedChroma = 1.0 - chroma;
+        float2 finalChroma = mix(chroma, invertedChroma, blend * (0.4 + 0.4 * args.strength));
+        cbcrTexture.write(float4(finalChroma, 0, 0), cbcrGid);
+    }
+}
+
+kernel void newsprint(constant KernelArguments &args [[buffer(0)]],
+                      texture2d<float, access::read_write> yTexture [[texture(0)]],
+                      texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
+                      uint2 gid [[thread_position_in_grid]]) {
+
+    float y = clamp(yTexture.read(gid).r, 0.0, 1.0);
+    float angle = 0.35;
+    float2 centered = float2(gid) - float2(yTexture.get_width(), yTexture.get_height()) * 0.5;
+    float2 rotated = float2(
+        centered.x * cos(angle) - centered.y * sin(angle),
+        centered.x * sin(angle) + centered.y * cos(angle)
+    );
+    float cellScale = 0.035 + 0.09 * args.strength;
+    float pattern = sin(rotated.x * cellScale) * sin(rotated.y * cellScale);
+    float ink = smoothstep(-0.15, 0.55, 1.0 - y + pattern * 0.35);
+    float finalY = mix(y, ink, 0.65 + 0.25 * args.strength);
+    yTexture.write(float4(clamp(finalY, 0.0, 1.0), 0, 0, 0), gid);
+
+    if ((gid.x % args.widthRatio == 0) && (gid.y % args.heightRatio == 0)) {
+        uint2 cbcrGid = gid / uint2(args.widthRatio, args.heightRatio);
+        float2 chroma = cbcrTexture.read(cbcrGid).rg;
+        float2 desaturated = mix(chroma, float2(0.5, 0.5), 0.75 + 0.2 * args.strength);
+        cbcrTexture.write(float4(desaturated, 0, 0), cbcrGid);
+    }
+}
+
+kernel void halation(constant KernelArguments &args [[buffer(0)]],
+                     texture2d<float, access::read_write> yTexture [[texture(0)]],
+                     texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
+                     uint2 gid [[thread_position_in_grid]]) {
+
+    float y = yTexture.read(gid).r;
+    float highlight = smoothstep(0.62, 1.1, clamp(y, 0.0, 1.5));
+    float glow = highlight * (0.06 + 0.16 * args.strength);
+    float newY = min(y + glow, 2.0);
+    yTexture.write(float4(newY, 0, 0, 0), gid);
+
+    if ((gid.x % args.widthRatio == 0) && (gid.y % args.heightRatio == 0)) {
+        uint2 cbcrGid = gid / uint2(args.widthRatio, args.heightRatio);
+        float2 chroma = cbcrTexture.read(cbcrGid).rg;
+        float2 warmTarget = float2(0.47, 0.57);
+        float2 warmed = mix(chroma, warmTarget, glow * 1.6);
+        cbcrTexture.write(float4(warmed, 0, 0), cbcrGid);
+    }
+}
+
 
 // ----====================== IMPRINTER ======================----
 
