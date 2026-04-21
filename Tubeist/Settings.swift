@@ -530,6 +530,14 @@ struct SettingsView: View {
 }
 
 final class Settings: Sendable {
+    private static func bool(forKey key: String, default defaultValue: Bool) -> Bool {
+        let defaults = UserDefaults.standard
+        guard defaults.object(forKey: key) != nil else {
+            return defaultValue
+        }
+        return defaults.bool(forKey: key)
+    }
+
     static func configureJournal() {
         let defs = UserDefaults.standard
         let journalError = defs.object(forKey: "JournalError") != nil ? defs.bool(forKey: "JournalError") : true
@@ -619,7 +627,7 @@ final class Settings: Sendable {
     
     static var isInputSyncedWithOutput: Bool {
         get {
-            UserDefaults.standard.bool(forKey: "InputSyncsWithOutput")
+            bool(forKey: "InputSyncsWithOutput", default: true)
         }
         set {
             UserDefaults.standard.set(newValue, forKey: "InputSyncsWithOutput")
@@ -627,7 +635,7 @@ final class Settings: Sendable {
     }
     static var stream: Bool {
         get {
-            UserDefaults.standard.bool(forKey: "Stream")
+            bool(forKey: "Stream", default: true)
         }
         set {
             UserDefaults.standard.set(newValue, forKey: "Stream")
