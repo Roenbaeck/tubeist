@@ -26,6 +26,15 @@ let CAMERA_CONTROL_QUEUE = DispatchQueue(label: "com.subside.Tubeist.CameraContr
     static let shared = UploadActor()
 }
 
+// YouTube Data API v3 settings
+let YOUTUBE_CLIENT_ID = "417360709076-6golrsu19ipsvdbsgce4e9fml9bru8dr.apps.googleusercontent.com"
+let YOUTUBE_REDIRECT_SCHEME = "com.googleusercontent.apps.417360709076-6golrsu19ipsvdbsgce4e9fml9bru8dr"
+let YOUTUBE_REDIRECT_URI = "\(YOUTUBE_REDIRECT_SCHEME):/oauthredirect"
+let YOUTUBE_API_BASE = "https://www.googleapis.com/youtube/v3"
+let YOUTUBE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
+let YOUTUBE_TOKEN_URL = "https://oauth2.googleapis.com/token"
+let YOUTUBE_SCOPES = "https://www.googleapis.com/auth/youtube"
+
 // CaptureDirector settings
 let DEFAULT_CAMERA = "Back Camera" // available on most (all?) devices
 let DEFAULT_MICROPHONE = "iPhone Microphone"

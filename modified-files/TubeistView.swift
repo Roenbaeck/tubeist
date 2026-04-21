@@ -37,7 +37,6 @@ enum Monitor {
 
 struct TubeistView: View {
     @Environment(AppState.self) var appState
-    @State private var areSystemMetricsAtTop = Settings.areSystemMetricsAtTop
     @State private var overlayManager = OverlaySettingsManager()
     @State private var showSettings = false
     @State private var showStabilizationConfirmation = false
@@ -112,6 +111,79 @@ struct TubeistView: View {
         }
     }
     
+    func startYouTubePolling() {
+        youtubePollingTask?.cancel()
+        guard youtubeService.isSignedIn,
+              Settings.target == "youtube",
+              let streamKey = Settings.streamKey, !streamKey.isEmpty else {
+            return
+        }
+        youtubePollingTask = Task {
+            // First, resolve the broadcast ID if we don't have one
+            if appState.youtubeBroadcastId == nil {
+                do {
+                    let broadcast = try await youtubeService.findBroadcastForStreamKey(streamKey)
+                    appState.youtubeBroadcastId = broadcast.id
+                    appState.youtubeStatus = broadcast.lifeCycleStatus
+                } catch {
+                    LOG("YouTube status: could not find broadcast: \(error.localizedDescription)", level: .warning)
+                    return
+                }
+            }
+
+            guard let broadcastId = appState.youtubeBroadcastId else { return }
+            let startTime = Date()
+
+            while !Task.isCancelled {
+                let elapsed = Date().timeIntervalSince(startTime)
+                let interval: Double = elapsed < 120 ? 10 : 120
+
+                do {
+                    try await Task.sleep(for: .seconds(interval))
+                } catch { break }
+
+                guard !Task.isCancelled else { break }
+
+                do {
+                    if let status = try await youtubeService.fetchBroadcastStatus(broadcastId: broadcastId) {
+                        appState.youtubeStatus = status
+                    }
+                } catch {
+                    LOG("YouTube status poll failed: \(error.localizedDescription)", level: .debug)
+                }
+            }
+        }
+    }
+
+    func stopYouTubePolling() {
+        youtubePollingTask?.cancel()
+        youtubePollingTask = nil
+        // Continue polling for 3 minutes at 10s intervals to observe YT-side shutdown
+        guard let broadcastId = appState.youtubeBroadcastId else {
+            appState.youtubeStatus = nil
+            return
+        }
+        youtubePollingTask = Task {
+            let windDownEnd = Date().addingTimeInterval(180)
+            while !Task.isCancelled, Date() < windDownEnd {
+                do {
+                    try await Task.sleep(for: .seconds(10))
+                } catch { break }
+                guard !Task.isCancelled else { break }
+                do {
+                    if let status = try await youtubeService.fetchBroadcastStatus(broadcastId: broadcastId) {
+                        appState.youtubeStatus = status
+                        if status == "complete" { break }
+                    }
+                } catch {
+                    LOG("YouTube wind-down poll failed: \(error.localizedDescription)", level: .debug)
+                }
+            }
+            appState.youtubeStatus = nil
+            appState.youtubeBroadcastId = nil
+        }
+    }
+
     func updateCameraProperties() {
         Task {
             // Passing Binding<variable> to a singleton is fine
@@ -153,118 +225,6 @@ struct TubeistView: View {
         // Schedule hide with a method that cancels and reschedules
         interaction.scheduleAction {
             showFocusAndExposureArea = false
-        }
-    }
-
-    func setSystemMetricsPosition(top: Bool) {
-        guard areSystemMetricsAtTop != top else {
-            return
-        }
-        areSystemMetricsAtTop = top
-        Settings.areSystemMetricsAtTop = top
-        fade(top ? "Status bar moved to top" : "Status bar moved to bottom")
-    }
-
-    func bootstrapYouTubeStatus() {
-        guard appState.youtubeStatus == nil else {
-            return
-        }
-
-        Task {
-            await refreshCurrentYouTubeBroadcastStatus(logContext: "bootstrap")
-        }
-    }
-
-    func refreshCurrentYouTubeBroadcastStatus(logContext: String) async {
-        guard youtubeService.isSignedIn,
-              Settings.target == "youtube",
-              let streamKey = Settings.streamKey,
-              !streamKey.isEmpty else {
-            appState.youtubeStatus = nil
-            appState.youtubeBroadcastId = nil
-            return
-        }
-
-        do {
-            let broadcast = try await youtubeService.findBroadcastForStreamKey(streamKey)
-            appState.youtubeBroadcastId = broadcast.id
-            appState.youtubeStatus = broadcast.lifeCycleStatus
-        } catch {
-            LOG("YouTube \(logContext) status failed: \(error.localizedDescription)", level: .debug)
-            appState.youtubeStatus = nil
-            appState.youtubeBroadcastId = nil
-        }
-    }
-
-    func startYouTubePolling() {
-        youtubePollingTask?.cancel()
-        guard youtubeService.isSignedIn,
-              Settings.target == "youtube",
-              let streamKey = Settings.streamKey,
-              !streamKey.isEmpty else {
-            return
-        }
-        youtubePollingTask = Task {
-            if appState.youtubeBroadcastId == nil {
-                await refreshCurrentYouTubeBroadcastStatus(logContext: "startup")
-                if appState.youtubeBroadcastId == nil {
-                    LOG("YouTube status: could not find broadcast for active stream", level: .warning)
-                    return
-                }
-            }
-
-            guard let broadcastId = appState.youtubeBroadcastId else { return }
-            let startTime = Date()
-
-            while !Task.isCancelled {
-                let elapsed = Date().timeIntervalSince(startTime)
-                let interval: Double = elapsed < 120 ? 10 : 120
-
-                do {
-                    try await Task.sleep(for: .seconds(interval))
-                } catch {
-                    break
-                }
-
-                guard !Task.isCancelled else { break }
-
-                do {
-                    if let status = try await youtubeService.fetchBroadcastStatus(broadcastId: broadcastId) {
-                        appState.youtubeStatus = status
-                    }
-                } catch {
-                    LOG("YouTube status poll failed: \(error.localizedDescription)", level: .debug)
-                }
-            }
-        }
-    }
-
-    func stopYouTubePolling() {
-        youtubePollingTask?.cancel()
-        youtubePollingTask = nil
-        guard let broadcastId = appState.youtubeBroadcastId else {
-            appState.youtubeStatus = nil
-            return
-        }
-        youtubePollingTask = Task {
-            let windDownEnd = Date().addingTimeInterval(180)
-            while !Task.isCancelled, Date() < windDownEnd {
-                do {
-                    try await Task.sleep(for: .seconds(10))
-                } catch {
-                    break
-                }
-                guard !Task.isCancelled else { break }
-                do {
-                    if let status = try await youtubeService.fetchBroadcastStatus(broadcastId: broadcastId) {
-                        appState.youtubeStatus = status
-                        if status == "complete" { break }
-                    }
-                } catch {
-                    LOG("YouTube wind-down poll failed: \(error.localizedDescription)", level: .debug)
-                }
-            }
-            await refreshCurrentYouTubeBroadcastStatus(logContext: "wind-down")
         }
     }
     
@@ -378,17 +338,7 @@ struct TubeistView: View {
                     }
                     
                     VStack {
-                        if areSystemMetricsAtTop {
-                            SystemMetricsView()
-                                .offset(y: 3)
-                                .opacity(showJournal ? 0 : 1)
-                            AudioMonitorView(width: width, height: AUDIO_METER_HEIGHT)
-                                .frame(width: width, height: AUDIO_METER_HEIGHT)
-                            Spacer()
-                        }
-                        else {
-                            Spacer()
-                        }
+                        Spacer()
                         if appState.isBatterySavingOn {
                             Text("BATTERY SAVING MODE")
                                 .font(.system(size: 30))
@@ -403,32 +353,11 @@ struct TubeistView: View {
                                 .opacity(fading ? 0 : 1)
                                 .animation(.easeInOut(duration: 0.5), value: message)
                         }
-                        if !areSystemMetricsAtTop {
-                            SystemMetricsView()
-                                .offset(y: 3)
-                                .opacity(showJournal ? 0 : 1)
-                            AudioMonitorView(width: width, height: AUDIO_METER_HEIGHT)
-                                .frame(width: width, height: AUDIO_METER_HEIGHT)
-                        }
-                    }
-
-                    HStack {
-                        Color.clear
-                            .contentShape(Rectangle())
-                            .frame(width: 44, height: height)
-                            .gesture(
-                                DragGesture(minimumDistance: 24)
-                                    .onEnded { gesture in
-                                        let verticalTravel = gesture.translation.height
-                                        let horizontalTravel = abs(gesture.translation.width)
-                                        guard abs(verticalTravel) > horizontalTravel,
-                                              abs(verticalTravel) >= 40 else {
-                                            return
-                                        }
-                                        setSystemMetricsPosition(top: verticalTravel < 0)
-                                    }
-                            )
-                        Spacer()
+                        SystemMetricsView()
+                            .offset(y: 3)
+                            .opacity(showJournal ? 0 : 1)
+                        AudioMonitorView(width: width, height: AUDIO_METER_HEIGHT)
+                            .frame(width: width, height: AUDIO_METER_HEIGHT)
                     }
                     
                     VStack(spacing: 0) {
@@ -655,53 +584,40 @@ struct TubeistView: View {
                                 }
                             }
                             
-                            if let ytStatus = appState.youtubeStatus {
-                                var ytColor: Color {
-                                    switch ytStatus {
-                                    case "live": return .red
-                                    case "testing": return .orange
-                                    case "ready": return .white
-                                    default: return .gray
-                                    }
-                                }
-                                ZStack {
-                                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                        .fill(Color(red: 1.0, green: 0.0, blue: 0.0))
-                                        .frame(width: 26, height: 18)
-                                        .overlay {
-                                            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                                .stroke(ytColor, lineWidth: 2)
-                                                .padding(-3)
-                                                .opacity(0.95)
-                                        }
-
-                                    Image(systemName: "play.fill")
-                                        .foregroundColor(.white)
-                                        .font(.system(size: 9, weight: .bold))
-                                }
-                                .padding(.bottom, 10)
-                            }
-
                             Image(systemName: "dot.radiowaves.right")
                                 .rotationEffect(.degrees(-90)) // Rotate the symbol by 90 degrees
                                 .foregroundColor(streamHealthColor)
                                 .font(.system(size: 25)) // Adjust the size as needed
                                 .padding(.bottom, 10)
-                            
+
+                            if let ytStatus = appState.youtubeStatus {
+                                var ytColor: Color {
+                                    switch ytStatus {
+                                    case "live": return .red
+                                    case "testing": return .orange
+                                    case "ready": return .green
+                                    default: return .gray
+                                    }
+                                }
+                                Image(systemName: ytStatus == "live" ? "play.tv.fill" : "play.tv")
+                                    .foregroundColor(ytColor)
+                                    .font(.system(size: 20))
+                                    .padding(.bottom, 10)
+                            }
+
                             Button(action: {
                                 if appState.isStreamActive {
                                     Task {
                                         await Streamer.shared.endStream()
+                                        stopYouTubePolling()
                                         LOG("Stopped streaming engine", level: .info)
                                     }
                                 } else {
-                                    if appState.youtubeStatus == "live" || appState.youtubeStatus == "testing" {
-                                        fade("YouTube is still finishing the previous stream")
-                                    }
-                                    else if Settings.hasCameraPermission() && Settings.hasMicrophonePermission() {
+                                    if Settings.hasCameraPermission() && Settings.hasMicrophonePermission() {
                                         Task {
                                             showCameraPicker = false
                                             await Streamer.shared.startStream()
+                                            startYouTubePolling()
                                             LOG("Started streaming engine", level: .info)
                                         }
                                     }
@@ -958,17 +874,14 @@ struct TubeistView: View {
                 appState.hadToStopStreaming = false
             }
         }
+        .onChange(of: appState.isStreamActive) { _, isActive in
+            if !isActive {
+                stopYouTubePolling()
+            }
+        }
         .onChange(of: appState.activeMonitor) { _, newMonitor in
             Task {
                 await Streamer.shared.setMonitor(newMonitor)
-            }
-        }
-        .onChange(of: appState.isStreamActive) { _, isStreamActive in
-            if isStreamActive {
-                startYouTubePolling()
-            }
-            else {
-                stopYouTubePolling()
             }
         }
         .onAppear {
@@ -977,13 +890,6 @@ struct TubeistView: View {
             Task {
                 cameras = await CaptureDirector.shared.getCameras()
             }
-            bootstrapYouTubeStatus()
-            if appState.isStreamActive {
-                startYouTubePolling()
-            }
-        }
-        .onDisappear {
-            youtubePollingTask?.cancel()
         }
     }
     

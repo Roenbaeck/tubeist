@@ -124,24 +124,6 @@ class OverlaySettingsManager {
         overlays.remove(atOffsets: offsets)
         saveOverlays()
     }
-
-    func updateOverlay(id: String, url: String) {
-        guard let index = overlays.firstIndex(where: { $0.id == id }) else {
-            return
-        }
-
-        let trimmedURL = url.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmedURL.isEmpty {
-            return
-        }
-
-        if overlays.contains(where: { $0.id != id && $0.url == trimmedURL }) {
-            return
-        }
-
-        overlays[index].url = trimmedURL
-        saveOverlays()
-    }
 }
 
 @Observable
@@ -228,21 +210,20 @@ struct SettingsView: View {
     @State private var customAudioBitrate: Int = DEFAULT_AUDIO_BITRATE
     @State private var customVideoBitrate: Int = DEFAULT_VIDEO_BITRATE
     @State private var maxFrameRate: Double = DEFAULT_FRAMERATE
+
+    // State variables for YouTube configuration
     @State private var youtubeService = YouTubeService()
     @State private var broadcastTitle: String = ""
     @State private var broadcastVisibility: String = "public"
     @State private var playlists: [YouTubePlaylist] = []
-    @State private var selectedPlaylistId: String? = Settings.youtubeSelectedPlaylistId
+    @State private var selectedPlaylistId: String? = nil
     @State private var selectedPhotoItem: PhotosPickerItem? = nil
     @State private var thumbnailImage: UIImage? = nil
     @State private var broadcastId: String? = nil
     @State private var broadcastScheduledStartTime: String? = nil
     @State private var broadcastLifeCycleStatus: String? = nil
     @State private var youtubeConfigLoaded: Bool = false
-    @State private var isYouTubeRefreshCoolingDown: Bool = false
-    @State private var editingOverlay: OverlaySetting? = nil
-    @State private var editedOverlayURL: String = ""
-        
+
     var body: some View {
         NavigationView {
             Form {
@@ -323,7 +304,7 @@ struct SettingsView: View {
                 }
 
                 if stream && target == "youtube" && !streamKeyManager.currentKey.isEmpty {
-                    Section(header: Text("YouTube Stream Configuration"), footer: Text(youtubeService.isSignedIn ? "Configure the YouTube broadcast tied to your stream key. Changes here are sent to YouTube when you tap Save." : "Sign in with your Google account to configure YouTube broadcast settings for the current stream key.")) {
+                    Section(header: Text("YouTube Stream Configuration"), footer: Text(youtubeService.isSignedIn ? "Configure the YouTube broadcast tied to your stream key. Tap 'Apply Changes' to save." : "Sign in with your Google account to configure YouTube broadcast settings for the current stream key.")) {
                         if !youtubeService.isSignedIn {
                             Button("Sign in with Google") {
                                 Task {
@@ -344,15 +325,6 @@ struct SettingsView: View {
                                 HStack {
                                     Text("Status")
                                     Spacer()
-                                    Button {
-                                        Task {
-                                            await refreshYouTubeBroadcast()
-                                        }
-                                    } label: {
-                                        Image(systemName: "arrow.clockwise")
-                                            .foregroundColor(.secondary)
-                                    }
-                                    .disabled(youtubeService.isLoading || isYouTubeRefreshCoolingDown)
                                     Circle()
                                         .fill(broadcastLifeCycleStatus == "live" ? Color.red :
                                               broadcastLifeCycleStatus == "testing" ? Color.orange :
@@ -365,17 +337,16 @@ struct SettingsView: View {
                                 if broadcastLifeCycleStatus == "live" || broadcastLifeCycleStatus == "testing" {
                                     Button("Stop YouTube Stream", role: .destructive) {
                                         Task {
-                                            guard let broadcastId else { return }
+                                            guard let broadcastId = broadcastId else { return }
                                             do {
                                                 try await youtubeService.stopBroadcast(id: broadcastId)
-                                                await loadYouTubeBroadcast()
+                                                broadcastLifeCycleStatus = "complete"
                                             } catch {
                                                 youtubeService.errorMessage = error.localizedDescription
                                                 LOG("Failed to stop broadcast: \(error.localizedDescription)", level: .error)
                                             }
                                         }
                                     }
-                                    .buttonStyle(.bordered)
                                 }
 
                                 TextField("Stream Title", text: $broadcastTitle)
@@ -419,13 +390,18 @@ struct SettingsView: View {
                                         Text(playlist.title).tag(Optional(playlist.id))
                                     }
                                 }
-                                .onChange(of: selectedPlaylistId) { _, newValue in
-                                    Settings.youtubeSelectedPlaylistId = newValue
+
+                                Button("Apply Changes") {
+                                    Task {
+                                        await applyYouTubeChanges()
+                                    }
                                 }
+                                .buttonStyle(.borderedProminent)
 
                             } else if let errorMessage = youtubeService.errorMessage {
                                 Text(errorMessage)
                                     .foregroundColor(.red)
+                                    .font(.caption)
                                 Button("Retry") {
                                     Task {
                                         await loadYouTubeBroadcast()
@@ -450,11 +426,8 @@ struct SettingsView: View {
                                 selectedPlaylistId = nil
                                 thumbnailImage = nil
                                 youtubeConfigLoaded = false
-                                Settings.youtubeSelectedPlaylistId = nil
-                                appState.youtubeStatus = nil
-                                appState.youtubeBroadcastId = nil
                             }
-                            .buttonStyle(.bordered)
+                            .font(.caption)
                         }
                     }
                     .onAppear {
@@ -598,19 +571,7 @@ struct SettingsView: View {
                 
                 Section(header: Text("Overlays"), footer: Text("Add multiple web overlay URLs that will be imprinted onto the video frames. Overlays are updated on content changes and at most once per second. Audio is captured from the last playing overlay if audio from multiple overlays overlap.")) {
                     ForEach(overlayManager.overlays) { overlay in
-                        Button {
-                            editingOverlay = overlay
-                            editedOverlayURL = overlay.url
-                        } label: {
-                            HStack {
-                                Text(overlay.url)
-                                    .foregroundColor(.primary)
-                                    .multilineTextAlignment(.leading)
-                                Spacer()
-                                Image(systemName: "pencil")
-                                    .foregroundColor(.secondary)
-                            }
-                        }
+                        Text(overlay.url)
                     }
                     .onDelete(perform: overlayManager.deleteOverlay)
                     
@@ -692,28 +653,6 @@ struct SettingsView: View {
                     customVideoBitrate = preset.videoBitrate
                 }
             }
-            .sheet(item: $editingOverlay) { overlay in
-                NavigationView {
-                    Form {
-                        Section(footer: Text("Update the existing overlay URL. Swipe left on the overlay row to delete it instead.")) {
-                            TextField("Overlay URL", text: $editedOverlayURL)
-                                .keyboardType(.URL)
-                                .autocapitalization(.none)
-                                .disableAutocorrection(true)
-                        }
-                    }
-                    .navigationTitle("Edit Overlay")
-                    .navigationBarTitleDisplayMode(.inline)
-                    .navigationBarItems(
-                        leading: Button("Cancel") {
-                            editingOverlay = nil
-                        },
-                        trailing: Button("Save") {
-                            saveOverlayEdit(for: overlay)
-                        }
-                    )
-                }
-            }
         }
     }
     
@@ -743,33 +682,6 @@ struct SettingsView: View {
         newOverlayURL = ""
     }
 
-    func saveOverlayEdit(for overlay: OverlaySetting) {
-        let trimmedURL = editedOverlayURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let url = URL(string: trimmedURL), UIApplication.shared.canOpenURL(url) else {
-            return
-        }
-
-        overlayManager.updateOverlay(id: overlay.id, url: trimmedURL)
-        editingOverlay = nil
-        editedOverlayURL = ""
-    }
-
-    func refreshYouTubeBroadcast() async {
-        guard !youtubeService.isLoading, !isYouTubeRefreshCoolingDown else {
-            return
-        }
-
-        isYouTubeRefreshCoolingDown = true
-        defer {
-            Task { @MainActor in
-                try? await Task.sleep(for: .seconds(2))
-                isYouTubeRefreshCoolingDown = false
-            }
-        }
-
-        await loadYouTubeBroadcast()
-    }
-
     func loadYouTubeBroadcast() async {
         do {
             let broadcast = try await youtubeService.findBroadcastForStreamKey(streamKeyManager.currentKey)
@@ -778,15 +690,8 @@ struct SettingsView: View {
             broadcastVisibility = broadcast.privacyStatus
             broadcastScheduledStartTime = broadcast.scheduledStartTime
             broadcastLifeCycleStatus = broadcast.lifeCycleStatus
-            appState.youtubeBroadcastId = broadcast.id
-            appState.youtubeStatus = broadcast.lifeCycleStatus
             playlists = try await youtubeService.listPlaylists()
-            if let selectedPlaylistId, !playlists.contains(where: { $0.id == selectedPlaylistId }) {
-                self.selectedPlaylistId = nil
-                Settings.youtubeSelectedPlaylistId = nil
-            }
             youtubeConfigLoaded = true
-            youtubeService.errorMessage = nil
             LOG("Loaded YouTube broadcast: \(broadcast.title)", level: .info)
         } catch {
             youtubeService.errorMessage = error.localizedDescription
@@ -796,8 +701,9 @@ struct SettingsView: View {
     }
 
     func applyYouTubeChanges() async {
-        guard let broadcastId else { return }
+        guard let broadcastId = broadcastId else { return }
 
+        // Update title and visibility
         do {
             try await youtubeService.updateBroadcast(
                 id: broadcastId,
@@ -810,7 +716,8 @@ struct SettingsView: View {
             LOG("Failed to update broadcast: \(error.localizedDescription)", level: .error)
         }
 
-        if let thumbnailImage,
+        // Upload thumbnail if one was selected
+        if let thumbnailImage = thumbnailImage,
            let resized = thumbnailImage.scaledToFit(maxWidth: 1280, maxHeight: 720),
            let imageData = resized.jpegDataWithinLimit(maxBytes: 2_000_000) {
             do {
@@ -822,11 +729,11 @@ struct SettingsView: View {
             }
         }
 
+        // Add to playlist if one was selected
         if let playlistId = selectedPlaylistId {
             do {
                 LOG("Adding broadcast to playlist \(playlistId)", level: .debug)
                 try await youtubeService.addToPlaylist(playlistId: playlistId, videoId: broadcastId)
-                Settings.youtubeSelectedPlaylistId = playlistId
             } catch {
                 youtubeService.errorMessage = error.localizedDescription
                 LOG("Failed to add to playlist: \(error.localizedDescription)", level: .error)
@@ -841,14 +748,6 @@ struct SettingsView: View {
 }
 
 final class Settings: Sendable {
-    private static func bool(forKey key: String, default defaultValue: Bool) -> Bool {
-        let defaults = UserDefaults.standard
-        guard defaults.object(forKey: key) != nil else {
-            return defaultValue
-        }
-        return defaults.bool(forKey: key)
-    }
-
     static func configureJournal() {
         let defs = UserDefaults.standard
         let journalError = defs.object(forKey: "JournalError") != nil ? defs.bool(forKey: "JournalError") : true
@@ -938,7 +837,7 @@ final class Settings: Sendable {
     
     static var isInputSyncedWithOutput: Bool {
         get {
-            bool(forKey: "InputSyncsWithOutput", default: true)
+            UserDefaults.standard.bool(forKey: "InputSyncsWithOutput")
         }
         set {
             UserDefaults.standard.set(newValue, forKey: "InputSyncsWithOutput")
@@ -946,7 +845,7 @@ final class Settings: Sendable {
     }
     static var stream: Bool {
         get {
-            bool(forKey: "Stream", default: true)
+            UserDefaults.standard.bool(forKey: "Stream")
         }
         set {
             UserDefaults.standard.set(newValue, forKey: "Stream")
@@ -1014,14 +913,6 @@ final class Settings: Sendable {
         }
         set {
             UserDefaults.standard.set(newValue, forKey: "HideOverlays")
-        }
-    }
-    static var areSystemMetricsAtTop: Bool {
-        get {
-            bool(forKey: "SystemMetricsAtTop", default: false)
-        }
-        set {
-            UserDefaults.standard.set(newValue, forKey: "SystemMetricsAtTop")
         }
     }
     static var overlaysData: Data? {
@@ -1098,14 +989,6 @@ final class Settings: Sendable {
         }
         set {
             UserDefaults.standard.set(newValue, forKey: "YouTubeTokenExpiry")
-        }
-    }
-    static var youtubeSelectedPlaylistId: String? {
-        get {
-            UserDefaults.standard.string(forKey: "YouTubeSelectedPlaylistId")
-        }
-        set {
-            UserDefaults.standard.set(newValue, forKey: "YouTubeSelectedPlaylistId")
         }
     }
 }
