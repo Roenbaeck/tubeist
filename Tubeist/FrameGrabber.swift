@@ -63,7 +63,7 @@ private actor FrameTinkerer {
     private var chromaHeight: Int = DEFAULT_CAPTURE_HEIGHT
     private var lumaChromaWidthRatio: UInt32 = 1
     private var lumaChromaHeightRatio: UInt32 = 1
-    private var currentSampleBuffer: CMSampleBuffer?
+    private var currentPresentationTimestamp: CMTime?
     private var frameNumber: UInt32 = 0
     private var threadsPerGrid: MTLSize = MTLSize(
         width: DEFAULT_CAPTURE_WIDTH,
@@ -195,7 +195,7 @@ private actor FrameTinkerer {
     
     func reset() {
         measureTextures = true
-        currentSampleBuffer = nil
+        currentPresentationTimestamp = nil
         frameNumber = 0
         var width = DEFAULT_CAPTURE_WIDTH
         var height = DEFAULT_CAPTURE_HEIGHT
@@ -212,7 +212,7 @@ private actor FrameTinkerer {
     }
     
     func getCurrentPresentationTimestamp() -> CMTime? {
-        currentSampleBuffer?.presentationTimeStamp
+        currentPresentationTimestamp
     }
     
     func setCombinedOverlay(_ combinedOverlay: CombinedOverlay?) {
@@ -397,7 +397,7 @@ private actor FrameTinkerer {
     }
     
     func processFrame(sampleBuffer: CMSampleBuffer) async {
-        currentSampleBuffer = sampleBuffer
+        currentPresentationTimestamp = sampleBuffer.presentationTimeStamp
         nonisolated(unsafe) let sendableSampleBuffer = sampleBuffer // removes the need for @preconcurrency
         if grabbingFrames {
             if style != nil || effect != nil || overlayTexture != nil {

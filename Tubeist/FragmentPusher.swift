@@ -53,15 +53,17 @@ actor FragmentBufferActor {
     }
     
     func handleBounds() {
-        if buffer.count > maxBufferSize {
+        if buffer.count >= maxBufferSize {
             buffer.removeFirst()
-            buffer[0].discontinuity = true
+            if !buffer.isEmpty {
+                buffer[0].discontinuity = true
+            }
         }
     }
     
     func append(_ fragment: Fragment) {
-        self.handleBounds()
         buffer.append(fragment)
+        self.handleBounds()
     }
     
     func withdrawFragment() -> Fragment? {
@@ -71,8 +73,8 @@ actor FragmentBufferActor {
     }
     
     func returnFragment(_ fragment: Fragment) {
-        self.handleBounds()
         buffer.insert(fragment, at: buffer.startIndex)
+        self.handleBounds()
     }
         
     func attachFragment(to taskId: Int, with fragment: Fragment) {
@@ -100,8 +102,8 @@ actor FragmentBufferActor {
             LOG("Cannot detach task \(taskId) from its associated fragment", level: .error)
             return
         }
-        self.handleBounds()
         buffer.insert(fragment, at: buffer.startIndex)
+        self.handleBounds()
     }
     
     func expelFragment(forTask taskId: Int) {
@@ -358,9 +360,10 @@ final class FragmentPusher: Sendable {
     }
     
     func gracefulShutdown() async {
-        await LOG("Fragment pusher is shutting down gracefully - \(fragmentBuffer.count()) remaining fragments will be uploaded", level: .debug)
-        if await !fragmentBuffer.isEmpty() {
-            if uploadQueue.operationCount == 0 {
+        let remainingFragments = await fragmentBuffer.countAll()
+        await LOG("Fragment pusher is shutting down gracefully - \(remainingFragments) remaining fragments will be uploaded", level: .debug)
+        if remainingFragments > 0 {
+            if uploadQueue.operationCount == 0, await !fragmentBuffer.isEmpty() {
                 self.uploadFragment(attempt: 1)
             }
             do {
@@ -390,10 +393,8 @@ final class FragmentPusher: Sendable {
         await fragmentBuffer.count()
     }
 
-    func addFragment(_ fragment: Fragment) {
-        Task {
-            await fragmentBuffer.append(fragment)
-        }
+    func addFragment(_ fragment: Fragment) async {
+        await fragmentBuffer.append(fragment)
     }
         
     func uploadFragment(attempt: Int) {

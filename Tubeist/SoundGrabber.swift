@@ -46,11 +46,9 @@ final class SoundGrabber: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate
                        didOutput sampleBuffer: CMSampleBuffer,
                        from connection: AVCaptureConnection) {
         nonisolated(unsafe) let sendableSampleBuffer = sampleBuffer
-        PipelineActor.queue.async {
-            Task { @PipelineActor in
-                if await self.soundGrabbing.isActive(), await Streamer.shared.isStreaming() {
-                    await ContentPackager.shared.appendAudioSampleBuffer(sendableSampleBuffer)
-                }
+        Task { @PipelineActor in
+            if await self.soundGrabbing.isActive(), await Streamer.shared.isStreaming() {
+                await ContentPackager.shared.appendAudioSampleBuffer(sendableSampleBuffer)
             }
         }
     }
