@@ -37,6 +37,7 @@ enum Monitor {
 
 struct TubeistView: View {
     @Environment(AppState.self) var appState
+    @State private var areSystemMetricsAtTop = Settings.areSystemMetricsAtTop
     @State private var overlayManager = OverlaySettingsManager()
     @State private var showSettings = false
     @State private var showStabilizationConfirmation = false
@@ -152,6 +153,15 @@ struct TubeistView: View {
             showFocusAndExposureArea = false
         }
     }
+
+    func setSystemMetricsPosition(top: Bool) {
+        guard areSystemMetricsAtTop != top else {
+            return
+        }
+        areSystemMetricsAtTop = top
+        Settings.areSystemMetricsAtTop = top
+        fade(top ? "Status bar moved to top" : "Status bar moved to bottom")
+    }
     
     var body: some View {
         GeometryReader { geometry in
@@ -263,7 +273,17 @@ struct TubeistView: View {
                     }
                     
                     VStack {
-                        Spacer()
+                        if areSystemMetricsAtTop {
+                            SystemMetricsView()
+                                .offset(y: 3)
+                                .opacity(showJournal ? 0 : 1)
+                            AudioMonitorView(width: width, height: AUDIO_METER_HEIGHT)
+                                .frame(width: width, height: AUDIO_METER_HEIGHT)
+                            Spacer()
+                        }
+                        else {
+                            Spacer()
+                        }
                         if appState.isBatterySavingOn {
                             Text("BATTERY SAVING MODE")
                                 .font(.system(size: 30))
@@ -278,11 +298,32 @@ struct TubeistView: View {
                                 .opacity(fading ? 0 : 1)
                                 .animation(.easeInOut(duration: 0.5), value: message)
                         }
-                        SystemMetricsView()
-                            .offset(y: 3)
-                            .opacity(showJournal ? 0 : 1)
-                        AudioMonitorView(width: width, height: AUDIO_METER_HEIGHT)
-                            .frame(width: width, height: AUDIO_METER_HEIGHT)
+                        if !areSystemMetricsAtTop {
+                            SystemMetricsView()
+                                .offset(y: 3)
+                                .opacity(showJournal ? 0 : 1)
+                            AudioMonitorView(width: width, height: AUDIO_METER_HEIGHT)
+                                .frame(width: width, height: AUDIO_METER_HEIGHT)
+                        }
+                    }
+
+                    HStack {
+                        Color.clear
+                            .contentShape(Rectangle())
+                            .frame(width: 44, height: height)
+                            .gesture(
+                                DragGesture(minimumDistance: 24)
+                                    .onEnded { gesture in
+                                        let verticalTravel = gesture.translation.height
+                                        let horizontalTravel = abs(gesture.translation.width)
+                                        guard abs(verticalTravel) > horizontalTravel,
+                                              abs(verticalTravel) >= 40 else {
+                                            return
+                                        }
+                                        setSystemMetricsPosition(top: verticalTravel < 0)
+                                    }
+                            )
+                        Spacer()
                     }
                     
                     VStack(spacing: 0) {

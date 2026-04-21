@@ -705,6 +705,14 @@ final class Settings: Sendable {
             UserDefaults.standard.set(newValue, forKey: "HideOverlays")
         }
     }
+    static var areSystemMetricsAtTop: Bool {
+        get {
+            bool(forKey: "SystemMetricsAtTop", default: false)
+        }
+        set {
+            UserDefaults.standard.set(newValue, forKey: "SystemMetricsAtTop")
+        }
+    }
     static var overlaysData: Data? {
         get {
             UserDefaults.standard.data(forKey: "Overlays")
