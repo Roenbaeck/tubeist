@@ -382,6 +382,14 @@ struct TubeistView: View {
                             SystemMetricsView()
                                 .offset(y: 3)
                                 .opacity(showJournal ? 0 : 1)
+                            if let message = fadeMessage {
+                                Text(message)
+                                    .fontWeight(.bold)
+                                    .font(.system(size: 24))
+                                    .foregroundColor(ULTRAYELLOW)
+                                    .opacity(fading ? 0 : 1)
+                                    .animation(.easeInOut(duration: 0.5), value: message)
+                            }
                             AudioMonitorView(width: width, height: AUDIO_METER_HEIGHT)
                                 .frame(width: width, height: AUDIO_METER_HEIGHT)
                             Spacer()
@@ -395,7 +403,7 @@ struct TubeistView: View {
                                 .foregroundColor(Color.yellow)
                                 .fontWeight(.black)
                         }
-                        if let message = fadeMessage {
+                        if !areSystemMetricsAtTop, let message = fadeMessage {
                             Text(message)
                                 .fontWeight(.bold)
                                 .font(.system(size: 24))
