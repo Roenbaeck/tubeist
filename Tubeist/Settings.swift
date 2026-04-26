@@ -997,6 +997,14 @@ final class Settings: Sendable {
             UserDefaults.standard.set(newValue, forKey: "SelectedCamera")
         }
     }
+    static var selectedMicrophone: String? {
+        get {
+            UserDefaults.standard.string(forKey: "SelectedMicrophone")
+        }
+        set {
+            UserDefaults.standard.set(newValue, forKey: "SelectedMicrophone")
+        }
+    }
     static var hlsServer: String? {
         get {
             UserDefaults.standard.string(forKey: "HLSServer")

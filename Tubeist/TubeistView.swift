@@ -59,6 +59,8 @@ struct TubeistView: View {
     @State private var selectedCamera = DEFAULT_CAMERA
     @State private var selectedStabilization = "Off"
     @State private var cameras: [String] = []
+    @State private var selectedMicrophone: String = ""
+    @State private var microphones: [String] = []
     @State private var stabilizations: [String] = []
     @State private var style: String = Settings.style ?? NO_STYLE
     @State private var styleStrength: Float = 1.0
@@ -487,8 +489,39 @@ struct TubeistView: View {
                                         .fill(Color.black.opacity(0.6))
                                 )
                                 .onChange(of: selectedCamera) { _, newCamera in
+                                    guard newCamera != Settings.selectedCamera else { return }
                                     LOG("Seletected camera: \(newCamera)", level: .debug)
                                     Settings.selectedCamera = newCamera
+                                    Task {
+                                        await Streamer.shared.cycleSessions()
+                                    }
+                                }
+                            }
+                            .padding(5)
+                            .background(
+                                Rectangle()
+                                    .fill(Color.black.opacity(0.4))
+                            )
+
+                            HStack(alignment: .center, spacing: 10) {
+                                Spacer()
+
+                                Text("Select Microphone")
+                                Picker("Microphone Selection", selection: $selectedMicrophone) {
+                                    ForEach(microphones, id: \.self) { microphone in
+                                        Text(microphone)
+                                            .tag(microphone)
+                                    }
+                                }
+                                .pickerStyle(MenuPickerStyle())
+                                .background(
+                                    RoundedRectangle(cornerRadius: 10)
+                                        .fill(Color.black.opacity(0.6))
+                                )
+                                .onChange(of: selectedMicrophone) { _, newMicrophone in
+                                    guard newMicrophone != (Settings.selectedMicrophone ?? "") else { return }
+                                    LOG("Selected microphone: \(newMicrophone)", level: .debug)
+                                    Settings.selectedMicrophone = newMicrophone
                                     Task {
                                         await Streamer.shared.cycleSessions()
                                     }
@@ -1018,10 +1051,30 @@ struct TubeistView: View {
             }
         }
         .onAppear {
-            selectedCamera = Settings.selectedCamera
             selectedStabilization = Settings.cameraStabilization ?? "Off"
             Task {
                 cameras = await CaptureDirector.shared.getCameras()
+                microphones = await CaptureDirector.shared.getMicrophones()
+                let savedCamera = Settings.selectedCamera
+                let validCamera = cameras.contains(savedCamera)
+                    ? savedCamera
+                    : (cameras.contains(DEFAULT_CAMERA) ? DEFAULT_CAMERA : (cameras.first ?? DEFAULT_CAMERA))
+                selectedCamera = validCamera
+                Settings.selectedCamera = validCamera
+
+                let preferredMicrophone = await CaptureDirector.shared.getPreferredMicrophoneName()
+                let savedMicrophone = Settings.selectedMicrophone
+                let validMicrophone = if let savedMicrophone, microphones.contains(savedMicrophone) {
+                    savedMicrophone
+                }
+                else if let preferredMicrophone, microphones.contains(preferredMicrophone) {
+                    preferredMicrophone
+                }
+                else {
+                    microphones.first ?? ""
+                }
+                selectedMicrophone = validMicrophone
+                Settings.selectedMicrophone = validMicrophone.isEmpty ? nil : validMicrophone
             }
             bootstrapYouTubeStatus()
             if appState.isStreamActive {

@@ -37,7 +37,7 @@ private class DeviceActor {
     private var effect: Binding<String>?
     // capabilties
     private let cameras: [String: AVCaptureDevice.DeviceType]
-    private let microphones: [String: AVCaptureDevice.DeviceType]
+    private let microphones: [String: String]
     private var stabilizations: [String: AVCaptureVideoStabilizationMode] = [:]
     // states
     private var isOutputting: Bool = false
@@ -84,7 +84,7 @@ private class DeviceActor {
         cameras = cameraDevicesByName
         LOG("Cameras: \(cameras.keys)", level: .info)
         
-        var microphoneDevicesByName: [String: AVCaptureDevice.DeviceType] = [:]
+        var microphoneDevicesByName: [String: String] = [:]
         
         let microphoneDiscoverySession = AVCaptureDevice.DiscoverySession(
             deviceTypes: [
@@ -97,7 +97,7 @@ private class DeviceActor {
       
         for device in microphoneDiscoverySession.devices {
             let name = device.localizedName
-            microphoneDevicesByName[name] = device.deviceType
+            microphoneDevicesByName[name] = device.uniqueID
         }
         
         microphones = microphoneDevicesByName
@@ -115,6 +115,9 @@ private class DeviceActor {
     }
     func getCameraType(_ camera: String) -> AVCaptureDevice.DeviceType? {
         cameras[camera]
+    }
+    func getFirstCameraName() -> String? {
+        cameras.keys.first
     }
     func getFirstCameraType() -> AVCaptureDevice.DeviceType? {
         return cameras.values.first
@@ -148,7 +151,7 @@ private class DeviceActor {
         stabilizations = supportedModes
     }
     
-    func setup(cameraType: AVCaptureDevice.DeviceType, microphoneType: AVCaptureDevice.DeviceType, session: AVCaptureSession) {
+    func setup(cameraType: AVCaptureDevice.DeviceType, microphoneDevice: AVCaptureDevice, session: AVCaptureSession) {
         // Fetch frame rate from settings
         self.frameRate = Settings.selectedPreset.frameRate
         
@@ -159,11 +162,7 @@ private class DeviceActor {
         }
         self.videoDevice = videoDevice
         
-        guard let audioDevice = AVCaptureDevice.default(microphoneType, for: .audio, position: .unspecified) else {
-            LOG("Could not create audio capture device", level: .error)
-            return
-        }
-        self.audioDevice = audioDevice
+        self.audioDevice = microphoneDevice
         
         // Configure the capture
         do {
@@ -202,7 +201,7 @@ private class DeviceActor {
             session.automaticallyConfiguresApplicationAudioSession = false
 
             // set up audio
-            self.audioInput = try AVCaptureDeviceInput(device: audioDevice)
+            self.audioInput = try AVCaptureDeviceInput(device: microphoneDevice)
             guard let audioInput = self.audioInput else {
                 LOG("Could not create audio input", level: .error)
                 return
@@ -589,10 +588,22 @@ private class DeviceActor {
     func getMicrophones() -> [String] {
         return Array(microphones.keys)
     }
-    func getMicrophoneType(_ microphone: String) -> AVCaptureDevice.DeviceType? {
+    func getMicrophoneID(_ microphone: String) -> String? {
         microphones[microphone]
     }
-    func getFirstMicrophoneType() -> AVCaptureDevice.DeviceType? {
+    func getMicrophoneName(_ microphoneID: String) -> String? {
+        microphones.first { $0.value == microphoneID }?.key
+    }
+    func getPreferredMicrophoneID() -> String? {
+        AVCaptureDevice.default(for: .audio)?.uniqueID
+    }
+    func getPreferredMicrophoneName() -> String? {
+        AVCaptureDevice.default(for: .audio)?.localizedName
+    }
+    func getFirstMicrophoneName() -> String? {
+        microphones.keys.first
+    }
+    func getFirstMicrophoneID() -> String? {
         microphones.values.first
     }
 
@@ -679,6 +690,12 @@ final class CaptureDirector: NSObject, Sendable {
     func getCameras() async -> [String] {
         return await deviceActor.getCameras()
     }
+    func getMicrophones() async -> [String] {
+        return await deviceActor.getMicrophones()
+    }
+    func getPreferredMicrophoneName() async -> String? {
+        return await deviceActor.getPreferredMicrophoneName()
+    }
     func getSession() async -> AVCaptureSession {
         await CaptureDirector.session
     }
@@ -696,28 +713,58 @@ final class CaptureDirector: NSObject, Sendable {
     func attachAll() async {
         // set up video and audio session
         let camera = Settings.selectedCamera
+        var resolvedCamera = camera
         var cameraType = await deviceActor.getCameraType(camera)
         if cameraType == nil {
             LOG("Cannot find designated camera \(camera), using first available camera", level: .warning)
-            cameraType = await deviceActor.getFirstCameraType()
+            if await deviceActor.getCameraType(DEFAULT_CAMERA) != nil {
+                resolvedCamera = DEFAULT_CAMERA
+                cameraType = await deviceActor.getCameraType(DEFAULT_CAMERA)
+            }
+            else if let firstCamera = await deviceActor.getFirstCameraName() {
+                resolvedCamera = firstCamera
+                cameraType = await deviceActor.getCameraType(firstCamera)
+            }
         }
         guard let cameraType else {
             LOG("No camera found, cannot start capture", level: .error)
             return
         }
-        
-        let microphone = DEFAULT_MICROPHONE
-        var microphoneType = await deviceActor.getMicrophoneType(microphone)
-        if microphoneType == nil {
-            LOG("Cannot find designated microphone \(microphone), using first available microphone", level: .warning)
-            microphoneType = await deviceActor.getFirstMicrophoneType()
+        if Settings.selectedCamera != resolvedCamera {
+            Settings.selectedCamera = resolvedCamera
         }
-        guard let microphoneType else {
+        
+        let selectedMicrophone = Settings.selectedMicrophone
+        var resolvedMicrophone = selectedMicrophone
+        var microphoneID: String?
+        if let selectedMicrophone {
+            microphoneID = await deviceActor.getMicrophoneID(selectedMicrophone)
+        }
+        if microphoneID == nil, let selectedMicrophone {
+            LOG("Cannot find designated microphone \(selectedMicrophone), using preferred microphone", level: .warning)
+        }
+        if microphoneID == nil {
+            microphoneID = await deviceActor.getPreferredMicrophoneID()
+            resolvedMicrophone = await deviceActor.getPreferredMicrophoneName()
+        }
+        if microphoneID == nil {
+            LOG("Cannot find preferred microphone, using first available microphone", level: .warning)
+            microphoneID = await deviceActor.getFirstMicrophoneID()
+            resolvedMicrophone = await deviceActor.getFirstMicrophoneName()
+        }
+        if resolvedMicrophone == nil, let microphoneID {
+            resolvedMicrophone = await deviceActor.getMicrophoneName(microphoneID)
+        }
+        let microphoneDevice = microphoneID.flatMap { AVCaptureDevice(uniqueID: $0) }
+        guard let microphoneDevice else {
             LOG("No microphone found, cannot start capture", level: .error)
             return
         }
+        if Settings.selectedMicrophone != resolvedMicrophone {
+            Settings.selectedMicrophone = resolvedMicrophone
+        }
         
-        await deviceActor.setup(cameraType: cameraType, microphoneType: microphoneType, session: CaptureDirector.session)
+        await deviceActor.setup(cameraType: cameraType, microphoneDevice: microphoneDevice, session: CaptureDirector.session)
         await deviceActor.addCameraControls(session: CaptureDirector.session)
         await deviceActor.findSupportedStabilizationModes()
         let selectedStabilization = Settings.cameraStabilization ?? "Off"
