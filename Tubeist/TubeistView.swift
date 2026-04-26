@@ -76,6 +76,7 @@ struct TubeistView: View {
     @State private var fadeMessage: String?
     @State private var fading: Bool = false
     @State private var isYouTubeRefreshCoolingDown: Bool = false
+    @State private var isStartingStream: Bool = false
     
     @State private var startMagnification: CGFloat?
     private var magnification: some Gesture {
@@ -767,6 +768,9 @@ struct TubeistView: View {
                                 .padding(.bottom, 10)
                             
                             Button(action: {
+                                guard !isStartingStream else {
+                                    return
+                                }
                                 if appState.isStreamActive {
                                     Task {
                                         await Streamer.shared.endStream()
@@ -778,9 +782,11 @@ struct TubeistView: View {
                                     }
                                     else if Settings.hasCameraPermission() && Settings.hasMicrophonePermission() {
                                         let streamID = Streamer.makeStreamID()
+                                        isStartingStream = true
                                         Task {
                                             showCameraPicker = false
                                             await Streamer.shared.startStream(streamID: streamID)
+                                            isStartingStream = false
                                             LOG("Started streaming engine", level: .info)
                                         }
                                     }
@@ -789,11 +795,16 @@ struct TubeistView: View {
                                     }
                                 }
                             }) {
-                                Image(systemName: appState.isStreamActive ? "record.circle.fill" : "record.circle")
+                                Image(systemName: appState.isStreamActive || isStartingStream ? "record.circle.fill" : "record.circle")
                                     .font(.system(size: 24))
-                                    .foregroundColor(appState.isStreamActive ? .red : .white)
+                                    .foregroundColor(
+                                        appState.isStreamActive ? .red :
+                                        isStartingStream ? .blue :
+                                        .white
+                                    )
                                     .frame(width: 50, height: 50)
                             }
+                            .disabled(isStartingStream)
                             .background(Color.black.opacity(0.5))
                             .cornerRadius(25)
                             
@@ -1043,6 +1054,9 @@ struct TubeistView: View {
             }
         }
         .onChange(of: appState.isStreamActive) { _, isStreamActive in
+            if isStreamActive {
+                isStartingStream = false
+            }
             if isStreamActive {
                 startYouTubePolling()
             }
