@@ -73,6 +73,7 @@ struct TubeistView: View {
     @State private var splashOpacity: Double = 1.0
     @State private var fadeMessage: String?
     @State private var fading: Bool = false
+    @State private var isYouTubeRefreshCoolingDown: Bool = false
     
     @State private var startMagnification: CGFloat?
     private var magnification: some Gesture {
@@ -194,6 +195,33 @@ struct TubeistView: View {
             appState.youtubeStatus = nil
             appState.youtubeBroadcastId = nil
         }
+    }
+
+    func refreshYouTubeStatusFromIcon() async {
+        guard appState.isStreamActive, !isYouTubeRefreshCoolingDown else {
+            return
+        }
+
+        isYouTubeRefreshCoolingDown = true
+        defer {
+            Task { @MainActor in
+                try? await Task.sleep(for: .seconds(2))
+                isYouTubeRefreshCoolingDown = false
+            }
+        }
+
+        if let broadcastId = appState.youtubeBroadcastId {
+            do {
+                if let status = try await youtubeService.fetchBroadcastStatus(broadcastId: broadcastId) {
+                    appState.youtubeStatus = status
+                    return
+                }
+            } catch {
+                LOG("YouTube manual status refresh failed: \(error.localizedDescription)", level: .debug)
+            }
+        }
+
+        await refreshCurrentYouTubeBroadcastStatus(logContext: "manual refresh")
     }
 
     func startYouTubePolling() {
@@ -672,21 +700,30 @@ struct TubeistView: View {
                                     default: return .gray
                                     }
                                 }
-                                ZStack {
-                                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                        .fill(Color(red: 1.0, green: 0.0, blue: 0.0))
-                                        .frame(width: 26, height: 18)
-                                        .overlay {
-                                            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                                .stroke(ytColor, lineWidth: 2)
-                                                .padding(-3)
-                                                .opacity(0.95)
-                                        }
+                                Button {
+                                    Task {
+                                        await refreshYouTubeStatusFromIcon()
+                                    }
+                                } label: {
+                                    ZStack {
+                                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                            .fill(Color(red: 1.0, green: 0.0, blue: 0.0))
+                                            .frame(width: 26, height: 18)
+                                            .overlay {
+                                                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                                    .stroke(ytColor, lineWidth: 2)
+                                                    .padding(-3)
+                                                    .opacity(0.95)
+                                            }
 
-                                    Image(systemName: "play.fill")
-                                        .foregroundColor(.white)
-                                        .font(.system(size: 9, weight: .bold))
+                                        Image(systemName: "play.fill")
+                                            .foregroundColor(.white)
+                                            .font(.system(size: 9, weight: .bold))
+                                    }
+                                    .opacity(appState.isStreamActive && !isYouTubeRefreshCoolingDown ? 1 : 0.7)
                                 }
+                                .buttonStyle(.plain)
+                                .disabled(!appState.isStreamActive || isYouTubeRefreshCoolingDown)
                                 .padding(.bottom, 10)
                             }
 
@@ -707,9 +744,10 @@ struct TubeistView: View {
                                         fade("YouTube is still finishing the previous stream")
                                     }
                                     else if Settings.hasCameraPermission() && Settings.hasMicrophonePermission() {
+                                        let streamID = Streamer.makeStreamID()
                                         Task {
                                             showCameraPicker = false
-                                            await Streamer.shared.startStream()
+                                            await Streamer.shared.startStream(streamID: streamID)
                                             LOG("Started streaming engine", level: .info)
                                         }
                                     }

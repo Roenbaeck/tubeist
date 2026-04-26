@@ -479,16 +479,13 @@ final class FrameGrabber: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
         await frameTinkerer.getCurrentPresentationTimestamp()
     }
 
-    func captureOutput(_ output: AVCaptureOutput,
+    nonisolated func captureOutput(_ output: AVCaptureOutput,
                        didOutput sampleBuffer: CMSampleBuffer,
                        from connection: AVCaptureConnection) {
-        let semaphore = DispatchSemaphore(value: 0)
         nonisolated(unsafe) let sendableSampleBuffer = sampleBuffer
-        Task { @PipelineActor in
+        Task(priority: .userInitiated) { @PipelineActor in
             await frameTinkerer.processFrame(sampleBuffer: sendableSampleBuffer)
-            semaphore.signal()
         }
-        semaphore.wait()
     }
 }
 

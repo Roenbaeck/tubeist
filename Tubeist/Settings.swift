@@ -238,6 +238,9 @@ struct SettingsView: View {
     @State private var broadcastId: String? = nil
     @State private var broadcastScheduledStartTime: String? = nil
     @State private var broadcastLifeCycleStatus: String? = nil
+    @State private var broadcastEnableDvr: Bool = true
+    @State private var broadcastLatencyPreference: String = "normal"
+    @State private var loadedBroadcast: YouTubeBroadcast? = nil
     @State private var youtubeConfigLoaded: Bool = false
     @State private var isYouTubeRefreshCoolingDown: Bool = false
     @State private var editingOverlay: OverlaySetting? = nil
@@ -385,6 +388,13 @@ struct SettingsView: View {
                                     Text("Public").tag("public")
                                     Text("Unlisted").tag("unlisted")
                                     Text("Private").tag("private")
+                                }
+
+                                Toggle("DVR (viewers can rewind)", isOn: $broadcastEnableDvr)
+                                Picker("Latency", selection: $broadcastLatencyPreference) {
+                                    Text("Normal").tag("normal")
+                                    Text("Low").tag("low")
+                                    Text("Ultra-low").tag("ultraLow")
                                 }
 
                                 PhotosPicker(selection: $selectedPhotoItem, matching: .images) {
@@ -778,6 +788,9 @@ struct SettingsView: View {
             broadcastVisibility = broadcast.privacyStatus
             broadcastScheduledStartTime = broadcast.scheduledStartTime
             broadcastLifeCycleStatus = broadcast.lifeCycleStatus
+            broadcastEnableDvr = broadcast.enableDvr
+            broadcastLatencyPreference = broadcast.latencyPreference
+            loadedBroadcast = broadcast
             appState.youtubeBroadcastId = broadcast.id
             appState.youtubeStatus = broadcast.lifeCycleStatus
             playlists = try await youtubeService.listPlaylists()
@@ -796,15 +809,30 @@ struct SettingsView: View {
     }
 
     func applyYouTubeChanges() async {
-        guard let broadcastId else { return }
+        guard let broadcastId, let currentBroadcast = loadedBroadcast else { return }
 
         do {
             try await youtubeService.updateBroadcast(
                 id: broadcastId,
                 title: broadcastTitle,
                 privacyStatus: broadcastVisibility,
-                scheduledStartTime: broadcastScheduledStartTime
+                scheduledStartTime: broadcastScheduledStartTime,
+                enableDvr: broadcastEnableDvr,
+                latencyPreference: broadcastLatencyPreference,
+                enableMonitorStream: currentBroadcast.enableMonitorStream,
+                broadcastStreamDelayMs: currentBroadcast.broadcastStreamDelayMs,
+                enableEmbed: currentBroadcast.enableEmbed,
+                recordFromStart: currentBroadcast.recordFromStart,
+                enableAutoStart: currentBroadcast.enableAutoStart,
+                enableAutoStop: currentBroadcast.enableAutoStop
             )
+            var updatedBroadcast = currentBroadcast
+            updatedBroadcast.title = broadcastTitle
+            updatedBroadcast.privacyStatus = broadcastVisibility
+            updatedBroadcast.lifeCycleStatus = broadcastLifeCycleStatus
+            updatedBroadcast.enableDvr = broadcastEnableDvr
+            updatedBroadcast.latencyPreference = broadcastLatencyPreference
+            loadedBroadcast = updatedBroadcast
         } catch {
             youtubeService.errorMessage = error.localizedDescription
             LOG("Failed to update broadcast: \(error.localizedDescription)", level: .error)

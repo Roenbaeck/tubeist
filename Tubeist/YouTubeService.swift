@@ -19,6 +19,14 @@ struct YouTubeBroadcast: Identifiable {
     let boundStreamId: String?
     let scheduledStartTime: String?
     var lifeCycleStatus: String?
+    var enableDvr: Bool
+    var latencyPreference: String
+    var enableMonitorStream: Bool
+    var broadcastStreamDelayMs: Int
+    var enableEmbed: Bool
+    var recordFromStart: Bool
+    var enableAutoStart: Bool
+    var enableAutoStop: Bool
 
     var isLive: Bool { lifeCycleStatus == "live" }
     var isTesting: Bool { lifeCycleStatus == "testing" }
@@ -123,6 +131,24 @@ final class YouTubeService {
         let lifeCycleStatus = status?["lifeCycleStatus"] as? String
         let contentDetails = broadcast["contentDetails"] as? [String: Any]
         let boundStreamId = contentDetails?["boundStreamId"] as? String
+        let enableDvr = contentDetails?["enableDvr"] as? Bool ?? true
+        let monitorStream = contentDetails?["monitorStream"] as? [String: Any]
+        let enableMonitorStream = monitorStream?["enableMonitorStream"] as? Bool ?? false
+        let broadcastStreamDelayMs = monitorStream?["broadcastStreamDelayMs"] as? Int ?? 0
+        let enableEmbed = contentDetails?["enableEmbed"] as? Bool ?? true
+        let recordFromStart = contentDetails?["recordFromStart"] as? Bool ?? true
+        let latencyPreference: String = {
+            if let latencyPreference = contentDetails?["latencyPreference"] as? String,
+               ["normal", "low", "ultraLow"].contains(latencyPreference) {
+                return latencyPreference
+            }
+            if let enableLowLatency = contentDetails?["enableLowLatency"] as? Bool, enableLowLatency {
+                return "low"
+            }
+            return "normal"
+        }()
+        let enableAutoStart = contentDetails?["enableAutoStart"] as? Bool ?? true
+        let enableAutoStop = contentDetails?["enableAutoStop"] as? Bool ?? true
 
         return YouTubeBroadcast(
             id: id,
@@ -130,7 +156,15 @@ final class YouTubeService {
             privacyStatus: privacyStatus,
             boundStreamId: boundStreamId,
             scheduledStartTime: scheduledStartTime,
-            lifeCycleStatus: lifeCycleStatus
+            lifeCycleStatus: lifeCycleStatus,
+            enableDvr: enableDvr,
+            latencyPreference: latencyPreference,
+            enableMonitorStream: enableMonitorStream,
+            broadcastStreamDelayMs: broadcastStreamDelayMs,
+            enableEmbed: enableEmbed,
+            recordFromStart: recordFromStart,
+            enableAutoStart: enableAutoStart,
+            enableAutoStop: enableAutoStop
         )
     }
 
@@ -195,8 +229,16 @@ final class YouTubeService {
                 "privacyStatus": broadcast.privacyStatus,
             ],
             "contentDetails": [
-                "enableAutoStart": true,
-                "enableAutoStop": true,
+                "enableDvr": broadcast.enableDvr,
+                "latencyPreference": broadcast.latencyPreference,
+                "monitorStream": [
+                    "enableMonitorStream": broadcast.enableMonitorStream,
+                    "broadcastStreamDelayMs": broadcast.broadcastStreamDelayMs,
+                ],
+                "enableEmbed": broadcast.enableEmbed,
+                "recordFromStart": broadcast.recordFromStart,
+                "enableAutoStart": broadcast.enableAutoStart,
+                "enableAutoStop": broadcast.enableAutoStop,
             ],
         ]
 
@@ -390,13 +432,13 @@ final class YouTubeService {
 
     // MARK: - YouTube API: Update Broadcast
 
-    func updateBroadcast(id: String, title: String, privacyStatus: String, scheduledStartTime: String?) async throws {
+    func updateBroadcast(id: String, title: String, privacyStatus: String, scheduledStartTime: String?, enableDvr: Bool, latencyPreference: String, enableMonitorStream: Bool, broadcastStreamDelayMs: Int, enableEmbed: Bool, recordFromStart: Bool, enableAutoStart: Bool, enableAutoStop: Bool) async throws {
         isLoading = true
         errorMessage = nil
         defer { isLoading = false }
 
         let token = try await getValidAccessToken()
-        let url = "\(YOUTUBE_API_BASE)/liveBroadcasts?part=snippet,status"
+        let url = "\(YOUTUBE_API_BASE)/liveBroadcasts?part=snippet,status,contentDetails"
 
         var snippet: [String: Any] = ["title": title]
         if let scheduledStartTime {
@@ -408,6 +450,18 @@ final class YouTubeService {
             "snippet": snippet,
             "status": [
                 "privacyStatus": privacyStatus,
+            ],
+            "contentDetails": [
+                "enableDvr": enableDvr,
+                "latencyPreference": latencyPreference,
+                "monitorStream": [
+                    "enableMonitorStream": enableMonitorStream,
+                    "broadcastStreamDelayMs": broadcastStreamDelayMs,
+                ],
+                "enableEmbed": enableEmbed,
+                "recordFromStart": recordFromStart,
+                "enableAutoStart": enableAutoStart,
+                "enableAutoStop": enableAutoStop,
             ],
         ]
 

@@ -169,10 +169,10 @@ actor URLSessionActor {
     func getBaseURLRequest() -> URLRequest? {
         baseURLRequest
     }
-    func refresh() {
-        baseURLRequest = URLSessionActor.createBaseUploadRequest()
+    func refresh(streamID: String? = nil) {
+        baseURLRequest = URLSessionActor.createBaseUploadRequest(streamID: streamID)
     }
-    private static func createBaseUploadRequest() -> URLRequest? {
+    private static func createBaseUploadRequest(streamID: String? = nil) -> URLRequest? {
         guard let hlsServer = Settings.hlsServer else {
             LOG("No HLS server specified", level: .warning)
             return nil
@@ -198,6 +198,10 @@ actor URLSessionActor {
             
             let streamKey = Settings.streamKey ?? MISSING_STREAM_KEY
             request.setValue(streamKey, forHTTPHeaderField: "Stream-Key")
+
+            if let streamID {
+                request.setValue(streamID, forHTTPHeaderField: "Stream-ID")
+            }
             
             return request
         }
@@ -351,9 +355,9 @@ final class FragmentPusher: Sendable {
         LOG("The FragmentPusher is initialized", level: .debug)
     }
     
-    func immediatePreparation() async {
+    func immediatePreparation(streamID: String) async {
         uploadQueue.cancelAllOperations()
-        await urlSession.refresh()
+        await urlSession.refresh(streamID: streamID)
         await fragmentBuffer.expelAllFragments()
         await networkPerformance.netowrkMetrics.deleteAllMetrics()
         LOG("Fragment pusher is prepared to upload", level: .debug)

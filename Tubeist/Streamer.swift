@@ -60,6 +60,18 @@ actor StreamingActor {
 final class Streamer: Sendable {
     @PipelineActor public static let shared = Streamer()
     private let streamingActor = StreamingActor()
+    private static let streamIDFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = .current
+        formatter.dateFormat = "yyyyMMdd_HHmmss"
+        return formatter
+    }()
+
+    static func makeStreamID(at date: Date = Date()) -> String {
+        streamIDFormatter.string(from: date)
+    }
     
     func setAppState(_ appState: AppState) async {
         await self.streamingActor.setAppState(appState)
@@ -83,8 +95,8 @@ final class Streamer: Sendable {
     func stopSessions() async {
         await CaptureDirector.shared.stopSessions()
     }
-    func startStream() async {
-        await FragmentPusher.shared.immediatePreparation()
+    func startStream(streamID: String) async {
+        await FragmentPusher.shared.immediatePreparation(streamID: streamID)
         await ContentPackager.shared.beginPackaging()
         await SoundGrabber.shared.commenceGrabbing()
         await FrameGrabber.shared.commenceGrabbing()
