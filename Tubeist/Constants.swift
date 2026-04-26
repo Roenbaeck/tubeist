@@ -81,9 +81,6 @@ let MAX_UPLOAD_RETRIES = 30
 let MAX_CONCURRENT_UPLOADS = 3
 let MAX_BUFFERED_FRAGMENTS = 90
 
-// Web View Process Pool
-@MainActor let WK_PROCESS_POOL = WKProcessPool()
-
 // Useful for debugging purposes
 func printCurrentExecutionInfo(message: String = "") {
     let currentQueue = OperationQueue.current?.name ?? "No Queue"

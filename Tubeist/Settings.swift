@@ -397,12 +397,13 @@ struct SettingsView: View {
                                     Text("Ultra-low").tag("ultraLow")
                                 }
 
+                                let previewThumbnail = thumbnailImage
                                 PhotosPicker(selection: $selectedPhotoItem, matching: .images) {
                                     HStack {
                                         Text("Thumbnail")
                                         Spacer()
-                                        if let thumbnailImage {
-                                            Image(uiImage: thumbnailImage)
+                                        if let previewThumbnail {
+                                            Image(uiImage: previewThumbnail)
                                                 .resizable()
                                                 .scaledToFill()
                                                 .frame(width: 64, height: 36)

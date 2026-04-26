@@ -188,7 +188,6 @@ final class Overlay: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
 
     func createWebView(width: Int, height: Int) -> WKWebView {
         let config = WKWebViewConfiguration()
-        config.processPool = WK_PROCESS_POOL
         config.suppressesIncrementalRendering = true
         config.mediaTypesRequiringUserActionForPlayback = []
         config.allowsInlineMediaPlayback = true

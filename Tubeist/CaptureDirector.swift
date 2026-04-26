@@ -11,7 +11,7 @@ import SwiftUI
 import AVKit
 
 #if canImport(AVFoundation)
-extension AVCaptureAudioChannel: @unchecked Sendable {}
+extension AVCaptureAudioChannel: @retroactive @unchecked Sendable {}
 #endif
 
 @PipelineActor

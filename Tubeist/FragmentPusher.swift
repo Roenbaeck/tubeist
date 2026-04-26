@@ -365,7 +365,7 @@ final class FragmentPusher: Sendable {
     
     func gracefulShutdown() async {
         let remainingFragments = await fragmentBuffer.countAll()
-        await LOG("Fragment pusher is shutting down gracefully - \(remainingFragments) remaining fragments will be uploaded", level: .debug)
+        LOG("Fragment pusher is shutting down gracefully - \(remainingFragments) remaining fragments will be uploaded", level: .debug)
         if remainingFragments > 0 {
             if uploadQueue.operationCount == 0, await !fragmentBuffer.isEmpty() {
                 self.uploadFragment(attempt: 1)
