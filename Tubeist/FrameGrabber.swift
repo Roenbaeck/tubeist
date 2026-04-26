@@ -81,7 +81,8 @@ private actor FrameTinkerer {
         grabbingFrames
     }
     func refreshStyle() {
-        style = Settings.style
+        let selectedStyle = Settings.style
+        style = selectedStyle == nil || selectedStyle == NO_STYLE ? nil : selectedStyle
     }
     func getStyle() -> String? {
         style
@@ -93,7 +94,8 @@ private actor FrameTinkerer {
         styleStrength
     }
     func refreshEffect() {
-        effect = Settings.effect
+        let selectedEffect = Settings.effect
+        effect = selectedEffect == nil || selectedEffect == NO_EFFECT ? nil : selectedEffect
     }
     func getEffect() -> String? {
         effect
@@ -418,13 +420,19 @@ private actor FrameTinkerer {
                     imprintOverlay(encoder: encoder)
                 }
                 encoder.endEncoding()
-                commandBuffer.commit()
+                await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                    commandBuffer.addCompletedHandler { _ in continuation.resume() }
+                    commandBuffer.commit()
+                }
             }
             if await Streamer.shared.isStreaming() {
                 await ContentPackager.shared.appendVideoSampleBuffer(sendableSampleBuffer)
             }
             if await Streamer.shared.getMonitor() == .output {
-                await OutputMonitorView.enqueue(sendableSampleBuffer)
+                nonisolated(unsafe) let previewSampleBuffer = sendableSampleBuffer
+                Task { @MainActor in
+                    OutputMonitorView.enqueue(previewSampleBuffer)
+                }
             }
         }
     }

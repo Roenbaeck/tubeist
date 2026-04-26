@@ -25,7 +25,13 @@ private class AssetWriterActor {
     private var hasStartedSession: Bool = false
     private var baseVideoPTS: CMTime? = nil
     private let writerTimeScale: CMTimeScale = 90000
+    private var startupAudio: [CMSampleBuffer] = []
     private var pendingAudio: [CMSampleBuffer] = []
+    private var pendingVideo: [CMSampleBuffer] = []
+    private var pendingTrimmedAudioSamples = 0
+    private var pendingTrimmedVideoSamples = 0
+    private var lastTrimLogTime: Date?
+    private let trimLogInterval: TimeInterval = 5
     
     func setupFragmentAssetWriter() async {
         finalizing = false
@@ -111,7 +117,12 @@ private class AssetWriterActor {
         
         hasStartedSession = false
         baseVideoPTS = nil
+        startupAudio.removeAll()
         pendingAudio.removeAll()
+        pendingVideo.removeAll()
+        pendingTrimmedAudioSamples = 0
+        pendingTrimmedVideoSamples = 0
+        lastTrimLogTime = nil
         
         // fetch whether to stream or record or both
         stream = Settings.stream
@@ -174,18 +185,139 @@ private class AssetWriterActor {
         }
     }
     
-    func appendSampleBuffer(_ sampleBuffer: CMSampleBuffer, to input: AVAssetWriterInput?) {
-        guard let input = input, input.isReadyForMoreMediaData else {
-            let inputType = switch input {
-            case videoInput: "video"
-            case audioInput: "audio"
-            default: "unknown"
+    private func presentationTimestamp(of sampleBuffer: CMSampleBuffer) -> CMTime {
+        CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+    }
+
+    private func enqueuePendingSample(_ sampleBuffer: CMSampleBuffer, mediaType: MediaType) {
+        switch mediaType {
+        case .audio:
+            pendingAudio.append(sampleBuffer)
+        case .video:
+            pendingVideo.append(sampleBuffer)
+        }
+        trimPendingBuffersIfNeeded()
+    }
+
+    private func pendingDuration() -> CMTime? {
+        let headPTS = [pendingAudio.first, pendingVideo.first]
+            .compactMap { $0.map(presentationTimestamp(of:)) }
+            .min { CMTimeCompare($0, $1) < 0 }
+        let tailPTS = [pendingAudio.last, pendingVideo.last]
+            .compactMap { $0.map(presentationTimestamp(of:)) }
+            .max { CMTimeCompare($0, $1) < 0 }
+
+        guard let headPTS, let tailPTS else {
+            return nil
+        }
+        return CMTimeSubtract(tailPTS, headPTS)
+    }
+
+    private func trimPendingBuffersIfNeeded() {
+        let maxPendingDuration = CMTime(seconds: 0.5, preferredTimescale: writerTimeScale)
+        let dropSlice = CMTime(seconds: 0.1, preferredTimescale: writerTimeScale)
+
+        while let duration = pendingDuration(), CMTimeCompare(duration, maxPendingDuration) > 0 {
+            let oldestPTS = [pendingAudio.first, pendingVideo.first]
+                .compactMap { $0.map(presentationTimestamp(of:)) }
+                .min { CMTimeCompare($0, $1) < 0 }
+            guard let oldestPTS else {
+                return
             }
-            LOG("Asset writer \(inputType) input not ready for more media data", level: .warning)
+
+            let cutoffPTS = CMTimeAdd(oldestPTS, dropSlice)
+            var droppedAudio = 0
+            while let firstAudio = pendingAudio.first,
+                  CMTimeCompare(presentationTimestamp(of: firstAudio), cutoffPTS) <= 0 {
+                pendingAudio.removeFirst()
+                droppedAudio += 1
+            }
+
+            var droppedVideo = 0
+            while let firstVideo = pendingVideo.first,
+                  CMTimeCompare(presentationTimestamp(of: firstVideo), cutoffPTS) <= 0 {
+                pendingVideo.removeFirst()
+                droppedVideo += 1
+            }
+
+            recordTrimmedSamples(audio: droppedAudio, video: droppedVideo)
+        }
+    }
+
+    private func recordTrimmedSamples(audio: Int, video: Int) {
+        pendingTrimmedAudioSamples += audio
+        pendingTrimmedVideoSamples += video
+
+        let now = Date()
+        if let lastTrimLogTime, now.timeIntervalSince(lastTrimLogTime) < trimLogInterval {
             return
         }
-        if !input.append(sampleBuffer) {
-            LOG("Failed to append sample buffer", level: .error)
+
+        LOG("Trimmed buffered media due to packager backpressure: dropped \(pendingTrimmedAudioSamples) audio and \(pendingTrimmedVideoSamples) video samples in the last \(Int(trimLogInterval))s", level: .warning)
+        pendingTrimmedAudioSamples = 0
+        pendingTrimmedVideoSamples = 0
+        lastTrimLogTime = now
+    }
+
+    private func appendPendingSample(from mediaType: MediaType) -> Bool {
+        let input: AVAssetWriterInput?
+        let sampleBuffer: CMSampleBuffer?
+
+        switch mediaType {
+        case .audio:
+            input = audioInput
+            sampleBuffer = pendingAudio.first
+        case .video:
+            input = videoInput
+            sampleBuffer = pendingVideo.first
+        }
+
+        guard let input, input.isReadyForMoreMediaData, let sampleBuffer else {
+            return false
+        }
+        guard input.append(sampleBuffer) else {
+            LOG("Failed to append pending \(mediaType) sample buffer", level: .error)
+            return false
+        }
+
+        switch mediaType {
+        case .audio:
+            pendingAudio.removeFirst()
+        case .video:
+            pendingVideo.removeFirst()
+        }
+        return true
+    }
+
+    private func drainPendingBuffers() {
+        while true {
+            let nextAudioPTS = pendingAudio.first.map(presentationTimestamp(of:))
+            let nextVideoPTS = pendingVideo.first.map(presentationTimestamp(of:))
+
+            let preferredType: MediaType?
+            switch (nextAudioPTS, nextVideoPTS) {
+            case (.none, .none):
+                return
+            case (.some, .none):
+                preferredType = .audio
+            case (.none, .some):
+                preferredType = .video
+            case let (.some(audioPTS), .some(videoPTS)):
+                preferredType = CMTimeCompare(audioPTS, videoPTS) <= 0 ? .audio : .video
+            }
+
+            guard let preferredType else {
+                return
+            }
+            if appendPendingSample(from: preferredType) {
+                continue
+            }
+
+            let alternateType: MediaType = preferredType == .audio ? .video : .audio
+            if appendPendingSample(from: alternateType) {
+                continue
+            }
+            return
         }
     }
     
@@ -244,39 +376,41 @@ private class AssetWriterActor {
             hasStartedSession = true
             LOG("Asset writing started at .zero; baseVideoPTS: \(pts.value)/\(pts.timescale)", level: .debug)
             // Flush any pending audio that normalizes to >= .zero
-            if !pendingAudio.isEmpty, let basePTS = baseVideoPTS {
-                for audioBuf in pendingAudio {
+            if !startupAudio.isEmpty, let basePTS = baseVideoPTS {
+                for audioBuf in startupAudio {
                     if let normalized = makeSampleBuffer(withNormalizedPTS: audioBuf, basePTS: basePTS, timeScale: writerTimeScale) {
                         let firstPTS = CMSampleBufferGetPresentationTimeStamp(normalized)
                         if CMTimeCompare(firstPTS, .zero) >= 0 {
-                            appendSampleBuffer(normalized, to: audioInput)
+                            enqueuePendingSample(normalized, mediaType: .audio)
                         }
                     }
                 }
-                pendingAudio.removeAll()
+                startupAudio.removeAll()
             }
         }
 
         if let basePTS = baseVideoPTS,
            let normalized = makeSampleBuffer(withNormalizedPTS: sampleBuffer, basePTS: basePTS, timeScale: writerTimeScale) {
-            appendSampleBuffer(normalized, to: videoInput)
+            enqueuePendingSample(normalized, mediaType: .video)
         } else {
-            appendSampleBuffer(sampleBuffer, to: videoInput)
+            enqueuePendingSample(sampleBuffer, mediaType: .video)
         }
+        drainPendingBuffers()
     }
     
     func appendAudioSampleBuffer(_ sampleBuffer: CMSampleBuffer) async {
         // Buffer audio until the video session has started to ensure aligned timelines
         guard hasStartedSession, let basePTS = baseVideoPTS else {
-            pendingAudio.append(sampleBuffer)
+            startupAudio.append(sampleBuffer)
             return
         }
 
         if let normalized = makeSampleBuffer(withNormalizedPTS: sampleBuffer, basePTS: basePTS, timeScale: writerTimeScale) {
-            appendSampleBuffer(normalized, to: audioInput)
+            enqueuePendingSample(normalized, mediaType: .audio)
         } else {
-            appendSampleBuffer(sampleBuffer, to: audioInput)
+            enqueuePendingSample(sampleBuffer, mediaType: .audio)
         }
+        drainPendingBuffers()
     }
 
     func status() -> AVAssetWriter.Status? {

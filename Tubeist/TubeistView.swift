@@ -236,15 +236,11 @@ struct TubeistView: View {
             return
         }
         youtubePollingTask = Task {
+            await refreshCurrentYouTubeBroadcastStatus(logContext: "startup")
             if appState.youtubeBroadcastId == nil {
-                await refreshCurrentYouTubeBroadcastStatus(logContext: "startup")
-                if appState.youtubeBroadcastId == nil {
-                    LOG("YouTube status: could not find broadcast for active stream", level: .warning)
-                    return
-                }
+                LOG("YouTube status: could not find broadcast for active stream", level: .warning)
+                return
             }
-
-            guard let broadcastId = appState.youtubeBroadcastId else { return }
             let startTime = Date()
 
             while !Task.isCancelled {
@@ -259,12 +255,23 @@ struct TubeistView: View {
 
                 guard !Task.isCancelled else { break }
 
+                guard let broadcastId = appState.youtubeBroadcastId else {
+                    await refreshCurrentYouTubeBroadcastStatus(logContext: "poll recovery")
+                    continue
+                }
+
                 do {
                     if let status = try await youtubeService.fetchBroadcastStatus(broadcastId: broadcastId) {
                         appState.youtubeStatus = status
+                        if status != "live" && status != "testing" {
+                            await refreshCurrentYouTubeBroadcastStatus(logContext: "poll reconcile")
+                        }
+                    } else {
+                        await refreshCurrentYouTubeBroadcastStatus(logContext: "poll refresh")
                     }
                 } catch {
                     LOG("YouTube status poll failed: \(error.localizedDescription)", level: .debug)
+                    await refreshCurrentYouTubeBroadcastStatus(logContext: "poll failure recovery")
                 }
             }
         }
