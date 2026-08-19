@@ -66,7 +66,7 @@ for (( index = 2; index <= ${#segments}; index++ )); do
   transport_input="${transport_input}|${segment}"
 done
 
-probe_entries="stream=codec_name,profile,pix_fmt,color_space,color_transfer,color_primaries,sample_rate,channels,r_frame_rate"
+probe_entries="stream=codec_name,profile,width,height,pix_fmt,color_space,color_transfer,color_primaries,sample_rate,channels,r_frame_rate"
 recording_probe=$(ffprobe \
   -v error \
   -show_entries "${probe_entries}" \
@@ -101,8 +101,8 @@ for required_value in ${required_values}; do
   fi
 done
 
-for field in sample_rate channels r_frame_rate; do
-  if [[ ${field} == r_frame_rate ]]; then
+for field in width height sample_rate channels r_frame_rate; do
+  if [[ ${field} == width || ${field} == height || ${field} == r_frame_rate ]]; then
     stream_selector="v:0"
   else
     stream_selector="a:0"

@@ -1,6 +1,6 @@
 # Direct YouTube HLS plan
 
-- Status: implementation complete; device/YouTube acceptance pending
+- Status: implementation complete; 1080p30 real-ingest passed; full device matrix pending
 - Last reviewed: 2026-08-19
 - Starting point: `main` at `3cabdba`
 - Reference only: `transport-stream` at `fdd21f0`
@@ -245,8 +245,10 @@ A pure Swift, stateful muxer. It:
 
 One separable fMP4 fragment produces one TS segment. The remuxer verifies that
 the segment begins at a video random-access point and refuses to upload a segment
-that is not independently decodable. It preserves the duration reported by
-`AVAssetSegmentReport` after cross-checking it against parsed timestamps.
+that is not independently decodable. Playlist duration comes from the complete
+parsed audio/video timeline. Steady-state fragments are cross-checked against
+`AVAssetSegmentReport`; the final fragment permits a shorter first-track report
+because AVAssetWriter may drain a longer audio tail during shutdown.
 
 ### `HLSMediaPlaylist`
 
@@ -319,8 +321,9 @@ phases into a single large transport-stream change.
   `xcodebuild ... build-for-testing` when `Kernels.metal` is excluded. The host
   Xcode installation does not currently contain the optional Metal toolchain;
   the unmodified baseline fails at that prerequisite before Swift compilation.
-- The full `TubeistTests` target passes on an iOS 26.5 simulator, including the
-  direct-sink integration path. Its sustained-network-stall regression verifies
+- The full `TubeistTests` target passes on an iOS 26.5 simulator and a physical
+  iPhone 16 Pro running iOS 26.6, including the direct-sink integration path.
+  Its sustained-network-stall regression verifies
   the six-fragment bound (five queued plus one in flight), oldest-media drops,
   the queued-duration bound, deadline-based shutdown, and queue cleanup. The
   standalone core runner also passes, including stop/cancellation races during
@@ -352,6 +355,15 @@ phases into a single large transport-stream change.
   then disables itself after six media fragments. The exported-capture validator
   probes and decodes both the local-recording byte stream and Tubeist's remuxed
   output while comparing frame rate, sample rate, and channel count.
+- A physical iPhone 16 Pro running iOS 26.6 produced a 1920x1080 30 fps capture
+  with HEVC Main10/yuv420p10le, HLG (ARIB STD-B67), BT.2020 primaries and
+  non-constant matrix, plus 44.1 kHz stereo AAC-LC. Both the exact fragmented-MP4
+  byte stream and six remuxed TS segments probe and decode successfully. The
+  device layout includes optional `sgpd`/`sbgp`, two `traf` boxes, multiple
+  `trun` boxes per track, 64-bit `tfdt`, video `tfhd` flags `0x020038`, and audio
+  `tfhd` flags `0x02001a`. The first random-access access units contain prefix
+  SEI plus IRAP NAL types 20 or 21 but no in-band VPS/SPS/PPS, so the muxer
+  correctly prepends parameter sets from `hvcC`.
 - The record/relay/direct matrix is an executable `StreamOutputPlan` contract.
   `Streamer` passes that immutable startup snapshot into `ContentPackager`, so
   settings cannot change recording and delivery decisions independently during
@@ -359,7 +371,15 @@ phases into a single large transport-stream change.
   primary/backup HLS metadata, RTMP rejection, HTTPS, and the raw `file=` suffix.
   Endpoint-validation and public-error tests use a canary stream key and verify
   that neither it nor a key-bearing URL can escape through diagnostics.
-  Physical-device capture and real YouTube acceptance remain open below.
+- A real direct-HLS session from the same phone delivered media sequences 0
+  through 17 to YouTube with HTTP 200 for every segment, zero retries, zero
+  queued duration, zero drops, and a clean `stopped` outcome. The last physical
+  fragment exposed that AVAssetWriter's first-track report can be shorter than
+  the complete audio/video timeline; final-fragment `EXTINF` now uses the parsed
+  remux timeline, with a physical-device regression test. The Debug acceptance
+  report contains status/queue counters only and passed a key/URL scan. This
+  proves the upload contract and graceful stop, but Live Control Room rendering,
+  archive HDR, the remaining preset matrix, and the long-run gates remain open.
 
 ### Phase 0 - Freeze the contract and collect fixtures
 
@@ -600,7 +620,7 @@ FFmpeg is a development/test oracle only; it is not an app dependency.
 
 ## Definition of done
 
-- [ ] Direct mode reaches YouTube without `hls-relay`.
+- [x] Direct mode reaches YouTube without `hls-relay`.
 - [x] Only one HEVC/AAC encoding path runs in every mode.
 - [x] Every uploaded media file is a self-initializing `.ts` segment beginning
   with PAT/PMT, containing muxed HEVC/AAC, and accepted by the offline validators.

@@ -101,6 +101,12 @@ actor DirectHLSStreamSink {
             )
         }
         isPrepared = true
+#if DEBUG
+        await DirectHLSAcceptanceRecorder.shared.begin(
+            sessionIdentifier: sessionIdentifier,
+            enabled: true
+        )
+#endif
         LOG("Direct YouTube HLS output is prepared", level: .info)
     }
 
@@ -114,6 +120,12 @@ actor DirectHLSStreamSink {
                 let dropped = queue.remove(at: dropIndex)
                 droppedFragments += 1
                 pendingDiscontinuity = true
+#if DEBUG
+                await DirectHLSAcceptanceRecorder.shared.segmentDropped(
+                    sequence: dropped.sequence,
+                    droppedFragments: droppedFragments
+                )
+#endif
                 LOG("Direct HLS queue dropped fragment \(dropped.sequence); the next segment will be discontinuous", level: .warning)
                 await Streamer.shared.setStreamHealth(.degraded)
             }
@@ -159,6 +171,9 @@ actor DirectHLSStreamSink {
             // URL. Keep the public shutdown error stable and non-secret.
             throw DirectHLSStreamError.notPrepared
         }
+#if DEBUG
+        await DirectHLSAcceptanceRecorder.shared.stopped()
+#endif
         LOG("Direct YouTube HLS output stopped", level: .info)
     }
 
@@ -173,6 +188,9 @@ actor DirectHLSStreamSink {
         if let cancelledUploader {
             await cancelledUploader.stop()
         }
+#if DEBUG
+        await DirectHLSAcceptanceRecorder.shared.cancelled()
+#endif
     }
 
     func metrics() async -> DirectHLSMetrics {
@@ -203,6 +221,9 @@ actor DirectHLSStreamSink {
                 guard generation == sessionGeneration else { return }
                 failure = String(describing: error)
                 queue.removeAll(keepingCapacity: true)
+#if DEBUG
+                await DirectHLSAcceptanceRecorder.shared.failed(String(describing: error))
+#endif
                 LOG("Direct HLS packaging stopped: \(error)", level: .error)
                 await Streamer.shared.setStreamHealth(.unusable)
                 if let uploader {
@@ -220,6 +241,9 @@ actor DirectHLSStreamSink {
         switch fragment.type {
         case .initialization:
             initialization = try reader.parseInitializationSegment(fragment.segment)
+#if DEBUG
+            await DirectHLSAcceptanceRecorder.shared.initializationParsed()
+#endif
             LOG("Parsed direct HLS initialization metadata", level: .debug)
 
         case .separable, .finalization:
@@ -231,9 +255,10 @@ actor DirectHLSStreamSink {
             }
             let media = try reader.parseMediaSegment(fragment.segment, initialization: initialization)
             let transportSegment = try muxer.mux(media, initialization: initialization)
-            let duration = fragment.duration > 0 ? fragment.duration : transportSegment.duration
-            let tolerance = max(0.1, duration / 20)
-            if fragment.duration > 0,
+            let duration = transportSegment.duration
+            let tolerance = max(0.1, fragment.duration / 20)
+            if fragment.type != .finalization,
+               fragment.duration > 0,
                abs(fragment.duration - transportSegment.duration) > tolerance {
                 throw DirectHLSStreamError.segmentDurationMismatch(
                     reported: fragment.duration,
@@ -250,6 +275,15 @@ actor DirectHLSStreamSink {
             lastAcceptedMediaSequence = receipt.sequence
             let diagnostics = await uploader.diagnostics
             let queuedDuration = await uploader.queuedDuration
+#if DEBUG
+            await DirectHLSAcceptanceRecorder.shared.segmentAccepted(
+                sequence: receipt.sequence,
+                duration: duration,
+                queuedDuration: queuedDuration,
+                retryCount: diagnostics.retryCount,
+                httpStatus: diagnostics.lastHTTPStatus
+            )
+#endif
             let queuedDurationDescription = String(format: "%.2f", queuedDuration)
             let status = diagnostics.lastHTTPStatus.map(String.init) ?? "network"
             LOG(

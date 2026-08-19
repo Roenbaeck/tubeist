@@ -101,6 +101,59 @@ struct DirectHLSStreamSinkTests {
         #expect(metrics.failure == nil)
     }
 
+    @Test func finalFragmentUsesParsedTimelineWhenWriterTrackDurationIsShorter() async throws {
+        let reader = ISOBMFFReader()
+        let initializationData = FMP4Fixture.initialization()
+        let mediaData = FMP4Fixture.mediaSegment()
+        let initialization = try reader.parseInitializationSegment(initializationData)
+        let media = try reader.parseMediaSegment(
+            mediaData,
+            initialization: initialization
+        )
+        var muxer = MPEGTransportStreamMuxer()
+        let parsedDuration = try muxer.mux(
+            media,
+            initialization: initialization
+        ).duration
+        let transport = DirectSinkTransport()
+        let endpoint = try YouTubeHLSEndpoint(URL(
+            string: "https://upload.youtube.com/http_upload_hls?cid=not-a-real-key&file="
+        )!)
+        let sink = DirectHLSStreamSink()
+        try await sink.prepare(
+            endpoint: endpoint,
+            sessionIdentifier: "final_duration_session",
+            userAgent: "Tubeist/Test",
+            transport: transport
+        )
+        await sink.enqueue(Fragment(
+            sequence: 0,
+            segment: initializationData,
+            duration: 0,
+            type: .initialization
+        ))
+        await sink.enqueue(Fragment(
+            sequence: 1,
+            segment: mediaData,
+            duration: max(0.001, parsedDuration - 0.2),
+            type: .finalization
+        ))
+        try await sink.finish(timeout: 2)
+
+        let requests = await transport.requests()
+        #expect(requests.count == 2)
+        let playlist = String(decoding: requests[0].body, as: UTF8.self)
+        let formattedDuration = String(
+            format: "%.6f",
+            locale: Locale(identifier: "en_US_POSIX"),
+            parsedDuration
+        )
+        #expect(playlist.contains("#EXTINF:\(formattedDuration),"))
+        let metrics = await sink.metrics()
+        #expect(metrics.lastAcceptedMediaSequence == 0)
+        #expect(metrics.failure == nil)
+    }
+
     @Test func sustainedNetworkStallKeepsTheQueueAndShutdownBounded() async throws {
         let reader = ISOBMFFReader()
         let initialization = try reader.parseInitializationSegment(FMP4Fixture.initialization())
