@@ -18,6 +18,8 @@ struct YouTubeBroadcast: Identifiable {
     var privacyStatus: String
     let boundStreamId: String?
     let scheduledStartTime: String?
+    let actualStartTime: String?
+    let publishedAt: String?
     var lifeCycleStatus: String?
     var enableDvr: Bool
     var latencyPreference: String
@@ -67,6 +69,7 @@ struct YouTubePlaylist: Identifiable {
 struct YouTubeStream: Sendable, Equatable {
     let id: String
     let streamName: String
+    let publishedAt: String?
     let ingestionType: String
     let ingestionAddress: String
     let backupIngestionAddress: String?
@@ -107,6 +110,16 @@ enum YouTubeStreamDiscovery {
             throw YouTubeError.invalidResponse
         }
 
+        return try findStream(in: items, matchingStreamKey: streamKey)
+    }
+
+    static func findStream(
+        in items: [[String: Any]],
+        matchingStreamKey streamKey: String
+    ) throws -> YouTubeStream {
+        var matchingStreams: [YouTubeStream] = []
+        var foundMatchingKey = false
+
         for item in items {
             guard let cdn = item["cdn"] as? [String: Any],
                   let ingestionInfo = cdn["ingestionInfo"] as? [String: Any],
@@ -114,21 +127,35 @@ enum YouTubeStreamDiscovery {
                   streamName == streamKey else {
                 continue
             }
+            foundMatchingKey = true
             guard let ingestionType = cdn["ingestionType"] as? String,
                   let ingestionAddress = ingestionInfo["ingestionAddress"] as? String,
                   let id = item["id"] as? String else {
-                throw YouTubeError.invalidResponse
+                continue
             }
-            return YouTubeStream(
+            let snippet = item["snippet"] as? [String: Any]
+            matchingStreams.append(YouTubeStream(
                 id: id,
                 streamName: streamName,
+                publishedAt: snippet?["publishedAt"] as? String,
                 ingestionType: ingestionType,
                 ingestionAddress: ingestionAddress,
                 backupIngestionAddress: ingestionInfo["backupIngestionAddress"] as? String
-            )
+            ))
         }
 
-        throw YouTubeError.noStreamFound
+        if let newest = matchingStreams.max(by: { lhs, rhs in
+            let lhsDate = lhs.publishedAt.flatMap(YouTubeTimestamp.parse) ?? .distantPast
+            let rhsDate = rhs.publishedAt.flatMap(YouTubeTimestamp.parse) ?? .distantPast
+            if lhsDate != rhsDate {
+                return lhsDate < rhsDate
+            }
+            return lhs.id < rhs.id
+        }) {
+            return newest
+        }
+
+        throw foundMatchingKey ? YouTubeError.invalidResponse : YouTubeError.noStreamFound
     }
 
     static func hlsEndpoint(for stream: YouTubeStream) throws -> YouTubeHLSEndpoint {
@@ -146,16 +173,53 @@ enum YouTubeStreamDiscovery {
     }
 }
 
-// MARK: - YouTubeService
+enum YouTubeTimestamp {
+    static func parse(_ value: String) -> Date? {
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = fractional.date(from: value) {
+            return date
+        }
+        return ISO8601DateFormatter().date(from: value)
+    }
+}
 
-@Observable
-@MainActor
-final class YouTubeService {
-    var isSignedIn: Bool = false
-    private(set) var isLoading: Bool = false
-    var errorMessage: String?
+enum YouTubeBroadcastDiscovery {
+    static func selectCurrentOrMostRecent(
+        from broadcasts: [YouTubeBroadcast]
+    ) -> YouTubeBroadcast? {
+        let eligible = broadcasts.filter { $0.lifeCycleStatus != "revoked" }
+        let active = eligible.filter(\.isActive)
+        return (active.isEmpty ? eligible : active).max(by: isOlder)
+    }
 
-    private static func broadcastStatusPriority(_ status: String?) -> Int {
+    private static func isOlder(_ lhs: YouTubeBroadcast, _ rhs: YouTubeBroadcast) -> Bool {
+        let lhsDate = recencyDate(for: lhs)
+        let rhsDate = recencyDate(for: rhs)
+        if lhsDate != rhsDate {
+            return (lhsDate ?? .distantPast) < (rhsDate ?? .distantPast)
+        }
+
+        let lhsPriority = statusPriority(lhs.lifeCycleStatus)
+        let rhsPriority = statusPriority(rhs.lifeCycleStatus)
+        if lhsPriority != rhsPriority {
+            return lhsPriority < rhsPriority
+        }
+        return lhs.id < rhs.id
+    }
+
+    private static func recencyDate(for broadcast: YouTubeBroadcast) -> Date? {
+        [
+            broadcast.actualStartTime,
+            broadcast.scheduledStartTime,
+            broadcast.publishedAt,
+        ]
+        .compactMap { $0 }
+        .compactMap(YouTubeTimestamp.parse)
+        .first
+    }
+
+    private static func statusPriority(_ status: String?) -> Int {
         switch status {
         case "live": return 5
         case "testing": return 4
@@ -166,6 +230,16 @@ final class YouTubeService {
         default: return 0
         }
     }
+}
+
+// MARK: - YouTubeService
+
+@Observable
+@MainActor
+final class YouTubeService {
+    var isSignedIn: Bool = false
+    private(set) var isLoading: Bool = false
+    var errorMessage: String?
 
     init() {
         isSignedIn = Settings.youtubeRefreshToken != nil
@@ -179,6 +253,8 @@ final class YouTubeService {
 
         let title = snippet["title"] as? String ?? ""
         let scheduledStartTime = snippet["scheduledStartTime"] as? String
+        let actualStartTime = snippet["actualStartTime"] as? String
+        let publishedAt = snippet["publishedAt"] as? String
         let status = broadcast["status"] as? [String: Any]
         let privacyStatus = status?["privacyStatus"] as? String ?? "public"
         let lifeCycleStatus = status?["lifeCycleStatus"] as? String
@@ -209,6 +285,8 @@ final class YouTubeService {
             privacyStatus: privacyStatus,
             boundStreamId: boundStreamId,
             scheduledStartTime: scheduledStartTime,
+            actualStartTime: actualStartTime,
+            publishedAt: publishedAt,
             lifeCycleStatus: lifeCycleStatus,
             enableDvr: enableDvr,
             latencyPreference: latencyPreference,
@@ -223,20 +301,16 @@ final class YouTubeService {
 
     private func findStream(for streamKey: String, token: String) async throws -> YouTubeStream {
         let streamsURL = "\(YOUTUBE_API_BASE)/liveStreams?part=cdn,snippet&mine=true&maxResults=50"
-        let streamsData = try await apiGet(url: streamsURL, token: token)
+        let streamItems = try await paginatedItems(url: streamsURL, token: token)
         return try YouTubeStreamDiscovery.findStream(
-            in: streamsData,
+            in: streamItems,
             matchingStreamKey: streamKey
         )
     }
 
     private func listBroadcasts(boundTo streamId: String, token: String) async throws -> [YouTubeBroadcast] {
         let broadcastsURL = "\(YOUTUBE_API_BASE)/liveBroadcasts?part=snippet,contentDetails,status&mine=true&maxResults=50"
-        let broadcastsData = try await apiGet(url: broadcastsURL, token: token)
-        guard let broadcastsJson = try JSONSerialization.jsonObject(with: broadcastsData) as? [String: Any],
-              let broadcasts = broadcastsJson["items"] as? [[String: Any]] else {
-            throw YouTubeError.invalidResponse
-        }
+        let broadcasts = try await paginatedItems(url: broadcastsURL, token: token)
 
         return broadcasts.compactMap { broadcast in
             guard let contentDetails = broadcast["contentDetails"] as? [String: Any],
@@ -462,15 +536,9 @@ final class YouTubeService {
         let stream = try await findStream(for: streamKey, token: token)
         let matchingBroadcasts = try await listBroadcasts(boundTo: stream.id, token: token)
 
-        guard let selectedBroadcast = matchingBroadcasts.sorted(by: { lhs, rhs in
-            let lhsPriority = Self.broadcastStatusPriority(lhs.lifeCycleStatus)
-            let rhsPriority = Self.broadcastStatusPriority(rhs.lifeCycleStatus)
-            if lhsPriority != rhsPriority {
-                return lhsPriority > rhsPriority
-            }
-
-            return (lhs.scheduledStartTime ?? "") > (rhs.scheduledStartTime ?? "")
-        }).first else {
+        guard let selectedBroadcast = YouTubeBroadcastDiscovery.selectCurrentOrMostRecent(
+            from: matchingBroadcasts
+        ) else {
             throw YouTubeError.noBroadcastFound
         }
 
@@ -680,6 +748,47 @@ final class YouTubeService {
             throw YouTubeError.apiError(httpResponse.statusCode, errorMsg)
         }
         return data
+    }
+
+    private func paginatedItems(url: String, token: String) async throws -> [[String: Any]] {
+        guard let baseComponents = URLComponents(string: url) else {
+            throw YouTubeError.invalidResponse
+        }
+
+        var items: [[String: Any]] = []
+        var pageToken: String?
+        var seenPageTokens: Set<String> = []
+
+        repeat {
+            var components = baseComponents
+            if let pageToken {
+                components.queryItems = (components.queryItems ?? []) + [
+                    URLQueryItem(name: "pageToken", value: pageToken),
+                ]
+            }
+            guard let pageURL = components.url else {
+                throw YouTubeError.invalidResponse
+            }
+
+            let data = try await apiGet(url: pageURL.absoluteString, token: token)
+            guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let pageItems = json["items"] as? [[String: Any]] else {
+                throw YouTubeError.invalidResponse
+            }
+            items.append(contentsOf: pageItems)
+
+            guard let nextPageToken = json["nextPageToken"] as? String,
+                  !nextPageToken.isEmpty else {
+                pageToken = nil
+                continue
+            }
+            guard seenPageTokens.insert(nextPageToken).inserted else {
+                throw YouTubeError.invalidResponse
+            }
+            pageToken = nextPageToken
+        } while pageToken != nil
+
+        return items
     }
 
     private func apiPut(url: String, token: String, jsonBody: Data) async throws -> Data {

@@ -58,19 +58,17 @@ struct StreamOutputPlan: Sendable, Equatable {
 
 actor StreamingActor {
     private var appState: AppState?
+    private var active = false
     func setAppState(_ appState: AppState) {
         self.appState = appState
     }
-    func run() {
-        Task { @MainActor in
-            await appState?.isStreamActive = true
-            await appState?.streamHealth = .awaiting
-        }
+    func run() async {
+        active = true
+        await appState?.beginStreaming()
     }
-    func pause() {
-        Task { @MainActor in
-            await appState?.isStreamActive = false
-        }
+    func pause() async {
+        active = false
+        await appState?.endStreaming()
     }
     func setStreamHealth(_ health: StreamHealth) {
         Task { @MainActor in
@@ -81,7 +79,7 @@ actor StreamingActor {
         await appState?.streamHealth ?? .awaiting
     }
     func isStreaming() async -> Bool {
-        await appState?.isStreamActive ?? false
+        active
     }
     func toggleBatterySaving() {
         Task { @MainActor in
@@ -161,8 +159,8 @@ final class Streamer: Sendable {
         }
         await SoundGrabber.shared.commenceGrabbing()
         await FrameGrabber.shared.commenceGrabbing()
-        await CaptureDirector.shared.startOutput()
         await streamingActor.run()
+        await CaptureDirector.shared.startOutput()
     }
     func endStream() async {
         // session time is close to real time

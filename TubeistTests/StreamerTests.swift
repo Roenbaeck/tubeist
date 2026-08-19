@@ -8,6 +8,22 @@ import Testing
 @testable import Tubeist
 
 struct StreamerTests {
+    @Test @MainActor
+    func streamActivityChangesCompleteBeforeTheCallerContinues() async {
+        let appState = AppState()
+        let actor = StreamingActor()
+        await actor.setAppState(appState)
+
+        await actor.run()
+        #expect(await actor.isStreaming())
+        #expect(appState.isStreamActive)
+        #expect(appState.streamHealth == .awaiting)
+
+        await actor.pause()
+        #expect(!(await actor.isStreaming()))
+        #expect(!appState.isStreamActive)
+    }
+
     @Test func outputPlanCoversTheRecordRelayAndDirectRegressionMatrix() throws {
         let cases: [(StreamOutputPlan, Bool, Bool, StreamDestination)] = [
             (StreamOutputPlan(delivery: .none, recordsOriginalFMP4: true), false, true, .relay),

@@ -42,6 +42,7 @@ struct YouTubeServiceTests {
         let stream = YouTubeStream(
             id: "rtmp-stream",
             streamName: "test-key",
+            publishedAt: nil,
             ingestionType: "rtmp",
             ingestionAddress: "rtmp://example.invalid/live",
             backupIngestionAddress: nil
@@ -63,6 +64,7 @@ struct YouTubeServiceTests {
         let stream = YouTubeStream(
             id: "invalid-address",
             streamName: "test-key",
+            publishedAt: nil,
             ingestionType: "hls",
             ingestionAddress: address,
             backupIngestionAddress: nil
@@ -123,6 +125,111 @@ struct YouTubeServiceTests {
             #expect(error == .invalidResponse)
         }
     }
+
+    @Test func selectsTheNewestStreamResourceWhenAReusableKeyAppearsMoreThanOnce() throws {
+        let data = try streamsResponse([
+            streamItem(
+                id: "old-stream-resource",
+                key: "reused-key",
+                type: "hls",
+                address: "https://old.upload.youtube.com/http_upload_hls?cid=reused-key&file=",
+                publishedAt: "2024-01-01T00:00:00Z"
+            ),
+            streamItem(
+                id: "new-stream-resource",
+                key: "reused-key",
+                type: "hls",
+                address: "https://new.upload.youtube.com/http_upload_hls?cid=reused-key&file=",
+                publishedAt: "2026-08-19T06:00:00.123Z"
+            ),
+        ])
+
+        let selected = try YouTubeStreamDiscovery.findStream(
+            in: data,
+            matchingStreamKey: "reused-key"
+        )
+
+        #expect(selected.id == "new-stream-resource")
+        #expect(selected.ingestionAddress.contains("new.upload.youtube.com"))
+    }
+
+    @Test func selectsARecentCompletedBroadcastOverAnOldReadyBroadcast() {
+        let oldReady = broadcast(
+            id: "old-ready",
+            title: "Old stream",
+            status: "ready",
+            scheduledStartTime: "2024-01-01T12:00:00Z"
+        )
+        let recentComplete = broadcast(
+            id: "recent-complete",
+            title: "Most recent stream",
+            status: "complete",
+            scheduledStartTime: "2026-08-19T06:00:00Z",
+            actualStartTime: "2026-08-19T06:01:00.123Z"
+        )
+        let revoked = broadcast(
+            id: "revoked",
+            title: "Revoked stream",
+            status: "revoked",
+            scheduledStartTime: "2027-01-01T00:00:00Z"
+        )
+
+        let selected = YouTubeBroadcastDiscovery.selectCurrentOrMostRecent(
+            from: [oldReady, recentComplete, revoked]
+        )
+
+        #expect(selected?.id == "recent-complete")
+    }
+
+    @Test func selectsTheCurrentActiveBroadcastBeforeAFutureBroadcast() {
+        let active = broadcast(
+            id: "active",
+            title: "Live now",
+            status: "live",
+            scheduledStartTime: "2026-08-19T06:00:00Z",
+            actualStartTime: "2026-08-19T06:01:00Z"
+        )
+        let future = broadcast(
+            id: "future",
+            title: "Tomorrow",
+            status: "ready",
+            scheduledStartTime: "2026-08-20T06:00:00Z"
+        )
+
+        let selected = YouTubeBroadcastDiscovery.selectCurrentOrMostRecent(
+            from: [future, active]
+        )
+
+        #expect(selected?.id == "active")
+    }
+}
+
+private func broadcast(
+    id: String,
+    title: String,
+    status: String,
+    scheduledStartTime: String? = nil,
+    actualStartTime: String? = nil,
+    publishedAt: String? = nil
+) -> YouTubeBroadcast {
+    YouTubeBroadcast(
+        id: id,
+        title: title,
+        privacyStatus: "unlisted",
+        boundStreamId: "shared-stream",
+        scheduledStartTime: scheduledStartTime,
+        actualStartTime: actualStartTime,
+        publishedAt: publishedAt,
+        lifeCycleStatus: status,
+        enableDvr: true,
+        latencyPreference: "normal",
+        enableMonitorStream: false,
+        broadcastStreamDelayMs: 0,
+        enableEmbed: true,
+        recordFromStart: true,
+        enableAutoStart: true,
+        enableAutoStop: true
+    )
 }
 
 private func streamItem(
@@ -130,7 +237,8 @@ private func streamItem(
     key: String,
     type: String,
     address: String,
-    backupAddress: String? = nil
+    backupAddress: String? = nil,
+    publishedAt: String? = nil
 ) -> [String: Any] {
     var ingestionInfo: [String: Any] = [
         "streamName": key,
@@ -139,13 +247,17 @@ private func streamItem(
     if let backupAddress {
         ingestionInfo["backupIngestionAddress"] = backupAddress
     }
-    return [
+    var item: [String: Any] = [
         "id": id,
         "cdn": [
             "ingestionType": type,
             "ingestionInfo": ingestionInfo,
         ],
     ]
+    if let publishedAt {
+        item["snippet"] = ["publishedAt": publishedAt]
+    }
+    return item
 }
 
 private func streamsResponse(_ items: [[String: Any]]) throws -> Data {

@@ -317,10 +317,10 @@ phases into a single large transport-stream change.
 ### Implementation evidence (2026-08-19)
 
 - Work is isolated on `codex/direct-youtube-hls`, based on `main` at `3cabdba`.
-- The complete app and unit-test targets compile with Swift 6 using
-  `xcodebuild ... build-for-testing` when `Kernels.metal` is excluded. The host
-  Xcode installation does not currently contain the optional Metal toolchain;
-  the unmodified baseline fails at that prerequisite before Swift compilation.
+- The complete app and unit-test targets compile with Swift 6, including
+  `Kernels.metal`, after installing Xcode's Metal Toolchain 17F109 component.
+  A device/simulator test loads every configured style, effect, and imprint
+  function from the app's default library and creates its compute pipeline.
 - The full `TubeistTests` target passes on an iOS 26.5 simulator and a physical
   iPhone 16 Pro running iOS 26.6, including the direct-sink integration path.
   Its sustained-network-stall regression verifies
@@ -380,6 +380,16 @@ phases into a single large transport-stream change.
   report contains status/queue counters only and passed a key/URL scan. This
   proves the upload contract and graceful stop, but Live Control Room rendering,
   archive HDR, the remaining preset matrix, and the long-run gates remain open.
+- Shutdown now closes the pipeline's media-intake gate before touching
+  `AVAssetWriter`, drains its bounded pending audio/video samples before marking
+  either input finished, and waits for ordered routing plus upload completion.
+  Apple may deliver the last audio and video as separate final callbacks; the
+  direct sink now coalesces those samples into one YouTube-compliant muxed TS
+  segment. An unmatched single-track tail is reported without poisoning or
+  deleting earlier complete media. Regression tests reproduce both final-track
+  layouts and the former misleading `not prepared` shutdown error. The full iOS
+  suite, static analyzer, and generic-device test build pass; a physical stop and
+  archive-tail replay remains pending while the test phone is offline.
 
 ### Phase 0 - Freeze the contract and collect fixtures
 
@@ -511,6 +521,8 @@ sinks, and settings migration leaves existing users on the working relay path.
 - [ ] Exercise a stop/restart in the same second, network loss and recovery,
   server 5xx responses, app interruption, thermal pressure, and a session long
   enough to expose timestamp drift or queue growth.
+- [ ] Repeat a physical direct-HLS stop after the final-drain fix and confirm the
+  YouTube archive contains the complete buffered tail with no shutdown error.
 - [ ] Compare CPU, energy, memory, and thermal behavior against relay streaming.
   Investigate any evidence of a second encoder or unbounded copying.
 - [ ] Decide and document final-playlist behavior from observed YouTube results.

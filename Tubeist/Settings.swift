@@ -500,12 +500,17 @@ struct SettingsView: View {
                             .buttonStyle(.bordered)
                         }
                     }
-                    .onAppear {
-                        if youtubeService.isSignedIn && !youtubeConfigLoaded {
-                            Task {
-                                await loadYouTubeBroadcast()
-                            }
+                    .task(id: streamKeyManager.currentKey) {
+                        let streamKey = streamKeyManager.currentKey
+                        resetLoadedYouTubeBroadcast()
+                        guard youtubeService.isSignedIn else { return }
+                        do {
+                            try await Task.sleep(for: .milliseconds(400))
+                        } catch {
+                            return
                         }
+                        guard !Task.isCancelled else { return }
+                        await loadYouTubeBroadcast(forStreamKey: streamKey)
                     }
                 }
 
@@ -822,9 +827,35 @@ struct SettingsView: View {
         await loadYouTubeBroadcast()
     }
 
-    func loadYouTubeBroadcast() async {
+    func resetLoadedYouTubeBroadcast() {
+        broadcastId = nil
+        broadcastTitle = ""
+        broadcastVisibility = "public"
+        broadcastScheduledStartTime = nil
+        broadcastLifeCycleStatus = nil
+        broadcastEnableDvr = true
+        broadcastLatencyPreference = "normal"
+        loadedBroadcast = nil
+        playlists = []
+        youtubeConfigLoaded = false
+        youtubeService.errorMessage = nil
+        appState.youtubeBroadcastId = nil
+        appState.youtubeStatus = nil
+    }
+
+    func loadYouTubeBroadcast(forStreamKey requestedStreamKey: String? = nil) async {
+        let streamKey = requestedStreamKey ?? streamKeyManager.currentKey
+        guard !streamKey.isEmpty else {
+            resetLoadedYouTubeBroadcast()
+            return
+        }
+        resetLoadedYouTubeBroadcast()
         do {
-            let broadcast = try await youtubeService.findBroadcastForStreamKey(streamKeyManager.currentKey)
+            let broadcast = try await youtubeService.findBroadcastForStreamKey(streamKey)
+            let loadedPlaylists = try await youtubeService.listPlaylists()
+            guard streamKey == streamKeyManager.currentKey, !Task.isCancelled else {
+                return
+            }
             broadcastId = broadcast.id
             broadcastTitle = broadcast.title
             broadcastVisibility = broadcast.privacyStatus
@@ -835,7 +866,7 @@ struct SettingsView: View {
             loadedBroadcast = broadcast
             appState.youtubeBroadcastId = broadcast.id
             appState.youtubeStatus = broadcast.lifeCycleStatus
-            playlists = try await youtubeService.listPlaylists()
+            playlists = loadedPlaylists
             if let selectedPlaylistId, !playlists.contains(where: { $0.id == selectedPlaylistId }) {
                 self.selectedPlaylistId = nil
                 Settings.youtubeSelectedPlaylistId = nil
@@ -844,6 +875,9 @@ struct SettingsView: View {
             youtubeService.errorMessage = nil
             LOG("Loaded YouTube broadcast: \(broadcast.title)", level: .info)
         } catch {
+            guard streamKey == streamKeyManager.currentKey, !Task.isCancelled else {
+                return
+            }
             youtubeService.errorMessage = error.localizedDescription
             youtubeConfigLoaded = true
             LOG("Failed to load YouTube broadcast: \(error.localizedDescription)", level: .error)

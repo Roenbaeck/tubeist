@@ -132,6 +132,10 @@ private class AssetWriterActor {
     }
     
     func finishWriting() async {
+        await drainPendingBuffersBeforeFinishing()
+        // Give already-enqueued segment delegate work one executor turn before
+        // callbacks produced by finishWriting are classified as finalization.
+        await Task.yield()
         finalizing = true
         await withCheckedContinuation { continuation in
             guard let fragmentAssetWriter else {
@@ -153,6 +157,9 @@ private class AssetWriterActor {
             self.fragmentAssetWriter = nil
             self.videoInput = nil
             self.audioInput = nil
+            self.startupAudio.removeAll(keepingCapacity: false)
+            self.pendingAudio.removeAll(keepingCapacity: false)
+            self.pendingVideo.removeAll(keepingCapacity: false)
         }
     }
     
@@ -291,7 +298,9 @@ private class AssetWriterActor {
         return true
     }
 
-    private func drainPendingBuffers() {
+    @discardableResult
+    private func drainPendingBuffers() -> Int {
+        var appendedCount = 0
         while true {
             let nextAudioPTS = pendingAudio.first.map(presentationTimestamp(of:))
             let nextVideoPTS = pendingVideo.first.map(presentationTimestamp(of:))
@@ -299,7 +308,7 @@ private class AssetWriterActor {
             let preferredType: MediaType?
             switch (nextAudioPTS, nextVideoPTS) {
             case (.none, .none):
-                return
+                return appendedCount
             case (.some, .none):
                 preferredType = .audio
             case (.none, .some):
@@ -309,17 +318,45 @@ private class AssetWriterActor {
             }
 
             guard let preferredType else {
-                return
+                return appendedCount
             }
             if appendPendingSample(from: preferredType) {
+                appendedCount += 1
                 continue
             }
 
             let alternateType: MediaType = preferredType == .audio ? .video : .audio
             if appendPendingSample(from: alternateType) {
+                appendedCount += 1
                 continue
             }
-            return
+            return appendedCount
+        }
+    }
+
+    private func drainPendingBuffersBeforeFinishing(timeout: TimeInterval = 2) async {
+        let deadline = Date().addingTimeInterval(timeout)
+        while (!pendingAudio.isEmpty || !pendingVideo.isEmpty),
+              fragmentAssetWriter?.status == .writing,
+              Date() < deadline {
+            let appendedCount = drainPendingBuffers()
+            if !pendingAudio.isEmpty || !pendingVideo.isEmpty {
+                // AVAssetWriter applies backpressure while it finishes encoding
+                // prior samples. Yield until an input is ready rather than
+                // marking it finished and silently dropping this tail.
+                if appendedCount == 0 {
+                    try? await Task.sleep(for: .milliseconds(5))
+                } else {
+                    await Task.yield()
+                }
+            }
+        }
+
+        if !pendingAudio.isEmpty || !pendingVideo.isEmpty {
+            LOG(
+                "Final media drain reached its deadline with \(pendingVideo.count) video and \(pendingAudio.count) audio samples still buffered",
+                level: .warning
+            )
         }
     }
     

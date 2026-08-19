@@ -32,6 +32,13 @@ final class AppState {
     var lastKnownBrightness: CGFloat = UIScreen.main.brightness
 
     var activeMonitor: Monitor = DEFAULT_MONITOR
+    func beginStreaming() {
+        isStreamActive = true
+        streamHealth = .awaiting
+    }
+    func endStreaming() {
+        isStreamActive = false
+    }
     var cameraMonitorId = UUID()
     func refreshCameraView() {
         cameraMonitorId = UUID()

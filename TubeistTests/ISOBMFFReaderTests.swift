@@ -218,8 +218,11 @@ enum FMP4Fixture {
         sequence: UInt32 = 7,
         videoDecodeTime: UInt64 = 1_000,
         audioDecodeTime: UInt64 = 480,
-        videoIsRandomAccess: Bool = true
+        videoIsRandomAccess: Bool = true,
+        includeVideo: Bool = true,
+        includeAudio: Bool = true
     ) -> Data {
+        precondition(includeVideo || includeAudio)
         let videoData = Data([0, 0, 0, 2, 0x26, 0x01])
         let audioData = Data([0xaa, 0xbb, 0xcc])
 
@@ -236,16 +239,34 @@ enum FMP4Fixture {
             let audioRun = box("trun", fullBoxPayload(flags: 0x000201) +
                 be32(1) + be32(audioOffset) + be32(audioData.count))
 
-            return box("moof", box("mfhd", fullBoxPayload() + be32(sequence)) +
-                box("traf", videoHeader + videoDecodeTimeBox + videoRun) +
-                box("traf", audioHeader + audioDecodeTimeBox + audioRun))
+            var trackFragments = Data()
+            if includeVideo {
+                trackFragments += box("traf", videoHeader + videoDecodeTimeBox + videoRun)
+            }
+            if includeAudio {
+                trackFragments += box("traf", audioHeader + audioDecodeTimeBox + audioRun)
+            }
+            return box(
+                "moof",
+                box("mfhd", fullBoxPayload() + be32(sequence)) + trackFragments
+            )
         }
 
         let placeholder = movieFragment(videoOffset: 0, audioOffset: 0)
-        let videoOffset = Int32(placeholder.count + 8)
-        let audioOffset = videoOffset + Int32(videoData.count)
+        let payloadOffset = Int32(placeholder.count + 8)
+        let videoOffset = includeVideo ? payloadOffset : 0
+        let audioOffset = includeAudio
+            ? payloadOffset + Int32(includeVideo ? videoData.count : 0)
+            : 0
         let moof = movieFragment(videoOffset: videoOffset, audioOffset: audioOffset)
-        return moof + box("mdat", videoData + audioData)
+        var mediaData = Data()
+        if includeVideo {
+            mediaData += videoData
+        }
+        if includeAudio {
+            mediaData += audioData
+        }
+        return moof + box("mdat", mediaData)
     }
 
     static func mediaSegmentWithMultipleVideoRuns() -> Data {

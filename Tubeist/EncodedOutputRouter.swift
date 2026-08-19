@@ -9,6 +9,7 @@ enum DirectHLSStreamError: LocalizedError, CustomStringConvertible {
     case notPrepared
     case initializationMissing
     case segmentDurationMismatch(reported: Double, parsed: Double)
+    case packagingFailed
     case shutdownTimedOut
 
     var description: String {
@@ -17,6 +18,7 @@ enum DirectHLSStreamError: LocalizedError, CustomStringConvertible {
         case .initializationMissing: "A media fragment arrived before its initialization segment"
         case .segmentDurationMismatch(let reported, let parsed):
             "Fragment duration mismatch (writer \(reported)s, parsed \(parsed)s)"
+        case .packagingFailed: "Direct HLS packaging failed before shutdown completed"
         case .shutdownTimedOut: "Direct HLS output did not drain before its shutdown deadline"
         }
     }
@@ -55,6 +57,11 @@ actor DirectHLSStreamSink {
     private var isPrepared = false
     private var currentDuration = 0.0
     private var pendingDiscontinuity = false
+    private var finalizationSamples: [ISOBMFFSample] = []
+    private var finalizationSequenceNumber: UInt32?
+    private var finalizationFragmentCount = 0
+    private var finalizationReportedDuration = 0.0
+    private var finalizationDiscontinuity = false
     private var droppedFragments = 0
     private var lastAcceptedMediaSequence: Int?
     private var failure: String?
@@ -77,6 +84,7 @@ actor DirectHLSStreamSink {
         isProcessing = false
         currentDuration = 0
         pendingDiscontinuity = false
+        clearFinalizationBuffer()
         droppedFragments = 0
         lastAcceptedMediaSequence = nil
         failure = nil
@@ -145,7 +153,6 @@ actor DirectHLSStreamSink {
         let deadline = Date().addingTimeInterval(timeout)
         while generation == sessionGeneration,
               (isProcessing || !queue.isEmpty),
-              failure == nil,
               Date() < deadline {
             try await Task.sleep(for: .milliseconds(50))
         }
@@ -155,6 +162,24 @@ actor DirectHLSStreamSink {
         guard !isProcessing, queue.isEmpty else {
             await cancel()
             throw DirectHLSStreamError.shutdownTimedOut
+        }
+        if !finalizationSamples.isEmpty {
+            isProcessing = true
+            Task(priority: .utility) {
+                await self.drainFinalization(sessionGeneration: generation)
+            }
+            while generation == sessionGeneration,
+                  isProcessing,
+                  Date() < deadline {
+                try await Task.sleep(for: .milliseconds(50))
+            }
+            guard generation == sessionGeneration else {
+                throw DirectHLSStreamError.notPrepared
+            }
+            guard !isProcessing else {
+                await cancel()
+                throw DirectHLSStreamError.shutdownTimedOut
+            }
         }
         let finishingUploader = uploader
         uploader = nil
@@ -169,7 +194,7 @@ actor DirectHLSStreamSink {
         if finishingFailure != nil {
             // The detailed failure was already journaled without an ingestion
             // URL. Keep the public shutdown error stable and non-secret.
-            throw DirectHLSStreamError.notPrepared
+            throw DirectHLSStreamError.packagingFailed
         }
 #if DEBUG
         await DirectHLSAcceptanceRecorder.shared.stopped()
@@ -185,6 +210,7 @@ actor DirectHLSStreamSink {
         isPrepared = false
         isProcessing = false
         currentDuration = 0
+        clearFinalizationBuffer()
         if let cancelledUploader {
             await cancelledUploader.stop()
         }
@@ -199,8 +225,10 @@ actor DirectHLSStreamSink {
         return DirectHLSMetrics(
             networkMbps: performance.0,
             networkUtilization: performance.1,
-            queuedFragments: queue.count + (isProcessing ? 1 : 0),
-            queuedDuration: queue.reduce(max(currentDuration, uploadDuration)) { $0 + $1.duration },
+            queuedFragments: queue.count + finalizationFragmentCount + (isProcessing ? 1 : 0),
+            queuedDuration: queue.reduce(
+                max(currentDuration, uploadDuration, finalizationReportedDuration)
+            ) { $0 + $1.duration },
             lastAcceptedMediaSequence: lastAcceptedMediaSequence,
             droppedFragments: droppedFragments,
             failure: failure
@@ -218,17 +246,7 @@ actor DirectHLSStreamSink {
                 try await process(fragment, sessionGeneration: generation)
                 guard generation == sessionGeneration else { return }
             } catch {
-                guard generation == sessionGeneration else { return }
-                failure = String(describing: error)
-                queue.removeAll(keepingCapacity: true)
-#if DEBUG
-                await DirectHLSAcceptanceRecorder.shared.failed(String(describing: error))
-#endif
-                LOG("Direct HLS packaging stopped: \(error)", level: .error)
-                await Streamer.shared.setStreamHealth(.unusable)
-                if let uploader {
-                    await uploader.stop()
-                }
+                await handleProcessingFailure(error, sessionGeneration: generation)
             }
             currentDuration = 0
         }
@@ -250,47 +268,153 @@ actor DirectHLSStreamSink {
             guard let initialization else {
                 throw DirectHLSStreamError.initializationMissing
             }
-            guard let uploader else {
-                throw DirectHLSStreamError.notPrepared
-            }
             let media = try reader.parseMediaSegment(fragment.segment, initialization: initialization)
-            let transportSegment = try muxer.mux(media, initialization: initialization)
-            let duration = transportSegment.duration
-            let tolerance = max(0.1, fragment.duration / 20)
-            if fragment.type != .finalization,
-               fragment.duration > 0,
-               abs(fragment.duration - transportSegment.duration) > tolerance {
-                throw DirectHLSStreamError.segmentDurationMismatch(
-                    reported: fragment.duration,
-                    parsed: transportSegment.duration
+            if fragment.type == .finalization {
+                finalizationSamples.append(contentsOf: media.samples)
+                if finalizationSequenceNumber == nil {
+                    finalizationSequenceNumber = media.sequenceNumber
+                }
+                finalizationFragmentCount += 1
+                finalizationReportedDuration = max(
+                    finalizationReportedDuration,
+                    fragment.duration
                 )
+                finalizationDiscontinuity = finalizationDiscontinuity || fragment.discontinuity
+                return
             }
-            let receipt = try await uploader.upload(
-                segment: transportSegment.data,
-                duration: duration,
-                discontinuity: fragment.discontinuity || pendingDiscontinuity
-            )
-            guard generation == sessionGeneration else { return }
-            pendingDiscontinuity = false
-            lastAcceptedMediaSequence = receipt.sequence
-            let diagnostics = await uploader.diagnostics
-            let queuedDuration = await uploader.queuedDuration
-#if DEBUG
-            await DirectHLSAcceptanceRecorder.shared.segmentAccepted(
-                sequence: receipt.sequence,
-                duration: duration,
-                queuedDuration: queuedDuration,
-                retryCount: diagnostics.retryCount,
-                httpStatus: diagnostics.lastHTTPStatus
-            )
-#endif
-            let queuedDurationDescription = String(format: "%.2f", queuedDuration)
-            let status = diagnostics.lastHTTPStatus.map(String.init) ?? "network"
-            LOG(
-                "YouTube direct accepted media sequence \(receipt.sequence); queued \(queuedDurationDescription)s; retries \(diagnostics.retryCount); HTTP \(status)",
-                level: .debug
+            try await upload(
+                media,
+                reportedDuration: fragment.duration,
+                validateReportedDuration: true,
+                discontinuity: fragment.discontinuity,
+                sessionGeneration: generation
             )
         }
+    }
+
+    private func drainFinalization(sessionGeneration generation: UInt64) async {
+        guard generation == sessionGeneration, isPrepared, failure == nil else {
+            return
+        }
+        let samples = finalizationSamples
+        let sequenceNumber = finalizationSequenceNumber
+        let fragmentCount = finalizationFragmentCount
+        let reportedDuration = finalizationReportedDuration
+        let discontinuity = finalizationDiscontinuity
+        clearFinalizationBuffer()
+        currentDuration = reportedDuration
+
+        let hasVideo = samples.contains { $0.kind == .video }
+        let hasAudio = samples.contains { $0.kind == .audio }
+        if hasVideo, hasAudio {
+            do {
+                try await upload(
+                    ISOBMFFMediaSegment(
+                        sequenceNumber: sequenceNumber,
+                        samples: samples
+                    ),
+                    reportedDuration: reportedDuration,
+                    validateReportedDuration: false,
+                    discontinuity: discontinuity,
+                    sessionGeneration: generation
+                )
+                if fragmentCount > 1 {
+                    LOG(
+                        "Coalesced \(fragmentCount) final AVAssetWriter callbacks into one muxed audio/video segment",
+                        level: .debug
+                    )
+                }
+            } catch {
+                await handleProcessingFailure(error, sessionGeneration: generation)
+            }
+        } else if !samples.isEmpty {
+            let mediaKind = hasVideo ? "video" : "audio"
+            LOG(
+                "AVAssetWriter ended with an unmatched \(mediaKind)-only tail; all complete audio/video media was uploaded",
+                level: .warning
+            )
+        }
+        currentDuration = 0
+        if generation == sessionGeneration {
+            isProcessing = false
+        }
+    }
+
+    private func upload(
+        _ media: ISOBMFFMediaSegment,
+        reportedDuration: Double,
+        validateReportedDuration: Bool,
+        discontinuity: Bool,
+        sessionGeneration generation: UInt64
+    ) async throws {
+        guard let initialization else {
+            throw DirectHLSStreamError.initializationMissing
+        }
+        guard let uploader else {
+            throw DirectHLSStreamError.notPrepared
+        }
+        let transportSegment = try muxer.mux(media, initialization: initialization)
+        let duration = transportSegment.duration
+        let tolerance = max(0.1, reportedDuration / 20)
+        if validateReportedDuration,
+           reportedDuration > 0,
+           abs(reportedDuration - duration) > tolerance {
+            throw DirectHLSStreamError.segmentDurationMismatch(
+                reported: reportedDuration,
+                parsed: duration
+            )
+        }
+        let receipt = try await uploader.upload(
+            segment: transportSegment.data,
+            duration: duration,
+            discontinuity: discontinuity || pendingDiscontinuity
+        )
+        guard generation == sessionGeneration else { return }
+        pendingDiscontinuity = false
+        lastAcceptedMediaSequence = receipt.sequence
+        let diagnostics = await uploader.diagnostics
+        let queuedDuration = await uploader.queuedDuration
+#if DEBUG
+        await DirectHLSAcceptanceRecorder.shared.segmentAccepted(
+            sequence: receipt.sequence,
+            duration: duration,
+            queuedDuration: queuedDuration,
+            retryCount: diagnostics.retryCount,
+            httpStatus: diagnostics.lastHTTPStatus
+        )
+#endif
+        let queuedDurationDescription = String(format: "%.2f", queuedDuration)
+        let status = diagnostics.lastHTTPStatus.map(String.init) ?? "network"
+        LOG(
+            "YouTube direct accepted media sequence \(receipt.sequence); queued \(queuedDurationDescription)s; retries \(diagnostics.retryCount); HTTP \(status)",
+            level: .debug
+        )
+    }
+
+    private func handleProcessingFailure(
+        _ error: Error,
+        sessionGeneration generation: UInt64
+    ) async {
+        guard generation == sessionGeneration else { return }
+        failure = String(describing: error)
+        queue.removeAll(keepingCapacity: true)
+        clearFinalizationBuffer()
+#if DEBUG
+        await DirectHLSAcceptanceRecorder.shared.failed(String(describing: error))
+#endif
+        LOG("Direct HLS packaging stopped: \(error)", level: .error)
+        await Streamer.shared.setStreamHealth(.unusable)
+        if let uploader {
+            await uploader.stop()
+        }
+    }
+
+    private func clearFinalizationBuffer() {
+        finalizationSamples.removeAll(keepingCapacity: true)
+        finalizationSequenceNumber = nil
+        finalizationFragmentCount = 0
+        finalizationReportedDuration = 0
+        finalizationDiscontinuity = false
     }
 }
 

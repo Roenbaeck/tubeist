@@ -154,6 +154,135 @@ struct DirectHLSStreamSinkTests {
         #expect(metrics.failure == nil)
     }
 
+    @Test func coalescesSplitFinalVideoAndAudioBeforeStopping() async throws {
+        let transport = DirectSinkTransport()
+        let endpoint = try YouTubeHLSEndpoint(URL(
+            string: "https://upload.youtube.com/http_upload_hls?cid=not-a-real-key&file="
+        )!)
+        let sink = DirectHLSStreamSink()
+        try await sink.prepare(
+            endpoint: endpoint,
+            sessionIdentifier: "split_final_session",
+            userAgent: "Tubeist/Test",
+            transport: transport
+        )
+        await sink.enqueue(Fragment(
+            sequence: 0,
+            segment: FMP4Fixture.initialization(),
+            duration: 0,
+            type: .initialization
+        ))
+        await sink.enqueue(Fragment(
+            sequence: 1,
+            segment: FMP4Fixture.mediaSegment(includeAudio: false),
+            duration: 0.04,
+            type: .finalization
+        ))
+        await sink.enqueue(Fragment(
+            sequence: 2,
+            segment: FMP4Fixture.mediaSegment(includeVideo: false),
+            duration: 0.03,
+            type: .finalization
+        ))
+
+        try await sink.finish(timeout: 2)
+
+        let requests = await transport.requests()
+        #expect(requests.count == 2)
+        #expect(requests[0].contentType == "application/vnd.apple.mpegurl")
+        #expect(requests[1].contentType == "video/mp2t")
+        #expect(requests[1].body.first == 0x47)
+        let packetPIDs = directSinkPacketPIDs(requests[1].body)
+        #expect(packetPIDs.contains(MPEGTransportStreamMuxer.videoPID))
+        #expect(packetPIDs.contains(MPEGTransportStreamMuxer.audioPID))
+        let metrics = await sink.metrics()
+        #expect(metrics.lastAcceptedMediaSequence == 0)
+        #expect(metrics.failure == nil)
+    }
+
+    @Test func incompleteFinalTrackDoesNotPoisonAlreadyBufferedMedia() async throws {
+        let transport = DirectSinkTransport()
+        let endpoint = try YouTubeHLSEndpoint(URL(
+            string: "https://upload.youtube.com/http_upload_hls?cid=not-a-real-key&file="
+        )!)
+        let sink = DirectHLSStreamSink()
+        try await sink.prepare(
+            endpoint: endpoint,
+            sessionIdentifier: "incomplete_final_session",
+            userAgent: "Tubeist/Test",
+            transport: transport
+        )
+        await sink.enqueue(Fragment(
+            sequence: 0,
+            segment: FMP4Fixture.initialization(),
+            duration: 0,
+            type: .initialization
+        ))
+        await sink.enqueue(Fragment(
+            sequence: 1,
+            segment: FMP4Fixture.mediaSegment(),
+            duration: 0,
+            type: .separable
+        ))
+        await sink.enqueue(Fragment(
+            sequence: 2,
+            segment: FMP4Fixture.mediaSegment(
+                sequence: 8,
+                videoDecodeTime: 4_000,
+                audioDecodeTime: 2_080,
+                includeVideo: false
+            ),
+            duration: 0.03,
+            type: .finalization
+        ))
+
+        try await sink.finish(timeout: 2)
+
+        let requests = await transport.requests()
+        #expect(requests.count == 2)
+        #expect(requests[1].contentType == "video/mp2t")
+        let metrics = await sink.metrics()
+        #expect(metrics.lastAcceptedMediaSequence == 0)
+        #expect(metrics.failure == nil)
+    }
+
+    @Test func shutdownReportsPackagingFailureInsteadOfClaimingTheSinkWasNotPrepared() async throws {
+        let transport = DirectSinkTransport()
+        let endpoint = try YouTubeHLSEndpoint(URL(
+            string: "https://upload.youtube.com/http_upload_hls?cid=not-a-real-key&file="
+        )!)
+        let sink = DirectHLSStreamSink()
+        try await sink.prepare(
+            endpoint: endpoint,
+            sessionIdentifier: "malformed_shutdown_session",
+            userAgent: "Tubeist/Test",
+            transport: transport
+        )
+        await sink.enqueue(Fragment(
+            sequence: 0,
+            segment: FMP4Fixture.initialization(),
+            duration: 0,
+            type: .initialization
+        ))
+        await sink.enqueue(Fragment(
+            sequence: 1,
+            segment: Data([0, 1, 2, 3]),
+            duration: 1,
+            type: .separable
+        ))
+
+        do {
+            try await sink.finish(timeout: 2)
+            Issue.record("Expected malformed media to fail shutdown")
+        } catch let error as DirectHLSStreamError {
+            if case .packagingFailed = error {
+                // Expected: the public error is accurate and contains no URL.
+            } else {
+                Issue.record("Unexpected shutdown error: \(error)")
+            }
+        }
+    }
+
     @Test func sustainedNetworkStallKeepsTheQueueAndShutdownBounded() async throws {
         let reader = ISOBMFFReader()
         let initialization = try reader.parseInitializationSegment(FMP4Fixture.initialization())
@@ -222,6 +351,16 @@ struct DirectHLSStreamSinkTests {
 private struct DirectSinkRequest: Sendable {
     let contentType: String?
     let body: Data
+}
+
+private func directSinkPacketPIDs(_ data: Data) -> [UInt16] {
+    guard data.count.isMultiple(of: MPEGTransportStreamMuxer.packetSize) else {
+        return []
+    }
+    return stride(from: 0, to: data.count, by: MPEGTransportStreamMuxer.packetSize).compactMap {
+        guard data[$0] == 0x47 else { return nil }
+        return (UInt16(data[$0 + 1] & 0x1f) << 8) | UInt16(data[$0 + 2])
+    }
 }
 
 private actor DirectSinkTransport: YouTubeHLSHTTPTransport {
