@@ -32,6 +32,26 @@ It's important to understand that in its current phase, Tubeist may still contai
 
 For testing purposes, a rudimentary stream server is available as a separate project: [https://github.com/Roenbaeck/hls-relay](https://github.com/Roenbaeck/hls-relay). This is an HTTP server that accepts HLS input, which is forwarded to YouTube (or Twitch) using ffmpeg. You will need to configure Tubeist to point to your HLS relay server.
 
+### Direct YouTube HLS (development builds)
+
+Debug builds can instead select **YouTube direct (HLS)** under the Delivery
+setting. This path remuxes the existing HEVC Main10 HLG and AAC output to
+MPEG-2 TS on the phone; it does not start a second video or audio encoder and it
+does not require `hls-relay`.
+
+Direct delivery requires a YouTube stream configured for the **HLS** ingestion
+type. An RTMP/RTMPS key is not interchangeable. When Tubeist is signed in to
+YouTube it validates the matching stream resource and uses the primary HLS
+ingestion address returned by the API. Without sign-in it uses YouTube's
+documented primary manual-key template. Stream keys and complete ingestion URLs
+must never be included in logs or bug reports.
+
+The feature remains Debug-only until the physical-device, long-stream, and real
+YouTube acceptance gates in [PLAN.md](PLAN.md) have passed. Relay remains the
+persisted default and the immediate fallback. See YouTube's official
+[HLS ingestion guide](https://developers.google.com/youtube/v3/live/guides/hls-ingestion)
+for creating a compatible stream key.
+
 ## Getting Started (For Developers)
 
 If you're interested in contributing to the development of Tubeist, here's a basic guide to get started:
@@ -40,6 +60,15 @@ If you're interested in contributing to the development of Tubeist, here's a bas
 2. **Install Dependencies:**  There are no dependencies to external frameworks.
 3. **Build the Project:** Open the `Tubeist.xcodeproj` or `Tubeist.xcworkspace` in Xcode and build the project for your target device.
 4. **Run on your iPhone:** Connect your iPhone and run the application from Xcode.
+
+The pure Swift remuxer also has a generated offline conformance check; see
+[`Tools/RemuxFixture/README.md`](Tools/RemuxFixture/README.md).
+The direct uploader's real `URLSession` behavior has a loopback HTTPS validator;
+see [`Tools/YouTubeHLSMock/README.md`](Tools/YouTubeHLSMock/README.md).
+Apple's host-side `mpeg4AppleHLS` box layout is covered separately; see
+[`Tools/AppleFMP4Fixture/README.md`](Tools/AppleFMP4Fixture/README.md).
+Exported physical-iPhone fixture sets can be checked with
+[`Tools/DeviceFMP4Fixture/README.md`](Tools/DeviceFMP4Fixture/README.md).
 
 **Ensure you have a valid development certificate and provisioning profile configured in Xcode.**
 

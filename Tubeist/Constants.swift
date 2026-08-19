@@ -80,6 +80,14 @@ let MAX_UPLOAD_RETRIES = 30
 let MAX_CONCURRENT_UPLOADS = 3
 let MAX_BUFFERED_FRAGMENTS = 90
 
+// Direct YouTube HLS remains a development feature until device and TestFlight
+// acceptance in PLAN.md is complete. Existing users continue to default to relay.
+#if DEBUG
+let DIRECT_YOUTUBE_HLS_AVAILABLE = true
+#else
+let DIRECT_YOUTUBE_HLS_AVAILABLE = false
+#endif
+
 // Useful for debugging purposes
 func printCurrentExecutionInfo(message: String = "") {
     let currentQueue = OperationQueue.current?.name ?? "No Queue"

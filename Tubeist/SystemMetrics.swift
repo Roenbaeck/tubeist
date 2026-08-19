@@ -46,11 +46,16 @@ struct SystemMetricsView: View {
         let cpuUsage = getCPUUsage()
         let batteryLevel = getBatteryLevel()
         let thermalLevel = getThermalLevel()
-        let (networkMbps, networkUtilization) = await FragmentPusher.shared.networkPerformance()
-        let fragmentBufferCount = await FragmentPusher.shared.fragmentBufferCount()
+        let outputMetrics = await EncodedOutputRouter.shared.metrics()
+        let networkMbps = outputMetrics.networkMbps
+        let networkUtilization = outputMetrics.networkUtilization
+        let fragmentBufferCount = outputMetrics.bufferedFragments
         let streamHealth: StreamHealth = await {
             if await Streamer.shared.isStreaming() {
-                if (networkUtilization > 100 || fragmentBufferCount > 1) {
+                if outputMetrics.hasFailure {
+                    return .unusable
+                }
+                if networkUtilization >= 100 || fragmentBufferCount > 1 {
                     return .degraded
                 }
                 else {
@@ -121,6 +126,5 @@ struct SystemMetricsView: View {
     }
     
 }
-
 
 

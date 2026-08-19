@@ -64,18 +64,23 @@ struct YouTubePlaylist: Identifiable {
     let title: String
 }
 
-private struct YouTubeStream {
+struct YouTubeStream: Sendable, Equatable {
     let id: String
     let streamName: String
+    let ingestionType: String
+    let ingestionAddress: String
+    let backupIngestionAddress: String?
 }
 
-enum YouTubeError: LocalizedError {
+enum YouTubeError: LocalizedError, Equatable {
     case notSignedIn
     case noClientId
     case authFailed(String)
     case apiError(Int, String)
     case noBroadcastFound
     case noStreamFound
+    case incompatibleIngestionType(String)
+    case invalidIngestionAddress
     case invalidResponse
     case tokenRefreshFailed
 
@@ -87,8 +92,56 @@ enum YouTubeError: LocalizedError {
         case .apiError(let code, let msg): return "YouTube API error (\(code)): \(msg)"
         case .noBroadcastFound: return "No broadcast found for this stream key"
         case .noStreamFound: return "No stream found matching this key"
+        case .incompatibleIngestionType(let type): return "This YouTube stream key uses \(type.uppercased()) ingestion. Direct mode requires an HLS stream key."
+        case .invalidIngestionAddress: return "YouTube did not return a valid HLS ingestion address"
         case .invalidResponse: return "Invalid response from YouTube API"
         case .tokenRefreshFailed: return "Failed to refresh access token"
+        }
+    }
+}
+
+enum YouTubeStreamDiscovery {
+    static func findStream(in data: Data, matchingStreamKey streamKey: String) throws -> YouTubeStream {
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let items = json["items"] as? [[String: Any]] else {
+            throw YouTubeError.invalidResponse
+        }
+
+        for item in items {
+            guard let cdn = item["cdn"] as? [String: Any],
+                  let ingestionInfo = cdn["ingestionInfo"] as? [String: Any],
+                  let streamName = ingestionInfo["streamName"] as? String,
+                  streamName == streamKey else {
+                continue
+            }
+            guard let ingestionType = cdn["ingestionType"] as? String,
+                  let ingestionAddress = ingestionInfo["ingestionAddress"] as? String,
+                  let id = item["id"] as? String else {
+                throw YouTubeError.invalidResponse
+            }
+            return YouTubeStream(
+                id: id,
+                streamName: streamName,
+                ingestionType: ingestionType,
+                ingestionAddress: ingestionAddress,
+                backupIngestionAddress: ingestionInfo["backupIngestionAddress"] as? String
+            )
+        }
+
+        throw YouTubeError.noStreamFound
+    }
+
+    static func hlsEndpoint(for stream: YouTubeStream) throws -> YouTubeHLSEndpoint {
+        guard stream.ingestionType.lowercased() == "hls" else {
+            throw YouTubeError.incompatibleIngestionType(stream.ingestionType)
+        }
+        guard let url = URL(string: stream.ingestionAddress) else {
+            throw YouTubeError.invalidIngestionAddress
+        }
+        do {
+            return try YouTubeHLSEndpoint(url)
+        } catch {
+            throw YouTubeError.invalidIngestionAddress
         }
     }
 }
@@ -171,22 +224,10 @@ final class YouTubeService {
     private func findStream(for streamKey: String, token: String) async throws -> YouTubeStream {
         let streamsURL = "\(YOUTUBE_API_BASE)/liveStreams?part=cdn,snippet&mine=true&maxResults=50"
         let streamsData = try await apiGet(url: streamsURL, token: token)
-        guard let streamsJson = try JSONSerialization.jsonObject(with: streamsData) as? [String: Any],
-              let items = streamsJson["items"] as? [[String: Any]] else {
-            throw YouTubeError.invalidResponse
-        }
-
-        for item in items {
-            if let cdn = item["cdn"] as? [String: Any],
-               let ingestionInfo = cdn["ingestionInfo"] as? [String: Any],
-               let streamName = ingestionInfo["streamName"] as? String,
-               streamName == streamKey,
-               let id = item["id"] as? String {
-                return YouTubeStream(id: id, streamName: streamName)
-            }
-        }
-
-        throw YouTubeError.noStreamFound
+        return try YouTubeStreamDiscovery.findStream(
+            in: streamsData,
+            matchingStreamKey: streamKey
+        )
     }
 
     private func listBroadcasts(boundTo streamId: String, token: String) async throws -> [YouTubeBroadcast] {
@@ -400,6 +441,16 @@ final class YouTubeService {
     }
 
     // MARK: - YouTube API: Streams
+
+    func findHLSIngestionEndpoint(forStreamKey streamKey: String) async throws -> YouTubeHLSEndpoint {
+        isLoading = true
+        errorMessage = nil
+        defer { isLoading = false }
+
+        let token = try await getValidAccessToken()
+        let stream = try await findStream(for: streamKey, token: token)
+        return try YouTubeStreamDiscovery.hlsEndpoint(for: stream)
+    }
 
     func findBroadcastForStreamKey(_ streamKey: String) async throws -> YouTubeBroadcast {
         isLoading = true

@@ -792,9 +792,14 @@ struct TubeistView: View {
                                         isStartingStream = true
                                         Task {
                                             showCameraPicker = false
-                                            await Streamer.shared.startStream(streamID: streamID)
+                                            do {
+                                                try await Streamer.shared.startStream(streamID: streamID)
+                                                LOG("Started streaming engine", level: .info)
+                                            } catch {
+                                                fade(error.localizedDescription)
+                                                LOG("Could not start streaming engine: \(error.localizedDescription)", level: .error)
+                                            }
                                             isStartingStream = false
-                                            LOG("Started streaming engine", level: .info)
                                         }
                                     }
                                     else {

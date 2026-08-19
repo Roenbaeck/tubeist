@@ -5,6 +5,7 @@
 //  Created by Lars Rönnbäck on 2024-12-06.
 //
 import CoreMedia
+import UIKit
 
 enum StreamHealth {
     case silenced   // When stream is not running
@@ -12,6 +13,47 @@ enum StreamHealth {
     case unusable   // Stream is too bad to watch
     case degraded   // Noticeable quality issues
     case pristine   // Perfect viewing experience
+}
+
+enum EncodedStreamDelivery: Sendable, Equatable {
+    case none
+    case relay
+    case youTubeDirect
+}
+
+struct StreamOutputPlan: Sendable, Equatable {
+    let delivery: EncodedStreamDelivery
+    let recordsOriginalFMP4: Bool
+
+    var routesEncodedFragments: Bool { delivery != .none }
+    var uploadsOriginalFMP4: Bool { delivery == .relay }
+    var remuxesToTransportStream: Bool { delivery == .youTubeDirect }
+
+    static func resolve(
+        stream: Bool,
+        record: Bool,
+        destination: StreamDestination,
+        target: String,
+        directYouTubeAvailable: Bool
+    ) throws -> StreamOutputPlan {
+        guard stream else {
+            return StreamOutputPlan(delivery: .none, recordsOriginalFMP4: record)
+        }
+
+        switch destination {
+        case .relay:
+            return StreamOutputPlan(delivery: .relay, recordsOriginalFMP4: record)
+
+        case .youTubeDirect:
+            guard directYouTubeAvailable else {
+                throw StreamStartError.directModeUnavailable
+            }
+            guard target == "youtube" else {
+                throw StreamStartError.directModeRequiresYouTube
+            }
+            return StreamOutputPlan(delivery: .youTubeDirect, recordsOriginalFMP4: record)
+        }
+    }
 }
 
 actor StreamingActor {
@@ -69,8 +111,9 @@ final class Streamer: Sendable {
         return formatter
     }()
 
-    static func makeStreamID(at date: Date = Date()) -> String {
-        streamIDFormatter.string(from: date)
+    static func makeStreamID(at date: Date = Date(), uuid: UUID = UUID()) -> String {
+        let suffix = uuid.uuidString.replacingOccurrences(of: "-", with: "").lowercased().prefix(12)
+        return "\(streamIDFormatter.string(from: date))_\(suffix)"
     }
     
     func setAppState(_ appState: AppState) async {
@@ -95,9 +138,27 @@ final class Streamer: Sendable {
     func stopSessions() async {
         await CaptureDirector.shared.stopSessions()
     }
-    func startStream(streamID: String) async {
-        await FragmentPusher.shared.immediatePreparation(streamID: streamID)
-        await ContentPackager.shared.beginPackaging()
+    func startStream(streamID: String) async throws {
+        guard await !ContentPackager.shared.isPackaging() else {
+            throw ContentPackagingError.assetWriterAlreadyWriting
+        }
+        let outputPlan = try StreamOutputPlan.resolve(
+            stream: Settings.stream,
+            record: Settings.record,
+            destination: Settings.streamDestination,
+            target: Settings.target,
+            directYouTubeAvailable: DIRECT_YOUTUBE_HLS_AVAILABLE
+        )
+        do {
+            try await prepareEncodedOutput(streamID: streamID, plan: outputPlan)
+            try await ContentPackager.shared.beginPackaging(
+                stream: outputPlan.routesEncodedFragments,
+                record: outputPlan.recordsOriginalFMP4
+            )
+        } catch {
+            await EncodedOutputRouter.shared.cancel()
+            throw error
+        }
         await SoundGrabber.shared.commenceGrabbing()
         await FrameGrabber.shared.commenceGrabbing()
         await CaptureDirector.shared.startOutput()
@@ -128,7 +189,12 @@ final class Streamer: Sendable {
         }
         await SoundGrabber.shared.terminateGrabbing()
         await ContentPackager.shared.endPackaging()
-        await FragmentPusher.shared.gracefulShutdown()
+        do {
+            try await EncodedOutputRouter.shared.finish()
+        } catch {
+            LOG("Encoded output shutdown failed: \(error)", level: .error)
+            await streamingActor.setStreamHealth(.unusable)
+        }
     }
     func isStreaming() async -> Bool {
         await streamingActor.isStreaming()
@@ -158,6 +224,50 @@ final class Streamer: Sendable {
             LOG("Stopping half the streaming pipeline", level: .debug)
             await CaptureDirector.shared.stopOutput()
             await FrameGrabber.shared.terminateGrabbing()
+        }
+    }
+
+    private func prepareEncodedOutput(streamID: String, plan: StreamOutputPlan) async throws {
+        switch plan.delivery {
+        case .none:
+            await EncodedOutputRouter.shared.prepareForRecordingOnly()
+
+        case .relay:
+            await EncodedOutputRouter.shared.prepareRelay(streamID: streamID)
+
+        case .youTubeDirect:
+            guard let streamKey = Settings.streamKey, !streamKey.isEmpty else {
+                throw StreamStartError.missingStreamKey
+            }
+
+            let endpoint: YouTubeHLSEndpoint
+            if Settings.youtubeRefreshToken != nil {
+                let service = await YouTubeService()
+                endpoint = try await service.findHLSIngestionEndpoint(forStreamKey: streamKey)
+            } else {
+                endpoint = try YouTubeHLSEndpoint.manualPrimary(streamKey: streamKey)
+            }
+            let model = await MainActor.run { UIDevice.current.model.replacingOccurrences(of: " ", with: "_") }
+            let userAgent = "Apple / \(model) / Tubeist-\(Bundle.main.appVersion ?? "unknown")"
+            try await EncodedOutputRouter.shared.prepareDirect(
+                endpoint: endpoint,
+                sessionIdentifier: streamID,
+                userAgent: userAgent
+            )
+        }
+    }
+}
+
+enum StreamStartError: LocalizedError, Equatable {
+    case directModeUnavailable
+    case directModeRequiresYouTube
+    case missingStreamKey
+
+    var errorDescription: String? {
+        switch self {
+        case .directModeUnavailable: "Direct YouTube HLS is not enabled in this build"
+        case .directModeRequiresYouTube: "Direct HLS delivery is available only for YouTube"
+        case .missingStreamKey: "Enter a YouTube HLS stream key before starting"
         }
     }
 }

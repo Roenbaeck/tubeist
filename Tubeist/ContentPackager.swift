@@ -33,16 +33,16 @@ private class AssetWriterActor {
     private var lastTrimLogTime: Date?
     private let trimLogInterval: TimeInterval = 5
     
-    func setupFragmentAssetWriter() async {
+    func setupFragmentAssetWriter(stream: Bool, record: Bool) async -> Bool {
         finalizing = false
         guard let contentType = UTType(AVFileType.mp4.rawValue) else {
             LOG("MP4 is not a valid type", level: .error)
-            return
+            return false
         }
         fragmentAssetWriter = AVAssetWriter(contentType: contentType)
         guard let fragmentAssetWriter else {
             LOG("Could not create asset writer", level: .error)
-            return
+            return false
         }
         let selectedPreset = Settings.selectedPreset
         let selectedVideoBitrate = selectedPreset.videoBitrate
@@ -87,7 +87,7 @@ private class AssetWriterActor {
         videoInput = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
         guard let videoInput else {
             LOG("Could not set up video input", level: .error)
-            return
+            return false
         }
         videoInput.expectsMediaDataInRealTime = true
         // Removed line: videoInput.mediaTimeScale = FRAGMENT_TIMESCALE
@@ -103,7 +103,7 @@ private class AssetWriterActor {
         audioInput = AVAssetWriterInput(mediaType: .audio, outputSettings: audioSettings)
         guard let audioInput else {
             LOG("Could not set up audio input", level: .error)
-            return
+            return false
         }
         audioInput.expectsMediaDataInRealTime = true
         
@@ -112,7 +112,7 @@ private class AssetWriterActor {
         
         guard fragmentAssetWriter.startWriting() else {
             LOG("Error starting writing: \(fragmentAssetWriter.error?.localizedDescription ?? "Unknown error")", level: .error)
-            return
+            return false
         }
         
         hasStartedSession = false
@@ -124,9 +124,11 @@ private class AssetWriterActor {
         pendingTrimmedVideoSamples = 0
         lastTrimLogTime = nil
         
-        // fetch whether to stream or record or both
-        stream = Settings.stream
-        record = Settings.record
+        // Freeze sink selection for the lifetime of this writer session so a
+        // settings edit cannot split recording and delivery decisions.
+        self.stream = stream
+        self.record = record
+        return true
     }
     
     func finishWriting() async {
@@ -430,18 +432,21 @@ private class AssetWriterActor {
     }
 }
 
-actor FragmentSequenceNumberActor {
+final class FragmentSequenceNumber: @unchecked Sendable {
     // with next() first sequence is numbered 0 (ensuring correspondence with the sequence numbers in the m4s files)
     private var fragmentSequenceNumber: Int = -1
+    private let lock = NSLock()
     func next() -> Int {
-        fragmentSequenceNumber += 1
-        return fragmentSequenceNumber
+        lock.withLock {
+            fragmentSequenceNumber += 1
+            return fragmentSequenceNumber
+        }
     }
     func last() -> Int {
-        return fragmentSequenceNumber
+        lock.withLock { fragmentSequenceNumber }
     }
     func reset() {
-        fragmentSequenceNumber = -1
+        lock.withLock { fragmentSequenceNumber = -1 }
     }
 }
 
@@ -469,11 +474,9 @@ actor RecordingActor {
         }
         fragmentQueue = []
         isWriting = false
-        let dateFormatter = DateFormatter()
-        dateFormatter.dateFormat = "yyyyMMdd_HHmmss"
-        let timestamp = dateFormatter.string(from: Date())
-        filename = "recording_\(timestamp).mp4"
-        let fileURL = recordingFolder.appendingPathComponent(filename!)
+        let filename = "recording_\(HLSMediaPlaylist.makeSessionIdentifier()).mp4"
+        self.filename = filename
+        let fileURL = recordingFolder.appendingPathComponent(filename)
         do {
             try? FileManager.default.removeItem(at: fileURL)
             FileManager.default.createFile(atPath: fileURL.path, contents: nil, attributes: nil)
@@ -535,16 +538,25 @@ actor RecordingActor {
 final class ContentPackager: NSObject, AVAssetWriterDelegate, Sendable {
     @PipelineActor public static let shared = ContentPackager()
     @PipelineActor private static let assetWriter = AssetWriterActor()
-    private let fragmentSequenceNumber = FragmentSequenceNumberActor()
+    private let fragmentSequenceNumber = FragmentSequenceNumber()
     private let recording = RecordingActor()
+    private let fragmentDispatchGroup = DispatchGroup()
 
-    func beginPackaging() async {
+    func isPackaging() async -> Bool {
+        await ContentPackager.assetWriter.status() == .writing
+    }
+
+    func beginPackaging(stream: Bool, record: Bool) async throws {
         guard await ContentPackager.assetWriter.status() != .writing else {
-            LOG("Asset writer had already started intercepting sample buffers", level: .debug)
-            return
+            throw ContentPackagingError.assetWriterAlreadyWriting
         }
-        await self.fragmentSequenceNumber.reset()
-        await ContentPackager.assetWriter.setupFragmentAssetWriter()
+        self.fragmentSequenceNumber.reset()
+        guard await ContentPackager.assetWriter.setupFragmentAssetWriter(
+            stream: stream,
+            record: record
+        ) else {
+            throw ContentPackagingError.assetWriterSetupFailed
+        }
         LOG("Asset writer is now intercepting sample buffers", level: .debug)
     }
     func endPackaging() async {
@@ -553,6 +565,11 @@ final class ContentPackager: NSObject, AVAssetWriterDelegate, Sendable {
             return
         }
         await ContentPackager.assetWriter.finishWriting()
+        await withCheckedContinuation { continuation in
+            fragmentDispatchGroup.notify(queue: .global(qos: .userInitiated)) {
+                continuation.resume()
+            }
+        }
         LOG("Asset writer is no longer intercepting sample buffers", level: .debug)
     }
     
@@ -568,7 +585,10 @@ final class ContentPackager: NSObject, AVAssetWriterDelegate, Sendable {
                      didOutputSegmentData segmentData: Data,
                      segmentType: AVAssetSegmentType,
                      segmentReport: AVAssetSegmentReport?) {
+        let sequenceNumber = fragmentSequenceNumber.next()
+        fragmentDispatchGroup.enter()
         Task { @PipelineActor in
+            defer { self.fragmentDispatchGroup.leave() }
             guard let fragmentType: Fragment.SegmentType = {
                 switch (segmentType, ContentPackager.assetWriter.isFinalizing()) {
                 case (.separable, false): .separable
@@ -581,13 +601,15 @@ final class ContentPackager: NSObject, AVAssetWriterDelegate, Sendable {
                 return
             }
             let duration = segmentReport?.trackReports.first?.duration.seconds ?? 0
-            let sequenceNumber = await fragmentSequenceNumber.next()
             let fragment = Fragment(sequence: sequenceNumber, segment: segmentData, duration: duration, type: fragmentType)
             LOG("Produced \(fragment)", level: .debug)
+
+#if DEBUG
+            await FMP4FixtureCapture.shared.capture(fragment)
+#endif
             
             if ContentPackager.assetWriter.shouldStream() {
-                await FragmentPusher.shared.addFragment(fragment)
-                await FragmentPusher.shared.uploadFragment(attempt: 1)
+                await EncodedOutputRouter.shared.route(fragment)
             }
             if ContentPackager.assetWriter.shouldRecord() {
                 await recording.enqueueFragment(fragment)
@@ -596,3 +618,16 @@ final class ContentPackager: NSObject, AVAssetWriterDelegate, Sendable {
     }
 }
 
+enum ContentPackagingError: LocalizedError {
+    case assetWriterAlreadyWriting
+    case assetWriterSetupFailed
+
+    var errorDescription: String? {
+        switch self {
+        case .assetWriterAlreadyWriting:
+            "The HEVC/AAC asset writer is already running"
+        case .assetWriterSetupFailed:
+            "Could not start the HEVC/AAC asset writer"
+        }
+    }
+}

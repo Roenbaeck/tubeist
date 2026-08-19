@@ -195,6 +195,20 @@ enum RecordingOption: String, CaseIterable, Identifiable {
     }
 }
 
+enum StreamDestination: String, CaseIterable, Identifiable, Sendable {
+    case relay
+    case youTubeDirect
+
+    var id: Self { self }
+
+    var description: String {
+        switch self {
+        case .relay: "Relay server"
+        case .youTubeDirect: "YouTube direct (HLS)"
+        }
+    }
+}
+
 struct SettingsView: View {
     var overlayManager: OverlaySettingsManager
     @Environment(AppState.self) var appState
@@ -203,6 +217,7 @@ struct SettingsView: View {
     @AppStorage("Username") private var hlsUsername: String = ""
     @AppStorage("Password") private var hlsPassword: String = ""
     @AppStorage("Target") private var target: String = DEFAULT_TARGET
+    @AppStorage("StreamDestination") private var streamDestinationRaw: String = StreamDestination.relay.rawValue
     @AppStorage("Stream") private var stream: Bool = true
     @AppStorage("Record") private var record: Bool = false
     @AppStorage("InputSyncsWithOutput") private var inputSyncsWithOutput: Bool = true // assume energy efficiency is top priority
@@ -215,6 +230,9 @@ struct SettingsView: View {
     @AppStorage("JournalWarning") private var journalWarning: Bool = true
     @AppStorage("JournalInfo") private var journalInfo: Bool = true
     @AppStorage("JournalDebug") private var journalDebug: Bool = false
+#if DEBUG
+    @AppStorage("CaptureRemuxFixtures") private var captureRemuxFixtures: Bool = false
+#endif
     @State private var newOverlayURL: String = ""
     @State private var selectedPreset: Preset? = nil
     @State private var streamKeyManager = StreamKeyManager()
@@ -313,6 +331,20 @@ struct SettingsView: View {
                         .keyboardType(.asciiCapable)
                         .autocapitalization(.none)
                         .disableAutocorrection(true)
+
+                        Picker("Delivery", selection: $streamDestinationRaw) {
+                            Text(StreamDestination.relay.description)
+                                .tag(StreamDestination.relay.rawValue)
+                            if target == "youtube" && DIRECT_YOUTUBE_HLS_AVAILABLE {
+                                Text(StreamDestination.youTubeDirect.description)
+                                    .tag(StreamDestination.youTubeDirect.rawValue)
+                            }
+                        }
+                        .onChange(of: target) { _, newValue in
+                            if newValue != "youtube" {
+                                streamDestinationRaw = StreamDestination.relay.rawValue
+                            }
+                        }
                     }
                 }
                 .onAppear {
@@ -476,6 +508,15 @@ struct SettingsView: View {
                         }
                     }
                 }
+
+#if DEBUG
+                Section(
+                    header: Text("Direct HLS Development"),
+                    footer: Text("Saves the next initialization segment and six fMP4 media fragments to Documents/TubeistRemuxFixtures. Use only generated test imagery when sharing fixtures.")
+                ) {
+                    Toggle("Capture fMP4 remux fixtures", isOn: $captureRemuxFixtures)
+                }
+#endif
 
                 Section(header: Text("Camera"), footer: Text("Select if the camera will be moving around with altering scenery or remain stationary aimed at a single scene. If you do not want to get suggested presets and instead configure settings in detail, select 'Custom' here.")) {
                     Picker("Camera Position", selection: $cameraPosition) {
@@ -1037,6 +1078,31 @@ final class Settings: Sendable {
             UserDefaults.standard.set(newValue, forKey: "Target")
         }
     }
+    static var streamDestination: StreamDestination {
+        get {
+            guard let rawValue = UserDefaults.standard.string(forKey: "StreamDestination"),
+                  let destination = StreamDestination(rawValue: rawValue) else {
+                return .relay
+            }
+            guard destination != .youTubeDirect || DIRECT_YOUTUBE_HLS_AVAILABLE else {
+                return .relay
+            }
+            return destination
+        }
+        set {
+            UserDefaults.standard.set(newValue.rawValue, forKey: "StreamDestination")
+        }
+    }
+#if DEBUG
+    static var captureRemuxFixtures: Bool {
+        get {
+            UserDefaults.standard.bool(forKey: "CaptureRemuxFixtures")
+        }
+        set {
+            UserDefaults.standard.set(newValue, forKey: "CaptureRemuxFixtures")
+        }
+    }
+#endif
     static var cameraStabilization: String? {
         get {
             UserDefaults.standard.string(forKey: "CameraStabilization")

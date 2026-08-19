@@ -8,14 +8,14 @@
 import Foundation
 import SystemConfiguration
 
-struct Fragment: CustomStringConvertible {
+struct Fragment: Sendable, CustomStringConvertible {
     let sequence: Int
     let segment: Data
     let duration: Double
     var discontinuity: Bool = false
     var type: SegmentType = .separable
 
-    enum SegmentType {
+    enum SegmentType: Sendable, Equatable {
         case initialization
         case separable
         case finalization
