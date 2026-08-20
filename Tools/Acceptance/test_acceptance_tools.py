@@ -25,16 +25,24 @@ class AcceptanceReportTests(unittest.TestCase):
         sequences: tuple[int, ...] = (0, 1),
         include_drop: bool = False,
         outcome: str = "stopped",
+        schema: int = 3,
     ) -> list[dict[str, object]]:
         timestamp = datetime(2026, 8, 20, tzinfo=timezone.utc)
         events: list[dict[str, object]] = []
 
         def append(kind: str, **values: object) -> None:
             nonlocal timestamp
-            events.append({"timestamp": timestamp.isoformat(), "kind": kind, **values})
+            event: dict[str, object] = {
+                "timestamp": timestamp.isoformat(),
+                "kind": kind,
+                **values,
+            }
+            if schema == 3:
+                event["elapsed"] = float(len(events))
+            events.append(event)
             timestamp += timedelta(seconds=1)
 
-        append("prepared", detail="schema=2")
+        append("prepared", detail=f"schema={schema}")
         append("initializationParsed")
         for sequence in sequences:
             append(
@@ -56,6 +64,7 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertEqual(summary["outcome"], "stopped")
         self.assertEqual(summary["acceptedSegmentCount"], 2)
         self.assertEqual(summary["acceptedDurationSeconds"], 4.0)
+        self.assertEqual(summary["elapsedDurationSeconds"], 4.0)
         self.assertNotIn("detail", summary)
 
     def test_load_report_rejects_malformed_json_without_echoing_content(self) -> None:
@@ -103,6 +112,20 @@ class AcceptanceReportTests(unittest.TestCase):
             validate_report(report)
         summary = validate_report(report, expected_outcome="failed")
         self.assertEqual(summary["outcome"], "failed")
+
+    def test_monotonic_elapsed_time_is_required_for_current_evidence(self) -> None:
+        report = self.make_report()
+        report[3]["elapsed"] = 0.5
+        with self.assertRaisesRegex(ReportValidationError, "out of order"):
+            validate_report(report)
+
+    def test_legacy_schema_requires_explicit_opt_in(self) -> None:
+        report = self.make_report(schema=2)
+        with self.assertRaisesRegex(ReportValidationError, "older than required"):
+            validate_report(report)
+        summary = validate_report(report, minimum_schema=2)
+        self.assertEqual(summary["schema"], 2)
+        self.assertIsNone(summary["elapsedDurationSeconds"])
 
 
 class CanaryScanTests(unittest.TestCase):

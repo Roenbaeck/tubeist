@@ -11,6 +11,7 @@ actor HLSAcceptanceRecorder {
 
     private struct Event: Codable {
         let timestamp: Date
+        let elapsed: Double?
         let kind: String
         let sequence: Int?
         let duration: Double?
@@ -23,9 +24,11 @@ actor HLSAcceptanceRecorder {
 
     private let maximumEvents = 10_000
     private let batchSize = 16
+    private let clock = ContinuousClock()
     private var fileHandle: FileHandle?
     private var bufferedLines: [Data] = []
     private var eventCount = 0
+    private var sessionStartedAt: ContinuousClock.Instant?
 
     func begin(sessionIdentifier: String, enabled: Bool) {
         closeFile()
@@ -47,7 +50,8 @@ actor HLSAcceptanceRecorder {
             fileHandle = try FileHandle(forWritingTo: reportURL)
             eventCount = 0
             bufferedLines.removeAll(keepingCapacity: true)
-            append(kind: "prepared", detail: "schema=2")
+            sessionStartedAt = clock.now
+            append(kind: "prepared", detail: "schema=3")
         } catch {
             closeFile()
             LOG("Could not create the YouTube HLS acceptance report", level: .warning)
@@ -105,6 +109,7 @@ actor HLSAcceptanceRecorder {
         guard fileHandle != nil, eventCount < maximumEvents else { return }
         let event = Event(
             timestamp: Date(),
+            elapsed: elapsedSinceSessionStart(),
             kind: kind,
             sequence: sequence,
             duration: duration,
@@ -156,6 +161,14 @@ actor HLSAcceptanceRecorder {
         fileHandle = nil
         bufferedLines.removeAll(keepingCapacity: false)
         eventCount = 0
+        sessionStartedAt = nil
+    }
+
+    private func elapsedSinceSessionStart() -> Double? {
+        guard let sessionStartedAt else { return nil }
+        let components = sessionStartedAt.duration(to: clock.now).components
+        return Double(components.seconds)
+            + Double(components.attoseconds) / 1_000_000_000_000_000_000
     }
 }
 #endif

@@ -18,9 +18,13 @@ python3 Tools/Acceptance/validate_report.py /path/to/acceptance.jsonl
 
 The command fails unless the report has one schema declaration, parsed
 initialization, at least one accepted segment, contiguous upload sequences,
-monotonic timestamps, successful HTTP status values, a clean Stop terminal
-event, and a matching summary. Its JSON result contains counts and durations,
-not event details or credentials.
+monotonic elapsed times, parseable wall-clock timestamps, successful HTTP status
+values, a clean Stop terminal event, and a matching summary. Its JSON result
+contains counts and durations, not event details or credentials.
+
+Schema 3 is required by default because it records duration with a monotonic
+clock. A pre-schema-3 report can be inspected with `--minimum-schema 2`, but it
+is not sufficient evidence for current duration or Stop-tail gates.
 
 Once measured budgets are agreed, enforce them explicitly:
 

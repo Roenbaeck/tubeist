@@ -27,6 +27,7 @@ KNOWN_KINDS = {
 }
 TERMINAL_KINDS = {"failed", "stopped", "cancelled"}
 SUMMARY_PATTERN = re.compile(r"outcome=(failed|stopped|cancelled);events=([0-9]+)")
+SCHEMA_PATTERN = re.compile(r"schema=([0-9]+)")
 
 
 class ReportValidationError(ValueError):
@@ -96,6 +97,7 @@ def validate_report(
     allow_drops: bool = False,
     maximum_queued_duration: float | None = None,
     maximum_retry_count: int | None = None,
+    minimum_schema: int = 3,
 ) -> dict[str, Any]:
     """Return a redacted evidence summary or raise ReportValidationError."""
 
@@ -122,10 +124,33 @@ def validate_report(
 
     if not kinds or kinds[0] != "prepared":
         errors.append("the first event is not prepared")
+    schema: int | None = None
     if kinds.count("prepared") != 1:
         errors.append("the report must contain exactly one prepared event")
-    elif events[0].get("detail") != "schema=2":
-        errors.append("the prepared event does not declare schema=2")
+    else:
+        prepared_detail = events[0].get("detail")
+        schema_match = SCHEMA_PATTERN.fullmatch(prepared_detail) if isinstance(prepared_detail, str) else None
+        if schema_match is None:
+            errors.append("the prepared event does not declare a schema")
+        else:
+            schema = int(schema_match.group(1))
+            if schema not in (2, 3):
+                errors.append("the report schema is not supported")
+            elif schema < minimum_schema:
+                errors.append(f"the report schema is older than required schema {minimum_schema}")
+
+    elapsed_values: list[float] = []
+    if schema == 3:
+        for index, event in enumerate(events, start=1):
+            elapsed = event.get("elapsed")
+            if not _is_finite_number(elapsed) or float(elapsed) < 0:
+                errors.append(f"event {index} has an invalid monotonic elapsed time")
+            else:
+                elapsed_values.append(float(elapsed))
+        if len(elapsed_values) == len(events) and any(
+            later < earlier for earlier, later in zip(elapsed_values, elapsed_values[1:])
+        ):
+            errors.append("monotonic elapsed times are out of order")
 
     if kinds.count("initializationParsed") != 1:
         errors.append("the report must contain exactly one initializationParsed event")
@@ -231,11 +256,17 @@ def validate_report(
         raise ReportValidationError(errors)
 
     total_duration = sum(float(event["duration"]) for event in accepted)
+    elapsed_duration = None
+    if schema == 3 and terminal_positions:
+        terminal_elapsed = events[terminal_positions[0]].get("elapsed")
+        if _is_finite_number(terminal_elapsed):
+            elapsed_duration = round(float(terminal_elapsed), 6)
     return {
         "status": "pass",
-        "schema": 2,
+        "schema": schema,
         "outcome": terminal_kind,
         "eventCount": len(events),
+        "elapsedDurationSeconds": elapsed_duration,
         "acceptedSegmentCount": len(accepted),
         "acceptedDurationSeconds": round(total_duration, 6),
         "droppedFragmentEvents": len(drops),
@@ -273,6 +304,13 @@ def main() -> int:
     )
     parser.add_argument("--max-queued-duration", type=_nonnegative_float)
     parser.add_argument("--max-retry-count", type=_nonnegative_int)
+    parser.add_argument(
+        "--minimum-schema",
+        type=int,
+        choices=(2, 3),
+        default=3,
+        help="require monotonic schema 3 by default; use 2 only for legacy evidence",
+    )
     arguments = parser.parse_args()
 
     try:
@@ -283,6 +321,7 @@ def main() -> int:
             allow_drops=arguments.allow_drops,
             maximum_queued_duration=arguments.max_queued_duration,
             maximum_retry_count=arguments.max_retry_count,
+            minimum_schema=arguments.minimum_schema,
         )
     except ReportValidationError as error:
         print("Acceptance report validation failed:", file=sys.stderr)
