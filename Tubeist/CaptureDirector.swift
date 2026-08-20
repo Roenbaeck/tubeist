@@ -14,6 +14,42 @@ import AVKit
 extension AVCaptureAudioChannel: @retroactive @unchecked Sendable {}
 #endif
 
+enum CaptureSetupError: LocalizedError, Equatable {
+    case controlInProgress
+    case noCamera
+    case noMicrophone
+    case videoDeviceUnavailable
+    case formatUnavailable
+    case cannotAddVideoInput
+    case cannotAddVideoOutput
+    case cannotAddAudioInput
+    case cannotAddAudioOutput
+    case videoOutputUnavailable
+    case audioOutputUnavailable
+    case configuration(String)
+    case audioSession(String)
+    case sessionDidNotStart
+
+    var errorDescription: String? {
+        switch self {
+        case .controlInProgress: "Camera configuration is already in progress"
+        case .noCamera: "No compatible camera is available"
+        case .noMicrophone: "No compatible microphone is available"
+        case .videoDeviceUnavailable: "The selected camera is unavailable"
+        case .formatUnavailable: "The selected camera does not support the requested HDR format"
+        case .cannotAddVideoInput: "The camera input cannot be added to the capture session"
+        case .cannotAddVideoOutput: "The video output cannot be added to the capture session"
+        case .cannotAddAudioInput: "The microphone input cannot be added to the capture session"
+        case .cannotAddAudioOutput: "The audio output cannot be added to the capture session"
+        case .videoOutputUnavailable: "The video output is not configured"
+        case .audioOutputUnavailable: "The audio output is not configured"
+        case .configuration(let message): "Camera configuration failed: \(message)"
+        case .audioSession(let message): "Microphone session configuration failed: \(message)"
+        case .sessionDidNotStart: "The camera session did not start"
+        }
+    }
+}
+
 @PipelineActor
 private class DeviceActor {
     // video device
@@ -36,8 +72,8 @@ private class DeviceActor {
     private var style: Binding<String>?
     private var effect: Binding<String>?
     // capabilties
-    private let cameras: [String: AVCaptureDevice.DeviceType]
-    private let microphones: [String: String]
+    private var cameras: [String: String]
+    private var microphones: [String: String]
     private var stabilizations: [String: AVCaptureVideoStabilizationMode] = [:]
     // states
     private var isOutputting: Bool = false
@@ -50,57 +86,9 @@ private class DeviceActor {
     }
 
     init() {
-        var cameraDevicesByName: [String: AVCaptureDevice.DeviceType] = [:]
-        
-        let backCameraDiscoverySession = AVCaptureDevice.DiscoverySession(
-            deviceTypes: [
-                .builtInWideAngleCamera,
-                .builtInTelephotoCamera,
-                .builtInTripleCamera
-            ],
-            mediaType: .video,
-            position: .back
-        )
-      
-        for device in backCameraDiscoverySession.devices {
-            let name = device.localizedName
-            cameraDevicesByName[name] = device.deviceType
-        }
-        
-        // preparing for USB-C capture cards (if and when they become supported by Apple)
-        let externalCameraDiscoverySession = AVCaptureDevice.DiscoverySession(
-            deviceTypes: [
-                .external
-            ],
-            mediaType: .video,
-            position: .unspecified
-        )
-      
-        for device in externalCameraDiscoverySession.devices {
-            let name = device.localizedName
-            cameraDevicesByName[name] = device.deviceType
-        }
-        
-        cameras = cameraDevicesByName
+        cameras = Self.discoverCameras()
+        microphones = Self.discoverMicrophones()
         LOG("Cameras: \(cameras.keys)", level: .info)
-        
-        var microphoneDevicesByName: [String: String] = [:]
-        
-        let microphoneDiscoverySession = AVCaptureDevice.DiscoverySession(
-            deviceTypes: [
-                .microphone,
-                .external
-            ],
-            mediaType: .audio,
-            position: .unspecified
-        )
-      
-        for device in microphoneDiscoverySession.devices {
-            let name = device.localizedName
-            microphoneDevicesByName[name] = device.uniqueID
-        }
-        
-        microphones = microphoneDevicesByName
         LOG("Microphones: \(microphones.keys)", level: .info)
     }
 
@@ -111,16 +99,73 @@ private class DeviceActor {
         stabilizations[stabilization]
     }
     func getCameras() -> [String] {
+        refreshDevices()
         return Array(cameras.keys)
     }
-    func getCameraType(_ camera: String) -> AVCaptureDevice.DeviceType? {
+    func getCameraID(_ camera: String) -> String? {
         cameras[camera]
+    }
+    func getCameraName(_ cameraID: String) -> String? {
+        cameras.first { $0.value == cameraID }?.key
     }
     func getFirstCameraName() -> String? {
         cameras.keys.first
     }
-    func getFirstCameraType() -> AVCaptureDevice.DeviceType? {
+    func getFirstCameraID() -> String? {
         return cameras.values.first
+    }
+
+    func frameRateLookup(for camera: String) -> [Resolution: Double] {
+        guard let cameraID = cameras[camera], let device = AVCaptureDevice(uniqueID: cameraID) else {
+            return [:]
+        }
+        var lookup: [Resolution: Double] = [:]
+        for format in device.formats where format.isVideoHDRSupported {
+            let dimensions = format.formatDescription.dimensions
+            guard dimensions.width * 9 == dimensions.height * 16 else { continue }
+            let resolution = Resolution(Int(dimensions.width), Int(dimensions.height))
+            for range in format.videoSupportedFrameRateRanges where range.maxFrameRate > lookup[resolution] ?? 0 {
+                lookup[resolution] = range.maxFrameRate
+            }
+        }
+        return lookup
+    }
+
+    private func refreshDevices() {
+        cameras = Self.discoverCameras()
+        microphones = Self.discoverMicrophones()
+        LOG("Cameras: \(cameras.keys)", level: .info)
+        LOG("Microphones: \(microphones.keys)", level: .info)
+    }
+
+    private static func discoverCameras() -> [String: String] {
+        let discovery = AVCaptureDevice.DiscoverySession(
+            deviceTypes: [.builtInWideAngleCamera, .builtInTelephotoCamera, .builtInTripleCamera, .external],
+            mediaType: .video,
+            position: .unspecified
+        )
+        return devicesByDisplayName(discovery.devices)
+    }
+
+    private static func discoverMicrophones() -> [String: String] {
+        let discovery = AVCaptureDevice.DiscoverySession(
+            deviceTypes: [.microphone, .external],
+            mediaType: .audio,
+            position: .unspecified
+        )
+        return devicesByDisplayName(discovery.devices)
+    }
+
+    private static func devicesByDisplayName(_ devices: [AVCaptureDevice]) -> [String: String] {
+        var result: [String: String] = [:]
+        for device in devices {
+            var displayName = device.localizedName
+            if result[displayName] != nil {
+                displayName += " (\(device.uniqueID.suffix(6)))"
+            }
+            result[displayName] = device.uniqueID
+        }
+        return result
     }
         
     func findSupportedStabilizationModes() {
@@ -151,126 +196,87 @@ private class DeviceActor {
         stabilizations = supportedModes
     }
     
-    func setup(cameraType: AVCaptureDevice.DeviceType, microphoneDevice: AVCaptureDevice, session: AVCaptureSession) {
+    func setup(cameraDevice videoDevice: AVCaptureDevice, microphoneDevice: AVCaptureDevice, session: AVCaptureSession) throws {
         // Fetch frame rate from settings
         self.frameRate = Settings.selectedPreset.frameRate
-        
-        // Get devices
-        guard let videoDevice = AVCaptureDevice.default(cameraType, for: .video, position: .unspecified) else {
-            LOG("Could not create video capture device", level: .error)
-            return
+
+        guard let format = videoDevice.findFormat() else {
+            throw CaptureSetupError.formatUnavailable
         }
-        self.videoDevice = videoDevice
-        
-        self.audioDevice = microphoneDevice
-        
-        // Configure the capture
+
         do {
-            // configure session by adding inputs and outputs first
+            let videoInput = try AVCaptureDeviceInput(device: videoDevice)
+            let videoOutput = AVCaptureVideoDataOutput()
+            let audioInput = try AVCaptureDeviceInput(device: microphoneDevice)
+            let audioOutput = AVCaptureAudioDataOutput()
+
+            try videoDevice.lockForConfiguration()
+            videoDevice.activeFormat = format
+            videoDevice.activeVideoMinFrameDuration = CMTime(value: 1, timescale: CMTimeScale(frameRate))
+            videoDevice.activeVideoMaxFrameDuration = CMTime(value: 1, timescale: CMTimeScale(frameRate))
+            videoDevice.activeColorSpace = AV_COLOR_SPACE
+            videoDevice.unlockForConfiguration()
+            videoOutput.alwaysDiscardsLateVideoFrames = true
+
             session.beginConfiguration()
-            // that's the only way I was able to get .inputPriority working
             session.sessionPreset = .inputPriority
             session.automaticallyConfiguresCaptureDeviceForWideColor = true
-
-            // set up video
-            self.videoInput = try AVCaptureDeviceInput(device: videoDevice)
-            guard let videoInput = self.videoInput else {
-                LOG("Could not create video input", level: .error)
-                return
-            }
-            self.videoOutput = AVCaptureVideoDataOutput()
-            guard let videoOutput = self.videoOutput else {
-                LOG("Could not create video output", level: .error)
-                return
-            }
-            // Add video input to the session
-            if session.canAddInput(videoInput) {
-                session.addInput(videoInput)
-            } else {
-                LOG("Cannot add video input", level: .error)
-                return
-            }
-            // Add video output to the session
-            if session.canAddOutput(videoOutput) {
-                session.addOutput(videoOutput)
-            } else {
-                LOG("Cannot add video output", level: .error)
-                return
-            }
-            
             session.automaticallyConfiguresApplicationAudioSession = false
-
-            // set up audio
-            self.audioInput = try AVCaptureDeviceInput(device: microphoneDevice)
-            guard let audioInput = self.audioInput else {
-                LOG("Could not create audio input", level: .error)
-                return
-            }
-            self.audioOutput = AVCaptureAudioDataOutput()
-            guard let audioOutput = self.audioOutput else {
-                LOG("Could not create audio output", level: .error)
-                return
-            }
-            // Add audio input to the session
-            if session.canAddInput(audioInput) {
+            var addedInputs: [AVCaptureInput] = []
+            var addedOutputs: [AVCaptureOutput] = []
+            do {
+                guard session.canAddInput(videoInput) else { throw CaptureSetupError.cannotAddVideoInput }
+                session.addInput(videoInput)
+                addedInputs.append(videoInput)
+                guard session.canAddOutput(videoOutput) else { throw CaptureSetupError.cannotAddVideoOutput }
+                session.addOutput(videoOutput)
+                addedOutputs.append(videoOutput)
+                guard session.canAddInput(audioInput) else { throw CaptureSetupError.cannotAddAudioInput }
                 session.addInput(audioInput)
-            } else {
-                LOG("Cannot add audio input", level: .error)
-                return
-            }
-            // Add audio output to the session
-            if session.canAddOutput(audioOutput) {
+                addedInputs.append(audioInput)
+                guard session.canAddOutput(audioOutput) else { throw CaptureSetupError.cannotAddAudioOutput }
                 session.addOutput(audioOutput)
-            } else {
-                LOG("Cannot add audio output", level: .error)
-                return
+                addedOutputs.append(audioOutput)
+                session.commitConfiguration()
+            } catch {
+                for output in addedOutputs { session.removeOutput(output) }
+                for input in addedInputs { session.removeInput(input) }
+                session.commitConfiguration()
+                throw error
             }
-
-            session.commitConfiguration()
-            // only after the configuarion is commited, the following can be changed
 
             do {
                 try AVAudioSession.sharedInstance().setCategory(
                     .playAndRecord,
                     mode: .videoRecording,
-                    options: [.mixWithOthers, .overrideMutedMicrophoneInterruption])
+                    options: [.mixWithOthers, .overrideMutedMicrophoneInterruption]
+                )
                 try AVAudioSession.sharedInstance().setPreferredSampleRate(AUDIO_SAMPLE_RATE)
                 try AVAudioSession.sharedInstance().setActive(true)
+            } catch {
+                throw CaptureSetupError.audioSession(error.localizedDescription)
             }
-            catch {
-                LOG("Could not set up the app audio session: \(error.localizedDescription)", level: .error)
-            }
-            
-            // videoDevice.listFormats()
-            guard let format = videoDevice.findFormat() else {
-                LOG("Desired format not found", level: .error)
-                return
-            }
-            LOG("Found format:\n\(String(describing: format))", level: .debug)
-            
-            // Apply the format to the video device
-            try videoDevice.lockForConfiguration()
-            videoDevice.activeFormat = format
-            videoDevice.activeVideoMinFrameDuration = CMTime(value: 1, timescale: CMTimeScale(self.frameRate))
-            videoDevice.activeVideoMaxFrameDuration = CMTime(value: 1, timescale: CMTimeScale(self.frameRate))
-            videoDevice.activeColorSpace = AV_COLOR_SPACE
-            videoDevice.unlockForConfiguration()
-            
-            // Drop frames in case the rendering is not quick enough
-            videoOutput.alwaysDiscardsLateVideoFrames = true
-            
-            self.minZoomFactor = videoDevice.minAvailableVideoZoomFactor
-            self.maxZoomFactor = videoDevice.maxAvailableVideoZoomFactor
-            self.opticalZoomFactor = videoDevice.activeFormat.secondaryNativeResolutionZoomFactors.first ?? 1.0
-            self.resolution = Resolution(
+
+            self.videoDevice = videoDevice
+            self.videoInput = videoInput
+            self.videoOutput = videoOutput
+            self.audioDevice = microphoneDevice
+            self.audioInput = audioInput
+            self.audioOutput = audioOutput
+            minZoomFactor = videoDevice.minAvailableVideoZoomFactor
+            maxZoomFactor = videoDevice.maxAvailableVideoZoomFactor
+            opticalZoomFactor = videoDevice.activeFormat.secondaryNativeResolutionZoomFactors.first ?? 1.0
+            resolution = Resolution(
                 Int(videoDevice.activeFormat.formatDescription.dimensions.width),
                 Int(videoDevice.activeFormat.formatDescription.dimensions.height)
             )
-
+            LOG("Found format:\n\(String(describing: format))", level: .debug)
+            LOG("Devices set up successfully", level: .info)
+        } catch let error as CaptureSetupError {
+            throw error
         } catch {
-            LOG("Error setting up devices: \(error)", level: .error)
+            throw CaptureSetupError.configuration(error.localizedDescription)
         }
-        LOG("Devices set up successfully", level: .info)
     }
     
     func bind(totalZoom: Binding<Double>, currentZoom: Binding<Double>, exposureBias: Binding<Float>, style: Binding<String>, effect: Binding<String>) {
@@ -536,10 +542,9 @@ private class DeviceActor {
         }
     }
 
-    func startVideoOutput() {
+    func startVideoOutput() throws {
         guard let videoOutput = videoOutput else {
-            LOG("Cannot start output, since video is unavailable", level: .warning)
-            return
+            throw CaptureSetupError.videoOutputUnavailable
         }
         videoOutput.setSampleBufferDelegate(FrameGrabber.shared, queue: PipelineActor.queue)
         LOG("Starting video output", level: .debug)
@@ -557,10 +562,9 @@ private class DeviceActor {
         resolution
     }
 
-    func startAudioOutput() {
+    func startAudioOutput() throws {
         guard let audioOutput = audioOutput else {
-            LOG("Cannot start output, since audio is unavailable", level: .warning)
-            return
+            throw CaptureSetupError.audioOutputUnavailable
         }
         if audioOutput.sampleBufferDelegate == nil {
             audioOutput.setSampleBufferDelegate(SoundGrabber.shared, queue: PipelineActor.queue)
@@ -625,15 +629,23 @@ actor SessionController {
         self.session = session
     }
     
-    func startSessions() async {
-        guard !isControllingSession else { return }
+    func startSessions() async throws {
+        guard !isControllingSession else { throw CaptureSetupError.controlInProgress }
         
         isControllingSession = true
         defer { isControllingSession = false }
         
         if !session.isRunning {
-            await CaptureDirector.shared.attachAll()
-            session.startRunning()
+            do {
+                try await CaptureDirector.shared.attachAll()
+                session.startRunning()
+                guard session.isRunning else {
+                    throw CaptureSetupError.sessionDidNotStart
+                }
+            } catch {
+                await CaptureDirector.shared.detachAll()
+                throw error
+            }
         }
     }
     
@@ -649,8 +661,8 @@ actor SessionController {
         }
     }
     
-    func cycleSessions() async {
-        guard !isControllingSession else { return }
+    func cycleSessions() async throws {
+        guard !isControllingSession else { throw CaptureSetupError.controlInProgress }
         
         isControllingSession = true
         defer { isControllingSession = false }
@@ -660,8 +672,16 @@ actor SessionController {
             await CaptureDirector.shared.detachAll()
         }
         if !session.isRunning {
-            await CaptureDirector.shared.attachAll()
-            session.startRunning()
+            do {
+                try await CaptureDirector.shared.attachAll()
+                session.startRunning()
+                guard session.isRunning else {
+                    throw CaptureSetupError.sessionDidNotStart
+                }
+            } catch {
+                await CaptureDirector.shared.detachAll()
+                throw error
+            }
         }
     }
 
@@ -680,6 +700,7 @@ final class CaptureDirector: NSObject, Sendable {
     @PipelineActor private static let session = AVCaptureSession()
     @PipelineActor private let deviceActor = DeviceActor()
     @PipelineActor private let sessionController = SessionController(session: CaptureDirector.session)
+    private let eventMonitor = CaptureEventMonitor()
 
     func bind(totalZoom: Binding<Double>, currentZoom: Binding<Double>, exposureBias: Binding<Float>, style: Binding<String>, effect: Binding<String>) async {
         await deviceActor.bind(totalZoom: totalZoom, currentZoom: currentZoom, exposureBias: exposureBias, style: style, effect: effect)
@@ -696,6 +717,18 @@ final class CaptureDirector: NSObject, Sendable {
     func getPreferredMicrophoneName() async -> String? {
         return await deviceActor.getPreferredMicrophoneName()
     }
+    func selectCamera(named camera: String) async -> Bool {
+        guard let cameraID = await deviceActor.getCameraID(camera) else { return false }
+        Settings.selectedCamera = camera
+        Settings.selectedCameraID = cameraID
+        return true
+    }
+    func selectMicrophone(named microphone: String) async -> Bool {
+        guard let microphoneID = await deviceActor.getMicrophoneID(microphone) else { return false }
+        Settings.selectedMicrophone = microphone
+        Settings.selectedMicrophoneID = microphoneID
+        return true
+    }
     func getSession() async -> AVCaptureSession {
         await CaptureDirector.session
     }
@@ -703,41 +736,56 @@ final class CaptureDirector: NSObject, Sendable {
         await CaptureDirector.session.synchronizationClock?.time
     }
     func detachAll() async {
+        await CaptureDirector.session.beginConfiguration()
         for output in await CaptureDirector.session.outputs {
             await CaptureDirector.session.removeOutput(output)
         }
         for input in await CaptureDirector.session.inputs {
             await CaptureDirector.session.removeInput(input)
         }
+        await CaptureDirector.session.commitConfiguration()
     }
-    func attachAll() async {
+    func attachAll() async throws {
         // set up video and audio session
+        _ = await deviceActor.getCameras()
         let camera = Settings.selectedCamera
         var resolvedCamera = camera
-        var cameraType = await deviceActor.getCameraType(camera)
-        if cameraType == nil {
+        var cameraID = Settings.selectedCameraID.flatMap { savedID in
+            AVCaptureDevice(uniqueID: savedID) == nil ? nil : savedID
+        }
+        if let cameraID, let currentName = await deviceActor.getCameraName(cameraID) {
+            resolvedCamera = currentName
+        } else {
+            cameraID = await deviceActor.getCameraID(camera)
+        }
+        if cameraID == nil {
             LOG("Cannot find designated camera \(camera), using first available camera", level: .warning)
-            if await deviceActor.getCameraType(DEFAULT_CAMERA) != nil {
+            if await deviceActor.getCameraID(DEFAULT_CAMERA) != nil {
                 resolvedCamera = DEFAULT_CAMERA
-                cameraType = await deviceActor.getCameraType(DEFAULT_CAMERA)
+                cameraID = await deviceActor.getCameraID(DEFAULT_CAMERA)
             }
             else if let firstCamera = await deviceActor.getFirstCameraName() {
                 resolvedCamera = firstCamera
-                cameraType = await deviceActor.getCameraType(firstCamera)
+                cameraID = await deviceActor.getCameraID(firstCamera)
             }
         }
-        guard let cameraType else {
-            LOG("No camera found, cannot start capture", level: .error)
-            return
+        guard let cameraID, let cameraDevice = AVCaptureDevice(uniqueID: cameraID) else {
+            throw CaptureSetupError.noCamera
         }
         if Settings.selectedCamera != resolvedCamera {
             Settings.selectedCamera = resolvedCamera
         }
+        Settings.selectedCameraID = cameraID
         
         let selectedMicrophone = Settings.selectedMicrophone
         var resolvedMicrophone = selectedMicrophone
-        var microphoneID: String?
-        if let selectedMicrophone {
+        var microphoneID = Settings.selectedMicrophoneID.flatMap { savedID in
+            AVCaptureDevice(uniqueID: savedID) == nil ? nil : savedID
+        }
+        if let microphoneID {
+            resolvedMicrophone = await deviceActor.getMicrophoneName(microphoneID)
+        }
+        if microphoneID == nil, let selectedMicrophone {
             microphoneID = await deviceActor.getMicrophoneID(selectedMicrophone)
         }
         if microphoneID == nil, let selectedMicrophone {
@@ -757,32 +805,47 @@ final class CaptureDirector: NSObject, Sendable {
         }
         let microphoneDevice = microphoneID.flatMap { AVCaptureDevice(uniqueID: $0) }
         guard let microphoneDevice else {
-            LOG("No microphone found, cannot start capture", level: .error)
-            return
+            throw CaptureSetupError.noMicrophone
         }
         if Settings.selectedMicrophone != resolvedMicrophone {
             Settings.selectedMicrophone = resolvedMicrophone
         }
+        Settings.selectedMicrophoneID = microphoneID
         
-        await deviceActor.setup(cameraType: cameraType, microphoneDevice: microphoneDevice, session: CaptureDirector.session)
+        try await deviceActor.setup(
+            cameraDevice: cameraDevice,
+            microphoneDevice: microphoneDevice,
+            session: CaptureDirector.session
+        )
         await deviceActor.addCameraControls(session: CaptureDirector.session)
         await deviceActor.findSupportedStabilizationModes()
         let selectedStabilization = Settings.cameraStabilization ?? "Off"
         await setCameraStabilization(to: selectedStabilization)
     }
-    func startSessions() async {
-        await sessionController.startSessions()
+    func startSessions() async throws {
+        try await sessionController.startSessions()
+        await eventMonitor.startMonitoring(session: CaptureDirector.session)
     }
     func stopSessions() async {
         await sessionController.stopSessions()
     }
-    func cycleSessions() async {
-        await sessionController.cycleSessions()
+    func cycleSessions() async throws {
+        try await sessionController.cycleSessions()
     }
-    func startOutput() async {
-        await deviceActor.startAudioOutput() // start audio first, to ensure we get audio samples with the video
-        await deviceActor.startVideoOutput()
-        await deviceActor.setOutputting(true)
+    func startOutput() async throws {
+        guard await CaptureDirector.session.isRunning else {
+            throw CaptureSetupError.sessionDidNotStart
+        }
+        do {
+            try await deviceActor.startAudioOutput() // start audio first, to ensure we get audio samples with the video
+            try await deviceActor.startVideoOutput()
+            await deviceActor.setOutputting(true)
+        } catch {
+            await deviceActor.stopVideoOutput()
+            await deviceActor.stopAudioOutput()
+            await deviceActor.setOutputting(false)
+            throw error
+        }
     }
     func stopOutput() async {
         await deviceActor.setOutputting(false)
@@ -853,25 +916,100 @@ final class CaptureDirector: NSObject, Sendable {
     func getResolution() async -> Resolution? {
         await deviceActor.getResolution()
     }
-    var frameRateLookup: [Resolution : Double] {
-        var lookup: [Resolution : Double] = [:]
-        guard let device = AVCaptureDevice.default(for: .video) else {
-            return lookup
-        }
-        for format in device.formats {
-            if format.isVideoHDRSupported {
-                let dimensions = format.formatDescription.dimensions
-                if dimensions.width * 9 == dimensions.height * 16 {
-                    let resolution = Resolution(Int(dimensions.width), Int(dimensions.height))
-                    for range in format.videoSupportedFrameRateRanges {
-                        if range.maxFrameRate > lookup[resolution] ?? 0 {
-                            lookup[resolution] = range.maxFrameRate
-                        }
-                    }
+    func frameRateLookup() async -> [Resolution: Double] {
+        await deviceActor.frameRateLookup(for: Settings.selectedCamera)
+    }
+}
+
+private final class CaptureEventMonitor: @unchecked Sendable {
+    private let lock = NSLock()
+    private var observers: [NSObjectProtocol] = []
+
+    func startMonitoring(session: AVCaptureSession) {
+        let shouldStart = lock.withLock { observers.isEmpty }
+        guard shouldStart else { return }
+
+        let center = NotificationCenter.default
+        var newObservers: [NSObjectProtocol] = []
+        newObservers.append(center.addObserver(
+            forName: AVCaptureSession.runtimeErrorNotification,
+            object: session,
+            queue: nil
+        ) { notification in
+            let nsError = notification.userInfo?[AVCaptureSessionErrorKey] as? NSError
+            let message: String
+            if nsError?.domain == AVFoundationErrorDomain,
+               nsError?.code == AVError.mediaServicesWereReset.rawValue {
+                message = "Camera media services were reset"
+            } else {
+                message = nsError?.localizedDescription ?? "The camera session failed"
+            }
+            let mediaServicesWereReset = nsError?.domain == AVFoundationErrorDomain &&
+                nsError?.code == AVError.mediaServicesWereReset.rawValue
+            Task {
+                if mediaServicesWereReset {
+                    await Streamer.shared.handleMediaServicesReset()
+                } else {
+                    await Streamer.shared.handleRuntimeFailure(
+                        CaptureSetupError.configuration(message)
+                    )
                 }
             }
+        })
+        newObservers.append(center.addObserver(
+            forName: AVCaptureSession.wasInterruptedNotification,
+            object: session,
+            queue: nil
+        ) { _ in
+            Task {
+                await Streamer.shared.handleRuntimeFailure(
+                    CaptureSetupError.configuration("The camera session was interrupted")
+                )
+            }
+        })
+        newObservers.append(center.addObserver(
+            forName: AVCaptureSession.interruptionEndedNotification,
+            object: session,
+            queue: nil
+        ) { _ in
+            LOG("Camera session interruption ended", level: .info)
+        })
+        newObservers.append(center.addObserver(
+            forName: AVCaptureDevice.wasDisconnectedNotification,
+            object: nil,
+            queue: nil
+        ) { notification in
+            guard let device = notification.object as? AVCaptureDevice else { return }
+            let disconnectedID = device.uniqueID
+            Task {
+                if Settings.selectedCameraID == disconnectedID ||
+                    Settings.selectedMicrophoneID == disconnectedID {
+                    await Streamer.shared.handleRuntimeFailure(
+                        CaptureSetupError.configuration("The selected capture device was disconnected")
+                    )
+                }
+            }
+        })
+        newObservers.append(center.addObserver(
+            forName: AVCaptureDevice.wasConnectedNotification,
+            object: nil,
+            queue: nil
+        ) { _ in
+            LOG("A capture device was connected; the device list will refresh when opened", level: .info)
+        })
+
+        lock.withLock {
+            if observers.isEmpty {
+                observers = newObservers
+            } else {
+                newObservers.forEach { center.removeObserver($0) }
+            }
         }
-        return lookup
+    }
+
+    deinit {
+        let center = NotificationCenter.default
+        observers.forEach { center.removeObserver($0) }
     }
 }
 
@@ -935,9 +1073,3 @@ extension AVCaptureDevice {
         return nil
     }
 }
-
-
-
-
-
-

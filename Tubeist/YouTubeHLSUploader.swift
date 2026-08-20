@@ -9,12 +9,26 @@ struct YouTubeHLSEndpoint: Sendable, Equatable {
     private let value: URL
 
     init(_ url: URL) throws {
+        let host = url.host?.lowercased()
         guard url.scheme?.lowercased() == "https",
+              host == "upload.youtube.com" || host?.hasSuffix(".upload.youtube.com") == true,
+              url.path == "/http_upload_hls",
               url.absoluteString.hasSuffix("file=") else {
             throw YouTubeHLSUploadError.invalidEndpoint
         }
         self.value = url
     }
+
+#if DEBUG
+    init(developmentURL url: URL) throws {
+        guard url.scheme?.lowercased() == "https",
+              url.path == "/http_upload_hls",
+              url.absoluteString.hasSuffix("file=") else {
+            throw YouTubeHLSUploadError.invalidEndpoint
+        }
+        self.value = url
+    }
+#endif
 
     static func manualPrimary(streamKey: String) throws -> YouTubeHLSEndpoint {
         guard !streamKey.isEmpty,
@@ -234,7 +248,8 @@ actor YouTubeHLSUploader {
             }
             lastRetryCount = 0
             lastHTTPStatus = nil
-            let uploadStart = Date()
+            let clock = ContinuousClock()
+            let uploadStart = clock.now
             let entry = try playlist.append(duration: duration, discontinuity: discontinuity)
             let playlistBody = Data(playlist.render().utf8)
             let playlistRetries = try await send(
@@ -251,7 +266,10 @@ actor YouTubeHLSUploader {
             )
             lastRetryCount = playlistRetries + segmentRetries
             try playlist.acknowledge(sequence: entry.sequence)
-            let elapsed = max(Date().timeIntervalSince(uploadStart), 0.001)
+            let durationComponents = uploadStart.duration(to: clock.now).components
+            let measuredElapsed = Double(durationComponents.seconds)
+                + Double(durationComponents.attoseconds) / 1_000_000_000_000_000_000
+            let elapsed = max(measuredElapsed, 0.001)
             lastMegabitsPerSecond = Int((Double(segment.count) * 8 / 1_000_000) / elapsed)
             lastUtilization = Int((elapsed / duration) * 100)
             return YouTubeHLSUploadReceipt(

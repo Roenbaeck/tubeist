@@ -142,40 +142,27 @@ class OverlaySettingsManager {
         overlays[index].url = trimmedURL
         saveOverlays()
     }
+
+    func replaceOverlays(with overlays: [OverlaySetting]) {
+        self.overlays = overlays
+        saveOverlays()
+    }
 }
 
 @Observable
 class StreamKeyManager {
-    var currentKey: String = ""
+    var currentKey: String
     
     init() {
-        loadKey(for: Settings.target)
+        currentKey = Settings.streamKey ?? ""
     }
     
-    private var storage: [String: String] {
-        get {
-            guard let targetData = Settings.targetData,
-                  let decodedTargetData = try? JSONDecoder().decode([String: String].self, from: targetData) else {
-                return [:]
-            }
-            return decodedTargetData
-        }
-        set {
-            if let encoded = try? JSONEncoder().encode(newValue) {
-                Settings.targetData  = encoded
-            }
-        }
-    }
-    
-    func loadKey(for target: String) {
-        currentKey = storage[target] ?? ""
-    }
-    
-    func saveKey(_ key: String, for target: String) {
-        var newStorage = storage
-        newStorage[target] = key
-        storage = newStorage
+    func updateKey(_ key: String) {
         currentKey = key
+    }
+
+    func commit() throws {
+        try Settings.setStreamKey(currentKey.isEmpty ? nil : currentKey)
     }
 }
 
@@ -195,17 +182,86 @@ enum RecordingOption: String, CaseIterable, Identifiable {
     }
 }
 
-enum StreamDestination: String, CaseIterable, Identifiable, Sendable {
-    case relay
-    case youTubeDirect
+private struct AppliedSettingsSnapshot {
+    let streamKey: String?
+    let stream: Bool
+    let record: Bool
+    let inputSyncsWithOutput: Bool
+    let measuredBandwidth: Int
+    let networkSharing: String
+    let cameraPosition: String
+    let selectedPresetData: Data
+    let journalError: Bool
+    let journalWarning: Bool
+    let journalInfo: Bool
+    let journalDebug: Bool
+    let selectedPlaylistID: String?
+    let overlays: [OverlaySetting]
+#if DEBUG
+    let captureRemuxFixtures: Bool
+    let recordHLSAcceptance: Bool
+#endif
 
-    var id: Self { self }
+    static func capture(overlays: [OverlaySetting]) throws -> Self {
+#if DEBUG
+        Self(
+            streamKey: try Settings.loadStreamKey(),
+            stream: Settings.stream,
+            record: Settings.record,
+            inputSyncsWithOutput: Settings.isInputSyncedWithOutput,
+            measuredBandwidth: Settings.measuredBandwidth,
+            networkSharing: Settings.networkSharing,
+            cameraPosition: Settings.cameraPosition,
+            selectedPresetData: Settings.selectedPresetData,
+            journalError: Settings.journalError,
+            journalWarning: Settings.journalWarning,
+            journalInfo: Settings.journalInfo,
+            journalDebug: Settings.journalDebug,
+            selectedPlaylistID: Settings.youtubeSelectedPlaylistId,
+            overlays: overlays,
+            captureRemuxFixtures: Settings.captureRemuxFixtures,
+            recordHLSAcceptance: Settings.recordHLSAcceptance
+        )
+#else
+        Self(
+            streamKey: try Settings.loadStreamKey(),
+            stream: Settings.stream,
+            record: Settings.record,
+            inputSyncsWithOutput: Settings.isInputSyncedWithOutput,
+            measuredBandwidth: Settings.measuredBandwidth,
+            networkSharing: Settings.networkSharing,
+            cameraPosition: Settings.cameraPosition,
+            selectedPresetData: Settings.selectedPresetData,
+            journalError: Settings.journalError,
+            journalWarning: Settings.journalWarning,
+            journalInfo: Settings.journalInfo,
+            journalDebug: Settings.journalDebug,
+            selectedPlaylistID: Settings.youtubeSelectedPlaylistId,
+            overlays: overlays
+        )
+#endif
+    }
 
-    var description: String {
-        switch self {
-        case .relay: "Relay server"
-        case .youTubeDirect: "YouTube direct (HLS)"
-        }
+    func restore(overlays manager: OverlaySettingsManager) throws {
+        try Settings.setStreamKey(streamKey)
+        Settings.stream = stream
+        Settings.record = record
+        Settings.isInputSyncedWithOutput = inputSyncsWithOutput
+        Settings.measuredBandwidth = measuredBandwidth
+        Settings.networkSharing = networkSharing
+        Settings.cameraPosition = cameraPosition
+        Settings.selectedPresetData = selectedPresetData
+        Settings.journalError = journalError
+        Settings.journalWarning = journalWarning
+        Settings.journalInfo = journalInfo
+        Settings.journalDebug = journalDebug
+        Settings.youtubeSelectedPlaylistId = selectedPlaylistID
+        manager.replaceOverlays(with: overlays)
+#if DEBUG
+        Settings.captureRemuxFixtures = captureRemuxFixtures
+        Settings.recordHLSAcceptance = recordHLSAcceptance
+#endif
+        Settings.configureJournal()
     }
 }
 
@@ -213,30 +269,26 @@ struct SettingsView: View {
     var overlayManager: OverlaySettingsManager
     @Environment(AppState.self) var appState
     @Environment(\.presentationMode) private var presentationMode
-    @AppStorage("HLSServer") private var hlsServer: String = ""
-    @AppStorage("Username") private var hlsUsername: String = ""
-    @AppStorage("Password") private var hlsPassword: String = ""
-    @AppStorage("Target") private var target: String = DEFAULT_TARGET
-    @AppStorage("StreamDestination") private var streamDestinationRaw: String = StreamDestination.relay.rawValue
-    @AppStorage("Stream") private var stream: Bool = true
-    @AppStorage("Record") private var record: Bool = false
-    @AppStorage("InputSyncsWithOutput") private var inputSyncsWithOutput: Bool = true // assume energy efficiency is top priority
-    @AppStorage("MeasuredBandwidth") private var measuredBandwidth: Int = 1_000 // in kbit/s
-    @AppStorage("NetworkSharing") private var networkSharing: String = "many"
-    @AppStorage("CameraPosition") private var cameraPosition: String = "stationary"
-    @AppStorage("SelectedPreset") private var selectedPresetData: Data = Data()
-    @AppStorage("Overlays") private var overlaysData: Data = Data()
-    @AppStorage("JournalError") private var journalError: Bool = true
-    @AppStorage("JournalWarning") private var journalWarning: Bool = true
-    @AppStorage("JournalInfo") private var journalInfo: Bool = true
-    @AppStorage("JournalDebug") private var journalDebug: Bool = false
+    @State private var stream: Bool = Settings.stream
+    @State private var record: Bool = Settings.record
+    @State private var inputSyncsWithOutput: Bool = Settings.isInputSyncedWithOutput
+    @State private var measuredBandwidth: Int = Settings.measuredBandwidth
+    @State private var networkSharing: String = Settings.networkSharing
+    @State private var cameraPosition: String = Settings.cameraPosition
+    @State private var selectedPresetData: Data = Settings.selectedPresetData
+    @State private var journalError: Bool = Settings.journalError
+    @State private var journalWarning: Bool = Settings.journalWarning
+    @State private var journalInfo: Bool = Settings.journalInfo
+    @State private var journalDebug: Bool = Settings.journalDebug
 #if DEBUG
-    @AppStorage("CaptureRemuxFixtures") private var captureRemuxFixtures: Bool = false
+    @State private var captureRemuxFixtures: Bool = Settings.captureRemuxFixtures
+    @State private var recordHLSAcceptance: Bool = Settings.recordHLSAcceptance
 #endif
     @State private var newOverlayURL: String = ""
     @State private var selectedPreset: Preset? = nil
     @State private var streamKeyManager = StreamKeyManager()
     @State private var selectedOption: RecordingOption = .streamOnly
+    @State private var revealsStreamKey = false
 
     // State variables for custom preset settings
     @State private var customResolution: Resolution = Resolution(DEFAULT_COMPRESSED_WIDTH, DEFAULT_COMPRESSED_HEIGHT)
@@ -263,6 +315,9 @@ struct SettingsView: View {
     @State private var isYouTubeRefreshCoolingDown: Bool = false
     @State private var editingOverlay: OverlaySetting? = nil
     @State private var editedOverlayURL: String = ""
+    @State private var overlayDraft: [OverlaySetting] = []
+    @State private var isApplying = false
+    @State private var applyErrorMessage: String?
         
     var body: some View {
         NavigationView {
@@ -276,24 +331,7 @@ struct SettingsView: View {
                     .foregroundColor(Color.red)
                 }
 
-                Section(header: Text("HLS Server and Credentials"), footer: Text("Enter the URI of the HLS relay server and corresponding login details. The server can be downloaded from https://github.com/Roenbaeck/hls-relay.")) {
-                    TextField("HLS Server URI", text: $hlsServer)
-                        .keyboardType(.URL)
-                        .autocapitalization(.none)
-                        .disableAutocorrection(true)
-
-                    TextField("Username", text: $hlsUsername)
-                        .autocapitalization(.none)
-                        .disableAutocorrection(true)
-                        .textContentType(.username)
-                    
-                    SecureField("Password", text: $hlsPassword)
-                        .autocapitalization(.none)
-                        .disableAutocorrection(true)
-                        .textContentType(.password)
-                }
-                
-                Section(header: Text("Target Platform with Recording Options"), footer: Text("Select the target platform and provide its related stream details. You can also select to save a copy of the stream locally on the phone, which can later be transferred to your computer.")) {
+                Section(header: Text("YouTube Streaming and Recording"), footer: Text("Stream directly to YouTube with an HLS stream key, save an original-quality recording on this phone, or do both.")) {
                     Picker("Stream or Record", selection: $selectedOption) {
                         ForEach(RecordingOption.allCases) { option in
                             Text(option.description).tag(option)
@@ -314,36 +352,26 @@ struct SettingsView: View {
                     }
 
                     if stream {
-                        Picker("Target Platform", selection: $target) {
-                            Text("YouTube (HDR)").tag("youtube")
-                            Text("Twitch (beta, no HDR)").tag("twitch")
-                        }
-                        .pickerStyle(.segmented)
-                        .onChange(of: target) { _, newValue in
-                            LOG("Changing stream target to: \(newValue)", level: .debug)
-                            streamKeyManager.loadKey(for: newValue)
-                        }
-
-                        TextField("Stream Key", text: Binding(
-                            get: { streamKeyManager.currentKey },
-                            set: { streamKeyManager.saveKey($0, for: target) }
-                        ))
-                        .keyboardType(.asciiCapable)
-                        .autocapitalization(.none)
-                        .disableAutocorrection(true)
-
-                        Picker("Delivery", selection: $streamDestinationRaw) {
-                            Text(StreamDestination.relay.description)
-                                .tag(StreamDestination.relay.rawValue)
-                            if target == "youtube" && DIRECT_YOUTUBE_HLS_AVAILABLE {
-                                Text(StreamDestination.youTubeDirect.description)
-                                    .tag(StreamDestination.youTubeDirect.rawValue)
+                        HStack {
+                            if revealsStreamKey {
+                                TextField("YouTube HLS Stream Key", text: streamKeyBinding)
+                                    .keyboardType(.asciiCapable)
+                                    .autocapitalization(.none)
+                                    .disableAutocorrection(true)
+                            } else {
+                                SecureField("YouTube HLS Stream Key", text: streamKeyBinding)
+                                    .keyboardType(.asciiCapable)
+                                    .autocapitalization(.none)
+                                    .disableAutocorrection(true)
                             }
-                        }
-                        .onChange(of: target) { _, newValue in
-                            if newValue != "youtube" {
-                                streamDestinationRaw = StreamDestination.relay.rawValue
+                            Button {
+                                revealsStreamKey.toggle()
+                            } label: {
+                                Image(systemName: revealsStreamKey ? "eye.slash" : "eye")
+                                    .frame(width: 44, height: 44)
                             }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel(revealsStreamKey ? "Hide stream key" : "Reveal stream key")
                         }
                     }
                 }
@@ -352,13 +380,16 @@ struct SettingsView: View {
                         selectedOption = .streamAndRecord
                     } else if record {
                         selectedOption = .recordOnly
-                    } else {
+                    } else if stream {
                         selectedOption = .streamOnly
+                    } else {
+                        selectedOption = .recordOnly
+                        record = true
                     }
                 }
 
-                if stream && target == "youtube" && !streamKeyManager.currentKey.isEmpty {
-                    Section(header: Text("YouTube Stream Configuration"), footer: Text(youtubeService.isSignedIn ? "Configure the YouTube broadcast tied to your stream key. Changes here are sent to YouTube when you tap Save." : "Sign in with your Google account to configure YouTube broadcast settings for the current stream key.")) {
+                if stream && !streamKeyManager.currentKey.isEmpty {
+                    Section(header: Text("YouTube Stream Configuration"), footer: Text(youtubeService.isSignedIn ? "Configure the YouTube broadcast tied to your stream key. Changes here are sent to YouTube only after Apply succeeds." : "Sign in with your Google account to configure YouTube broadcast settings for the current stream key.")) {
                         if !youtubeService.isSignedIn {
                             Button("Sign in with Google") {
                                 Task {
@@ -386,6 +417,7 @@ struct SettingsView: View {
                                     } label: {
                                         Image(systemName: "arrow.clockwise")
                                             .foregroundColor(.secondary)
+                                            .frame(width: 44, height: 44)
                                     }
                                     .disabled(youtubeService.isLoading || isYouTubeRefreshCoolingDown)
                                     Circle()
@@ -462,10 +494,6 @@ struct SettingsView: View {
                                         Text(playlist.title).tag(Optional(playlist.id))
                                     }
                                 }
-                                .onChange(of: selectedPlaylistId) { _, newValue in
-                                    Settings.youtubeSelectedPlaylistId = newValue
-                                }
-
                             } else if let errorMessage = youtubeService.errorMessage {
                                 Text(errorMessage)
                                     .foregroundColor(.red)
@@ -486,16 +514,7 @@ struct SettingsView: View {
                             }
 
                             Button("Sign out of YouTube", role: .destructive) {
-                                youtubeService.signOut()
-                                broadcastId = nil
-                                broadcastTitle = ""
-                                playlists = []
-                                selectedPlaylistId = nil
-                                thumbnailImage = nil
-                                youtubeConfigLoaded = false
-                                Settings.youtubeSelectedPlaylistId = nil
-                                appState.youtubeStatus = nil
-                                appState.youtubeBroadcastId = nil
+                                clearYouTubeAccountState()
                             }
                             .buttonStyle(.bordered)
                         }
@@ -516,10 +535,11 @@ struct SettingsView: View {
 
 #if DEBUG
                 Section(
-                    header: Text("Direct HLS Development"),
-                    footer: Text("Saves the next initialization segment and six fMP4 media fragments to Documents/TubeistRemuxFixtures. Use only generated test imagery when sharing fixtures.")
+                    header: Text("YouTube HLS Development"),
+                    footer: Text("Diagnostics are opt-in and remain off in normal use. Fixture capture saves one bounded sample set; acceptance recording appends bounded event lines for a single session.")
                 ) {
                     Toggle("Capture fMP4 remux fixtures", isOn: $captureRemuxFixtures)
+                    Toggle("Record YouTube HLS acceptance events", isOn: $recordHLSAcceptance)
                 }
 #endif
 
@@ -592,7 +612,8 @@ struct SettingsView: View {
                         .pickerStyle(.segmented)
                         .onChange(of: customResolution) { oldValue, newValue in
                             Task {
-                                maxFrameRate = await CaptureDirector.shared.frameRateLookup[customResolution] ?? DEFAULT_FRAMERATE
+                                let frameRates = await CaptureDirector.shared.frameRateLookup()
+                                maxFrameRate = frameRates[customResolution] ?? DEFAULT_FRAMERATE
                                 
                                 if customFrameRate > maxFrameRate {
                                     customFrameRate = maxFrameRate
@@ -654,7 +675,7 @@ struct SettingsView: View {
                 }
                 
                 Section(header: Text("Overlays"), footer: Text("Add multiple web overlay URLs that will be imprinted onto the video frames. Overlays are updated on content changes and at most once per second. Audio is captured from the last playing overlay if audio from multiple overlays overlap.")) {
-                    ForEach(overlayManager.overlays) { overlay in
+                    ForEach(overlayDraft) { overlay in
                         Button {
                             editingOverlay = overlay
                             editedOverlayURL = overlay.url
@@ -669,7 +690,9 @@ struct SettingsView: View {
                             }
                         }
                     }
-                    .onDelete(perform: overlayManager.deleteOverlay)
+                    .onDelete { offsets in
+                        overlayDraft.remove(atOffsets: offsets)
+                    }
                     
                     HStack {
                         TextField("New Overlay URL", text: $newOverlayURL)
@@ -678,23 +701,50 @@ struct SettingsView: View {
                             .disableAutocorrection(true)
                         Button(action: addOverlay) {
                             Image(systemName: "plus.circle.fill")
+                                .frame(width: 44, height: 44)
                         }
                     }
                 }
                 
                 Section(header: Text("Journal"), footer: Text("Configure which types of messages to record in the journal")) {
                     HStack {
-                        Toggle("Test", isOn: $journalError).labelsHidden()
+                        Toggle("Error", isOn: $journalError).labelsHidden()
+                            .accessibilityLabel("Error journal messages")
                         Text("Error").font(.caption).multilineTextAlignment(.center)
                         Spacer()
-                        Toggle("Test", isOn: $journalWarning).labelsHidden()
+                        Toggle("Warning", isOn: $journalWarning).labelsHidden()
+                            .accessibilityLabel("Warning journal messages")
                         Text("Warning").font(.caption).multilineTextAlignment(.center)
                         Spacer()
-                        Toggle("Test", isOn: $journalInfo).labelsHidden()
+                        Toggle("Info", isOn: $journalInfo).labelsHidden()
+                            .accessibilityLabel("Informational journal messages")
                         Text("Info").font(.caption).multilineTextAlignment(.center)
                         Spacer()
-                        Toggle("Test", isOn: $journalDebug).labelsHidden()
+                        Toggle("Debug", isOn: $journalDebug).labelsHidden()
+                            .accessibilityLabel("Debug journal messages")
                         Text("Debug").font(.caption).multilineTextAlignment(.center)
+                    }
+                }
+
+                Section(header: Text("Privacy and Credentials"), footer: Text("Tubeist stores the HLS stream key and optional Google authorization in the iOS Keychain. Removing them disables streaming until a new key is entered.")) {
+                    Link(
+                        "Read the Tubeist Privacy Policy",
+                        destination: URL(string: "https://github.com/Roenbaeck/tubeist/blob/main/PRIVACY.md")!
+                    )
+                    if !streamKeyManager.currentKey.isEmpty || youtubeService.isSignedIn {
+                        Button("Remove YouTube Credentials", role: .destructive) {
+                            do {
+                                try Settings.setStreamKey(nil)
+                                streamKeyManager.updateKey("")
+                                clearYouTubeAccountState()
+                                if let errorMessage = youtubeService.errorMessage {
+                                    appState.activeAlert = errorMessage
+                                }
+                            } catch {
+                                appState.activeAlert = "Could not remove the YouTube stream key: \(error.localizedDescription)"
+                                LOG("Could not remove the YouTube stream key from Keychain", level: .error)
+                            }
+                        }
                     }
                 }
 
@@ -719,22 +769,56 @@ struct SettingsView: View {
             .navigationBarTitleDisplayMode(.inline)
             .navigationBarItems(leading: Button("Close") {
                 presentationMode.wrappedValue.dismiss()
-            }, trailing: Button("Save") {
-                Settings.configureJournal()
-                if cameraPosition == "custom" {
-                    LOG("Saving custom settings", level: .debug)
-                    saveCustomPreset()
-                }
+            }.disabled(isApplying), trailing: Button("Apply") {
                 Task {
-                    await Streamer.shared.cycleSessions()
-                    if broadcastId != nil && youtubeService.isSignedIn {
-                        await applyYouTubeChanges()
+                    isApplying = true
+                    defer { isApplying = false }
+                    var previousSettings: AppliedSettingsSnapshot?
+                    var localSettingsCommitted = false
+                    var attemptedYouTubeMutation = false
+                    do {
+                        try validateDraft()
+                        previousSettings = try AppliedSettingsSnapshot.capture(
+                            overlays: overlayManager.overlays
+                        )
+                        if cameraPosition == "custom" {
+                            saveCustomPreset()
+                        }
+                        try commitDraft()
+                        localSettingsCommitted = true
+                        try await Streamer.shared.cycleSessions()
+                        if broadcastId != nil && youtubeService.isSignedIn {
+                            attemptedYouTubeMutation = true
+                            try await applyYouTubeChanges()
+                        }
+                        Settings.configureJournal()
+                        youtubeService.errorMessage = nil
+                        applyErrorMessage = nil
+                        presentationMode.wrappedValue.dismiss()
+                    } catch {
+                        var failureMessage = error.localizedDescription
+                        if localSettingsCommitted, let previousSettings {
+                            do {
+                                try previousSettings.restore(overlays: overlayManager)
+                                try await Streamer.shared.cycleSessions()
+                                failureMessage += " Local app settings were restored."
+                            } catch {
+                                failureMessage += " Restoring the previous app settings also failed: \(error.localizedDescription)"
+                            }
+                        }
+                        if attemptedYouTubeMutation {
+                            failureMessage += " YouTube may have accepted an earlier part of the request; refresh before trying again."
+                        }
+                        youtubeService.errorMessage = failureMessage
+                        applyErrorMessage = failureMessage
+                        LOG("Could not apply settings: \(error.localizedDescription)", level: .error)
                     }
                 }
-                presentationMode.wrappedValue.dismiss()
             }
+            .disabled(isApplying)
             .buttonStyle(.borderedProminent))
             .onAppear {
+                overlayDraft = overlayManager.overlays
                 if let preset = try? JSONDecoder().decode(Preset.self, from: selectedPresetData) {
                     selectedPreset = preset
                 } else {
@@ -748,6 +832,17 @@ struct SettingsView: View {
                     customAudioBitrate = preset.audioBitrate
                     customVideoBitrate = preset.videoBitrate
                 }
+            }
+            .alert(
+                "Could Not Apply Settings",
+                isPresented: Binding(
+                    get: { applyErrorMessage != nil },
+                    set: { if !$0 { applyErrorMessage = nil } }
+                )
+            ) {
+                Button("OK") { applyErrorMessage = nil }
+            } message: {
+                Text(applyErrorMessage ?? "The settings could not be applied")
             }
             .sheet(item: $editingOverlay) { overlay in
                 NavigationView {
@@ -773,6 +868,25 @@ struct SettingsView: View {
             }
         }
     }
+
+    private var streamKeyBinding: Binding<String> {
+        Binding(
+            get: { streamKeyManager.currentKey },
+            set: { streamKeyManager.updateKey($0) }
+        )
+    }
+
+    private func clearYouTubeAccountState() {
+        guard youtubeService.signOut() else { return }
+        broadcastId = nil
+        broadcastTitle = ""
+        playlists = []
+        selectedPlaylistId = nil
+        thumbnailImage = nil
+        youtubeConfigLoaded = false
+        appState.youtubeStatus = nil
+        appState.youtubeBroadcastId = nil
+    }
     
     func saveCustomPreset() {
         let customPreset = Preset(
@@ -792,21 +906,19 @@ struct SettingsView: View {
     }
     
     func addOverlay() {
-        guard let url = URL(string: newOverlayURL), UIApplication.shared.canOpenURL(url) else {
-            // Handle invalid URL error
-            return
-        }
-        overlayManager.addOverlay(url: newOverlayURL)
+        let trimmedURL = newOverlayURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard OverlayURLValidator.isAllowed(trimmedURL),
+              !overlayDraft.contains(where: { $0.url == trimmedURL }) else { return }
+        overlayDraft.append(OverlaySetting(url: trimmedURL))
         newOverlayURL = ""
     }
 
     func saveOverlayEdit(for overlay: OverlaySetting) {
         let trimmedURL = editedOverlayURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let url = URL(string: trimmedURL), UIApplication.shared.canOpenURL(url) else {
-            return
-        }
-
-        overlayManager.updateOverlay(id: overlay.id, url: trimmedURL)
+        guard OverlayURLValidator.isAllowed(trimmedURL),
+              !overlayDraft.contains(where: { $0.id != overlay.id && $0.url == trimmedURL }),
+              let index = overlayDraft.firstIndex(where: { $0.id == overlay.id }) else { return }
+        overlayDraft[index].url = trimmedURL
         editingOverlay = nil
         editedOverlayURL = ""
     }
@@ -869,7 +981,6 @@ struct SettingsView: View {
             playlists = loadedPlaylists
             if let selectedPlaylistId, !playlists.contains(where: { $0.id == selectedPlaylistId }) {
                 self.selectedPlaylistId = nil
-                Settings.youtubeSelectedPlaylistId = nil
             }
             youtubeConfigLoaded = true
             youtubeService.errorMessage = nil
@@ -884,12 +995,15 @@ struct SettingsView: View {
         }
     }
 
-    func applyYouTubeChanges() async {
-        guard let broadcastId, let currentBroadcast = loadedBroadcast else { return }
+    func applyYouTubeChanges() async throws {
+        guard let currentBroadcast = loadedBroadcast else { return }
+        let current = try await youtubeService.ensureCurrentBroadcastForStreamKey(
+            streamKeyManager.currentKey
+        )
+        let targetBroadcastID = current.id
 
-        do {
-            try await youtubeService.updateBroadcast(
-                id: broadcastId,
+        try await youtubeService.updateBroadcast(
+                id: targetBroadcastID,
                 title: broadcastTitle,
                 privacyStatus: broadcastVisibility,
                 scheduledStartTime: broadcastScheduledStartTime,
@@ -902,49 +1016,85 @@ struct SettingsView: View {
                 enableAutoStart: currentBroadcast.enableAutoStart,
                 enableAutoStop: currentBroadcast.enableAutoStop
             )
-            var updatedBroadcast = currentBroadcast
+            var updatedBroadcast = current
             updatedBroadcast.title = broadcastTitle
             updatedBroadcast.privacyStatus = broadcastVisibility
             updatedBroadcast.lifeCycleStatus = broadcastLifeCycleStatus
             updatedBroadcast.enableDvr = broadcastEnableDvr
             updatedBroadcast.latencyPreference = broadcastLatencyPreference
             loadedBroadcast = updatedBroadcast
-        } catch {
-            youtubeService.errorMessage = error.localizedDescription
-            LOG("Failed to update broadcast: \(error.localizedDescription)", level: .error)
-        }
+            broadcastId = targetBroadcastID
 
         if let thumbnailImage,
-           let resized = thumbnailImage.scaledToFit(maxWidth: 1280, maxHeight: 720),
-           let imageData = resized.jpegDataWithinLimit(maxBytes: 2_000_000) {
-            do {
-                LOG("Uploading thumbnail (\(imageData.count) bytes, \(Int(resized.size.width))x\(Int(resized.size.height)))", level: .debug)
-                try await youtubeService.uploadThumbnail(videoId: broadcastId, imageData: imageData)
-            } catch {
-                youtubeService.errorMessage = error.localizedDescription
-                LOG("Failed to upload thumbnail: \(error.localizedDescription)", level: .error)
+           let resized = thumbnailImage.scaledToFit(maxWidth: 1280, maxHeight: 720) {
+            guard let imageData = resized.jpegDataWithinLimit(maxBytes: 2_000_000) else {
+                throw YouTubeError.thumbnailTooLarge
             }
+            LOG("Uploading thumbnail (\(imageData.count) bytes, \(Int(resized.size.width))x\(Int(resized.size.height)))", level: .debug)
+            try await youtubeService.uploadThumbnail(videoId: targetBroadcastID, imageData: imageData)
         }
 
         if let playlistId = selectedPlaylistId {
-            do {
-                LOG("Adding broadcast to playlist \(playlistId)", level: .debug)
-                try await youtubeService.addToPlaylist(playlistId: playlistId, videoId: broadcastId)
-                Settings.youtubeSelectedPlaylistId = playlistId
-            } catch {
-                youtubeService.errorMessage = error.localizedDescription
-                LOG("Failed to add to playlist: \(error.localizedDescription)", level: .error)
-            }
+            LOG("Adding broadcast to playlist \(playlistId)", level: .debug)
+            try await youtubeService.addToPlaylist(playlistId: playlistId, videoId: targetBroadcastID)
         }
+        Settings.youtubeSelectedPlaylistId = selectedPlaylistId
+        LOG("YouTube broadcast settings applied successfully", level: .info)
+    }
 
-        if youtubeService.errorMessage == nil {
-            LOG("YouTube broadcast settings applied successfully", level: .info)
+    private func validateDraft() throws {
+        guard stream || record else {
+            throw SettingsApplyError.noOutputSelected
         }
+        if stream {
+            guard !streamKeyManager.currentKey.isEmpty else {
+                throw StreamStartError.missingStreamKey
+            }
+            _ = try YouTubeHLSEndpoint.manualPrimary(streamKey: streamKeyManager.currentKey)
+        }
+        guard measuredBandwidth >= 1_000_000 else {
+            throw SettingsApplyError.invalidBandwidth
+        }
+    }
+
+    private func commitDraft() throws {
+        try streamKeyManager.commit()
+        Settings.stream = stream
+        Settings.record = record
+        Settings.isInputSyncedWithOutput = inputSyncsWithOutput
+        Settings.measuredBandwidth = measuredBandwidth
+        Settings.networkSharing = networkSharing
+        Settings.cameraPosition = cameraPosition
+        Settings.selectedPresetData = selectedPresetData
+        Settings.journalError = journalError
+        Settings.journalWarning = journalWarning
+        Settings.journalInfo = journalInfo
+        Settings.journalDebug = journalDebug
+        Settings.youtubeSelectedPlaylistId = selectedPlaylistId
+        overlayManager.replaceOverlays(with: overlayDraft)
+#if DEBUG
+        Settings.captureRemuxFixtures = captureRemuxFixtures
+        Settings.recordHLSAcceptance = recordHLSAcceptance
+#endif
     }
 
 }
 
+enum SettingsApplyError: LocalizedError, Equatable {
+    case noOutputSelected
+    case invalidBandwidth
+
+    var errorDescription: String? {
+        switch self {
+        case .noOutputSelected: "Select streaming, recording, or both"
+        case .invalidBandwidth: "Measured upload bandwidth must be at least 1 Mbps"
+        }
+    }
+}
+
 final class Settings: Sendable {
+    private static let credentialStore = KeychainCredentialStore()
+
     private static func bool(forKey key: String, default defaultValue: Bool) -> Bool {
         let defaults = UserDefaults.standard
         guard defaults.object(forKey: key) != nil else {
@@ -965,6 +1115,11 @@ final class Settings: Sendable {
             await journalInfo ? Journal.shared.enable(level: .info) : Journal.shared.disable(level: .info)
             await journalDebug ? Journal.shared.enable(level: .debug) : Journal.shared.disable(level: .debug)
         }
+    }
+
+    @discardableResult
+    static func migrateLegacySettings() throws -> LegacySettingsMigrationResult {
+        try LegacySettingsMigration.run(credentials: credentialStore)
     }
     
     static func hasCameraPermission() -> Bool {
@@ -1030,14 +1185,34 @@ final class Settings: Sendable {
         }
         return selectedPreset
     }
+    static var selectedPresetData: Data {
+        get { UserDefaults.standard.data(forKey: "SelectedPreset") ?? Data() }
+        set { UserDefaults.standard.set(newValue, forKey: "SelectedPreset") }
+    }
     static var streamKey: String? {
-        guard let targetData = Settings.targetData,
-              let decodedTargetData = try? JSONDecoder().decode([String: String].self, from: targetData),
-              let streamKey = decodedTargetData[Settings.target]
-        else {
-            return nil
+        get {
+            credential(.youTubeStreamKey)
         }
-        return streamKey
+        set {
+            setCredential(newValue, for: .youTubeStreamKey)
+        }
+    }
+    static func loadStreamKey() throws -> String? {
+        try credentialStore.value(for: .youTubeStreamKey)
+    }
+    static func setStreamKey(_ value: String?) throws {
+        try credentialStore.setValue(value, for: .youTubeStreamKey)
+    }
+    static func setYouTubeAccessToken(_ value: String?) throws {
+        try credentialStore.setValue(value, for: .youTubeAccessToken)
+    }
+    static func setYouTubeRefreshToken(_ value: String?) throws {
+        try credentialStore.setValue(value, for: .youTubeRefreshToken)
+    }
+    static func clearYouTubeAuthorization() throws {
+        try setYouTubeAccessToken(nil)
+        try setYouTubeRefreshToken(nil)
+        youtubeTokenExpiry = nil
     }
     
     static var isInputSyncedWithOutput: Bool {
@@ -1064,6 +1239,37 @@ final class Settings: Sendable {
             UserDefaults.standard.set(newValue, forKey: "Record")
         }
     }
+    static var measuredBandwidth: Int {
+        get {
+            let value = UserDefaults.standard.integer(forKey: "MeasuredBandwidth")
+            return value >= 1_000_000 ? value : 10_000_000
+        }
+        set { UserDefaults.standard.set(newValue, forKey: "MeasuredBandwidth") }
+    }
+    static var networkSharing: String {
+        get { UserDefaults.standard.string(forKey: "NetworkSharing") ?? "many" }
+        set { UserDefaults.standard.set(newValue, forKey: "NetworkSharing") }
+    }
+    static var cameraPosition: String {
+        get { UserDefaults.standard.string(forKey: "CameraPosition") ?? "stationary" }
+        set { UserDefaults.standard.set(newValue, forKey: "CameraPosition") }
+    }
+    static var journalError: Bool {
+        get { bool(forKey: "JournalError", default: true) }
+        set { UserDefaults.standard.set(newValue, forKey: "JournalError") }
+    }
+    static var journalWarning: Bool {
+        get { bool(forKey: "JournalWarning", default: true) }
+        set { UserDefaults.standard.set(newValue, forKey: "JournalWarning") }
+    }
+    static var journalInfo: Bool {
+        get { bool(forKey: "JournalInfo", default: true) }
+        set { UserDefaults.standard.set(newValue, forKey: "JournalInfo") }
+    }
+    static var journalDebug: Bool {
+        get { bool(forKey: "JournalDebug", default: false) }
+        set { UserDefaults.standard.set(newValue, forKey: "JournalDebug") }
+    }
     static var selectedCamera: String {
         get {
             UserDefaults.standard.string(forKey: "SelectedCamera") ?? DEFAULT_CAMERA
@@ -1071,6 +1277,10 @@ final class Settings: Sendable {
         set {
             UserDefaults.standard.set(newValue, forKey: "SelectedCamera")
         }
+    }
+    static var selectedCameraID: String? {
+        get { UserDefaults.standard.string(forKey: "SelectedCameraID") }
+        set { UserDefaults.standard.set(newValue, forKey: "SelectedCameraID") }
     }
     static var selectedMicrophone: String? {
         get {
@@ -1080,52 +1290,9 @@ final class Settings: Sendable {
             UserDefaults.standard.set(newValue, forKey: "SelectedMicrophone")
         }
     }
-    static var hlsServer: String? {
-        get {
-            UserDefaults.standard.string(forKey: "HLSServer")
-        }
-        set {
-            UserDefaults.standard.set(newValue, forKey: "HLSServer")
-        }
-    }
-    static var hlsUsername: String? {
-        get {
-            UserDefaults.standard.string(forKey: "Username")
-        }
-        set {
-            UserDefaults.standard.set(newValue, forKey: "Username")
-        }
-    }
-    static var hlsPassword: String? {
-        get {
-            UserDefaults.standard.string(forKey: "Password")
-        }
-        set {
-            UserDefaults.standard.set(newValue, forKey: "Password")
-        }
-    }
-    static var target: String {
-        get {
-            UserDefaults.standard.string(forKey: "Target") ?? DEFAULT_TARGET
-        }
-        set {
-            UserDefaults.standard.set(newValue, forKey: "Target")
-        }
-    }
-    static var streamDestination: StreamDestination {
-        get {
-            guard let rawValue = UserDefaults.standard.string(forKey: "StreamDestination"),
-                  let destination = StreamDestination(rawValue: rawValue) else {
-                return .relay
-            }
-            guard destination != .youTubeDirect || DIRECT_YOUTUBE_HLS_AVAILABLE else {
-                return .relay
-            }
-            return destination
-        }
-        set {
-            UserDefaults.standard.set(newValue.rawValue, forKey: "StreamDestination")
-        }
+    static var selectedMicrophoneID: String? {
+        get { UserDefaults.standard.string(forKey: "SelectedMicrophoneID") }
+        set { UserDefaults.standard.set(newValue, forKey: "SelectedMicrophoneID") }
     }
 #if DEBUG
     static var captureRemuxFixtures: Bool {
@@ -1135,6 +1302,10 @@ final class Settings: Sendable {
         set {
             UserDefaults.standard.set(newValue, forKey: "CaptureRemuxFixtures")
         }
+    }
+    static var recordHLSAcceptance: Bool {
+        get { UserDefaults.standard.bool(forKey: "RecordHLSAcceptance") }
+        set { UserDefaults.standard.set(newValue, forKey: "RecordHLSAcceptance") }
     }
 #endif
     static var cameraStabilization: String? {
@@ -1167,14 +1338,6 @@ final class Settings: Sendable {
         }
         set {
             UserDefaults.standard.set(newValue, forKey: "Overlays")
-        }
-    }
-    static var targetData: Data? {
-        get {
-            UserDefaults.standard.data(forKey: "TargetData")
-        }
-        set {
-            UserDefaults.standard.set(newValue, forKey: "TargetData")
         }
     }
     static var style: String? {
@@ -1215,18 +1378,18 @@ final class Settings: Sendable {
     }
     static var youtubeAccessToken: String? {
         get {
-            UserDefaults.standard.string(forKey: "YouTubeAccessToken")
+            credential(.youTubeAccessToken)
         }
         set {
-            UserDefaults.standard.set(newValue, forKey: "YouTubeAccessToken")
+            setCredential(newValue, for: .youTubeAccessToken)
         }
     }
     static var youtubeRefreshToken: String? {
         get {
-            UserDefaults.standard.string(forKey: "YouTubeRefreshToken")
+            credential(.youTubeRefreshToken)
         }
         set {
-            UserDefaults.standard.set(newValue, forKey: "YouTubeRefreshToken")
+            setCredential(newValue, for: .youTubeRefreshToken)
         }
     }
     static var youtubeTokenExpiry: Date? {
@@ -1243,6 +1406,23 @@ final class Settings: Sendable {
         }
         set {
             UserDefaults.standard.set(newValue, forKey: "YouTubeSelectedPlaylistId")
+        }
+    }
+
+    private static func credential(_ credential: TubeistCredential) -> String? {
+        do {
+            return try credentialStore.value(for: credential)
+        } catch {
+            LOG("Could not read a credential from Keychain: \(error.localizedDescription)", level: .error)
+            return nil
+        }
+    }
+
+    private static func setCredential(_ value: String?, for credential: TubeistCredential) {
+        do {
+            try credentialStore.setValue(value, for: credential)
+        } catch {
+            LOG("Could not update a credential in Keychain: \(error.localizedDescription)", level: .error)
         }
     }
 }

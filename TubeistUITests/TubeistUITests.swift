@@ -10,25 +10,112 @@ import XCTest
 final class TubeistUITests: XCTestCase {
 
     override func setUpWithError() throws {
-        // Put setup code here. This method is called before the invocation of each test method in the class.
-
-        // In UI tests it is usually best to stop immediately when a failure occurs.
         continueAfterFailure = false
-
-        // In UI tests it’s important to set the initial state - such as interface orientation - required for your tests before they run. The setUp method is a good place to do this.
-    }
-
-    override func tearDownWithError() throws {
-        // Put teardown code here. This method is called after the invocation of each test method in the class.
     }
 
     @MainActor
-    func testExample() throws {
-        // UI tests must launch the application that they test.
+    func testPrimaryControlsHaveAccessibleNames() throws {
         let app = XCUIApplication()
+        app.launchArguments = ["-ui-testing"]
         app.launch()
 
-        // Use XCTAssert and related functions to verify your tests produce the correct results.
+        XCTAssertTrue(app.buttons["Settings"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["Battery saving"].exists)
+        XCTAssertTrue(app.buttons["Camera selection"].exists)
+        XCTAssertTrue(app.buttons["Monitor selection"].exists)
+        XCTAssertTrue(app.buttons["Journal"].exists)
+        XCTAssertTrue(app.buttons["Start stream"].exists)
+        XCTAssertTrue(app.images["Stream health"].exists)
+    }
+
+    @MainActor
+    func testClosingSettingsDiscardsStreamKeyDraft() throws {
+        let app = XCUIApplication()
+        app.launchArguments = ["-ui-testing"]
+        app.launch()
+
+        let settings = app.buttons["Settings"]
+        XCTAssertTrue(settings.waitForExistence(timeout: 5))
+        settings.tap()
+
+        let keyField = app.secureTextFields["YouTube HLS Stream Key"]
+        // The stream-key control proves that the Settings sheet is presented.
+        // Navigation-bar titles changed element type in iOS 26, so querying the
+        // field avoids coupling this behavior test to framework internals.
+        XCTAssertTrue(keyField.waitForExistence(timeout: 5))
+        keyField.tap()
+        keyField.typeText("draft-key-1234")
+        app.buttons["Close"].tap()
+
+        XCTAssertTrue(settings.waitForExistence(timeout: 3))
+        settings.tap()
+        let reopenedKeyField = app.secureTextFields["YouTube HLS Stream Key"]
+        XCTAssertTrue(reopenedKeyField.waitForExistence(timeout: 3))
+        XCTAssertEqual(reopenedKeyField.value as? String, "YouTube HLS Stream Key")
+    }
+
+    @MainActor
+    func testInvalidManualKeyShowsAnActionableApplyError() throws {
+        let app = launchForUITesting()
+        app.buttons["Settings"].tap()
+        let keyField = app.secureTextFields["YouTube HLS Stream Key"]
+        XCTAssertTrue(keyField.waitForExistence(timeout: 5))
+        keyField.tap()
+        keyField.typeText("invalid/key")
+        app.buttons["Apply"].tap()
+
+        XCTAssertTrue(app.alerts["Could Not Apply Settings"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.staticTexts["The YouTube HLS ingestion endpoint is invalid"].exists)
+        app.alerts["Could Not Apply Settings"].buttons["OK"].tap()
+        XCTAssertTrue(keyField.exists)
+    }
+
+    @MainActor
+    func testApplyingAValidManualKeyPersistsTheDraft() throws {
+        let app = launchForUITesting()
+        let settings = app.buttons["Settings"]
+        settings.tap()
+        let keyField = app.secureTextFields["YouTube HLS Stream Key"]
+        XCTAssertTrue(keyField.waitForExistence(timeout: 5))
+        keyField.tap()
+        keyField.typeText("abcd-efgh-1234")
+        app.buttons["Apply"].tap()
+
+        XCTAssertTrue(settings.waitForExistence(timeout: 5))
+        settings.tap()
+        let persistedField = app.secureTextFields["YouTube HLS Stream Key"]
+        XCTAssertTrue(persistedField.waitForExistence(timeout: 3))
+        XCTAssertNotEqual(persistedField.value as? String, "YouTube HLS Stream Key")
+    }
+
+    @MainActor
+    func testEssentialControlsRemainReachableAtLargestDynamicTypeSize() throws {
+        let app = launchForUITesting(additionalArguments: [
+            "-UIPreferredContentSizeCategoryName",
+            "UICTContentSizeCategoryAccessibilityExtraExtraExtraLarge"
+        ])
+
+        let settings = app.buttons["Settings"]
+        let startStream = app.buttons["Start stream"]
+        XCTAssertTrue(settings.isHittable)
+        XCTAssertTrue(startStream.exists)
+
+        settings.tap()
+        let keyField = app.secureTextFields["YouTube HLS Stream Key"]
+        XCTAssertTrue(keyField.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["Apply"].exists)
+        XCTAssertTrue(app.buttons["Close"].exists)
+    }
+
+    @MainActor
+    private func launchForUITesting(
+        additionalArguments: [String] = []
+    ) -> XCUIApplication {
+        let app = XCUIApplication()
+        app.launchArguments = ["-ui-testing"] + additionalArguments
+        app.launch()
+        XCTAssertTrue(app.buttons["Settings"].waitForExistence(timeout: 5))
+        return app
     }
 
     @MainActor

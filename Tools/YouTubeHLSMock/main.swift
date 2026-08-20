@@ -55,7 +55,7 @@ private struct YouTubeHLSUploaderSocketTest {
             delegate: LocalhostTrustDelegate()
         )
         let uploader = try YouTubeHLSUploader(
-            endpoint: YouTubeHLSEndpoint(endpointURL),
+            endpoint: YouTubeHLSEndpoint(developmentURL: endpointURL),
             sessionIdentifier: "socket_session",
             userAgent: "Apple / SocketTest / Tubeist-1",
             transport: transport,

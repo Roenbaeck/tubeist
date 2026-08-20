@@ -5,7 +5,7 @@
 
 import Foundation
 
-enum DirectHLSStreamError: LocalizedError, CustomStringConvertible {
+enum YouTubeHLSPackagingError: LocalizedError, CustomStringConvertible {
     case notPrepared
     case initializationMissing
     case segmentDurationMismatch(reported: Double, parsed: Double)
@@ -14,19 +14,19 @@ enum DirectHLSStreamError: LocalizedError, CustomStringConvertible {
 
     var description: String {
         switch self {
-        case .notPrepared: "Direct HLS output was not prepared"
+        case .notPrepared: "YouTube HLS output was not prepared"
         case .initializationMissing: "A media fragment arrived before its initialization segment"
         case .segmentDurationMismatch(let reported, let parsed):
             "Fragment duration mismatch (writer \(reported)s, parsed \(parsed)s)"
-        case .packagingFailed: "Direct HLS packaging failed before shutdown completed"
-        case .shutdownTimedOut: "Direct HLS output did not drain before its shutdown deadline"
+        case .packagingFailed: "YouTube HLS packaging failed before shutdown completed"
+        case .shutdownTimedOut: "YouTube HLS output did not drain before its shutdown deadline"
         }
     }
 
     var errorDescription: String? { description }
 }
 
-struct DirectHLSMetrics: Sendable, Equatable {
+struct YouTubeHLSPackagingMetrics: Sendable, Equatable {
     let networkMbps: Int
     let networkUtilization: Int
     let queuedFragments: Int
@@ -44,8 +44,8 @@ struct EncodedOutputMetrics: Sendable, Equatable {
     let hasFailure: Bool
 }
 
-actor DirectHLSStreamSink {
-    static let shared = DirectHLSStreamSink()
+actor YouTubeHLSStreamSink {
+    static let shared = YouTubeHLSStreamSink()
 
     private static let maximumQueuedFragments = 5
     private let reader = ISOBMFFReader()
@@ -92,7 +92,7 @@ actor DirectHLSStreamSink {
             await previousUploader.stop()
         }
         guard generation == sessionGeneration else {
-            throw DirectHLSStreamError.notPrepared
+            throw YouTubeHLSPackagingError.notPrepared
         }
         if let transport {
             uploader = try YouTubeHLSUploader(
@@ -110,17 +110,17 @@ actor DirectHLSStreamSink {
         }
         isPrepared = true
 #if DEBUG
-        await DirectHLSAcceptanceRecorder.shared.begin(
+        await HLSAcceptanceRecorder.shared.begin(
             sessionIdentifier: sessionIdentifier,
-            enabled: true
+            enabled: Settings.recordHLSAcceptance
         )
 #endif
-        LOG("Direct YouTube HLS output is prepared", level: .info)
+        LOG("YouTube HLS output is prepared", level: .info)
     }
 
     func enqueue(_ fragment: Fragment) async {
         guard isPrepared, failure == nil else {
-            LOG("Ignoring an encoded fragment because direct HLS output is unavailable", level: .warning)
+            LOG("Ignoring an encoded fragment because YouTube HLS output is unavailable", level: .warning)
             return
         }
         if queue.count >= Self.maximumQueuedFragments {
@@ -129,12 +129,12 @@ actor DirectHLSStreamSink {
                 droppedFragments += 1
                 pendingDiscontinuity = true
 #if DEBUG
-                await DirectHLSAcceptanceRecorder.shared.segmentDropped(
+                await HLSAcceptanceRecorder.shared.segmentDropped(
                     sequence: dropped.sequence,
                     droppedFragments: droppedFragments
                 )
 #endif
-                LOG("Direct HLS queue dropped fragment \(dropped.sequence); the next segment will be discontinuous", level: .warning)
+                LOG("YouTube HLS queue dropped fragment \(dropped.sequence); the next segment will be discontinuous", level: .warning)
                 await Streamer.shared.setStreamHealth(.degraded)
             }
         }
@@ -149,19 +149,24 @@ actor DirectHLSStreamSink {
     }
 
     func finish(timeout: TimeInterval = 20) async throws {
+        let clock = ContinuousClock()
+        try await finish(deadline: clock.now.advanced(by: .seconds(timeout)))
+    }
+
+    func finish(deadline: ContinuousClock.Instant) async throws {
         let generation = sessionGeneration
-        let deadline = Date().addingTimeInterval(timeout)
+        let clock = ContinuousClock()
         while generation == sessionGeneration,
               (isProcessing || !queue.isEmpty),
-              Date() < deadline {
+              clock.now < deadline {
             try await Task.sleep(for: .milliseconds(50))
         }
         guard generation == sessionGeneration else {
-            throw DirectHLSStreamError.notPrepared
+            throw YouTubeHLSPackagingError.notPrepared
         }
         guard !isProcessing, queue.isEmpty else {
             await cancel()
-            throw DirectHLSStreamError.shutdownTimedOut
+            throw YouTubeHLSPackagingError.shutdownTimedOut
         }
         if !finalizationSamples.isEmpty {
             isProcessing = true
@@ -170,15 +175,15 @@ actor DirectHLSStreamSink {
             }
             while generation == sessionGeneration,
                   isProcessing,
-                  Date() < deadline {
+                  clock.now < deadline {
                 try await Task.sleep(for: .milliseconds(50))
             }
             guard generation == sessionGeneration else {
-                throw DirectHLSStreamError.notPrepared
+                throw YouTubeHLSPackagingError.notPrepared
             }
             guard !isProcessing else {
                 await cancel()
-                throw DirectHLSStreamError.shutdownTimedOut
+                throw YouTubeHLSPackagingError.shutdownTimedOut
             }
         }
         let finishingUploader = uploader
@@ -189,17 +194,17 @@ actor DirectHLSStreamSink {
             await finishingUploader.stop()
         }
         guard generation == sessionGeneration else {
-            throw DirectHLSStreamError.notPrepared
+            throw YouTubeHLSPackagingError.notPrepared
         }
         if finishingFailure != nil {
             // The detailed failure was already journaled without an ingestion
             // URL. Keep the public shutdown error stable and non-secret.
-            throw DirectHLSStreamError.packagingFailed
+            throw YouTubeHLSPackagingError.packagingFailed
         }
 #if DEBUG
-        await DirectHLSAcceptanceRecorder.shared.stopped()
+        await HLSAcceptanceRecorder.shared.stopped()
 #endif
-        LOG("Direct YouTube HLS output stopped", level: .info)
+        LOG("YouTube HLS output stopped", level: .info)
     }
 
     func cancel() async {
@@ -215,14 +220,14 @@ actor DirectHLSStreamSink {
             await cancelledUploader.stop()
         }
 #if DEBUG
-        await DirectHLSAcceptanceRecorder.shared.cancelled()
+        await HLSAcceptanceRecorder.shared.cancelled()
 #endif
     }
 
-    func metrics() async -> DirectHLSMetrics {
+    func metrics() async -> YouTubeHLSPackagingMetrics {
         let uploadDuration = await uploader?.queuedDuration ?? 0
         let performance = await uploader?.performance ?? (0, 0)
-        return DirectHLSMetrics(
+        return YouTubeHLSPackagingMetrics(
             networkMbps: performance.0,
             networkUtilization: performance.1,
             queuedFragments: queue.count + finalizationFragmentCount + (isProcessing ? 1 : 0),
@@ -260,13 +265,13 @@ actor DirectHLSStreamSink {
         case .initialization:
             initialization = try reader.parseInitializationSegment(fragment.segment)
 #if DEBUG
-            await DirectHLSAcceptanceRecorder.shared.initializationParsed()
+            await HLSAcceptanceRecorder.shared.initializationParsed()
 #endif
-            LOG("Parsed direct HLS initialization metadata", level: .debug)
+            LOG("Parsed YouTube HLS initialization metadata", level: .debug)
 
         case .separable, .finalization:
             guard let initialization else {
-                throw DirectHLSStreamError.initializationMissing
+                throw YouTubeHLSPackagingError.initializationMissing
             }
             let media = try reader.parseMediaSegment(fragment.segment, initialization: initialization)
             if fragment.type == .finalization {
@@ -348,10 +353,10 @@ actor DirectHLSStreamSink {
         sessionGeneration generation: UInt64
     ) async throws {
         guard let initialization else {
-            throw DirectHLSStreamError.initializationMissing
+            throw YouTubeHLSPackagingError.initializationMissing
         }
         guard let uploader else {
-            throw DirectHLSStreamError.notPrepared
+            throw YouTubeHLSPackagingError.notPrepared
         }
         let transportSegment = try muxer.mux(media, initialization: initialization)
         let duration = transportSegment.duration
@@ -359,7 +364,7 @@ actor DirectHLSStreamSink {
         if validateReportedDuration,
            reportedDuration > 0,
            abs(reportedDuration - duration) > tolerance {
-            throw DirectHLSStreamError.segmentDurationMismatch(
+            throw YouTubeHLSPackagingError.segmentDurationMismatch(
                 reported: reportedDuration,
                 parsed: duration
             )
@@ -375,7 +380,7 @@ actor DirectHLSStreamSink {
         let diagnostics = await uploader.diagnostics
         let queuedDuration = await uploader.queuedDuration
 #if DEBUG
-        await DirectHLSAcceptanceRecorder.shared.segmentAccepted(
+        await HLSAcceptanceRecorder.shared.segmentAccepted(
             sequence: receipt.sequence,
             duration: duration,
             queuedDuration: queuedDuration,
@@ -400,9 +405,9 @@ actor DirectHLSStreamSink {
         queue.removeAll(keepingCapacity: true)
         clearFinalizationBuffer()
 #if DEBUG
-        await DirectHLSAcceptanceRecorder.shared.failed(String(describing: error))
+        await HLSAcceptanceRecorder.shared.failed(String(describing: error))
 #endif
-        LOG("Direct HLS packaging stopped: \(error)", level: .error)
+        LOG("YouTube HLS packaging stopped: \(error)", level: .error)
         await Streamer.shared.setStreamHealth(.unusable)
         if let uploader {
             await uploader.stop()
@@ -423,7 +428,6 @@ actor EncodedOutputRouter {
 
     private enum Mode {
         case none
-        case relay
         case direct
     }
 
@@ -438,17 +442,7 @@ actor EncodedOutputRouter {
         mode = .none
     }
 
-    func prepareRelay(streamID: String) async {
-        resetOrdering()
-        let generation = routingGeneration
-        mode = .none
-        await FragmentPusher.shared.immediatePreparation(streamID: streamID)
-        if generation == routingGeneration {
-            mode = .relay
-        }
-    }
-
-    func prepareDirect(
+    func prepareYouTube(
         endpoint: YouTubeHLSEndpoint,
         sessionIdentifier: String,
         userAgent: String
@@ -456,13 +450,13 @@ actor EncodedOutputRouter {
         resetOrdering()
         let generation = routingGeneration
         mode = .none
-        try await DirectHLSStreamSink.shared.prepare(
+        try await YouTubeHLSStreamSink.shared.prepare(
             endpoint: endpoint,
             sessionIdentifier: sessionIdentifier,
             userAgent: userAgent
         )
         guard generation == routingGeneration else {
-            throw DirectHLSStreamError.notPrepared
+            throw YouTubeHLSPackagingError.notPrepared
         }
         mode = .direct
     }
@@ -482,36 +476,37 @@ actor EncodedOutputRouter {
         switch mode {
         case .none:
             break
-        case .relay:
-            await FragmentPusher.shared.addFragment(fragment)
-            await FragmentPusher.shared.uploadFragment(attempt: 1)
         case .direct:
-            await DirectHLSStreamSink.shared.enqueue(fragment)
+            await YouTubeHLSStreamSink.shared.enqueue(fragment)
         }
     }
 
     func finish(timeout: TimeInterval = 25) async throws {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(timeout))
+        try await finish(deadline: deadline)
+    }
+
+    func finish(deadline: ContinuousClock.Instant) async throws {
         let generation = routingGeneration
-        let deadline = Date().addingTimeInterval(timeout)
+        let clock = ContinuousClock()
         while generation == routingGeneration,
               (isRouting || !pendingFragments.isEmpty),
-              Date() < deadline {
+              clock.now < deadline {
             try await Task.sleep(for: .milliseconds(10))
         }
         guard generation == routingGeneration else {
-            throw DirectHLSStreamError.notPrepared
+            throw YouTubeHLSPackagingError.notPrepared
         }
         guard !isRouting, pendingFragments.isEmpty else {
             await cancel()
-            throw DirectHLSStreamError.shutdownTimedOut
+            throw YouTubeHLSPackagingError.shutdownTimedOut
         }
         switch mode {
         case .none:
             break
-        case .relay:
-            await FragmentPusher.shared.gracefulShutdown()
         case .direct:
-            try await DirectHLSStreamSink.shared.finish()
+            try await YouTubeHLSStreamSink.shared.finish(deadline: deadline)
         }
         if generation == routingGeneration {
             mode = .none
@@ -523,7 +518,7 @@ actor EncodedOutputRouter {
         resetOrdering()
         mode = .none
         if wasDirect {
-            await DirectHLSStreamSink.shared.cancel()
+            await YouTubeHLSStreamSink.shared.cancel()
         }
     }
 
@@ -537,18 +532,8 @@ actor EncodedOutputRouter {
                 queuedDuration: 0,
                 hasFailure: false
             )
-        case .relay:
-            let (mbps, utilization) = await FragmentPusher.shared.networkPerformance()
-            let buffered = await FragmentPusher.shared.fragmentBufferCount()
-            return EncodedOutputMetrics(
-                networkMbps: mbps,
-                networkUtilization: utilization,
-                bufferedFragments: buffered,
-                queuedDuration: Double(buffered) * FRAGMENT_DURATION,
-                hasFailure: false
-            )
         case .direct:
-            let metrics = await DirectHLSStreamSink.shared.metrics()
+            let metrics = await YouTubeHLSStreamSink.shared.metrics()
             return EncodedOutputMetrics(
                 networkMbps: metrics.networkMbps,
                 networkUtilization: metrics.queuedFragments > 1

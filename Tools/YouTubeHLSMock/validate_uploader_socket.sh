@@ -21,6 +21,7 @@ echo "Validation artifacts: ${artifact_root}"
 
 xcrun swiftc \
   -swift-version 6 \
+  -D DEBUG \
   -parse-as-library \
   -module-cache-path "${artifact_root}/module-cache" \
   "${repository_root}/Tubeist/HLSMediaPlaylist.swift" \

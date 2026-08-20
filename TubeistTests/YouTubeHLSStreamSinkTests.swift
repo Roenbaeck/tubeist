@@ -1,5 +1,5 @@
 //
-//  DirectHLSStreamSinkTests.swift
+//  YouTubeHLSStreamSinkTests.swift
 //  TubeistTests
 //
 
@@ -7,13 +7,13 @@ import Foundation
 import Testing
 @testable import Tubeist
 
-struct DirectHLSStreamSinkTests {
+struct YouTubeHLSStreamSinkTests {
     @Test func remuxesWriterFragmentsWithoutUploadingTheInitializationSegment() async throws {
         let transport = DirectSinkTransport()
         let endpoint = try YouTubeHLSEndpoint(URL(
             string: "https://upload.youtube.com/http_upload_hls?cid=not-a-real-key&file="
         )!)
-        let sink = DirectHLSStreamSink()
+        let sink = YouTubeHLSStreamSink()
         try await sink.prepare(
             endpoint: endpoint,
             sessionIdentifier: "integration_session",
@@ -52,7 +52,7 @@ struct DirectHLSStreamSinkTests {
         let endpoint = try YouTubeHLSEndpoint(URL(
             string: "https://upload.youtube.com/http_upload_hls?cid=not-a-real-key&file="
         )!)
-        let sink = DirectHLSStreamSink()
+        let sink = YouTubeHLSStreamSink()
         try await sink.prepare(
             endpoint: endpoint,
             sessionIdentifier: "old_session",
@@ -119,7 +119,7 @@ struct DirectHLSStreamSinkTests {
         let endpoint = try YouTubeHLSEndpoint(URL(
             string: "https://upload.youtube.com/http_upload_hls?cid=not-a-real-key&file="
         )!)
-        let sink = DirectHLSStreamSink()
+        let sink = YouTubeHLSStreamSink()
         try await sink.prepare(
             endpoint: endpoint,
             sessionIdentifier: "final_duration_session",
@@ -159,7 +159,7 @@ struct DirectHLSStreamSinkTests {
         let endpoint = try YouTubeHLSEndpoint(URL(
             string: "https://upload.youtube.com/http_upload_hls?cid=not-a-real-key&file="
         )!)
-        let sink = DirectHLSStreamSink()
+        let sink = YouTubeHLSStreamSink()
         try await sink.prepare(
             endpoint: endpoint,
             sessionIdentifier: "split_final_session",
@@ -205,7 +205,7 @@ struct DirectHLSStreamSinkTests {
         let endpoint = try YouTubeHLSEndpoint(URL(
             string: "https://upload.youtube.com/http_upload_hls?cid=not-a-real-key&file="
         )!)
-        let sink = DirectHLSStreamSink()
+        let sink = YouTubeHLSStreamSink()
         try await sink.prepare(
             endpoint: endpoint,
             sessionIdentifier: "incomplete_final_session",
@@ -251,7 +251,7 @@ struct DirectHLSStreamSinkTests {
         let endpoint = try YouTubeHLSEndpoint(URL(
             string: "https://upload.youtube.com/http_upload_hls?cid=not-a-real-key&file="
         )!)
-        let sink = DirectHLSStreamSink()
+        let sink = YouTubeHLSStreamSink()
         try await sink.prepare(
             endpoint: endpoint,
             sessionIdentifier: "malformed_shutdown_session",
@@ -274,7 +274,7 @@ struct DirectHLSStreamSinkTests {
         do {
             try await sink.finish(timeout: 2)
             Issue.record("Expected malformed media to fail shutdown")
-        } catch let error as DirectHLSStreamError {
+        } catch let error as YouTubeHLSPackagingError {
             if case .packagingFailed = error {
                 // Expected: the public error is accurate and contains no URL.
             } else {
@@ -299,7 +299,7 @@ struct DirectHLSStreamSinkTests {
         let endpoint = try YouTubeHLSEndpoint(URL(
             string: "https://upload.youtube.com/http_upload_hls?cid=not-a-real-key&file="
         )!)
-        let sink = DirectHLSStreamSink()
+        let sink = YouTubeHLSStreamSink()
         try await sink.prepare(
             endpoint: endpoint,
             sessionIdentifier: "bounded_session",
@@ -336,7 +336,7 @@ struct DirectHLSStreamSinkTests {
         do {
             try await sink.finish(timeout: 0.05)
             Issue.record("Expected the stalled sink to hit its shutdown deadline")
-        } catch let error as DirectHLSStreamError {
+        } catch let error as YouTubeHLSPackagingError {
             if case .shutdownTimedOut = error {
                 // Expected.
             } else {

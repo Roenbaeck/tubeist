@@ -1,6 +1,6 @@
 # Physical-device fMP4 validation
 
-In a Debug build, enable **Capture fMP4 remux fixtures** under **Direct HLS
+In a Debug build, enable **Capture fMP4 remux fixtures** under **YouTube HLS
 Development**, then start a stream using generated/test imagery. Tubeist captures
 one initialization segment and the next six media fragments, automatically turns
 the capture setting off, and writes the set under

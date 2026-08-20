@@ -14,6 +14,42 @@ enum MediaType {
     case video
 }
 
+private final class AssetWriterFinishContinuation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<(AVAssetWriter.Status, String?), Never>?
+
+    init(_ continuation: CheckedContinuation<(AVAssetWriter.Status, String?), Never>) {
+        self.continuation = continuation
+    }
+
+    func resume(status: AVAssetWriter.Status, message: String?) {
+        let continuation = lock.withLock {
+            let current = self.continuation
+            self.continuation = nil
+            return current
+        }
+        continuation?.resume(returning: (status, message))
+    }
+}
+
+private final class OneShotBoolContinuation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Bool, Never>?
+
+    init(_ continuation: CheckedContinuation<Bool, Never>) {
+        self.continuation = continuation
+    }
+
+    func resume(returning value: Bool) {
+        let continuation = lock.withLock {
+            let current = self.continuation
+            self.continuation = nil
+            return current
+        }
+        continuation?.resume(returning: value)
+    }
+}
+
 @PipelineActor
 private class AssetWriterActor {
     private var fragmentAssetWriter: AVAssetWriter?
@@ -30,11 +66,14 @@ private class AssetWriterActor {
     private var pendingVideo: [CMSampleBuffer] = []
     private var pendingTrimmedAudioSamples = 0
     private var pendingTrimmedVideoSamples = 0
+    private var startupTrimmedAudioSamples = 0
     private var lastTrimLogTime: Date?
     private let trimLogInterval: TimeInterval = 5
+    private var terminalError: ContentPackagingError?
     
     func setupFragmentAssetWriter(stream: Bool, record: Bool) async -> Bool {
         finalizing = false
+        terminalError = nil
         guard let contentType = UTType(AVFileType.mp4.rawValue) else {
             LOG("MP4 is not a valid type", level: .error)
             return false
@@ -107,6 +146,10 @@ private class AssetWriterActor {
         }
         audioInput.expectsMediaDataInRealTime = true
         
+        guard fragmentAssetWriter.canAdd(videoInput), fragmentAssetWriter.canAdd(audioInput) else {
+            LOG("Could not add the configured media inputs to the asset writer", level: .error)
+            return false
+        }
         fragmentAssetWriter.add(videoInput)
         fragmentAssetWriter.add(audioInput)
         
@@ -122,6 +165,7 @@ private class AssetWriterActor {
         pendingVideo.removeAll()
         pendingTrimmedAudioSamples = 0
         pendingTrimmedVideoSamples = 0
+        startupTrimmedAudioSamples = 0
         lastTrimLogTime = nil
         
         // Freeze sink selection for the lifetime of this writer session so a
@@ -131,36 +175,67 @@ private class AssetWriterActor {
         return true
     }
     
-    func finishWriting() async {
-        await drainPendingBuffersBeforeFinishing()
+    func finishWriting(deadline: ContinuousClock.Instant) async throws {
+        guard let fragmentAssetWriter else {
+            throw ContentPackagingError.writerFinishFailed("The asset writer is not active")
+        }
+        guard hasStartedSession else {
+            fragmentAssetWriter.cancelWriting()
+            cleanupAfterFinishing()
+            throw ContentPackagingError.videoNeverStarted
+        }
+        try await drainPendingBuffersBeforeFinishing(deadline: deadline)
+        if let terminalError {
+            fragmentAssetWriter.cancelWriting()
+            cleanupAfterFinishing()
+            throw terminalError
+        }
         // Give already-enqueued segment delegate work one executor turn before
         // callbacks produced by finishWriting are classified as finalization.
         await Task.yield()
         finalizing = true
-        await withCheckedContinuation { continuation in
-            guard let fragmentAssetWriter else {
-                LOG("Asset writer not active or configured", level: .error)
-                continuation.resume() // Resume immediately if there's nothing to stop
-                return
-            }
+        nonisolated(unsafe) let sendableAssetWriter = fragmentAssetWriter
+        let finishResult = await withCheckedContinuation { continuation in
+            let finishContinuation = AssetWriterFinishContinuation(continuation)
             self.videoInput?.markAsFinished()
             self.audioInput?.markAsFinished()
-            nonisolated(unsafe) let sendableAssetWriter = fragmentAssetWriter
-            fragmentAssetWriter.finishWriting {
-                if sendableAssetWriter.status != .completed {
-                    LOG("Failed to finish writing: \(String(describing: sendableAssetWriter.error))", level: .warning)
-                } else {
-                    LOG("Finished writing successfully", level: .debug)
+            let remaining = max(.zero, ContinuousClock().now.duration(to: deadline))
+            let timeoutTask = Task.detached(priority: .userInitiated) {
+                do {
+                    try await Task.sleep(for: remaining)
+                } catch {
+                    return
                 }
-                continuation.resume() // Resume after `finishWriting` completes
+                sendableAssetWriter.cancelWriting()
+                finishContinuation.resume(
+                    status: .cancelled,
+                    message: "Asset writer did not finish before the shutdown deadline"
+                )
             }
-            self.fragmentAssetWriter = nil
-            self.videoInput = nil
-            self.audioInput = nil
-            self.startupAudio.removeAll(keepingCapacity: false)
-            self.pendingAudio.removeAll(keepingCapacity: false)
-            self.pendingVideo.removeAll(keepingCapacity: false)
+            fragmentAssetWriter.finishWriting {
+                timeoutTask.cancel()
+                finishContinuation.resume(
+                    status: sendableAssetWriter.status,
+                    message: sendableAssetWriter.error?.localizedDescription
+                )
+            }
         }
+        cleanupAfterFinishing()
+        guard finishResult.0 == .completed else {
+            throw ContentPackagingError.writerFinishFailed(finishResult.1 ?? "Unknown writer failure")
+        }
+        LOG("Finished writing successfully", level: .debug)
+    }
+
+    private func cleanupAfterFinishing() {
+        fragmentAssetWriter = nil
+        videoInput = nil
+        audioInput = nil
+        startupAudio.removeAll(keepingCapacity: false)
+        pendingAudio.removeAll(keepingCapacity: false)
+        pendingVideo.removeAll(keepingCapacity: false)
+        hasStartedSession = false
+        baseVideoPTS = nil
     }
     
     // this can be used to ensure that tampering with the contents of the sample buffer has not affected HDR
@@ -285,7 +360,9 @@ private class AssetWriterActor {
             return false
         }
         guard input.append(sampleBuffer) else {
-            LOG("Failed to append pending \(mediaType) sample buffer", level: .error)
+            let writerMessage = fragmentAssetWriter?.error?.localizedDescription ?? "The encoder rejected the sample"
+            terminalError = .writerAppendFailed("\(mediaType): \(writerMessage)")
+            LOG("Failed to append pending \(mediaType) sample buffer: \(writerMessage)", level: .error)
             return false
         }
 
@@ -334,11 +411,14 @@ private class AssetWriterActor {
         }
     }
 
-    private func drainPendingBuffersBeforeFinishing(timeout: TimeInterval = 2) async {
-        let deadline = Date().addingTimeInterval(timeout)
+    private func drainPendingBuffersBeforeFinishing(
+        deadline: ContinuousClock.Instant
+    ) async throws {
+        let clock = ContinuousClock()
         while (!pendingAudio.isEmpty || !pendingVideo.isEmpty),
               fragmentAssetWriter?.status == .writing,
-              Date() < deadline {
+              clock.now < deadline,
+              terminalError == nil {
             let appendedCount = drainPendingBuffers()
             if !pendingAudio.isEmpty || !pendingVideo.isEmpty {
                 // AVAssetWriter applies backpressure while it finishes encoding
@@ -352,10 +432,13 @@ private class AssetWriterActor {
             }
         }
 
+        if let terminalError {
+            throw terminalError
+        }
         if !pendingAudio.isEmpty || !pendingVideo.isEmpty {
-            LOG(
-                "Final media drain reached its deadline with \(pendingVideo.count) video and \(pendingAudio.count) audio samples still buffered",
-                level: .warning
+            throw ContentPackagingError.finalMediaDrainTimedOut(
+                audioSamples: pendingAudio.count,
+                videoSamples: pendingVideo.count
             )
         }
     }
@@ -406,7 +489,8 @@ private class AssetWriterActor {
         return status == noErr ? normalizedBuffer : nil
     }
         
-    func appendVideoSampleBuffer(_ sampleBuffer: CMSampleBuffer) async {
+    func appendVideoSampleBuffer(_ sampleBuffer: CMSampleBuffer) async throws {
+        if let terminalError { throw terminalError }
         let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
 
         if baseVideoPTS == nil {
@@ -435,12 +519,15 @@ private class AssetWriterActor {
             enqueuePendingSample(sampleBuffer, mediaType: .video)
         }
         drainPendingBuffers()
+        if let terminalError { throw terminalError }
     }
     
-    func appendAudioSampleBuffer(_ sampleBuffer: CMSampleBuffer) async {
+    func appendAudioSampleBuffer(_ sampleBuffer: CMSampleBuffer) async throws {
+        if let terminalError { throw terminalError }
         // Buffer audio until the video session has started to ensure aligned timelines
         guard hasStartedSession, let basePTS = baseVideoPTS else {
             startupAudio.append(sampleBuffer)
+            trimStartupAudioIfNeeded()
             return
         }
 
@@ -450,6 +537,25 @@ private class AssetWriterActor {
             enqueuePendingSample(sampleBuffer, mediaType: .audio)
         }
         drainPendingBuffers()
+        if let terminalError { throw terminalError }
+    }
+
+    private func trimStartupAudioIfNeeded() {
+        let maximumDuration = CMTime(seconds: 1, preferredTimescale: writerTimeScale)
+        while let first = startupAudio.first, let last = startupAudio.last,
+              CMTimeCompare(
+                CMTimeSubtract(presentationTimestamp(of: last), presentationTimestamp(of: first)),
+                maximumDuration
+              ) > 0 {
+            startupAudio.removeFirst()
+            startupTrimmedAudioSamples += 1
+        }
+        if startupTrimmedAudioSamples == 1 || startupTrimmedAudioSamples % 100 == 0 {
+            LOG(
+                "Video has not started; trimmed \(startupTrimmedAudioSamples) old startup audio samples to keep memory bounded",
+                level: .warning
+            )
+        }
     }
 
     func status() -> AVAssetWriter.Status? {
@@ -487,88 +593,251 @@ final class FragmentSequenceNumber: @unchecked Sendable {
     }
 }
 
-actor RecordingActor {
-    private var filename: String?
-    private var fileHandle: FileHandle?
-    private let recordingFolder: URL?
-    private var fragmentQueue: [Fragment]
-    private var isWriting: Bool = false
-    init() {
-        fragmentQueue = []
-        // Use a shared container that's accessible in Files app
-        if let recordingFolder = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
-            self.recordingFolder = recordingFolder
-        }
-        else {
-            LOG("Could not access directory where fragments are stored", level: .error)
-            self.recordingFolder = nil
+enum RecordingError: LocalizedError, Equatable {
+    case folderUnavailable
+    case missingInitialization
+    case createFailed(String)
+    case writeFailed(sequence: Int, message: String)
+    case finalizeFailed(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .folderUnavailable:
+            "The local recording folder is unavailable"
+        case .missingInitialization:
+            "The local recording did not receive an initialization fragment"
+        case .createFailed(let message):
+            "Could not create the local recording: \(message)"
+        case .writeFailed(let sequence, let message):
+            "Could not write recording fragment \(sequence): \(message)"
+        case .finalizeFailed(let message):
+            "Could not finalize the local recording: \(message)"
         }
     }
-    func new() {
-        guard let recordingFolder else {
-            LOG("The folder where recordings are supposed to be stored is not available", level: .error)
+}
+
+protocol RecordingFileWriting: Sendable {
+    func write(_ data: Data) throws
+    func synchronize() throws
+    func close() throws
+}
+
+protocol RecordingFileCreating: Sendable {
+    func createFile(at url: URL) throws -> any RecordingFileWriting
+}
+
+struct SystemRecordingFileFactory: RecordingFileCreating {
+    func createFile(at url: URL) throws -> any RecordingFileWriting {
+        guard FileManager.default.createFile(
+            atPath: url.path,
+            contents: nil,
+            attributes: [.protectionKey: FileProtectionType.completeUnlessOpen]
+        ) else {
+            throw RecordingError.createFailed("The file could not be created")
+        }
+        return SystemRecordingFile(handle: try FileHandle(forWritingTo: url))
+    }
+}
+
+private final class SystemRecordingFile: RecordingFileWriting, @unchecked Sendable {
+    private var handle: FileHandle?
+
+    init(handle: FileHandle) {
+        self.handle = handle
+    }
+
+    func write(_ data: Data) throws {
+        guard let handle else {
+            throw CocoaError(.fileNoSuchFile)
+        }
+        try handle.write(contentsOf: data)
+    }
+
+    func synchronize() throws {
+        try handle?.synchronize()
+    }
+
+    func close() throws {
+        try handle?.close()
+        handle = nil
+    }
+
+    deinit {
+        try? handle?.close()
+    }
+}
+
+actor RecordingActor {
+    private var filename: String?
+    private var fileURL: URL?
+    private var file: (any RecordingFileWriting)?
+    private let recordingFolder: URL?
+    private let fileFactory: any RecordingFileCreating
+    private var prepared = false
+    private var sawInitialization = false
+    private var closed = true
+    private var failure: RecordingError?
+
+    init(
+        recordingFolder: URL? = FileManager.default.urls(
+            for: .documentDirectory,
+            in: .userDomainMask
+        ).first,
+        fileFactory: any RecordingFileCreating = SystemRecordingFileFactory()
+    ) {
+        self.recordingFolder = recordingFolder
+        self.fileFactory = fileFactory
+        if recordingFolder == nil {
+            LOG("Could not access directory where fragments are stored", level: .error)
+        }
+    }
+
+    func prepareForNewSession() {
+        try? file?.close()
+        filename = nil
+        fileURL = nil
+        file = nil
+        prepared = true
+        sawInitialization = false
+        closed = false
+        failure = nil
+    }
+
+    func enqueueFragment(_ fragment: Fragment) {
+        guard prepared, failure == nil else {
             return
         }
-        fragmentQueue = []
-        isWriting = false
+        do {
+            try writeFragment(fragment)
+        } catch let recordingError as RecordingError {
+            failure = recordingError
+            LOG(recordingError.localizedDescription, level: .error)
+        } catch {
+            let recordingError = RecordingError.writeFailed(
+                sequence: fragment.sequence,
+                message: error.localizedDescription
+            )
+            failure = recordingError
+            LOG(recordingError.localizedDescription, level: .error)
+        }
+    }
+
+    func finish() throws {
+        guard prepared else {
+            return
+        }
+        defer { prepared = false }
+        if let failure {
+            try? file?.close()
+            file = nil
+            closed = true
+            throw failure
+        }
+        guard sawInitialization else {
+            closed = true
+            throw RecordingError.missingInitialization
+        }
+        if !closed {
+            try finalizeFile()
+        }
+    }
+
+    func recordingURL() -> URL? {
+        fileURL
+    }
+
+    private func writeFragment(_ fragment: Fragment) throws {
+        if fragment.type == .initialization {
+            LOG("Starting recording", level: .debug)
+            try openRecording()
+            sawInitialization = true
+        }
+        guard let file else {
+            throw RecordingError.missingInitialization
+        }
+        do {
+            try file.write(fragment.segment)
+            LOG("Appended fragment \(fragment.sequence) to file: \(filename ?? "<none>")", level: .debug)
+        } catch {
+            throw RecordingError.writeFailed(
+                sequence: fragment.sequence,
+                message: error.localizedDescription
+            )
+        }
+    }
+
+    private func openRecording() throws {
+        guard let recordingFolder else {
+            throw RecordingError.folderUnavailable
+        }
         let filename = "recording_\(HLSMediaPlaylist.makeSessionIdentifier()).mp4"
         self.filename = filename
         let fileURL = recordingFolder.appendingPathComponent(filename)
+        self.fileURL = fileURL
         do {
-            try? FileManager.default.removeItem(at: fileURL)
-            FileManager.default.createFile(atPath: fileURL.path, contents: nil, attributes: nil)
-            fileHandle = try FileHandle(forWritingTo: fileURL)
+            file = try fileFactory.createFile(at: fileURL)
+        } catch let error as RecordingError {
+            file = nil
+            throw error
         } catch {
-            LOG("Error creating output file: \(error)", level: .error)
-            fileHandle = nil
-        }
-    }
-    
-    func enqueueFragment(_ fragment: Fragment) {
-        fragmentQueue.append(fragment)
-        startProcessingQueue()
-    }
-
-    private func startProcessingQueue() {
-        guard !isWriting else { return }
-        isWriting = true
-        Task {
-            await processQueue()
+            file = nil
+            throw RecordingError.createFailed(error.localizedDescription)
         }
     }
 
-    private func processQueue() async {
-        while let fragment = fragmentQueue.first {
-            fragmentQueue.removeFirst()
-            writeFragment(fragment)
-        }
-        isWriting = false
-    }
-    
-    func writeFragment(_ fragment: Fragment) {
-        if fragment.type == .initialization {
-            LOG("Starting recording", level: .debug)
-            new()
-        }
-        guard let fileHandle else {
-            LOG("File handle is not initialized", level: .error)
-            return
+    private func finalizeFile() throws {
+        guard let file else {
+            if closed { return }
+            throw RecordingError.finalizeFailed("The recording file is not open")
         }
         do {
-            try fileHandle.write(contentsOf: fragment.segment)
-            try fileHandle.synchronize()
-            LOG("Appended fragment \(fragment.sequence) to file: \(filename ?? "<none>")", level: .debug)
-        }
-        catch {
-            LOG("Appending fragment failed: \(error)", level: .warning)
-        }
-        if fragment.type == .finalization {
-            LOG("Stopping recording", level: .debug)
-            try? fileHandle.close()
+            try file.synchronize()
+            try file.close()
+            self.file = nil
+            closed = true
+        } catch {
+            throw RecordingError.finalizeFailed(error.localizedDescription)
         }
     }
+
     deinit {
-        try? fileHandle?.close()
+        try? file?.close()
+    }
+}
+
+actor OrderedFragmentDispatcher {
+    private var pending: [Int: Fragment] = [:]
+    private var nextExpectedSequence = 0
+    private var streams = false
+    private var records = false
+
+    func prepare(stream: Bool, record: Bool) {
+        pending.removeAll(keepingCapacity: true)
+        nextExpectedSequence = 0
+        streams = stream
+        records = record
+    }
+
+    func enqueue(_ fragment: Fragment, recording: RecordingActor) async {
+        pending[fragment.sequence] = fragment
+        while let next = pending.removeValue(forKey: nextExpectedSequence) {
+            nextExpectedSequence += 1
+            if streams {
+                await EncodedOutputRouter.shared.route(next)
+            }
+            if records {
+                await recording.enqueueFragment(next)
+            }
+        }
+    }
+
+    func finish() throws {
+        guard pending.isEmpty else {
+            throw ContentPackagingError.fragmentSequenceGap(
+                expected: nextExpectedSequence,
+                pending: pending.keys.sorted()
+            )
+        }
     }
 }
 
@@ -577,6 +846,7 @@ final class ContentPackager: NSObject, AVAssetWriterDelegate, Sendable {
     @PipelineActor private static let assetWriter = AssetWriterActor()
     private let fragmentSequenceNumber = FragmentSequenceNumber()
     private let recording = RecordingActor()
+    private let fragmentDispatcher = OrderedFragmentDispatcher()
     private let fragmentDispatchGroup = DispatchGroup()
 
     func isPackaging() async -> Bool {
@@ -588,35 +858,100 @@ final class ContentPackager: NSObject, AVAssetWriterDelegate, Sendable {
             throw ContentPackagingError.assetWriterAlreadyWriting
         }
         self.fragmentSequenceNumber.reset()
+        await fragmentDispatcher.prepare(stream: stream, record: record)
         guard await ContentPackager.assetWriter.setupFragmentAssetWriter(
             stream: stream,
             record: record
         ) else {
             throw ContentPackagingError.assetWriterSetupFailed
         }
+        if record {
+            await recording.prepareForNewSession()
+        }
         LOG("Asset writer is now intercepting sample buffers", level: .debug)
     }
-    func endPackaging() async {
-        guard await ContentPackager.assetWriter.status() == .writing else {
+    func endPackaging(
+        deadline requestedDeadline: ContinuousClock.Instant? = nil
+    ) async throws -> ContentPackagingShutdownReport {
+        let clock = ContinuousClock()
+        let deadline = requestedDeadline ?? clock.now.advanced(by: .seconds(10))
+        let shouldRecord = await ContentPackager.assetWriter.shouldRecord()
+        let writerWasPrepared = await ContentPackager.assetWriter.status() != nil
+        var writerStatus: ShutdownComponentStatus = writerWasPrepared ? .completed : .notRequested
+        var dispatchStatus: ShutdownComponentStatus = writerWasPrepared ? .completed : .notRequested
+        var recordingStatus: ShutdownComponentStatus = shouldRecord ? .completed : .notRequested
+        if writerWasPrepared {
+            do {
+                try await ContentPackager.assetWriter.finishWriting(deadline: deadline)
+            } catch {
+                writerStatus = .failed(error.localizedDescription)
+            }
+            if await waitForFragmentDispatch(deadline: deadline) {
+                do {
+                    try await fragmentDispatcher.finish()
+                } catch {
+                    dispatchStatus = .failed(error.localizedDescription)
+                }
+            } else {
+                dispatchStatus = .failed("Fragment delivery did not finish before the shutdown deadline")
+            }
+        } else {
             LOG("Asset writer had already stopped intercepting sample buffers", level: .debug)
-            return
         }
-        await ContentPackager.assetWriter.finishWriting()
-        await withCheckedContinuation { continuation in
-            fragmentDispatchGroup.notify(queue: .global(qos: .userInitiated)) {
-                continuation.resume()
+        if shouldRecord {
+            if dispatchStatus.failedMessage == nil, clock.now < deadline {
+                do {
+                    try await recording.finish()
+                    if clock.now >= deadline {
+                        recordingStatus = .failed("Recording finalization exceeded the shutdown deadline")
+                    }
+                } catch {
+                    recordingStatus = .failed(error.localizedDescription)
+                }
+            } else {
+                recordingStatus = .failed("Recording could not finalize before the shutdown deadline")
             }
         }
         LOG("Asset writer is no longer intercepting sample buffers", level: .debug)
+        let report = ContentPackagingShutdownReport(
+            assetWriter: writerStatus,
+            fragmentDispatch: dispatchStatus,
+            recording: recordingStatus
+        )
+        if !report.succeeded {
+            throw ContentPackagingShutdownError(report: report)
+        }
+        return report
+    }
+
+    private func waitForFragmentDispatch(
+        deadline: ContinuousClock.Instant
+    ) async -> Bool {
+        await withCheckedContinuation { continuation in
+            let oneShot = OneShotBoolContinuation(continuation)
+            let remaining = max(.zero, ContinuousClock().now.duration(to: deadline))
+            let timeoutTask = Task.detached(priority: .userInitiated) {
+                do {
+                    try await Task.sleep(for: remaining)
+                } catch {
+                    return
+                }
+                oneShot.resume(returning: false)
+            }
+            fragmentDispatchGroup.notify(queue: .global(qos: .userInitiated)) {
+                timeoutTask.cancel()
+                oneShot.resume(returning: true)
+            }
+        }
     }
     
-    func appendVideoSampleBuffer(_ sampleBuffer: CMSampleBuffer) async {
+    func appendVideoSampleBuffer(_ sampleBuffer: CMSampleBuffer) async throws {
         nonisolated(unsafe) let sendableSampleBuffer = sampleBuffer
-        await ContentPackager.assetWriter.appendVideoSampleBuffer(sendableSampleBuffer)
+        try await ContentPackager.assetWriter.appendVideoSampleBuffer(sendableSampleBuffer)
     }
-    func appendAudioSampleBuffer(_ sampleBuffer: CMSampleBuffer) async {
+    func appendAudioSampleBuffer(_ sampleBuffer: CMSampleBuffer) async throws {
         nonisolated(unsafe) let sendableSampleBuffer = sampleBuffer
-        await ContentPackager.assetWriter.appendAudioSampleBuffer(sendableSampleBuffer)
+        try await ContentPackager.assetWriter.appendAudioSampleBuffer(sendableSampleBuffer)
     }
     func assetWriter(_ writer: AVAssetWriter,
                      didOutputSegmentData segmentData: Data,
@@ -645,12 +980,7 @@ final class ContentPackager: NSObject, AVAssetWriterDelegate, Sendable {
             await FMP4FixtureCapture.shared.capture(fragment)
 #endif
             
-            if ContentPackager.assetWriter.shouldStream() {
-                await EncodedOutputRouter.shared.route(fragment)
-            }
-            if ContentPackager.assetWriter.shouldRecord() {
-                await recording.enqueueFragment(fragment)
-            }
+            await fragmentDispatcher.enqueue(fragment, recording: recording)
         }
     }
 }
@@ -658,6 +988,11 @@ final class ContentPackager: NSObject, AVAssetWriterDelegate, Sendable {
 enum ContentPackagingError: LocalizedError {
     case assetWriterAlreadyWriting
     case assetWriterSetupFailed
+    case videoNeverStarted
+    case writerAppendFailed(String)
+    case writerFinishFailed(String)
+    case finalMediaDrainTimedOut(audioSamples: Int, videoSamples: Int)
+    case fragmentSequenceGap(expected: Int, pending: [Int])
 
     var errorDescription: String? {
         switch self {
@@ -665,6 +1000,16 @@ enum ContentPackagingError: LocalizedError {
             "The HEVC/AAC asset writer is already running"
         case .assetWriterSetupFailed:
             "Could not start the HEVC/AAC asset writer"
+        case .videoNeverStarted:
+            "The stream produced no video frames"
+        case .writerAppendFailed(let message):
+            "The HEVC/AAC writer stopped accepting media: \(message)"
+        case .writerFinishFailed(let message):
+            "The HEVC/AAC writer could not finish: \(message)"
+        case .finalMediaDrainTimedOut(let audioSamples, let videoSamples):
+            "The HEVC/AAC writer could not drain \(videoSamples) video and \(audioSamples) audio samples before shutdown"
+        case .fragmentSequenceGap(let expected, let pending):
+            "Encoded fragment ordering stopped at \(expected); pending fragments: \(pending)"
         }
     }
 }

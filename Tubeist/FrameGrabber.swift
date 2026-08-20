@@ -9,6 +9,10 @@ import AVFoundation
 import CoreImage
 import Metal
 
+struct SendableSampleBuffer: @unchecked Sendable {
+    let value: CMSampleBuffer
+}
+
 // this is not 1-1 with the Metal struct, since textures are set differently
 struct KernelArguments {
     var strength: Float = 0
@@ -507,7 +511,8 @@ private actor FrameTinkerer {
         }
     }
     
-    func processFrame(sampleBuffer: CMSampleBuffer) async {
+    func processFrame(_ wrappedSampleBuffer: SendableSampleBuffer) async {
+        let sampleBuffer = wrappedSampleBuffer.value
         currentPresentationTimestamp = sampleBuffer.presentationTimeStamp
         nonisolated(unsafe) let sendableSampleBuffer = sampleBuffer // removes the need for @preconcurrency
         if grabbingFrames {
@@ -537,11 +542,17 @@ private actor FrameTinkerer {
                 }
             }
             if await Streamer.shared.isStreaming() {
-                await ContentPackager.shared.appendVideoSampleBuffer(sendableSampleBuffer)
+                do {
+                    try await ContentPackager.shared.appendVideoSampleBuffer(sendableSampleBuffer)
+                } catch {
+                    Task {
+                        await Streamer.shared.handleRuntimeFailure(error)
+                    }
+                }
             }
             if await Streamer.shared.getMonitor() == .output {
                 nonisolated(unsafe) let previewSampleBuffer = sendableSampleBuffer
-                Task { @MainActor in
+                await MainActor.run {
                     OutputMonitorView.enqueue(previewSampleBuffer)
                 }
             }
@@ -552,7 +563,17 @@ private actor FrameTinkerer {
 
 final class FrameGrabber: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, Sendable {
     @PipelineActor public static let shared = FrameGrabber()
-    private let frameTinkerer = FrameTinkerer()
+    private let frameTinkerer: FrameTinkerer
+    private let frameMailbox: BoundedAsyncMailbox<SendableSampleBuffer>
+
+    override init() {
+        let frameTinkerer = FrameTinkerer()
+        self.frameTinkerer = frameTinkerer
+        self.frameMailbox = BoundedAsyncMailbox(policy: .latest) { sampleBuffer in
+            await frameTinkerer.processFrame(sampleBuffer)
+        }
+        super.init()
+    }
 
     func resetTinkerer() async {
         await frameTinkerer.reset()
@@ -564,6 +585,7 @@ final class FrameGrabber: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
             await frameTinkerer.refreshStyle()
             await frameTinkerer.refreshEffect()
             await frameTinkerer.start()
+            frameMailbox.resetDropCount()
             LOG("Started grabbing frames", level: .debug)
         }
         else {
@@ -597,13 +619,24 @@ final class FrameGrabber: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
     func getCurrentPresentationTimestamp() async -> CMTime? {
         await frameTinkerer.getCurrentPresentationTimestamp()
     }
+    func drainSubmittedFrames() async {
+        await frameMailbox.waitUntilIdle()
+    }
+
+    func drainSubmittedFrames(deadline: ContinuousClock.Instant) async -> Bool {
+        await frameMailbox.waitUntilIdle(deadline: deadline)
+    }
 
     nonisolated func captureOutput(_ output: AVCaptureOutput,
                        didOutput sampleBuffer: CMSampleBuffer,
                        from connection: AVCaptureConnection) {
         nonisolated(unsafe) let sendableSampleBuffer = sampleBuffer
-        Task(priority: .userInitiated) { @PipelineActor in
-            await frameTinkerer.processFrame(sampleBuffer: sendableSampleBuffer)
+        let submission = frameMailbox.submit(SendableSampleBuffer(value: sendableSampleBuffer))
+        if submission.dropped, submission.totalDropped % 120 == 1 {
+            LOG("Dropped stale video work to keep capture latency bounded", level: .warning)
+            Task {
+                await Streamer.shared.setStreamHealth(.degraded)
+            }
         }
     }
 }

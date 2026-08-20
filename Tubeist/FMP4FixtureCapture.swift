@@ -57,7 +57,7 @@ actor FMP4FixtureCapture {
             try writeManifest(in: folder)
             if mediaFragmentCount == maximumMediaFragments {
                 Settings.captureRemuxFixtures = false
-                LOG("Captured direct-HLS fMP4 fixture set in the app Documents folder", level: .info)
+                LOG("Captured YouTube HLS fMP4 fixture set in the app Documents folder", level: .info)
             }
         } catch {
             LOG("Could not capture fMP4 fixture: \(error.localizedDescription)", level: .warning)

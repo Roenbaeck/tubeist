@@ -2,7 +2,7 @@
 
 # Tubeist
 
-Tubeist is an iPhone application for live streaming, leveraging the fMP4 format over the HLS (HTTP Live Streaming) protocol. Built entirely in Swift 6, this project was initially conceived as a learning exercise to explore the Swift language, with significant early development aided by the capabilities of large language models.
+Tubeist is a Swift 6 iPhone application for recording locally and streaming HDR video directly to YouTube over HLS. It encodes HEVC Main10 HLG and AAC once, writes the original fragmented MP4 when recording is enabled, and remuxes that encoded media to MPEG-2 TS for YouTube without running a second encoder. The project was initially conceived as a Swift learning exercise, with significant early development aided by large language models.
 
 The primary goal of Tubeist is to facilitate the streaming of high-fidelity HDR content, particularly targeted for platforms like YouTube. It's designed for scenarios where pristine visual quality is paramount, rather than ultra-low latency interaction. This makes it an ideal choice for streaming events, sporting competitions, educational content, or any other long-running stream where immediate audience interaction is not the primary focus. You can watch some [demos of Tubeist on YouTube](https://youtube.com/playlist?list=PLFnkPgO2HxdAp_YiFVSWVpyak--0y6m5U&si=b2vjD-jVe0FY2egZ).
 
@@ -18,7 +18,8 @@ While still under active development, Tubeist aims to provide a robust set of fe
 
 * **High Dynamic Range (HDR) Streaming:** Capture and broadcast video with enhanced color and detail.
 * **High Frame Rate Support:** Stream with smoother motion for supported platforms and content.
-* **fMP4 over HLS:** Utilizing industry-standard protocols for reliable and scalable streaming.
+* **YouTube HLS:** Remux the encoded fMP4 output to MPEG-2 TS and upload it directly to YouTube.
+* **Local Recording:** Save the original fragmented MP4 while streaming, or record without streaming.
 * **Manual camera controls:** Staying true to common camera controls, made easily accessible.
 * **Web Overlay Support:** Integrate dynamic graphics and information into your stream.
 * **Bandwidth-Aware Presets:**  Optionally input your available bandwidth to receive recommendations for optimal streaming settings.
@@ -28,16 +29,17 @@ While still under active development, Tubeist aims to provide a robust set of fe
 
 ## Usage
 
-It's important to understand that in its current phase, Tubeist may still contain bugs. However, it is progressively becoming more stable and user-friendly. Using Xcode you can clone this repository and manually compile and install Tubeist on your iPhone. Tubeist also relies on a server infrastructure capable of ingesting fMP4 over HLS. There is a playlist [available on YouTube](https://youtube.com/playlist?list=PLFnkPgO2HxdASltkwnLEGB2yuyhIS2RL8&si=-DYTXwvt9tNDtWgT) that explains how to set up an HLS relay and configure Tubeist to work with it. 
+Tubeist remains under active development. Clone the repository and install it on
+a supported iPhone with Xcode. To stream, create a YouTube Live stream configured
+for HLS ingestion and enter its stream key in Tubeist Settings. You may sign in
+with Google to manage the matching broadcast from Tubeist, but sign-in is not
+required for manual-key streaming.
 
-For testing purposes, a rudimentary stream server is available as a separate project: [https://github.com/Roenbaeck/hls-relay](https://github.com/Roenbaeck/hls-relay). This is an HTTP server that accepts HLS input, which is forwarded to YouTube (or Twitch) using ffmpeg. You will need to configure Tubeist to point to your HLS relay server.
+### YouTube HLS
 
-### Direct YouTube HLS (development builds)
-
-Debug builds can instead select **YouTube direct (HLS)** under the Delivery
-setting. This path remuxes the existing HEVC Main10 HLG and AAC output to
-MPEG-2 TS on the phone; it does not start a second video or audio encoder and it
-does not require `hls-relay`.
+Tubeist remuxes its existing HEVC Main10 HLG and AAC output to MPEG-2 TS on the
+phone. It does not start a second video or audio encoder and does not require an
+intermediate server.
 
 Direct delivery requires a YouTube stream configured for the **HLS** ingestion
 type. An RTMP/RTMPS key is not interchangeable. When Tubeist is signed in to
@@ -47,10 +49,46 @@ documented primary manual-key template. Stream keys and complete ingestion URLs
 must never be included in logs or bug reports.
 
 The feature remains Debug-only until the physical-device, long-stream, and real
-YouTube acceptance gates in [PLAN.md](PLAN.md) have passed. Relay remains the
-persisted default and the immediate fallback. See YouTube's official
+YouTube acceptance gates in [PLAN.md](PLAN.md) have passed. See YouTube's official
 [HLS ingestion guide](https://developers.google.com/youtube/v3/live/guides/hls-ingestion)
 for creating a compatible stream key.
+
+### Supported output modes and presets
+
+Tubeist supports record-only, YouTube stream-only, and simultaneous YouTube
+streaming plus local recording. Built-in presets cover 540p, 720p, 1080p,
+1440p, and 4K at frame rates supported by the selected iPhone camera; custom
+presets are restricted to formats the selected camera reports as HDR-capable.
+The 1080p30 path has real YouTube acceptance evidence. The 60 fps, 4K,
+long-duration, interruption, and TestFlight matrices remain release gates in
+[PLAN.md](PLAN.md), not implied guarantees.
+
+Manual-key streaming sends directly to YouTube and does not require Google
+sign-in. Optional sign-in is only for discovering the HLS ingestion resource,
+viewing broadcast state, and applying title, visibility, DVR, latency,
+thumbnail, and playlist changes. Opening Settings does not create or modify a
+YouTube broadcast; mutations happen only after Apply.
+
+### iOS behavior and troubleshooting
+
+Tubeist requires iOS 18 and a physical iPhone with an HDR-capable capture
+format. iOS does not permit indefinite camera capture in the background, so
+backgrounding Tubeist stops capture and uses finite background time to finalize
+the MP4 and accepted YouTube tail. Keep the app in the foreground for an active
+stream.
+
+If Start is unavailable or fails:
+
+1. confirm Camera and Microphone access in iOS Settings;
+2. confirm the key belongs to a YouTube stream configured for HLS, not RTMP;
+3. select a preset supported by the currently selected camera;
+4. verify at least 1 Mbps measured upload bandwidth and sufficient free storage;
+5. read the persistent in-app error first, then use the journal for detail.
+
+Stop is complete only after enabled outputs finalize. Do not force-quit the app
+while the control shows the orange stopping state. Stream keys, complete
+ingestion URLs, OAuth tokens, and user recordings must not be attached to bug
+reports.
 
 ## Getting Started (For Developers)
 
@@ -69,6 +107,9 @@ Apple's host-side `mpeg4AppleHLS` box layout is covered separately; see
 [`Tools/AppleFMP4Fixture/README.md`](Tools/AppleFMP4Fixture/README.md).
 Exported physical-iPhone fixture sets can be checked with
 [`Tools/DeviceFMP4Fixture/README.md`](Tools/DeviceFMP4Fixture/README.md).
+CI also enforces the YouTube-only source boundary, Swift parsing, property-list
+validation, tests, static analysis, generic-device Debug/Release builds, and the
+offline media validators.
 
 **Ensure you have a valid development certificate and provisioning profile configured in Xcode.**
 

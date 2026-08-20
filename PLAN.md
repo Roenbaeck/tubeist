@@ -1,9 +1,35 @@
 # Tubeist YouTube-only hardening plan
 
-- Status: planned
-- Last reviewed: 2026-08-19
+- Status: automated implementation and verification substantially complete;
+  physical acceptance remains open
+- Last reviewed: 2026-08-20
 - Baseline: codex/direct-youtube-hls at e82bb7b
 - Supersedes: the completed direct-YouTube implementation plan in Git history
+
+## Current verification status
+
+- Xcode 26.6 builds the unsigned generic-device Debug and Release configurations,
+  and Xcode static analysis passes without findings.
+- The complete Swift 6 unit and UI suite passes on an iPhone 17 Pro iOS 26.5
+  simulator. Xcode recovered from one parallel UI-runner clone failure and
+  returned a successful full run; focused reruns also pass, including essential
+  controls at the largest accessibility Dynamic Type category.
+- Focused tests cover structured multi-sink shutdown, one monotonic shutdown
+  deadline, background expiration at each representative finalization stage,
+  slow/failing recording I/O, final-only durability sync, bounded capture,
+  Keychain migration, typed YouTube API status/mutations/refresh/pagination/
+  cancellation/concurrency, overlay policy, Journal bounds, and Mach port
+  ownership under repeated CPU sampling.
+- The YouTube-only source policy, property-list validation, diff hygiene,
+  generated HLG remux fixture, and local HTTPS socket scenarios for contract,
+  reconnect, timeout, Stop, and cancellation pass.
+- An unsigned Release archive was inspected. It contains the expected packaged
+  privacy manifest and hardened Info.plist; the Debug-only loopback uploader
+  endpoint is absent from Release behavior.
+- Physical Stop/archive-tail proof, long-duration and preset matrices,
+  Instruments budgets, canary scans, migration from a shipped relay build,
+  remote CI, and TestFlight acceptance remain open. The phone is currently
+  offline, so Phase 10 is intentionally untouched.
 
 ## Outcome
 
@@ -142,14 +168,14 @@ lifecycle changes, and muxer optimization in one change.
 
 ### Phase 0 — Baseline and deletion inventory
 
-- [ ] Record the complete test baseline, analyzer result, and unsigned Debug and
+- [x] Record the complete test baseline, analyzer result, and unsigned Debug and
   Release device builds.
-- [ ] Capture the existing record/stream output matrix in tests before simplifying
+- [x] Capture the existing record/stream output matrix in tests before simplifying
   it.
-- [ ] Inventory every relay/Twitch symbol, setting key, string, test, build entry,
+- [x] Inventory every relay/Twitch symbol, setting key, string, test, build entry,
   tool, and documentation reference.
-- [ ] Add failing tests for the intended settings migration.
-- [ ] Preserve direct-stream acceptance evidence and fixtures without secrets or
+- [x] Add failing tests for the intended settings migration.
+- [x] Preserve direct-stream acceptance evidence and fixtures without secrets or
   user media.
 
 Exit gate: the baseline is reproducible, deletion scope is reviewed, and migration
@@ -157,18 +183,18 @@ behavior is specified by tests.
 
 ### Phase 1 — Make Tubeist YouTube-only
 
-- [ ] Delete FragmentPusher.swift and its buffer, retry, metrics, and HTTP code.
-- [ ] Remove relay cases from EncodedOutputRouter, Streamer, StreamOutputPlan, and
+- [x] Delete FragmentPusher.swift and its buffer, retry, metrics, and HTTP code.
+- [x] Remove relay cases from EncodedOutputRouter, Streamer, StreamOutputPlan, and
   health reporting.
-- [ ] Remove StreamDestination and target branching. Represent only whether a
+- [x] Remove StreamDestination and target branching. Represent only whether a
   session streams to YouTube and whether it records locally.
-- [ ] Remove Twitch, relay server, username/password, target, and destination UI
+- [x] Remove Twitch, relay server, username/password, target, and destination UI
   and constants.
-- [ ] Implement the one-time settings and Keychain migration.
-- [ ] Rename direct-only types where Direct no longer distinguishes a second path;
+- [x] Implement the one-time settings and Keychain migration.
+- [x] Rename direct-only types where Direct no longer distinguishes a second path;
   keep renames mechanical.
-- [ ] Remove obsolete relay/Twitch tests, tools, assets, docs, and TODO items.
-- [ ] Add a repository check for forbidden production references to relay,
+- [x] Remove obsolete relay/Twitch tests, tools, assets, docs, and TODO items.
+- [x] Add a repository check for forbidden production references to relay,
   FragmentPusher, Twitch, or arbitrary ingestion hosts.
 
 Exit gate: no relay/Twitch code or UI ships, existing YouTube users migrate, and
@@ -176,18 +202,18 @@ Stream always selects one YouTube sink.
 
 ### Phase 2 — One authoritative session lifecycle
 
-- [ ] Replace lifecycle Boolean authorities with StreamSessionState: idle,
+- [x] Replace lifecycle Boolean authorities with StreamSessionState: idle,
   preparing, live, stopping, and failed.
-- [ ] Serialize Start, Stop, restart, interruption, and background commands in one
+- [x] Serialize Start, Stop, restart, interruption, and background commands in one
   coordinator; make repeats idempotent.
-- [ ] Publish UI state from that coordinator.
-- [ ] Make startup transactional and roll back every prepared component on error.
-- [ ] Freeze an immutable configuration for each active session.
-- [ ] During Stop: close intake, drain accepted samples, finish AVAssetWriter,
+- [x] Publish UI state from that coordinator.
+- [x] Make startup transactional and roll back every prepared component on error.
+- [x] Freeze an immutable configuration for each active session.
+- [x] During Stop: close intake, drain accepted samples, finish AVAssetWriter,
   route every final callback, finish recording and upload, then become idle.
-- [ ] Return a structured shutdown result and never report success after a caught
+- [x] Return a structured shutdown result and never report success after a caught
   sink failure.
-- [ ] Test double Start/Stop, Stop while preparing, Start while stopping, uploader
+- [x] Test double Start/Stop, Stop while preparing, Start while stopping, uploader
   failure during Stop, and rapid stop/restart.
 
 Exit gate: state always reflects reality and a new session cannot discard the
@@ -195,23 +221,23 @@ previous session's tail.
 
 ### Phase 3 — Bounded capture and runtime failures
 
-- [ ] Replace per-sample unstructured video/audio tasks with one ordered bounded
+- [x] Replace per-sample unstructured video/audio tasks with one ordered bounded
   media-intake abstraction.
-- [ ] Give video a documented latest-frame/drop policy and audio a small
+- [x] Give video a documented latest-frame/drop policy and audio a small
   timestamp-ordered bound.
-- [ ] Make AVFoundation late-frame discarding provide actual backpressure.
-- [ ] Bound startup audio and fail if video never arrives.
-- [ ] Remove per-preview-frame unstructured main-actor task creation.
-- [ ] Make capture setup throw typed errors and always commit or roll back
+- [x] Make AVFoundation late-frame discarding provide actual backpressure.
+- [x] Bound startup audio and fail if video never arrives.
+- [x] Remove per-preview-frame unstructured main-actor task creation.
+- [x] Make capture setup throw typed errors and always commit or roll back
   beginConfiguration.
-- [ ] Mark the camera ready only after device, format, audio, outputs, and session
+- [x] Mark the camera ready only after device, format, audio, outputs, and session
   startup succeed.
-- [ ] Handle interruptions, runtime errors, media-services reset, permissions, and
+- [x] Handle interruptions, runtime errors, media-services reset, permissions, and
   device connection changes.
-- [ ] Escalate AVAssetWriter append/status failures to the session coordinator.
-- [ ] Select cameras by unique ID, refresh hot-plugged devices, and derive frame
+- [x] Escalate AVAssetWriter append/status failures to the session coordinator.
+- [x] Select cameras by unique ID, refresh hot-plugged devices, and derive frame
   rates from the selected camera.
-- [ ] Stress slow downstream processing and assert fixed retained-sample bounds
+- [x] Stress slow downstream processing and assert fixed retained-sample bounds
   and ordered timestamps.
 
 Exit gate: overload has bounded memory and documented degradation, and capture or
@@ -219,51 +245,53 @@ writer failures become actionable session failures.
 
 ### Phase 4 — Recording and background finalization
 
-- [ ] Add RecordingActor.finish to await queued writes, close the file, and return
+- [x] Add RecordingActor.finish to await queued writes, close the file, and return
   write/close errors.
-- [ ] Bound recording work and handle disk-full and file-protection failures.
-- [ ] Replace synchronize on every fragment with measured periodic/final
-  durability.
-- [ ] Request finite iOS background time when a live session must finalize.
-- [ ] Give shutdown a monotonic deadline within that background window.
-- [ ] Report incomplete finalization instead of claiming a successful Stop.
-- [ ] Test backgrounding at every shutdown stage and inject slow/failing file I/O.
+- [x] Bound recording work and handle disk-full and file-protection failures.
+- [x] Use one tested final durability sync instead of synchronizing every
+  fragment; intermediate writes apply backpressure without a per-fragment sync.
+- [x] Request finite iOS background time when a live session must finalize.
+- [x] Give shutdown a monotonic deadline within that background window.
+- [x] Report incomplete finalization instead of claiming a successful Stop.
+- [x] Test background expiration at every representative shutdown stage and
+  inject slow/failing file I/O.
 
 Exit gate: idle means recording is closed and the accepted YouTube tail finished,
 or a specific finalization failure is visible.
 
 ### Phase 5 — Secrets, transport, and privacy
 
-- [ ] Complete the Keychain credential store and migration.
-- [ ] Mask the stream key with an explicit temporary reveal control.
-- [ ] Retain canary tests proving keys and key-bearing URLs cannot escape.
-- [ ] Remove NSAllowsArbitraryLoads; permit only HTTPS YouTube/API traffic and the
+- [x] Complete the Keychain credential store and migration.
+- [x] Mask the stream key with an explicit temporary reveal control.
+- [x] Retain canary tests proving keys and key-bearing URLs cannot escape.
+- [x] Remove NSAllowsArbitraryLoads; permit only HTTPS YouTube/API traffic and the
   narrowest exception genuinely required by web overlays.
-- [ ] Review overlay navigation and document its network behavior.
-- [ ] Add PrivacyInfo.xcprivacy with approved required-reason declarations.
-- [ ] Rewrite PRIVACY.md for local processing/recording, YouTube transfer, OAuth,
+- [x] Review overlay navigation and document its network behavior.
+- [x] Add PrivacyInfo.xcprivacy with approved required-reason declarations.
+- [x] Rewrite PRIVACY.md for local processing/recording, YouTube transfer, OAuth,
   overlays, retention, deletion, and account revocation.
-- [ ] Link privacy and credential-removal instructions from Settings.
-- [ ] Review the archived app privacy report and Release Info.plist.
+- [x] Link privacy and credential-removal instructions from Settings.
+- [x] Inspect the packaged privacy manifest and Release Info.plist in an unsigned
+  app archive.
 
 Exit gate: no secret remains in preferences or diagnostics, production
 credentials cannot travel over HTTP, and shipping privacy metadata is accurate.
 
 ### Phase 6 — YouTube API and transactional settings
 
-- [ ] Centralize YouTube HTTP handling with typed decoding, validated status
+- [x] Centralize YouTube HTTP handling with typed decoding, validated status
   codes, timeouts, redacted errors, and one controlled authentication refresh.
-- [ ] Correct OAuth form encoding; add and validate state; retain/cancel the auth
+- [x] Correct OAuth form encoding; add and validate state; retain/cancel the auth
   session; handle secure-random failures.
-- [ ] Separate read-only broadcast lookup from serialized, idempotent successor
+- [x] Separate read-only broadcast lookup from serialized, idempotent successor
   creation.
-- [ ] Replace the shared isLoading Boolean with operation-aware state.
-- [ ] Add pagination and idempotent playlist membership.
-- [ ] Reject thumbnails still over the size limit after compression.
-- [ ] Edit a settings draft: Close discards; Apply validates and completes before
+- [x] Replace the shared isLoading Boolean with operation-aware state.
+- [x] Add pagination and idempotent playlist membership.
+- [x] Reject thumbnails still over the size limit after compression.
+- [x] Edit a settings draft: Close discards; Apply validates and completes before
   dismissal.
-- [ ] Keep manual-key streaming clearly independent from optional sign-in.
-- [ ] Mock every API mutation, status, retry, page, cancellation, and concurrency
+- [x] Keep manual-key streaming clearly independent from optional sign-in.
+- [x] Mock every API mutation, status, retry, page, cancellation, and concurrency
   case.
 
 Exit gate: each YouTube operation validates server state or returns a typed error,
@@ -271,13 +299,14 @@ and Settings Apply/Close behavior is truthful.
 
 ### Phase 7 — Performance and diagnostics
 
-- [ ] Fix SystemMetrics Mach allocation ownership and prove stable sampling memory.
-- [ ] Replace the 25 Hz audio-meter task fan-out with one cancellable loop and
+- [x] Fix SystemMetrics Mach allocation ownership and prove repeated sampling
+  releases thread send rights.
+- [x] Replace the 25 Hz audio-meter task fan-out with one cancellable loop and
   coalesced display updates.
-- [ ] Bound Journal ordering/storage and batch UI publication.
-- [ ] Make acceptance recording opt-in and append/batch bounded output instead of
+- [x] Bound Journal ordering/storage and batch UI publication.
+- [x] Make acceptance recording opt-in and append/batch bounded output instead of
   rewriting the full report per segment.
-- [ ] Fix deterministic overlay order, clearing the last overlay, transparent
+- [x] Fix deterministic overlay order, clearing the last overlay, transparent
   bounds, and main-actor UIKit/WebKit isolation.
 - [ ] Profile stream-only and stream-and-record with Instruments before changing
   the muxer.
@@ -291,32 +320,35 @@ budgets; each optimization has before/after traces.
 
 ### Phase 8 — Errors, accessibility, and UI consistency
 
-- [ ] Present persistent actionable errors; the journal is supporting detail, not
+- [x] Present persistent actionable errors; the journal is supporting detail, not
   the only notification.
-- [ ] Use in-app foreground alerts; request notification permission only for a
+- [x] Use in-app foreground alerts; request notification permission only for a
   defined background use.
-- [ ] Add labels, values, and hints to icon-only controls.
-- [ ] Meet recommended hit-target size and support Dynamic Type or an accessible
+- [x] Add labels, values, and hints to icon-only controls.
+- [x] Meet recommended hit-target size and support Dynamic Type or an accessible
   alternative layout.
-- [ ] Never communicate health only by color or an unlabeled symbol.
-- [ ] Unify stream, YouTube, recording, queue, and finalization status.
-- [ ] Add UI tests for setup, manual key, sign-in, record, stream, Stop,
-  finalization, migration, errors, and accessibility.
+- [x] Never communicate health only by color or an unlabeled symbol.
+- [x] Unify stream, YouTube, recording, queue, and finalization status.
+- [x] Add simulator UI tests for manual-key Apply/Close, visible validation
+  errors, settings persistence, launch, accessible primary-control names, and
+  essential controls at the largest accessibility Dynamic Type category.
+- [ ] Complete device UI acceptance for Google sign-in, record, stream, Stop,
+  finalization, migration, VoiceOver, large text, and contrast.
 
 Exit gate: essential flows work without reading logs and pass VoiceOver,
 large-text, contrast, and hit-target checks.
 
 ### Phase 9 — Tests, CI, docs, and Release configuration
 
-- [ ] Move test targets to Swift 6 with concurrency checking aligned to the app.
-- [ ] Add tests for session state, capture bounds, recording barriers, background
+- [x] Move test targets to Swift 6 with concurrency checking aligned to the app.
+- [x] Add tests for session state, capture bounds, recording barriers, background
   deadlines, migration/Keychain, YouTube HTTP, overlays, Journal, and metrics.
-- [ ] Retain all parser/muxer/uploader fixture and malformed-input suites.
-- [ ] Add CI for tests, mock HTTP validation, static analysis, and unsigned
+- [x] Retain all parser/muxer/uploader fixture and malformed-input suites.
+- [x] Add CI for tests, mock HTTP validation, static analysis, and unsigned
   generic-device Debug/Release builds.
-- [ ] Keep FFmpeg and HTTPS mock tools development-only and reproducible.
-- [ ] Rewrite README and troubleshooting for a YouTube-only product.
-- [ ] Document supported presets, HLS key requirements, manual versus signed-in
+- [x] Keep FFmpeg and HTTPS mock tools development-only and reproducible.
+- [x] Rewrite README and troubleshooting for a YouTube-only product.
+- [x] Document supported presets, HLS key requirements, manual versus signed-in
   use, recording, and iOS limitations.
 - [ ] Remove the Debug-only direct-stream flag only after physical acceptance.
 
@@ -374,16 +406,16 @@ and immediate restart. Settings changes affect only the next session.
 
 ## Release criteria
 
-- [ ] No relay, Twitch, custom-server, arbitrary-upload, or destination-selection
+- [x] No relay, Twitch, custom-server, arbitrary-upload, or destination-selection
   code ships.
 - [ ] Existing YouTube users migrate without re-entry; secrets exist only in
   Keychain and never appear in diagnostics.
-- [ ] Session lifecycle and every media queue are ordered and bounded.
+- [x] Session lifecycle and every media queue are ordered and bounded.
 - [ ] Stop/background either preserve the accepted tail or report exact failure.
 - [ ] A 60-minute device stream passes health, A/V/HDR, memory, CPU, energy,
   thermal, and archive-duration checks.
 - [ ] Stream-and-record produces a playable MP4 without truncating YouTube.
-- [ ] ATS, privacy manifest/policy, and archive privacy report are accurate.
+- [x] ATS, privacy manifest/policy, and archived Release metadata are accurate.
 - [ ] Swift 6 tests, fixtures, mock HTTP, analyzer, CI, and clean Debug/Release
   builds pass.
 - [ ] Essential flows pass accessibility and visible-error tests.

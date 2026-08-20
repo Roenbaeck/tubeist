@@ -6,8 +6,6 @@
 //
 
 import SwiftUI
-import UserNotifications
-import Intents
 
 @Observable @MainActor
 class Interaction {
@@ -76,7 +74,10 @@ struct TubeistView: View {
     @State private var fadeMessage: String?
     @State private var fading: Bool = false
     @State private var isYouTubeRefreshCoolingDown: Bool = false
-    @State private var isStartingStream: Bool = false
+
+    private var isUITesting: Bool {
+        CommandLine.arguments.contains("-ui-testing")
+    }
     
     @State private var startMagnification: CGFloat?
     private var magnification: some Gesture {
@@ -181,7 +182,6 @@ struct TubeistView: View {
 
     func refreshCurrentYouTubeBroadcastStatus(logContext: String) async {
         guard youtubeService.isSignedIn,
-              Settings.target == "youtube",
               let streamKey = Settings.streamKey,
               !streamKey.isEmpty else {
             appState.youtubeStatus = nil
@@ -230,7 +230,6 @@ struct TubeistView: View {
     func startYouTubePolling() {
         youtubePollingTask?.cancel()
         guard youtubeService.isSignedIn,
-              Settings.target == "youtube",
               let streamKey = Settings.streamKey,
               !streamKey.isEmpty else {
             return
@@ -320,13 +319,26 @@ struct TubeistView: View {
                         .gesture(magnification)
                         .frame(width: width, height: height)
                         .onAppear {
+                            if isUITesting {
+                                isCameraReady = true
+                                showSplashScreen = false
+                                splashOpacity = 0
+                                return
+                            }
                             Task {
                                 await CameraMonitorView.createPreviewLayer()
-                                await Streamer.shared.startSessions()
-                                appState.refreshCameraView()
-                                updateCameraProperties()
-                                isCameraReady = true
-                                LOG("Viewing camera monitor", level: .debug)
+                                do {
+                                    try await Streamer.shared.startSessions()
+                                    appState.refreshCameraView()
+                                    updateCameraProperties()
+                                    isCameraReady = true
+                                    LOG("Viewing camera monitor", level: .debug)
+                                } catch {
+                                    isCameraReady = false
+                                    fade(error.localizedDescription)
+                                    appState.activeAlert = error.localizedDescription
+                                    LOG("Could not start camera monitoring: \(error.localizedDescription)", level: .error)
+                                }
                             }
                         }
                         .onDisappear {
@@ -498,10 +510,18 @@ struct TubeistView: View {
                                 )
                                 .onChange(of: selectedCamera) { _, newCamera in
                                     guard newCamera != Settings.selectedCamera else { return }
-                                    LOG("Seletected camera: \(newCamera)", level: .debug)
-                                    Settings.selectedCamera = newCamera
+                                    LOG("Selected camera: \(newCamera)", level: .debug)
                                     Task {
-                                        await Streamer.shared.cycleSessions()
+                                        do {
+                                            guard await CaptureDirector.shared.selectCamera(named: newCamera) else {
+                                                throw CaptureSetupError.videoDeviceUnavailable
+                                            }
+                                            try await Streamer.shared.cycleSessions()
+                                        } catch {
+                                            fade(error.localizedDescription)
+                                            appState.activeAlert = error.localizedDescription
+                                            LOG("Could not change camera: \(error.localizedDescription)", level: .error)
+                                        }
                                     }
                                 }
                             }
@@ -529,9 +549,17 @@ struct TubeistView: View {
                                 .onChange(of: selectedMicrophone) { _, newMicrophone in
                                     guard newMicrophone != (Settings.selectedMicrophone ?? "") else { return }
                                     LOG("Selected microphone: \(newMicrophone)", level: .debug)
-                                    Settings.selectedMicrophone = newMicrophone
                                     Task {
-                                        await Streamer.shared.cycleSessions()
+                                        do {
+                                            guard await CaptureDirector.shared.selectMicrophone(named: newMicrophone) else {
+                                                throw CaptureSetupError.noMicrophone
+                                            }
+                                            try await Streamer.shared.cycleSessions()
+                                        } catch {
+                                            fade(error.localizedDescription)
+                                            appState.activeAlert = error.localizedDescription
+                                            LOG("Could not change microphone: \(error.localizedDescription)", level: .error)
+                                        }
                                     }
                                 }
                             }
@@ -691,17 +719,19 @@ struct TubeistView: View {
                         VStack(alignment: .center, spacing: 0) {
                             
                             Button(action: {
-                                if(!appState.isStreamActive) {
+                                if !appState.isStreamSessionRunning {
                                     showSettings = true
                                 }
                             }) {
                                 Image(systemName: "gear")
                                     .font(.system(size: 24))
-                                    .foregroundColor(appState.isStreamActive ? .yellow.opacity(0.5) : .white)
+                                    .foregroundColor(appState.isStreamSessionRunning ? .yellow.opacity(0.5) : .white)
                                     .frame(width: 50, height: 50)
                             }
                             .background(Color.black.opacity(0.5))
                             .cornerRadius(25)
+                            .accessibilityLabel("Settings")
+                            .accessibilityHint("Opens streaming, recording, camera, and overlay settings")
                             .sheet(isPresented: $showSettings) {
                                 SettingsView(overlayManager: overlayManager)
                             }
@@ -761,11 +791,15 @@ struct TubeistView: View {
                                             .foregroundColor(.white)
                                             .font(.system(size: 9, weight: .bold))
                                     }
+                                    .frame(width: 44, height: 44)
                                     .opacity(appState.isStreamActive && !isYouTubeRefreshCoolingDown ? 1 : 0.7)
                                 }
                                 .buttonStyle(.plain)
                                 .disabled(!appState.isStreamActive || isYouTubeRefreshCoolingDown)
                                 .padding(.bottom, 10)
+                                .accessibilityLabel("YouTube status")
+                                .accessibilityValue(YouTubeBroadcast.label(for: ytStatus))
+                                .accessibilityHint("Refreshes YouTube broadcast status")
                             }
 
                             Image(systemName: "dot.radiowaves.right")
@@ -773,23 +807,29 @@ struct TubeistView: View {
                                 .foregroundColor(streamHealthColor)
                                 .font(.system(size: 25)) // Adjust the size as needed
                                 .padding(.bottom, 10)
+                                .accessibilityLabel("Stream health")
+                                .accessibilityValue(appState.streamHealth.statusDescription)
                             
                             Button(action: {
-                                guard !isStartingStream else {
-                                    return
-                                }
-                                if appState.isStreamActive {
+                                switch appState.streamSessionState {
+                                case .preparing, .live:
                                     Task {
-                                        await Streamer.shared.endStream()
-                                        LOG("Stopped streaming engine", level: .info)
+                                        do {
+                                            let result = try await Streamer.shared.endStream()
+                                            if result.outcome == .stopped {
+                                                LOG("Stopped streaming engine", level: .info)
+                                            }
+                                        } catch {
+                                            fade(error.localizedDescription)
+                                            LOG("Could not stop streaming engine: \(error.localizedDescription)", level: .error)
+                                        }
                                     }
-                                } else {
+                                case .idle, .failed:
                                     if appState.youtubeStatus == "live" || appState.youtubeStatus == "testing" {
                                         fade("YouTube is still finishing the previous stream")
                                     }
-                                    else if Settings.hasCameraPermission() && Settings.hasMicrophonePermission() {
+                                    else if isCameraReady && Settings.hasCameraPermission() && Settings.hasMicrophonePermission() {
                                         let streamID = Streamer.makeStreamID()
-                                        isStartingStream = true
                                         Task {
                                             showCameraPicker = false
                                             do {
@@ -799,26 +839,34 @@ struct TubeistView: View {
                                                 fade(error.localizedDescription)
                                                 LOG("Could not start streaming engine: \(error.localizedDescription)", level: .error)
                                             }
-                                            isStartingStream = false
                                         }
                                     }
-                                    else {
+                                    else if !Settings.hasCameraPermission() || !Settings.hasMicrophonePermission() {
                                         Settings.openSystemSettings()
                                     }
+                                    else {
+                                        fade("The camera is not ready")
+                                    }
+                                case .stopping:
+                                    break
                                 }
                             }) {
-                                Image(systemName: appState.isStreamActive || isStartingStream ? "record.circle.fill" : "record.circle")
+                                Image(systemName: appState.isStreamSessionRunning ? "record.circle.fill" : "record.circle")
                                     .font(.system(size: 24))
                                     .foregroundColor(
                                         appState.isStreamActive ? .red :
-                                        isStartingStream ? .blue :
+                                        appState.streamSessionState == .preparing ? .blue :
+                                        appState.streamSessionState == .stopping ? .orange :
                                         .white
                                     )
                                     .frame(width: 50, height: 50)
                             }
-                            .disabled(isStartingStream)
+                            .disabled(appState.streamSessionState == .stopping)
                             .background(Color.black.opacity(0.5))
                             .cornerRadius(25)
+                            .accessibilityLabel(appState.isStreamSessionRunning ? "Stop stream" : "Start stream")
+                            .accessibilityValue(appState.streamSessionState.statusDescription)
+                            .accessibilityHint(appState.isStreamSessionRunning ? "Finalizes recording and YouTube uploads" : "Starts the selected streaming and recording outputs")
                             
                         }
                         .padding()
@@ -846,9 +894,9 @@ struct TubeistView: View {
                                     Text(appState.isBatterySavingOn ? "Turning off battery saving will enable convenience features at the cost of higher battery consumption." : "Turning on battery saving will reduce everything not necessary for the streaming to a minimum.")
                                 }
                     
-                    SmallButton(imageName: appState.isStreamActive ? "camera.fill" : "camera",
-                                foregroundColor: appState.isStreamActive || showCameraPicker ? .yellow : .white) {
-                        if !appState.isStreamActive {
+                    SmallButton(imageName: appState.isStreamSessionRunning ? "camera.fill" : "camera",
+                                foregroundColor: appState.isStreamSessionRunning || showCameraPicker ? .yellow : .white) {
+                        if !appState.isStreamSessionRunning {
                             showCameraPicker.toggle()
                             if showCameraPicker && showStabilizationPicker {
                                 showStabilizationPicker = false
@@ -1050,13 +1098,7 @@ struct TubeistView: View {
         }
         .onChange(of: appState.justCameFromBackground) { oldValue, newValue in
             if newValue && appState.hadToStopStreaming {
-                let content = UNMutableNotificationContent()
-                content.title = "App resumed from background"
-                content.body = "The stream had to be stopped because the app was put into background."
-                
-                let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
-                UNUserNotificationCenter.current().add(request)
-                
+                appState.activeAlert = "The stream was stopped because Tubeist entered the background."
                 appState.hadToStopStreaming = false
             }
         }
@@ -1065,11 +1107,8 @@ struct TubeistView: View {
                 await Streamer.shared.setMonitor(newMonitor)
             }
         }
-        .onChange(of: appState.isStreamActive) { _, isStreamActive in
-            if isStreamActive {
-                isStartingStream = false
-            }
-            if isStreamActive {
+        .onChange(of: appState.streamSessionState) { _, state in
+            if state.isLive {
                 startYouTubePolling()
             }
             else {
@@ -1077,6 +1116,7 @@ struct TubeistView: View {
             }
         }
         .onAppear {
+            guard !isUITesting else { return }
             selectedStabilization = Settings.cameraStabilization ?? "Off"
             Task {
                 cameras = await CaptureDirector.shared.getCameras()
@@ -1086,7 +1126,7 @@ struct TubeistView: View {
                     ? savedCamera
                     : (cameras.contains(DEFAULT_CAMERA) ? DEFAULT_CAMERA : (cameras.first ?? DEFAULT_CAMERA))
                 selectedCamera = validCamera
-                Settings.selectedCamera = validCamera
+                _ = await CaptureDirector.shared.selectCamera(named: validCamera)
 
                 let preferredMicrophone = await CaptureDirector.shared.getPreferredMicrophoneName()
                 let savedMicrophone = Settings.selectedMicrophone
@@ -1100,7 +1140,9 @@ struct TubeistView: View {
                     microphones.first ?? ""
                 }
                 selectedMicrophone = validMicrophone
-                Settings.selectedMicrophone = validMicrophone.isEmpty ? nil : validMicrophone
+                if !validMicrophone.isEmpty {
+                    _ = await CaptureDirector.shared.selectMicrophone(named: validMicrophone)
+                }
             }
             bootstrapYouTubeStatus()
             if appState.isStreamActive {
@@ -1109,6 +1151,17 @@ struct TubeistView: View {
         }
         .onDisappear {
             youtubePollingTask?.cancel()
+        }
+        .alert(
+            "Tubeist",
+            isPresented: Binding(
+                get: { appState.activeAlert != nil },
+                set: { if !$0 { appState.activeAlert = nil } }
+            )
+        ) {
+            Button("OK") { appState.activeAlert = nil }
+        } message: {
+            Text(appState.activeAlert ?? "")
         }
     }
     
@@ -1139,9 +1192,28 @@ struct SmallButton: View {
             Image(systemName: imageName)
                 .font(.system(size: 20))
                 .foregroundColor(foregroundColor ?? .white)  // Use provided color or default to white
-                .frame(width: 30, height: 30)
+                .frame(width: 44, height: 44)
         }
         .background(Color.black)
+        .contentShape(Rectangle())
+        .accessibilityLabel(accessibilityName)
+        .accessibilityHint("Activates \(accessibilityName.lowercased()) controls")
+    }
+
+    private var accessibilityName: String {
+        switch imageName {
+        case "sunrise.fill", "sunset": "Battery saving"
+        case "camera.fill", "camera": "Camera selection"
+        case "hand.raised.fill", "hand.raised.slash": "Video stabilization"
+        case "square.and.line.vertical.and.square.filled", "square.filled.and.line.vertical.and.square": "Monitor selection"
+        case "camera.filters": "Style and effects"
+        case "viewfinder.circle.fill", "viewfinder.circle": "Focus lock"
+        case "sun.max.fill", "sun.max": "Exposure lock"
+        case "lightbulb.fill", "lightbulb": "White balance lock"
+        case "rectangle.on.rectangle", "rectangle.on.rectangle.fill": "Overlays"
+        case "text.quote": "Journal"
+        default: "Control"
+        }
     }
 }
 

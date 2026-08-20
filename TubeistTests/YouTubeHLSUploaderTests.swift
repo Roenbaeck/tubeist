@@ -280,6 +280,19 @@ struct YouTubeHLSUploaderTests {
         }
     }
 
+    @Test(arguments: [
+        "http://a.upload.youtube.com/http_upload_hls?cid=key&file=",
+        "https://example.invalid/http_upload_hls?cid=key&file=",
+        "https://a.upload.youtube.com/other?cid=key&file=",
+        "https://a.upload.youtube.com/http_upload_hls?cid=key",
+    ])
+    func rejectsNonYouTubeOrMalformedIngestionEndpoints(_ value: String) throws {
+        let url = try #require(URL(string: value))
+        #expect(throws: YouTubeHLSUploadError.self) {
+            _ = try YouTubeHLSEndpoint(url)
+        }
+    }
+
     @Test func publicErrorsDoNotExposeTheEndpointOrStreamKey() async throws {
         let secret = "secret-key-never-log"
         let endpoint = try YouTubeHLSEndpoint(URL(

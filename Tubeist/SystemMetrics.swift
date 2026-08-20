@@ -8,6 +8,52 @@ import SwiftUI
 import Foundation
 @preconcurrency import Darwin
 
+struct SystemCPUSampler: Sendable {
+    func usage() -> Float {
+        var threadList: thread_act_array_t?
+        var threadCount: mach_msg_type_number_t = 0
+        let listResult = task_threads(mach_task_self_, &threadList, &threadCount)
+        guard listResult == KERN_SUCCESS, let threadList else {
+            return 0
+        }
+
+        defer {
+            for index in 0 ..< Int(threadCount) {
+                mach_port_deallocate(mach_task_self_, threadList[index])
+            }
+            let byteCount = vm_size_t(Int(threadCount) * MemoryLayout<thread_t>.stride)
+            vm_deallocate(
+                mach_task_self_,
+                vm_address_t(UInt(bitPattern: threadList)),
+                byteCount
+            )
+        }
+
+        var total: Float = 0
+        for index in 0 ..< Int(threadCount) {
+            var info = thread_basic_info_data_t()
+            var infoCount = mach_msg_type_number_t(
+                MemoryLayout<thread_basic_info_data_t>.size / MemoryLayout<integer_t>.size
+            )
+            let infoResult = withUnsafeMutablePointer(to: &info) {
+                $0.withMemoryRebound(to: integer_t.self, capacity: Int(infoCount)) {
+                    thread_info(
+                        threadList[index],
+                        thread_flavor_t(THREAD_BASIC_INFO),
+                        $0,
+                        &infoCount
+                    )
+                }
+            }
+            guard infoResult == KERN_SUCCESS, info.flags & TH_FLAGS_IDLE == 0 else {
+                continue
+            }
+            total += (Float(info.cpu_usage) / Float(TH_USAGE_SCALE)) * 100
+        }
+        return total
+    }
+}
+
 struct SystemMetricsView: View {
     @Environment(AppState.self) var appState
     private let processInfo = ProcessInfo()
@@ -18,17 +64,24 @@ struct SystemMetricsView: View {
     @State private var networkUtilization: Int = 0
     @State private var fragmentBufferCount: Int = 0
     @State private var updateSystemMetricsTask: Task<Void, Never>?
+    private let cpuSampler = SystemCPUSampler()
             
     var body: some View {
-        HStack(spacing: 10) {
-            Text("CPU: \(String(format: "%.1f", cpuUsage))%")
-            Text("Battery: \(String(format: "%.0f", batteryLevel))%")
-            Text("Temp: \(thermalLevel)")
-            Text("\(networkMbps) Mbps | \(networkUtilization)% utilization | \(fragmentBufferCount) buffered")
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 10) {
+                metricLabels
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                metricLabels
+            }
         }
-        .font(.system(size: 13))
-        .lineLimit(1) // Ensure text stays on a single line
+        .font(.caption)
+        .fixedSize(horizontal: false, vertical: true)
         .foregroundColor(BRIGHTER_THAN_WHITE)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(
+            "CPU \(String(format: "%.1f", cpuUsage)) percent, battery \(String(format: "%.0f", batteryLevel)) percent, temperature \(thermalLevel), network \(networkMbps) megabits per second at \(networkUtilization) percent utilization, \(fragmentBufferCount) fragments buffered"
+        )
         .onAppear {
             updateSystemMetricsTask = Task(priority: .utility) {
                 while !Task.isCancelled {
@@ -40,6 +93,14 @@ struct SystemMetricsView: View {
         .onDisappear {
             updateSystemMetricsTask?.cancel()
         }
+    }
+
+    @ViewBuilder
+    private var metricLabels: some View {
+        Text("CPU: \(String(format: "%.1f", cpuUsage))%")
+        Text("Battery: \(String(format: "%.0f", batteryLevel))%")
+        Text("Temp: \(thermalLevel)")
+        Text("\(networkMbps) Mbps | \(networkUtilization)% utilization | \(fragmentBufferCount) buffered")
     }
     
     private func updateSystemMetrics() async {
@@ -70,7 +131,7 @@ struct SystemMetricsView: View {
             }
         }()
         
-        Task { @MainActor in
+        await MainActor.run {
             self.cpuUsage = cpuUsage
             self.batteryLevel = batteryLevel
             self.thermalLevel = thermalLevel
@@ -82,33 +143,7 @@ struct SystemMetricsView: View {
     }
     
     public func getCPUUsage() -> Float {
-        var result: Int32
-        var threadList = UnsafeMutablePointer<UInt32>.allocate(capacity: 1)
-        var threadCount = UInt32(MemoryLayout<mach_task_basic_info_data_t>.size / MemoryLayout<natural_t>.size)
-        var threadInfo = thread_basic_info()
-        
-        result = withUnsafeMutablePointer(to: &threadList) {
-            $0.withMemoryRebound(to: thread_act_array_t?.self, capacity: 1) {
-                task_threads(mach_task_self_, $0, &threadCount)
-            }
-        }
-        
-        if result != KERN_SUCCESS { return 0 }
-        
-        return (0 ..< Int(threadCount))
-            .compactMap { index -> Float? in
-                var threadInfoCount = UInt32(THREAD_INFO_MAX)
-                result = withUnsafeMutablePointer(to: &threadInfo) {
-                    $0.withMemoryRebound(to: integer_t.self, capacity: 1) {
-                        thread_info(threadList[index], UInt32(THREAD_BASIC_INFO), $0, &threadInfoCount)
-                    }
-                }
-                if result != KERN_SUCCESS { return nil }
-                let isIdle = threadInfo.flags == TH_FLAGS_IDLE
-                
-                return !isIdle ? (Float(threadInfo.cpu_usage) / Float(TH_USAGE_SCALE)) * 100 : nil
-            }
-            .reduce(0, +)
+        cpuSampler.usage()
     }
     
     private func getBatteryLevel() -> Float {
@@ -126,5 +161,3 @@ struct SystemMetricsView: View {
     }
     
 }
-
-

@@ -2,7 +2,7 @@
 //  MPEGTransportStreamMuxer.swift
 //  Tubeist
 //
-//  A focused HEVC/AAC MPEG-2 Transport Stream muxer for Tubeist's direct HLS
+//  A focused HEVC/AAC MPEG-2 Transport Stream muxer for Tubeist's YouTube HLS
 //  output. Continuity counters and the timestamp epoch intentionally survive
 //  across media segments.
 //
