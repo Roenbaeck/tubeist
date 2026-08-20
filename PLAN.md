@@ -1,7 +1,7 @@
 # Tubeist YouTube-only hardening plan
 
-- Status: automated implementation and verification substantially complete;
-  physical acceptance remains open
+- Status: automated implementation and CI verification complete; physical
+  acceptance remains open
 - Last reviewed: 2026-08-20
 - Baseline: codex/direct-youtube-hls at e82bb7b
 - Supersedes: the completed direct-YouTube implementation plan in Git history
@@ -14,6 +14,12 @@
   simulator. Xcode recovered from one parallel UI-runner clone failure and
   returned a successful full run; focused reruns also pass, including essential
   controls at the largest accessibility Dynamic Type category.
+- GitHub Actions run
+  [32350714076](https://github.com/Roenbaeck/tubeist/actions/runs/32350714076)
+  passes on Xcode 16.4: source policy, property-list and Swift parsing checks,
+  the serial unit/UI suite, static analysis, generic-device Debug and Release
+  builds, the generated HLG transport-stream fixture, and the loopback HTTPS
+  uploader harness.
 - Focused tests cover structured multi-sink shutdown, one monotonic shutdown
   deadline, background expiration at each representative finalization stage,
   slow/failing recording I/O, final-only durability sync, bounded capture,
@@ -27,9 +33,9 @@
   privacy manifest and hardened Info.plist; the Debug-only loopback uploader
   endpoint is absent from Release behavior.
 - Physical Stop/archive-tail proof, long-duration and preset matrices,
-  Instruments budgets, canary scans, migration from a shipped relay build,
-  remote CI, and TestFlight acceptance remain open. The phone is currently
-  offline, so Phase 10 is intentionally untouched.
+  Instruments budgets, canary scans, migration from a shipped relay build, and
+  TestFlight acceptance remain open. The phone is currently offline, so Phase
+  10 is intentionally untouched.
 
 ## Outcome
 
@@ -416,7 +422,7 @@ and immediate restart. Settings changes affect only the next session.
   thermal, and archive-duration checks.
 - [ ] Stream-and-record produces a playable MP4 without truncating YouTube.
 - [x] ATS, privacy manifest/policy, and archived Release metadata are accurate.
-- [ ] Swift 6 tests, fixtures, mock HTTP, analyzer, CI, and clean Debug/Release
+- [x] Swift 6 tests, fixtures, mock HTTP, analyzer, CI, and clean Debug/Release
   builds pass.
 - [ ] Essential flows pass accessibility and visible-error tests.
 - [ ] Direct YouTube streaming is enabled in Release/TestFlight only after every
