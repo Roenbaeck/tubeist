@@ -63,6 +63,10 @@ The 1080p30 path has real YouTube acceptance evidence. The 60 fps, 4K,
 long-duration, interruption, and TestFlight matrices remain release gates in
 [PLAN.md](PLAN.md), not implied guarantees.
 
+The Debug acceptance report validator and secret-canary scanner are documented
+in [Tools/Acceptance](Tools/Acceptance/README.md). They produce redacted evidence
+summaries but do not replace the required physical-device runs.
+
 Manual-key streaming sends directly to YouTube and does not require Google
 sign-in. Optional sign-in is only for discovering the HLS ingestion resource,
 viewing broadcast state, and applying title, visibility, DVR, latency,

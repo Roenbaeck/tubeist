@@ -22,6 +22,8 @@ jobs:
         run: plutil -lint Tubeist/Info.plist Tubeist/PrivacyInfo.xcprivacy
       - name: Parse all Swift sources
         run: xcrun swiftc -frontend -parse Tubeist/*.swift TubeistTests/*.swift TubeistUITests/*.swift
+      - name: Test device acceptance tools
+        run: python3 -m unittest discover -s Tools/Acceptance -p 'test_*.py'
 
   tests-and-builds:
     runs-on: macos-15
