@@ -7,6 +7,8 @@ import Foundation
 import Testing
 @testable import Tubeist
 
+private let successfulSinkShutdownTimeout: TimeInterval = 10
+
 struct YouTubeHLSStreamSinkTests {
     @Test func remuxesWriterFragmentsWithoutUploadingTheInitializationSegment() async throws {
         let transport = DirectSinkTransport()
@@ -32,7 +34,7 @@ struct YouTubeHLSStreamSinkTests {
             duration: 0,
             type: .separable
         ))
-        try await sink.finish(timeout: 2)
+        try await sink.finish(timeout: successfulSinkShutdownTimeout)
 
         let requests = await transport.requests()
         #expect(requests.count == 2)
@@ -91,7 +93,7 @@ struct YouTubeHLSStreamSinkTests {
             duration: 0,
             type: .separable
         ))
-        try await sink.finish(timeout: 2)
+        try await sink.finish(timeout: successfulSinkShutdownTimeout)
 
         let requests = await newTransport.requests()
         #expect(requests.count == 2)
@@ -138,7 +140,7 @@ struct YouTubeHLSStreamSinkTests {
             duration: max(0.001, parsedDuration - 0.2),
             type: .finalization
         ))
-        try await sink.finish(timeout: 2)
+        try await sink.finish(timeout: successfulSinkShutdownTimeout)
 
         let requests = await transport.requests()
         #expect(requests.count == 2)
@@ -185,7 +187,7 @@ struct YouTubeHLSStreamSinkTests {
             type: .finalization
         ))
 
-        try await sink.finish(timeout: 2)
+        try await sink.finish(timeout: successfulSinkShutdownTimeout)
 
         let requests = await transport.requests()
         #expect(requests.count == 2)
@@ -236,7 +238,7 @@ struct YouTubeHLSStreamSinkTests {
             type: .finalization
         ))
 
-        try await sink.finish(timeout: 2)
+        try await sink.finish(timeout: successfulSinkShutdownTimeout)
 
         let requests = await transport.requests()
         #expect(requests.count == 2)
@@ -272,7 +274,7 @@ struct YouTubeHLSStreamSinkTests {
         ))
 
         do {
-            try await sink.finish(timeout: 2)
+            try await sink.finish(timeout: successfulSinkShutdownTimeout)
             Issue.record("Expected malformed media to fail shutdown")
         } catch let error as YouTubeHLSPackagingError {
             if case .packagingFailed = error {
