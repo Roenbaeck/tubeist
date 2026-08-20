@@ -32,10 +32,11 @@
 - An unsigned Release archive was inspected. It contains the expected packaged
   privacy manifest and hardened Info.plist; the Debug-only loopback uploader
   endpoint is absent from Release behavior.
-- Physical Stop/archive-tail proof, long-duration and preset matrices,
-  Instruments budgets, canary scans, migration from a shipped relay build, and
-  TestFlight acceptance remain open. The phone is currently offline, so Phase
-  10 is intentionally untouched.
+- An iPhone 16 Pro running iOS 26.6 physically confirms the restored compact
+  landscape layout and a direct YouTube start/stop smoke test. Physical
+  Stop/archive-tail proof, long-duration and preset matrices, Instruments
+  budgets, canary scans, migration from a shipped relay build, and TestFlight
+  acceptance remain open.
 
 ## Outcome
 
@@ -331,8 +332,11 @@ budgets; each optimization has before/after traces.
 - [x] Use in-app foreground alerts; request notification permission only for a
   defined background use.
 - [x] Add labels, values, and hints to icon-only controls.
-- [x] Meet recommended hit-target size and support Dynamic Type or an accessible
-  alternative layout.
+- [x] Restore the proven 30-point compact landscape rail after 44-point targets
+  caused the preview and controls to overflow; retain labels, hints, and Dynamic
+  Type coverage.
+- [ ] Redesign the dense camera rail before claiming recommended 44-point target
+  sizes without sacrificing simultaneous access to its ten controls.
 - [x] Never communicate health only by color or an unlabeled symbol.
 - [x] Unify stream, YouTube, recording, queue, and finalization status.
 - [x] Add simulator UI tests for manual-key Apply/Close, visible validation
@@ -369,6 +373,9 @@ legacy behavior or accidental development-only gate.
   and archive A/V skew, HLG metadata, resolution, frame rate, and audio channels.
 - [x] Configure HEVC output to prohibit open GOPs so every sync sample begins an
   independently decodable group; retain physical-output verification below.
+- [x] On 2026-08-20, verify on iPhone 16 Pro with iOS 26.6 that the restored
+  compact landscape UI keeps the preview and controls on-screen and that a
+  direct YouTube stream can start, appear on YouTube, and stop cleanly.
 - [ ] Test stream-only and stream-and-record at 1080p30, 1080p60, and a supported
   4K preset, covering mono/stereo where applicable.
 - [ ] Run a 60-minute session and a longer soak for drift, memory, thermal, and

@@ -29,6 +29,38 @@ final class TubeistUITests: XCTestCase {
     }
 
     @MainActor
+    func testLandscapeControlsRemainOnScreenAndHittable() throws {
+        let app = launchForUITesting()
+        let window = app.windows.firstMatch
+        XCTAssertTrue(window.exists)
+
+        let controlNames = [
+            "Settings",
+            "Start stream",
+            "Battery saving",
+            "Camera selection",
+            "Video stabilization",
+            "Monitor selection",
+            "Style and effects",
+            "Focus lock",
+            "Exposure lock",
+            "White balance lock",
+            "Overlays",
+            "Journal"
+        ]
+
+        for name in controlNames {
+            let control = app.buttons[name]
+            XCTAssertTrue(control.waitForExistence(timeout: 2), "Missing \(name)")
+            XCTAssertTrue(control.isHittable, "\(name) is outside the interactive viewport")
+            XCTAssertTrue(
+                window.frame.contains(control.frame),
+                "\(name) extends beyond the landscape window: \(control.frame)"
+            )
+        }
+    }
+
+    @MainActor
     func testClosingSettingsDiscardsStreamKeyDraft() throws {
         let app = XCUIApplication()
         app.launchArguments = ["-ui-testing"]

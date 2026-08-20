@@ -1192,7 +1192,7 @@ struct SmallButton: View {
             Image(systemName: imageName)
                 .font(.system(size: 20))
                 .foregroundColor(foregroundColor ?? .white)  // Use provided color or default to white
-                .frame(width: 44, height: 44)
+                .frame(width: 30, height: 30)
         }
         .background(Color.black)
         .contentShape(Rectangle())
