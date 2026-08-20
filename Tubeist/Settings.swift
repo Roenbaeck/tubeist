@@ -465,7 +465,6 @@ struct SettingsView: View {
                                 PhotosPicker(selection: $selectedPhotoItem, matching: .images) {
                                     HStack {
                                         Text("Thumbnail")
-                                        Spacer()
                                         if let previewThumbnail {
                                             Image(uiImage: previewThumbnail)
                                                 .resizable()

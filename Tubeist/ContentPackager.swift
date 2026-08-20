@@ -32,6 +32,26 @@ private final class AssetWriterFinishContinuation: @unchecked Sendable {
     }
 }
 
+private final class SendableAssetWriterFinishHandle: @unchecked Sendable {
+    private let writer: AVAssetWriter
+
+    init(_ writer: AVAssetWriter) {
+        self.writer = writer
+    }
+
+    func cancelWriting() {
+        writer.cancelWriting()
+    }
+
+    var status: AVAssetWriter.Status {
+        writer.status
+    }
+
+    var errorDescription: String? {
+        writer.error?.localizedDescription
+    }
+}
+
 private final class OneShotBoolContinuation: @unchecked Sendable {
     private let lock = NSLock()
     private var continuation: CheckedContinuation<Bool, Never>?
@@ -194,7 +214,7 @@ private class AssetWriterActor {
         // callbacks produced by finishWriting are classified as finalization.
         await Task.yield()
         finalizing = true
-        nonisolated(unsafe) let sendableAssetWriter = fragmentAssetWriter
+        let sendableAssetWriter = SendableAssetWriterFinishHandle(fragmentAssetWriter)
         let finishResult = await withCheckedContinuation { continuation in
             let finishContinuation = AssetWriterFinishContinuation(continuation)
             self.videoInput?.markAsFinished()
@@ -216,7 +236,7 @@ private class AssetWriterActor {
                 timeoutTask.cancel()
                 finishContinuation.resume(
                     status: sendableAssetWriter.status,
-                    message: sendableAssetWriter.error?.localizedDescription
+                    message: sendableAssetWriter.errorDescription
                 )
             }
         }

@@ -45,21 +45,30 @@ for scenario in contract reconnect timeout stop cancel; do
   mkdir -p "${scenario_directory}"
   port_file="${scenario_directory}/port"
   log_file="${scenario_directory}/requests.json"
+  server_output="${scenario_directory}/server.log"
 
-  python3 "${tool_directory}/mock_server.py" \
+  python3 -u "${tool_directory}/mock_server.py" \
     --scenario "${scenario}" \
     --port-file "${port_file}" \
     --log-file "${log_file}" \
     --certificate "${certificate}" \
-    --key "${private_key}" &
+    --key "${private_key}" \
+    >"${server_output}" 2>&1 &
   server_pid=$!
 
-  for _ in {1..200}; do
-    [[ -s ${port_file} ]] && break
-    sleep 0.02
+  readiness_started=${SECONDS}
+  while [[ ! -s ${port_file} ]] && (( SECONDS - readiness_started < 30 )); do
+    if ! kill -0 ${server_pid} 2>/dev/null; then
+      echo "HTTPS mock server exited before becoming ready for ${scenario}" >&2
+      sed -n '1,200p' "${server_output}" >&2
+      wait ${server_pid} 2>/dev/null || true
+      exit 1
+    fi
+    sleep 0.05
   done
   if [[ ! -s ${port_file} ]]; then
     echo "HTTPS mock server did not start for ${scenario}" >&2
+    sed -n '1,200p' "${server_output}" >&2
     exit 1
   fi
 
