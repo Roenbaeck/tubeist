@@ -9,6 +9,7 @@ import hashlib
 import http.server
 import json
 import socket
+import socketserver
 import ssl
 import sys
 import threading
@@ -33,6 +34,15 @@ class RequestRecord:
 
 class ValidationServer(http.server.ThreadingHTTPServer):
     daemon_threads = True
+
+    def server_bind(self) -> None:
+        # HTTPServer.server_bind performs socket.getfqdn() after binding. A
+        # loopback-only validation server does not need reverse DNS, and hosted
+        # CI runners can block in that lookup long enough to fail readiness.
+        socketserver.TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name = host
+        self.server_port = port
 
     def __init__(self, address: tuple[str, int], scenario: str):
         super().__init__(address, ValidationHandler)
