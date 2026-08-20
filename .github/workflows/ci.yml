@@ -15,7 +15,7 @@ jobs:
   source-policy:
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Enforce YouTube-only production sources
         run: Tools/check_youtube_only.sh
       - name: Validate property lists
@@ -27,7 +27,7 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Report Xcode version
         run: xcodebuild -version
       - name: Unit and UI tests
@@ -70,7 +70,7 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install FFmpeg
         run: brew install ffmpeg
       - name: Validate generated HLG transport stream
