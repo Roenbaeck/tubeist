@@ -37,7 +37,7 @@ jobs:
           -scheme Tubeist
           -destination 'platform=iOS Simulator,OS=latest,name=iPhone 16 Pro'
           -derivedDataPath '${{ runner.temp }}/TubeistDerivedData'
-          CODE_SIGNING_ALLOWED=NO
+          -parallel-testing-enabled NO
       - name: Analyze Debug
         run: >-
           xcodebuild analyze
