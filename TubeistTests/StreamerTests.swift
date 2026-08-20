@@ -138,8 +138,7 @@ struct StreamerTests {
         for (expected, stream, record) in cases {
             let plan = try StreamOutputPlan.resolve(
                 stream: stream,
-                record: record,
-                directYouTubeAvailable: true
+                record: record
             )
             #expect(plan == expected)
             #expect(plan.routesEncodedFragments == stream)
@@ -147,36 +146,11 @@ struct StreamerTests {
         }
     }
 
-    @Test func recordOnlyIgnoresAnUnavailableDirectDestination() throws {
-        let plan = try StreamOutputPlan.resolve(
-            stream: false,
-            record: true,
-            directYouTubeAvailable: false
-        )
-        #expect(plan == StreamOutputPlan(streamsToYouTube: false, recordsOriginalFMP4: true))
-    }
-
-    @Test func streamingRejectsABuildWithoutYouTubeHLS() {
-        do {
-            _ = try StreamOutputPlan.resolve(
-                stream: true,
-                record: false,
-                directYouTubeAvailable: false
-            )
-            Issue.record("Expected unavailable YouTube output to fail")
-        } catch let error as StreamStartError {
-            #expect(error == .youTubeHLSUnavailable)
-        } catch {
-            Issue.record("Unexpected output-plan error: \(error)")
-        }
-    }
-
     @Test func startingWithoutAnyOutputIsRejected() {
         do {
             _ = try StreamOutputPlan.resolve(
                 stream: false,
-                record: false,
-                directYouTubeAvailable: true
+                record: false
             )
             Issue.record("Expected an empty output plan to fail")
         } catch let error as StreamStartError {

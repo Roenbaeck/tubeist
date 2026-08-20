@@ -86,17 +86,13 @@ struct StreamOutputPlan: Sendable, Equatable {
 
     static func resolve(
         stream: Bool,
-        record: Bool,
-        directYouTubeAvailable: Bool
+        record: Bool
     ) throws -> StreamOutputPlan {
         guard stream || record else {
             throw StreamStartError.noOutputSelected
         }
         guard stream else {
             return StreamOutputPlan(streamsToYouTube: false, recordsOriginalFMP4: record)
-        }
-        guard directYouTubeAvailable else {
-            throw StreamStartError.youTubeHLSUnavailable
         }
         return StreamOutputPlan(streamsToYouTube: true, recordsOriginalFMP4: record)
     }
@@ -357,8 +353,7 @@ final class Streamer: Sendable {
             }
             let outputPlan = try StreamOutputPlan.resolve(
                 stream: Settings.stream,
-                record: Settings.record,
-                directYouTubeAvailable: DIRECT_YOUTUBE_HLS_AVAILABLE
+                record: Settings.record
             )
             await streamingActor.setOutputPlan(outputPlan)
             try await prepareEncodedOutput(streamID: streamID, plan: outputPlan)
@@ -561,13 +556,11 @@ final class Streamer: Sendable {
 }
 
 enum StreamStartError: LocalizedError, Equatable {
-    case youTubeHLSUnavailable
     case missingStreamKey
     case noOutputSelected
 
     var errorDescription: String? {
         switch self {
-        case .youTubeHLSUnavailable: "YouTube HLS streaming is not enabled in this build"
         case .missingStreamKey: "Enter a YouTube HLS stream key before starting"
         case .noOutputSelected: "Enable YouTube streaming, local recording, or both"
         }

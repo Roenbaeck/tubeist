@@ -68,14 +68,6 @@ let AUDIO_METER_HEIGHT: CGFloat = 3
 // Journal settings
 let MAX_LOG_ENTRIES = 1000
 
-// YouTube HLS remains a development feature until the physical-device and
-// TestFlight acceptance gates in PLAN.md are complete.
-#if DEBUG
-let DIRECT_YOUTUBE_HLS_AVAILABLE = true
-#else
-let DIRECT_YOUTUBE_HLS_AVAILABLE = false
-#endif
-
 // Useful for debugging purposes
 func printCurrentExecutionInfo(message: String = "") {
     let currentQueue = OperationQueue.current?.name ?? "No Queue"

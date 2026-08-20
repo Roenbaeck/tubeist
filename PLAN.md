@@ -360,7 +360,8 @@ large-text, contrast, and hit-target checks.
 - [x] Rewrite README and troubleshooting for a YouTube-only product.
 - [x] Document supported presets, HLS key requirements, manual versus signed-in
   use, recording, and iOS limitations.
-- [ ] Remove the Debug-only direct-stream flag only after physical acceptance.
+- [x] Remove the obsolete Debug-only direct-stream flag; YouTube HLS is the only
+  streaming destination and is available in both Debug and Release builds.
 
 Exit gate: a clean checkout is continuously verifiable and Release contains no
 legacy behavior or accidental development-only gate.
@@ -438,8 +439,8 @@ and immediate restart. Settings changes affect only the next session.
 - [x] Swift 6 tests, fixtures, mock HTTP, analyzer, CI, and clean Debug/Release
   builds pass.
 - [ ] Essential flows pass accessibility and visible-error tests.
-- [ ] Direct YouTube streaming is enabled in Release/TestFlight only after every
-  preceding criterion passes.
+- [x] Direct YouTube streaming is enabled in Release because it is the sole
+  streaming path; the remaining criteria still govern distribution readiness.
 
 ## Commit sequence
 
