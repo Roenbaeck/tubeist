@@ -137,8 +137,10 @@ private class AssetWriterActor {
                 AVVideoAverageBitRateKey: selectedVideoBitrate,
                 AVVideoExpectedSourceFrameRateKey: selectedFrameRate,
                 AVVideoMaxKeyFrameIntervalKey: frameIntervalKey,
-                // I believe we need this since we are async and frames can potentially arrive out of order
                 AVVideoAllowFrameReorderingKey: true,
+                // Each sync sample must begin an independently decodable GOP so
+                // HLS segment boundaries never depend on an earlier segment.
+                kVTCompressionPropertyKey_AllowOpenGOP: false,
                 kVTCompressionPropertyKey_HDRMetadataInsertionMode: kVTHDRMetadataInsertionMode_Auto
             ]
         ]

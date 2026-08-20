@@ -365,6 +365,10 @@ legacy behavior or accidental development-only gate.
 
 - [x] Add secret-safe tooling that validates bounded Debug acceptance reports
   and scans exported containers and diagnostics for a canary without printing it.
+- [x] Add redacted FFprobe evidence tooling for accepted-tail duration, recording
+  and archive A/V skew, HLG metadata, resolution, frame rate, and audio channels.
+- [x] Configure HEVC output to prohibit open GOPs so every sync sample begins an
+  independently decodable group; retain physical-output verification below.
 - [ ] Test stream-only and stream-and-record at 1080p30, 1080p60, and a supported
   4K preset, covering mono/stereo where applicable.
 - [ ] Run a 60-minute session and a longer soak for drift, memory, thermal, and

@@ -42,6 +42,38 @@ The accepted-duration total proves what the uploader acknowledged before Stop;
 it must still be compared with capture time, the local recording, and the
 YouTube archive. Keep those media files and private URLs out of Git.
 
+## Recording and YouTube archive comparison
+
+Download the processed YouTube HDR archive to a local file and export the local
+recording. Compare them with the schema-3 report using explicit, agreed budgets:
+
+```sh
+python3 Tools/Acceptance/compare_media.py \
+  --report /path/to/acceptance.jsonl \
+  --recording /path/to/recording.mp4 \
+  --youtube-archive /path/to/archive.webm \
+  --expected-width 1920 --expected-height 1080 \
+  --expected-frame-rate 30 --expected-audio-channels 2 \
+  --max-duration-delta 2.25 --max-av-skew 0.1
+```
+
+Choose and record budgets before running the matrix; the example numbers are not
+project policy. The comparator requires Tubeist's recording to be HEVC Main10
+HLG/BT.2020 with AAC-LC, permits YouTube's HDR transcode codecs, checks expected
+resolution/frame rate/channels, measures start/end A/V skew, and compares each
+media duration with the uploader-accepted duration. It emits no paths, tags,
+titles, URLs, or event details.
+
+If YouTube intentionally changes the source channel layout, specify the observed
+archive layout separately with `--expected-archive-audio-channels`; otherwise the
+source channel count is required for both files. A/V sync passes only when each
+audio and video stream has its own start and duration evidence—container duration
+is not substituted for missing stream timing.
+
+`--allow-archive-sdr` exists only for a deliberately documented YouTube
+transcoding limitation; it must not silently convert an HDR acceptance row into
+an HDR pass.
+
 ## Canary scan
 
 Use a dedicated non-production HLS key containing a unique canary. Store the
