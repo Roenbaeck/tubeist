@@ -1,72 +1,118 @@
-<img src="https://github.com/Roenbaeck/tubeist/blob/8dc94e3895936ae2c1c6d8ac17cb4d7cbd5aedec/Tubeist/Assets.xcassets/AppIcon.appiconset/TubeistIcon.png" alt="Tubeist icon" width="110" height="110">&nbsp;&nbsp;&nbsp;<a href="https://apps.apple.com/us/app/tubeist/id6740208994"><img src="https://github.com/Roenbaeck/tubeist/blob/a706314e3155cb0dbda8ef6c0ac0965b5883a55b/Download_AppStore.svg"/></a>
+<img src="https://github.com/Roenbaeck/tubeist/blob/8dc94e3895936ae2c1c6d8ac17cb4d7cbd5aedec/Tubeist/Assets.xcassets/AppIcon.appiconset/TubeistIcon.png" alt="Tubeist icon" width="110" height="110">&nbsp;&nbsp;&nbsp;<a href="https://apps.apple.com/us/app/tubeist/id6740208994"><img src="https://github.com/Roenbaeck/tubeist/blob/a706314e3155cb0dbda8ef6c0ac0965b5883a55b/Download_AppStore.svg" alt="Download Tubeist on the App Store"></a>
 
 # Tubeist
 
-Tubeist is an iPhone application for live streaming, leveraging the fMP4 format over the HLS (HTTP Live Streaming) protocol. Built entirely in Swift 6, this project was initially conceived as a learning exercise to explore the Swift language, with significant early development aided by the capabilities of large language models.
+Tubeist is a native Swift 6 camera app for recording and streaming HDR video from an iPhone. It sends HEVC Main10 HLG video and AAC audio directly to YouTube over HLS, without an intermediate relay server. When local recording is enabled, the same encoded media is saved as fragmented MP4 while it is remuxed to MPEG-2 TS for streaming—no second video or audio encoder is required.
 
-The primary goal of Tubeist is to facilitate the streaming of high-fidelity HDR content, particularly targeted for platforms like YouTube. It's designed for scenarios where pristine visual quality is paramount, rather than ultra-low latency interaction. This makes it an ideal choice for streaming events, sporting competitions, educational content, or any other long-running stream where immediate audience interaction is not the primary focus. You can watch some [demos of Tubeist on YouTube](https://youtube.com/playlist?list=PLFnkPgO2HxdAp_YiFVSWVpyak--0y6m5U&si=b2vjD-jVe0FY2egZ).
+Tubeist is designed for events, sports, education, performances, and other long-form productions where image quality matters more than conversational latency. Watch [Tubeist demos on YouTube](https://youtube.com/playlist?list=PLFnkPgO2HxdAp_YiFVSWVpyak--0y6m5U&si=b2vjD-jVe0FY2egZ).
 
-![IMG_1816](https://github.com/user-attachments/assets/c48ee5ce-86a9-49a1-b859-8c88c4a341d9)
-User interface, showing the "Blackbright" style with "Grain" effect, together with two web overlays.
+![Tubeist camera interface with the Blackbright style, Grain effect, and two web overlays](https://github.com/user-attachments/assets/c48ee5ce-86a9-49a1-b859-8c88c4a341d9)
 
-## TestFlight
-A TestFlight version is publicly available here: https://testflight.apple.com/join/atDHXHWy
+## Features
 
-## Features (Under Development)
+- Direct YouTube HLS delivery from the iPhone, with no relay server
+- HEVC Main10 HLG video and AAC audio
+- Record-only, stream-only, and simultaneous stream-and-record modes
+- Fragmented MP4 local recordings using the original encoded media
+- Built-in presets from 540p through 4K, subject to the selected camera's capabilities
+- Manual focus, exposure, white balance, zoom, stabilization, and camera controls
+- Local and external monitoring options
+- Live bandwidth, buffer, CPU, battery, and thermal information
+- Web overlays for graphics and live information
+- Built-in image styles and effects
+- Optional Google sign-in for YouTube broadcast discovery and management
 
-While still under active development, Tubeist aims to provide a robust set of features for high-quality streaming. Key features currently being developed and tested include:
+## Installation
 
-* **High Dynamic Range (HDR) Streaming:** Capture and broadcast video with enhanced color and detail.
-* **High Frame Rate Support:** Stream with smoother motion for supported platforms and content.
-* **fMP4 over HLS:** Utilizing industry-standard protocols for reliable and scalable streaming.
-* **Manual camera controls:** Staying true to common camera controls, made easily accessible.
-* **Web Overlay Support:** Integrate dynamic graphics and information into your stream.
-* **Bandwidth-Aware Presets:**  Optionally input your available bandwidth to receive recommendations for optimal streaming settings.
-* **Styling and Effects:** A number of styles and effects are available through an In-App purchase (kept at the lowest price possible).
+Tubeist is available on the [App Store](https://apps.apple.com/us/app/tubeist/id6740208994), and public builds are also distributed through [TestFlight](https://testflight.apple.com/join/atDHXHWy).
 
-**Please note that this project is continuously evolving, and the availability and stability of specific features may vary.**
+To build from source:
 
-## Usage
+1. Clone this repository.
+2. Open `Tubeist.xcodeproj` in Xcode.
+3. Select your development team and a connected iPhone.
+4. Build and run.
 
-It's important to understand that in its current phase, Tubeist may still contain bugs. However, it is progressively becoming more stable and user-friendly. Using Xcode you can clone this repository and manually compile and install Tubeist on your iPhone. Tubeist also relies on a server infrastructure capable of ingesting fMP4 over HLS. There is a playlist [available on YouTube](https://youtube.com/playlist?list=PLFnkPgO2HxdASltkwnLEGB2yuyhIS2RL8&si=-DYTXwvt9tNDtWgT) that explains how to set up an HLS relay and configure Tubeist to work with it. 
+Tubeist requires iOS 18 or later and a physical iPhone with an HDR-capable capture format. The project has no external framework dependencies.
 
-For testing purposes, a rudimentary stream server is available as a separate project: [https://github.com/Roenbaeck/hls-relay](https://github.com/Roenbaeck/hls-relay). This is an HTTP server that accepts HLS input, which is forwarded to YouTube (or Twitch) using ffmpeg. You will need to configure Tubeist to point to your HLS relay server.
+## Streaming to YouTube
 
-## Getting Started (For Developers)
+Create a YouTube Live stream configured for **HLS ingestion**, then enter its stream key in Tubeist Settings. An RTMP or RTMPS key is not interchangeable with an HLS key.
 
-If you're interested in contributing to the development of Tubeist, here's a basic guide to get started:
+Manual-key streaming does not require Google sign-in. Signing in is optional and lets Tubeist discover the matching HLS ingestion resource, display broadcast state, and apply supported metadata and broadcast settings. Opening Settings never creates or modifies a broadcast; changes are sent only when you choose Apply.
 
-1. **Clone the Repository:** `git clone https://github.com/Roenbaeck/tubeist`
-2. **Install Dependencies:**  There are no dependencies to external frameworks.
-3. **Build the Project:** Open the `Tubeist.xcodeproj` or `Tubeist.xcworkspace` in Xcode and build the project for your target device.
-4. **Run on your iPhone:** Connect your iPhone and run the application from Xcode.
+See YouTube's official [HLS ingestion guide](https://developers.google.com/youtube/v3/live/guides/hls-ingestion) for help creating a compatible stream.
 
-**Ensure you have a valid development certificate and provisioning profile configured in Xcode.**
+### Output modes and presets
 
-## Discord
-Join the official Discord server to connect with the developer and other users, discuss features, and get support: 
-https://discord.gg/W48k2rSvr8
+Tubeist supports:
 
-**For reporting issues or suggesting improvements, it's highly recommended to create a detailed issue directly here on GitHub. Even better, if you have a solution, consider submitting a pull request!**
+- local recording without streaming;
+- YouTube streaming without a local recording; and
+- YouTube streaming with a simultaneous local recording.
+
+Built-in presets cover 540p, 720p, 1080p, 1440p, and 4K at frame rates supported by the selected iPhone camera. Custom presets are limited to formats that the camera reports as HDR-capable. Available combinations depend on the device, selected lens, thermal state, storage, and network capacity.
+
+### Starting and stopping
+
+Before starting, confirm that Tubeist has Camera and Microphone access, the selected camera supports the chosen preset, and the phone has sufficient upload bandwidth and free storage.
+
+Stopping is complete when enabled outputs have finalized. Keep Tubeist open while the control shows the orange stopping state so the recording can close cleanly and the accepted streaming tail can finish uploading.
+
+## Camera interface
+
+Tubeist uses a fixed landscape interface with a central 16:9 preview and a compact control rail. Pinch the preview to zoom, tap to position focus or exposure, and use the rail for camera selection, stabilization, monitoring, styles, focus, exposure, white balance, overlays, and streaming.
+
+The interface displays operational information—including current throughput, upload utilization, buffered media, CPU load, battery level, and thermal state—without covering the primary camera controls.
+
+## Overlays, styles, and effects
+
+Web overlays can add live graphics and information to the encoded output. Tubeist also includes visual styles and effects that can be combined with overlays while recording or streaming. Some styles and effects are available through an in-app purchase.
+
+## iOS behavior
+
+iOS does not permit indefinite camera capture in the background. If Tubeist moves to the background during capture, it stops capture and uses finite background execution time to finalize the local recording and accepted YouTube tail. Keep the app in the foreground for an active stream.
+
+Battery-saving mode can reduce display power use during long sessions while leaving the capture pipeline active.
+
+## Privacy and credentials
+
+Stream keys and authentication credentials are stored using iOS-provided secure storage. Tubeist redacts stream keys, complete ingestion URLs, and OAuth tokens from its diagnostic output. Never include those credentials—or private recordings—in an issue or bug report.
+
+See the [privacy policy](PRIVACY.md) for details about data handling.
+
+## Troubleshooting
+
+If Start is unavailable or a stream fails:
+
+1. Confirm Camera and Microphone access in iOS Settings.
+2. Confirm that the stream key belongs to a YouTube stream configured for HLS, not RTMP.
+3. Select a preset supported by the current camera and lens.
+4. Check upload bandwidth, device temperature, and available storage.
+5. Read the persistent in-app error first, then open the journal for additional detail.
+
+After a successful stop, YouTube may need additional time to process the live archive before every quality level is available.
+
+## Development and verification
+
+Tubeist's capture, encoding, remuxing, and delivery pipeline is implemented in Swift and Apple media frameworks. Repository tooling provides deterministic checks for the media and network boundaries:
+
+- [Remux fixture](Tools/RemuxFixture/README.md) validates generated HLG MPEG-2 TS output.
+- [YouTube HLS mock](Tools/YouTubeHLSMock/README.md) exercises uploader behavior against loopback HTTPS.
+- [Apple fMP4 fixture](Tools/AppleFMP4Fixture/README.md) checks Apple's `mpeg4AppleHLS` box layout.
+- [Device fMP4 fixture](Tools/DeviceFMP4Fixture/README.md) validates exported physical-device captures.
+- [Media comparison tools](Tools/Acceptance/README.md) produce redacted evidence summaries and scan them for credential canaries.
+
+Continuous integration enforces the YouTube-only source boundary, Swift parsing, property-list validation, unit and UI tests, static analysis, Debug and Release builds, and the offline media validators.
 
 ## Contributing
 
-We welcome contributions to Tubeist! If you're interested in helping make Tubeist better, there are several ways you can contribute:
+Bug reports, feature proposals, documentation improvements, test results, and pull requests are welcome. For useful bug reports, include reproducible steps, iPhone model, iOS version, selected preset, and redacted screenshots or journal output. Do not include stream keys, complete ingestion URLs, OAuth tokens, or private recordings.
 
-* Reporting Bugs: If you encounter any issues or unexpected behavior while using the app, please create a detailed issue on GitHub. Be sure to include steps to reproduce the bug, your device information, and any relevant screenshots or logs.
-* Suggesting Enhancements: Do you have an idea for a new feature or improvement? Feel free to open an issue on GitHub to discuss your suggestion.
-* Submitting Code Changes (Pull Requests): If you've fixed a bug or implemented a new feature, we encourage you to submit a pull request. Please ensure your code follows the project's coding style (if defined) and includes relevant tests.
-* Improving Documentation: Help make Tubeist more accessible by improving the documentation. This could include clarifying existing documentation, adding new examples, or creating tutorials.
-* Testing: As the app moves towards a TestFlight release, providing feedback and thorough testing on new builds will be invaluable.
+For code changes, fork the repository, create a focused branch, include relevant tests, and open a pull request explaining the behavior and motivation.
 
-### How to Contribute Code
-
-* Fork the Repository: Create your own fork of the Tubeist repository on GitHub.
-* Create a Branch: Create a new branch in your fork for your changes. It's good practice to name your branch descriptively (e.g., fix-login-bug or add-new-overlay-feature).
-* Make Your Changes: Implement your bug fix or new feature.
-* Commit Your Changes: Commit your changes with clear and concise commit messages.
-* Push to Your Fork: Push your branch to your forked repository.
-* Submit a Pull Request: Create a pull request from your branch to the main Tubeist repository. Describe the changes you've made and why they are necessary.
+Join the [Tubeist Discord server](https://discord.gg/W48k2rSvr8) for discussion and support.
 
 ## Acknowledgements
-Tubeist was inspired by the amazing work put into [Moblin](https://github.com/eerimoq/moblin), another Open Source live streaming software. 
+
+Tubeist was inspired by the work on [Moblin](https://github.com/eerimoq/moblin), another open-source live-streaming application. Tubeist began as a Swift learning project, with significant early development aided by large language models.

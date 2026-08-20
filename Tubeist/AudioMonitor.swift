@@ -19,65 +19,72 @@ struct AudioMonitorView: UIViewRepresentable {
     
     func updateUIView(_ uiView: AudioMeter, context: Context) {
         if appState.isAudioLevelRunning, !appState.soonGoingToBackground {
-            uiView.startTimer()
+            uiView.startUpdating()
         } else {
-            uiView.stopTimer()
+            uiView.stopUpdating()
         }
-        uiView.setNeedsDisplay() // Trigger redraw
     }
 }
 
 class AudioMeter: UIView {
     var width: CGFloat
     var height: CGFloat
-    private var leftAverageLevel: Float = 0 { didSet { setNeedsDisplay() } }
-    private var leftPeakLevel: Float = 0 { didSet { setNeedsDisplay() } }
-    private var rightAverageLevel: Float = 0 { didSet { setNeedsDisplay() } }
-    private var rightPeakLevel: Float = 0 { didSet { setNeedsDisplay() } }
-    private var timer: Timer?
+    private var leftAverageLevel: Float = 0
+    private var leftPeakLevel: Float = 0
+    private var rightAverageLevel: Float = 0
+    private var rightPeakLevel: Float = 0
+    private var updateTask: Task<Void, Never>?
 
     init(width: CGFloat, height: CGFloat) {
         self.width = width
         self.height = height
         super.init(frame: .zero)
         self.backgroundColor = UIColor.black.withAlphaComponent(0)
-        startTimer()
+        startUpdating()
     }
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
     }
     
-    func startTimer() {
-        guard let timer = self.timer else {
-            self.timer = Timer.scheduledTimer(timeInterval: 0.04, target: self, selector: #selector(updateLevels), userInfo: nil, repeats: true)
-            return
-        }
-        if !timer.isValid {
-            self.timer = Timer.scheduledTimer(timeInterval: 0.04, target: self, selector: #selector(updateLevels), userInfo: nil, repeats: true)
+    func startUpdating() {
+        guard updateTask == nil else { return }
+        updateTask = Task { [weak self] in
+            while !Task.isCancelled {
+                let channels = await CaptureDirector.shared.getAudioChannels()
+                guard let self, !Task.isCancelled else { return }
+                apply(channels)
+                do {
+                    try await Task.sleep(for: .milliseconds(40))
+                } catch {
+                    return
+                }
+            }
         }
     }
     
-    func stopTimer() {
-        timer?.invalidate()
-        timer = nil
+    func stopUpdating() {
+        updateTask?.cancel()
+        updateTask = nil
     }
 
-    @objc private func updateLevels() {
-        Task { @MainActor in // Ensure UI updates on main thread
-            let channels = await CaptureDirector.shared.getAudioChannels()
-            if channels.count == 2 {
-                leftAverageLevel = channels[0].averagePowerLevel
-                leftPeakLevel = channels[0].peakHoldLevel
-                rightAverageLevel = channels[1].averagePowerLevel
-                rightPeakLevel = channels[1].peakHoldLevel
-            } else if channels.count == 1 {
-                leftAverageLevel = channels[0].averagePowerLevel
-                leftPeakLevel = channels[0].peakHoldLevel
-                rightAverageLevel = channels[0].averagePowerLevel
-                rightPeakLevel = channels[0].peakHoldLevel
-            }
+    private func apply(_ channels: [AVCaptureAudioChannel]) {
+        if channels.count == 2 {
+            leftAverageLevel = channels[0].averagePowerLevel
+            leftPeakLevel = channels[0].peakHoldLevel
+            rightAverageLevel = channels[1].averagePowerLevel
+            rightPeakLevel = channels[1].peakHoldLevel
+        } else if channels.count == 1 {
+            leftAverageLevel = channels[0].averagePowerLevel
+            leftPeakLevel = channels[0].peakHoldLevel
+            rightAverageLevel = channels[0].averagePowerLevel
+            rightPeakLevel = channels[0].peakHoldLevel
         }
+        setNeedsDisplay()
+    }
+
+    deinit {
+        updateTask?.cancel()
     }
 
     // Normalization function (adjust scaling as desired)

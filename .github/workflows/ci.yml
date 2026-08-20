@@ -1,0 +1,83 @@
+name: Tubeist CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - codex/direct-youtube-hls
+
+concurrency:
+  group: tubeist-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  source-policy:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v5
+      - name: Enforce YouTube-only production sources
+        run: Tools/check_youtube_only.sh
+      - name: Validate property lists
+        run: plutil -lint Tubeist/Info.plist Tubeist/PrivacyInfo.xcprivacy
+      - name: Parse all Swift sources
+        run: xcrun swiftc -frontend -parse Tubeist/*.swift TubeistTests/*.swift TubeistUITests/*.swift
+      - name: Test device acceptance tools
+        run: python3 -m unittest discover -s Tools/Acceptance -p 'test_*.py'
+
+  tests-and-builds:
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+      - name: Report Xcode version
+        run: xcodebuild -version
+      - name: Unit and UI tests
+        run: >-
+          xcodebuild test
+          -project Tubeist.xcodeproj
+          -scheme Tubeist
+          -destination 'platform=iOS Simulator,OS=latest,name=iPhone 16 Pro'
+          -derivedDataPath '${{ runner.temp }}/TubeistDerivedData'
+          -parallel-testing-enabled NO
+      - name: Analyze Debug
+        run: >-
+          xcodebuild analyze
+          -project Tubeist.xcodeproj
+          -scheme Tubeist
+          -configuration Debug
+          -destination 'generic/platform=iOS'
+          -derivedDataPath '${{ runner.temp }}/TubeistDerivedData'
+          CODE_SIGNING_ALLOWED=NO
+      - name: Build generic device Debug
+        run: >-
+          xcodebuild build
+          -project Tubeist.xcodeproj
+          -scheme Tubeist
+          -configuration Debug
+          -destination 'generic/platform=iOS'
+          -derivedDataPath '${{ runner.temp }}/TubeistDerivedData'
+          CODE_SIGNING_ALLOWED=NO
+      - name: Build generic device Release
+        run: >-
+          xcodebuild build
+          -project Tubeist.xcodeproj
+          -scheme Tubeist
+          -configuration Release
+          -destination 'generic/platform=iOS'
+          -derivedDataPath '${{ runner.temp }}/TubeistDerivedData'
+          CODE_SIGNING_ALLOWED=NO
+
+  offline-media-validation:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install FFmpeg
+        run: brew install ffmpeg
+      - name: Validate generated HLG transport stream
+        run: Tools/RemuxFixture/validate_generated_hlg.sh
+      - name: Validate recording/archive evidence comparison
+        run: Tools/Acceptance/validate_media_comparison.sh
+      - name: Validate uploader against local HTTPS mock
+        run: Tools/YouTubeHLSMock/validate_uploader_socket.sh

@@ -31,7 +31,7 @@ extension UIImage {
 
 extension UIImage {
     func roughBoundingBox(scaledWidth: Int) -> CGRect? {
-        guard let cgImage = self.cgImage else { return nil }
+        guard scaledWidth > 0, let cgImage = self.cgImage else { return nil }
 
         // Calculate scaling factor
         let originalWidth = cgImage.width
@@ -49,74 +49,23 @@ extension UIImage {
         let bytesPerRow = Int(scaledCGImage.bytesPerRow)
         let bytesPerPixel = Int(scaledCGImage.bitsPerPixel / 8)
 
-        var minX = 0
-        var minY = 0
-        var maxX = width - 1
-        var maxY = height - 1
+        var minX = width
+        var minY = height
+        var maxX = -1
+        var maxY = -1
 
         data.withUnsafeBytes { (pointer: UnsafeRawBufferPointer) in
-            guard let _ = pointer.baseAddress else { return }
-
-            // Similar logic as original for finding bounding box on scaled image
+            guard pointer.baseAddress != nil else { return }
             for y in 0..<height {
-                var found = false
-                for x in minX...maxX {
+                for x in 0..<width {
                     let pixelIndex = y * bytesPerRow + x * bytesPerPixel
                     let alpha = pointer.load(fromByteOffset: pixelIndex + bytesPerPixel - 1, as: UInt8.self)
                     if alpha > 0 {
-                        minY = y
-                        found = true
-                        break
+                        minX = min(minX, x)
+                        minY = min(minY, y)
+                        maxX = max(maxX, x)
+                        maxY = max(maxY, y)
                     }
-                }
-                if found { break }
-            }
-
-            if minY < height {
-                for y in (minY...maxY).reversed() {
-                    var found = false
-                    for x in minX...maxX {
-                        let pixelIndex = y * bytesPerRow + x * bytesPerPixel
-                        let alpha = pointer.load(fromByteOffset: pixelIndex + bytesPerPixel - 1, as: UInt8.self)
-                        if alpha > 0 {
-                            maxY = y
-                            found = true
-                            break
-                        }
-                    }
-                    if found { break }
-                }
-            }
-
-            if minY <= maxY {
-                for x in 0..<width {
-                    var found = false
-                    for y in minY...maxY {
-                        let pixelIndex = y * bytesPerRow + x * bytesPerPixel
-                        let alpha = pointer.load(fromByteOffset: pixelIndex + bytesPerPixel - 1, as: UInt8.self)
-                        if alpha > 0 {
-                            minX = x
-                            found = true
-                            break
-                        }
-                    }
-                    if found { break }
-                }
-            }
-
-            if minY <= maxY {
-                for x in (minX...maxX).reversed() {
-                    var found = false
-                    for y in minY...maxY {
-                        let pixelIndex = y * bytesPerRow + x * bytesPerPixel
-                        let alpha = pointer.load(fromByteOffset: pixelIndex + bytesPerPixel - 1, as: UInt8.self)
-                        if alpha > 0 {
-                            maxX = x
-                            found = true
-                            break
-                        }
-                    }
-                    if found { break }
                 }
             }
         }
@@ -150,6 +99,19 @@ extension UIImage {
     }
 }
 
+enum OverlayURLValidator {
+    static func isAllowed(_ value: String) -> Bool {
+        guard let components = URLComponents(string: value),
+              let scheme = components.scheme?.lowercased(),
+              scheme == "https" || scheme == "http",
+              components.host?.isEmpty == false else {
+            return false
+        }
+        return true
+    }
+}
+
+@MainActor
 final class Overlay: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     private let url: URL
     private let bundler: OverlayBundler
@@ -226,6 +188,18 @@ final class Overlay: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     }
     
     // MARK: - WKNavigationDelegate
+    func webView(
+        _ webView: WKWebView,
+        decidePolicyFor navigationAction: WKNavigationAction
+    ) async -> WKNavigationActionPolicy {
+        guard let targetURL = navigationAction.request.url,
+              OverlayURLValidator.isAllowed(targetURL.absoluteString) else {
+            LOG("Blocked overlay navigation to an unsupported URL scheme", level: .warning)
+            return .cancel
+        }
+        return .allow
+    }
+
     func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse) async -> WKNavigationResponsePolicy {
         if let mimeType = navigationResponse.response.mimeType {
             self.mimeType = mimeType
@@ -316,24 +290,28 @@ final class Overlay: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
 
 actor OverlayBundleActor {
     private var url2overlay: [URL: Overlay] = [:]
-    func addOverlay(url: URL, overlay: Overlay) async {
+    private var order: [URL] = []
+    func addOverlay(url: URL, overlay: Overlay) {
+        if url2overlay[url] == nil {
+            order.append(url)
+        }
         url2overlay[url] = overlay
     }
-    func removeOverlay(url: URL) {
+    func removeOverlay(url: URL) async {
         guard let overlay = url2overlay.removeValue(forKey: url) else { return }
-        Task { @MainActor in
-            overlay.prepareForRemoval()
-        }
+        order.removeAll { $0 == url }
+        await overlay.prepareForRemoval()
     }
     func getOverlays() -> [Overlay] {
-        Array(url2overlay.values)
+        order.compactMap { url2overlay[$0] }
     }
-    func removeAllOverlays() {
+    func removeAllOverlays() async {
         let overlays = getOverlays()
-        Task { @MainActor in
+        await MainActor.run {
             overlays.forEach { $0.prepareForRemoval() }
         }
         url2overlay.removeAll()
+        order.removeAll()
     }
 }
 
@@ -388,6 +366,7 @@ final class OverlayBundler: Sendable {
         }
         if images.isEmpty {
             LOG("There are no images to combine", level: .debug)
+            await FrameGrabber.shared.setCombinedOverlay(nil)
             return
         }
         var boundingBoxes: [CGRect] = []

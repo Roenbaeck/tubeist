@@ -22,10 +22,6 @@ let CAMERA_CONTROL_QUEUE = DispatchQueue(label: "com.subside.Tubeist.CameraContr
     static let shared = PipelineActor()
     static let queue = DispatchQueue(label: "com.subside.Tubeist.PipelineQueue", qos: .userInitiated)
 }
-@globalActor actor UploadActor: GlobalActor {
-    static let shared = UploadActor()
-}
-
 // YouTube Data API v3 settings
 let YOUTUBE_CLIENT_ID = "417360709076-6golrsu19ipsvdbsgce4e9fml9bru8dr.apps.googleusercontent.com"
 let YOUTUBE_REDIRECT_SCHEME = "com.googleusercontent.apps.417360709076-6golrsu19ipsvdbsgce4e9fml9bru8dr"
@@ -71,14 +67,6 @@ let AUDIO_METER_HEIGHT: CGFloat = 3
 
 // Journal settings
 let MAX_LOG_ENTRIES = 1000
-
-// FragmentPusher settings
-let DEFAULT_TARGET = "youtube"
-let MISSING_STREAM_KEY = "missing_stream_key"
-let NETWORK_METRICS_SLIDING_WINDOW: TimeInterval = 10 // seconds
-let MAX_UPLOAD_RETRIES = 30
-let MAX_CONCURRENT_UPLOADS = 3
-let MAX_BUFFERED_FRAGMENTS = 90
 
 // Useful for debugging purposes
 func printCurrentExecutionInfo(message: String = "") {

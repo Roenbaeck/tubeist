@@ -1,0 +1,6 @@
+{"detail":"schema=3","elapsed":0.0,"kind":"prepared","timestamp":"2026-08-20T09:00:00Z"}
+{"elapsed":0.01,"kind":"initializationParsed","timestamp":"2026-08-20T09:00:00Z"}
+{"duration":1.5,"elapsed":1.5,"httpStatus":200,"kind":"segmentAccepted","queuedDuration":0.1,"retryCount":0,"sequence":0,"timestamp":"2026-08-20T09:00:01Z"}
+{"duration":1.5,"elapsed":3.0,"httpStatus":202,"kind":"segmentAccepted","queuedDuration":0.0,"retryCount":0,"sequence":1,"timestamp":"2026-08-20T09:00:03Z"}
+{"elapsed":3.05,"kind":"stopped","timestamp":"2026-08-20T09:00:03Z"}
+{"detail":"outcome=stopped;events=5","elapsed":3.06,"kind":"summary","timestamp":"2026-08-20T09:00:03Z"}
