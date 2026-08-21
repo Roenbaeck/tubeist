@@ -4,6 +4,7 @@
 //
 
 import Foundation
+import CoreMedia
 import Testing
 @testable import Tubeist
 
@@ -16,6 +17,31 @@ private actor CommandOrderRecorder {
 }
 
 struct StreamerTests {
+    @Test func stabilizedVideoMustReachTheStopTimestamp() {
+        let stop = CMTime(value: 900_000, timescale: 90_000)
+
+        #expect(!CaptureTailAlignment.videoHasReached(
+            stopTimestamp: stop,
+            videoTimestamp: nil
+        ))
+        #expect(!CaptureTailAlignment.videoHasReached(
+            stopTimestamp: stop,
+            videoTimestamp: CMTime(value: 899_999, timescale: 90_000)
+        ))
+        #expect(CaptureTailAlignment.videoHasReached(
+            stopTimestamp: stop,
+            videoTimestamp: CMTime(value: 10, timescale: 1)
+        ))
+        #expect(CaptureTailAlignment.videoHasReached(
+            stopTimestamp: stop,
+            videoTimestamp: CMTime(value: 10_001, timescale: 1_000)
+        ))
+        #expect(!CaptureTailAlignment.videoHasReached(
+            stopTimestamp: .invalid,
+            videoTimestamp: stop
+        ))
+    }
+
     @Test @MainActor
     func streamStateTransitionsCompleteBeforeTheCallerContinues() async throws {
         let appState = AppState()

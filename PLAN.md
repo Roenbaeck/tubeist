@@ -1,15 +1,22 @@
 # Tubeist YouTube-only hardening plan
 
-- Status: repeat-stream fix locally verified; physical acceptance remains open
+- Status: repeat-stream fix verified; buffer continuity and Stop-tail fixes await physical acceptance
 - Last reviewed: 2026-08-21
 - Baseline: codex/direct-youtube-hls at e82bb7b
 - Supersedes: the completed direct-YouTube implementation plan in Git history
 
 ## Current verification status
 
-- The 2026-08-21 repeat-stream lifecycle fix passes the complete 100-test unit
-  suite on the iPhone 16 Pro iOS 18.2 simulator, Swift parsing, the YouTube-only
-  source check, and an unsigned generic-device Release build.
+- The 2026-08-21 repeat-stream, buffer-continuity, and Stop-tail fixes pass all
+  103 unit tests on the iPhone 16 Pro iOS 18.2 simulator, Swift parsing, the
+  YouTube-only source check, and an unsigned generic-device Release build.
+- The local YouTube jitter queue is now explicitly distinct from YouTube's
+  five-outstanding-segment protocol limit: it absorbs at least sixty seconds of
+  two-second fragments before a bounded discontinuity is required, and upload
+  retries remain active for up to two minutes. Stop freezes audio at the user's
+  action and lets stabilized video reach that timestamp before capture is
+  detached. Automated verification passes; physical verification remains
+  pending.
 - Xcode 26.6 builds the unsigned generic-device Debug and Release configurations,
   and Xcode static analysis passes without findings.
 - The complete Swift 6 unit and UI suite passes on an iPhone 17 Pro iOS 26.5
@@ -220,6 +227,9 @@ Stream always selects one YouTube sink.
 - [x] Freeze an immutable configuration for each active session.
 - [x] During Stop: close intake, drain accepted samples, finish AVAssetWriter,
   route every final callback, finish recording and upload, then become idle.
+- [ ] Physically verify timestamp-aligned Stop: audio freezes at the button press,
+  stabilized video catches up to that instant, and the archive includes the
+  spoken Stop marker without an unmatched audio-only tail.
 - [x] Return a structured shutdown result and never report success after a caught
   sink failure.
 - [x] Test double Start/Stop, Stop while preparing, Start while stopping, uploader
@@ -318,6 +328,9 @@ and Settings Apply/Close behavior is truthful.
 - [x] Bound Journal ordering/storage and batch UI publication.
 - [x] Make acceptance recording opt-in and append/batch bounded output instead of
   rewriting the full report per segment.
+- [x] Prove with an ordered uploader test that the enlarged local jitter queue
+  survives a recovered 60-second network stall without a discontinuity; confirm
+  longer stalls remain bounded and surface degradation.
 - [x] Fix deterministic overlay order, clearing the last overlay, transparent
   bounds, and main-actor UIKit/WebKit isolation.
 - [ ] Profile stream-only and stream-and-record with Instruments before changing
@@ -396,6 +409,9 @@ legacy behavior or accidental development-only gate.
 - [ ] Exercise rapid controls, backgrounding, interruptions, route changes,
   media-services reset, low storage, network loss, timeout, 5xx, authentication
   failure, and thermal pressure.
+- [ ] On device, recover from a 60-second network interruption without an archive
+  gap; extend the interruption past one minute and verify bounded, visibly
+  degraded behavior.
 - [ ] Verify budgets with acceptance diagnostics disabled.
 - [ ] Scan logs, preferences, app container, and crash context for a canary key.
 - [ ] Repeat the core matrix in TestFlight, including migration from the

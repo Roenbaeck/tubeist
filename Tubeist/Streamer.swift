@@ -98,6 +98,21 @@ struct StreamOutputPlan: Sendable, Equatable {
     }
 }
 
+enum CaptureTailAlignment {
+    static let maximumVideoCatchUpSeconds = 5.0
+
+    static func videoHasReached(
+        stopTimestamp: CMTime,
+        videoTimestamp: CMTime?
+    ) -> Bool {
+        guard let videoTimestamp else { return false }
+        let stopSeconds = CMTimeGetSeconds(stopTimestamp)
+        let videoSeconds = CMTimeGetSeconds(videoTimestamp)
+        guard stopSeconds.isFinite, videoSeconds.isFinite else { return false }
+        return CMTimeCompare(videoTimestamp, stopTimestamp) >= 0
+    }
+}
+
 actor StreamingActor {
     private var appState: AppState?
     private var state: StreamSessionState = .idle
@@ -308,7 +323,7 @@ final class Streamer: Sendable {
 
     func endStream(
         resumePreviewAfterStop: Bool = true,
-        shutdownTimeout: TimeInterval = 25
+        shutdownTimeout: TimeInterval = 120
     ) async throws -> StreamStopResult {
         try await commandQueue.run { [self] in
             try await performStop(
@@ -406,47 +421,70 @@ final class Streamer: Sendable {
         let clock = ContinuousClock()
         let deadline = clock.now.advanced(by: .seconds(max(1, shutdownTimeout)))
         let outputPlan = await streamingActor.activeOutputPlan()
+        let monitor = await streamingActor.getMonitor()
 
-        // session time is close to real time
-        // presentation time can be earlier because of camera stabilization
-        if let sessionTime = await CaptureDirector.shared.getSessionTime(),
-           let presentationTime = await FrameGrabber.shared.getCurrentPresentationTimestamp() {
-            let difference = CMTimeSubtract(sessionTime, presentationTime)
-            let duration = CMTimeGetSeconds(difference)
-            LOG("Sleeping \(duration) seconds to await late frames", level: .debug)
-            if duration.isFinite, duration > 0 {
-                let boundedDuration = min(duration, 5)
-                if boundedDuration < duration {
-                    LOG("Capped an invalid late-frame wait at five seconds", level: .warning)
-                }
+        // Audio is effectively real-time, while camera stabilization can delay
+        // video presentation timestamps. Freeze audio at Stop, then keep only
+        // video capture alive until it reaches that same instant. Waiting while
+        // both tracks continued (the old behavior) could never close the gap.
+        let stopTimestamp = await CaptureDirector.shared.beginOutputFinalization()
+        var captureFailures: [String] = []
+        if let stopTimestamp {
+            let maximumCatchUpDeadline = clock.now.advanced(
+                by: .seconds(CaptureTailAlignment.maximumVideoCatchUpSeconds)
+            )
+            let catchUpDeadline = min(deadline, maximumCatchUpDeadline)
+            var videoTimestamp = await FrameGrabber.shared.getCurrentPresentationTimestamp()
+            while !CaptureTailAlignment.videoHasReached(
+                stopTimestamp: stopTimestamp,
+                videoTimestamp: videoTimestamp
+            ), clock.now < catchUpDeadline {
                 do {
-                    let remaining = max(.zero, clock.now.duration(to: deadline))
-                    try await Task.sleep(for: min(.seconds(boundedDuration), remaining))
+                    let remaining = max(.zero, clock.now.duration(to: catchUpDeadline))
+                    try await Task.sleep(for: min(.milliseconds(10), remaining))
+                } catch {
+                    break
                 }
-                catch {
-                    LOG("The sleep intended to await late frames was interrupted", level: .warning)
-                }
+                videoTimestamp = await FrameGrabber.shared.getCurrentPresentationTimestamp()
             }
+            if !CaptureTailAlignment.videoHasReached(
+                stopTimestamp: stopTimestamp,
+                videoTimestamp: videoTimestamp
+            ) {
+                captureFailures.append(
+                    "Stabilized video did not reach the Stop timestamp before its alignment deadline"
+                )
+                LOG(
+                    "Stabilized video did not reach the Stop timestamp before capture was detached",
+                    level: .error
+                )
+            }
+        } else {
+            LOG(
+                "The capture clock was unavailable during Stop; detaching video without tail alignment",
+                level: .warning
+            )
         }
+        await CaptureDirector.shared.finishOutputFinalization()
 
         // Detach capture callbacks first, then drain every sample already
         // accepted by the bounded mailboxes before closing media intake.
-        let monitor = await streamingActor.getMonitor()
-        await CaptureDirector.shared.stopOutput()
         async let framesDrained = FrameGrabber.shared.drainSubmittedFrames(deadline: deadline)
         async let audioDrained = SoundGrabber.shared.drainSubmittedAudio(deadline: deadline)
         let captureDrainResults = await (framesDrained, audioDrained)
-        let captureStatus: ShutdownComponentStatus
         switch captureDrainResults {
         case (true, true):
-            captureStatus = .completed
+            break
         case (false, true):
-            captureStatus = .failed("Accepted video samples did not drain before the shutdown deadline")
+            captureFailures.append("Accepted video samples did not drain before the shutdown deadline")
         case (true, false):
-            captureStatus = .failed("Accepted audio samples did not drain before the shutdown deadline")
+            captureFailures.append("Accepted audio samples did not drain before the shutdown deadline")
         case (false, false):
-            captureStatus = .failed("Accepted video and audio samples did not drain before the shutdown deadline")
+            captureFailures.append("Accepted video and audio samples did not drain before the shutdown deadline")
         }
+        let captureStatus: ShutdownComponentStatus = captureFailures.isEmpty
+            ? .completed
+            : .failed(captureFailures.joined(separator: "; "))
         await streamingActor.closeMediaIntake()
         if monitor == .camera || !resumePreviewAfterStop {
             await FrameGrabber.shared.terminateGrabbing()

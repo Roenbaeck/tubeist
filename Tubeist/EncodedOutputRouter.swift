@@ -47,7 +47,11 @@ struct EncodedOutputMetrics: Sendable, Equatable {
 actor YouTubeHLSStreamSink {
     static let shared = YouTubeHLSStreamSink()
 
-    private static let maximumQueuedFragments = 5
+    // This is the local fMP4 jitter queue, not YouTube's limit of five
+    // outstanding playlist entries. With two-second writer fragments, thirty
+    // entries absorb at least sixty seconds of a temporary network stall while
+    // keeping worst-case high-bitrate 4K memory use bounded near 120 MB.
+    static let maximumQueuedFragments = 30
     private let reader = ISOBMFFReader()
     private var initialization: ISOBMFFInitialization?
     private var muxer = MPEGTransportStreamMuxer()
@@ -148,7 +152,7 @@ actor YouTubeHLSStreamSink {
         }
     }
 
-    func finish(timeout: TimeInterval = 20) async throws {
+    func finish(timeout: TimeInterval = 120) async throws {
         let clock = ContinuousClock()
         try await finish(deadline: clock.now.advanced(by: .seconds(timeout)))
     }
@@ -481,7 +485,7 @@ actor EncodedOutputRouter {
         }
     }
 
-    func finish(timeout: TimeInterval = 25) async throws {
+    func finish(timeout: TimeInterval = 120) async throws {
         let clock = ContinuousClock()
         let deadline = clock.now.advanced(by: .seconds(timeout))
         try await finish(deadline: deadline)

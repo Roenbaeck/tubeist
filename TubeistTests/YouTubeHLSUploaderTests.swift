@@ -8,6 +8,13 @@ import Testing
 @testable import Tubeist
 
 struct YouTubeHLSUploaderTests {
+    @Test func defaultRetryBudgetOutlivesAOneMinuteConnectivityGap() {
+        let policy = YouTubeHLSRetryPolicy.default
+
+        #expect(policy.maximumRetryDuration == 120)
+        #expect(policy.maximumAttempts == 23)
+    }
+
     @Test func uploadsPlaylistThenSegmentWithExactRawFileSuffix() async throws {
         let transport = MockYouTubeHLSTransport(statuses: [200, 202, 202, 200])
         let endpoint = try YouTubeHLSEndpoint(URL(

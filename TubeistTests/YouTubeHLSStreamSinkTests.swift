@@ -285,6 +285,79 @@ struct YouTubeHLSStreamSinkTests {
         }
     }
 
+    @Test func recoveredSixtySecondNetworkStallUploadsEverySegmentInOrder() async throws {
+        let reader = ISOBMFFReader()
+        let initialization = try reader.parseInitializationSegment(FMP4Fixture.initialization())
+        let media = try reader.parseMediaSegment(
+            FMP4Fixture.mediaSegment(),
+            initialization: initialization
+        )
+        var muxer = MPEGTransportStreamMuxer()
+        let fragmentDuration = try muxer.mux(
+            media,
+            initialization: initialization
+        ).duration
+        let transport = RecoveringDirectSinkTransport()
+        let endpoint = try YouTubeHLSEndpoint(URL(
+            string: "https://upload.youtube.com/http_upload_hls?cid=not-a-real-key&file="
+        )!)
+        let sink = YouTubeHLSStreamSink()
+        try await sink.prepare(
+            endpoint: endpoint,
+            sessionIdentifier: "recovery_session",
+            userAgent: "Tubeist/Test",
+            transport: transport
+        )
+        await sink.enqueue(Fragment(
+            sequence: 0,
+            segment: FMP4Fixture.initialization(),
+            duration: 0,
+            type: .initialization
+        ))
+        await sink.enqueue(Fragment(
+            sequence: 1,
+            segment: FMP4Fixture.mediaSegment(),
+            duration: fragmentDuration,
+            type: .separable
+        ))
+        try await transport.waitUntilRequested()
+        for sequence in 2..<32 {
+            let mediaIndex = sequence - 1
+            await sink.enqueue(Fragment(
+                sequence: sequence,
+                segment: FMP4Fixture.mediaSegment(
+                    sequence: UInt32(7 + mediaIndex),
+                    videoDecodeTime: 1_000 + UInt64(mediaIndex * 3_000),
+                    audioDecodeTime: 480 + UInt64(mediaIndex * 1_600)
+                ),
+                duration: fragmentDuration,
+                type: .separable
+            ))
+        }
+
+        let stalledMetrics = await sink.metrics()
+        #expect(stalledMetrics.queuedFragments == 31)
+        #expect(stalledMetrics.droppedFragments == 0)
+
+        await transport.releaseFirstRequest()
+        try await sink.finish(timeout: successfulSinkShutdownTimeout)
+
+        let requests = await transport.requests()
+        #expect(requests.count == 62)
+        for sequence in 0..<31 {
+            let playlistRequest = requests[sequence * 2]
+            let segmentRequest = requests[sequence * 2 + 1]
+            let playlist = String(decoding: playlistRequest.body, as: UTF8.self)
+            #expect(playlistRequest.contentType == "application/vnd.apple.mpegurl")
+            #expect(segmentRequest.contentType == "video/mp2t")
+            #expect(playlist.contains("tubeist_recovery_session_\(sequence).ts"))
+            #expect(!playlist.contains("#EXT-X-DISCONTINUITY"))
+        }
+        let finishedMetrics = await sink.metrics()
+        #expect(finishedMetrics.lastAcceptedMediaSequence == 30)
+        #expect(finishedMetrics.droppedFragments == 0)
+    }
+
     @Test func sustainedNetworkStallKeepsTheQueueAndShutdownBounded() async throws {
         let reader = ISOBMFFReader()
         let initialization = try reader.parseInitializationSegment(FMP4Fixture.initialization())
@@ -321,7 +394,23 @@ struct YouTubeHLSStreamSinkTests {
             type: .separable
         ))
         try await transport.waitUntilRequested()
-        for sequence in 2..<12 {
+        // Thirty queued two-second fragments retain a full minute locally.
+        for sequence in 2..<32 {
+            await sink.enqueue(Fragment(
+                sequence: sequence,
+                segment: FMP4Fixture.mediaSegment(),
+                duration: fragmentDuration,
+                type: .separable
+            ))
+        }
+
+        let oneMinuteStallMetrics = await sink.metrics()
+        #expect(oneMinuteStallMetrics.queuedFragments == 31)
+        #expect(oneMinuteStallMetrics.droppedFragments == 0)
+        #expect(oneMinuteStallMetrics.queuedDuration <= fragmentDuration * 31 + 0.001)
+
+        // A sustained stall remains bounded after the larger jitter allowance.
+        for sequence in 32..<39 {
             await sink.enqueue(Fragment(
                 sequence: sequence,
                 segment: FMP4Fixture.mediaSegment(),
@@ -331,9 +420,12 @@ struct YouTubeHLSStreamSinkTests {
         }
 
         let stalledMetrics = await sink.metrics()
-        #expect(stalledMetrics.queuedFragments <= 6)
-        #expect(stalledMetrics.droppedFragments >= 5)
-        #expect(stalledMetrics.queuedDuration <= fragmentDuration * 6 + 0.001)
+        #expect(stalledMetrics.queuedFragments <= YouTubeHLSStreamSink.maximumQueuedFragments + 1)
+        #expect(stalledMetrics.droppedFragments == 7)
+        #expect(
+            stalledMetrics.queuedDuration
+                <= fragmentDuration * Double(YouTubeHLSStreamSink.maximumQueuedFragments + 1) + 0.001
+        )
 
         do {
             try await sink.finish(timeout: 0.05)
@@ -435,5 +527,49 @@ private actor BlockingDirectSinkTransport: YouTubeHLSHTTPTransport {
             try await Task.sleep(for: .milliseconds(1))
         }
         throw BlockingTransportError.requestNeverStarted
+    }
+}
+
+private actor RecoveringDirectSinkTransport: YouTubeHLSHTTPTransport {
+    private var sent: [DirectSinkRequest] = []
+    private var firstContinuation: CheckedContinuation<YouTubeHLSHTTPResponse, Error>?
+
+    func send(_ request: URLRequest, body: Data) async throws -> YouTubeHLSHTTPResponse {
+        sent.append(DirectSinkRequest(
+            contentType: request.value(forHTTPHeaderField: "Content-Type"),
+            body: body
+        ))
+        guard sent.count == 1 else {
+            return YouTubeHLSHTTPResponse(statusCode: 200)
+        }
+        return try await withCheckedThrowingContinuation { continuation in
+            firstContinuation = continuation
+        }
+    }
+
+    func invalidate() {
+        let continuation = firstContinuation
+        firstContinuation = nil
+        continuation?.resume(throwing: BlockingTransportError.invalidated)
+    }
+
+    func waitUntilRequested() async throws {
+        for _ in 0..<1_000 {
+            if firstContinuation != nil {
+                return
+            }
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        throw BlockingTransportError.requestNeverStarted
+    }
+
+    func releaseFirstRequest() {
+        let continuation = firstContinuation
+        firstContinuation = nil
+        continuation?.resume(returning: YouTubeHLSHTTPResponse(statusCode: 200))
+    }
+
+    func requests() -> [DirectSinkRequest] {
+        sent
     }
 }

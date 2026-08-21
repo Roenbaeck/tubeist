@@ -848,9 +848,19 @@ final class CaptureDirector: NSObject, Sendable {
         }
     }
     func stopOutput() async {
+        _ = await beginOutputFinalization()
+        await finishOutputFinalization()
+    }
+    /// Freezes the audio tail at the user's Stop action while leaving the
+    /// delayed, stabilized video callback attached long enough to catch up.
+    func beginOutputFinalization() async -> CMTime? {
+        let stopTimestamp = await CaptureDirector.session.synchronizationClock?.time
         await deviceActor.setOutputting(false)
-        await deviceActor.stopVideoOutput()
         await deviceActor.stopAudioOutput()
+        return stopTimestamp
+    }
+    func finishOutputFinalization() async {
+        await deviceActor.stopVideoOutput()
     }
     func isOutputting() async -> Bool {
         await deviceActor.getOutputting()

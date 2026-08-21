@@ -135,12 +135,30 @@ struct YouTubeHLSRetryPolicy: Sendable, Equatable {
     let initialDelay: TimeInterval
     let maximumDelay: TimeInterval
     let jitterFraction: Double
+    let maximumRetryDuration: TimeInterval
+
+    init(
+        maximumAttempts: Int,
+        initialDelay: TimeInterval,
+        maximumDelay: TimeInterval,
+        jitterFraction: Double,
+        maximumRetryDuration: TimeInterval = 120
+    ) {
+        self.maximumAttempts = maximumAttempts
+        self.initialDelay = initialDelay
+        self.maximumDelay = maximumDelay
+        self.jitterFraction = jitterFraction
+        self.maximumRetryDuration = maximumRetryDuration
+    }
 
     static let `default` = YouTubeHLSRetryPolicy(
-        maximumAttempts: 5,
+        // Twenty-three attempts are enough for even minimum-jitter backoff to
+        // span the two-minute reconnect budget when failures return instantly.
+        maximumAttempts: 23,
         initialDelay: 0.5,
         maximumDelay: 8,
-        jitterFraction: 0.2
+        jitterFraction: 0.2,
+        maximumRetryDuration: 120
     )
 }
 
@@ -205,7 +223,8 @@ actor YouTubeHLSUploader {
         guard retryPolicy.maximumAttempts > 0,
               retryPolicy.initialDelay >= 0,
               retryPolicy.maximumDelay >= retryPolicy.initialDelay,
-              (0...1).contains(retryPolicy.jitterFraction) else {
+              (0...1).contains(retryPolicy.jitterFraction),
+              retryPolicy.maximumRetryDuration > 0 else {
             throw YouTubeHLSUploadError.invalidResponse
         }
         self.endpoint = endpoint
@@ -307,6 +326,10 @@ actor YouTubeHLSUploader {
         request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
 
         var attempt = 1
+        let clock = ContinuousClock()
+        let retryDeadline = clock.now.advanced(
+            by: .seconds(retryPolicy.maximumRetryDuration)
+        )
         while true {
             guard !stopped, !Task.isCancelled else {
                 throw YouTubeHLSUploadError.stopped
@@ -339,7 +362,8 @@ actor YouTubeHLSUploader {
             guard !stopped, !Task.isCancelled else {
                 throw YouTubeHLSUploadError.stopped
             }
-            guard attempt < retryPolicy.maximumAttempts else {
+            guard attempt < retryPolicy.maximumAttempts,
+                  clock.now < retryDeadline else {
                 throw YouTubeHLSUploadError.retriesExhausted
             }
             let exponent = pow(2, Double(attempt - 1))
@@ -347,7 +371,8 @@ actor YouTubeHLSUploader {
             let jitter = retryPolicy.jitterFraction == 0
                 ? 1
                 : Double.random(in: (1 - retryPolicy.jitterFraction)...(1 + retryPolicy.jitterFraction))
-            try await sleeper(.seconds(baseDelay * jitter))
+            let remaining = max(.zero, clock.now.duration(to: retryDeadline))
+            try await sleeper(min(.seconds(baseDelay * jitter), remaining))
             attempt += 1
         }
     }
