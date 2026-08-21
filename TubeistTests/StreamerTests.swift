@@ -44,6 +44,18 @@ struct StreamerTests {
     }
 
     @Test @MainActor
+    func youtubePreflightPublishesTheBroadcastUsedByTheSession() async {
+        let appState = AppState()
+        let actor = StreamingActor()
+        await actor.setAppState(appState)
+
+        await actor.setYouTubeBroadcast(id: "next-broadcast", status: "ready")
+
+        #expect(appState.youtubeBroadcastId == "next-broadcast")
+        #expect(appState.youtubeStatus == "ready")
+    }
+
+    @Test @MainActor
     func duplicateStartIsRejectedBySessionState() async throws {
         let actor = StreamingActor()
         await actor.setAppState(AppState())

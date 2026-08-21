@@ -316,6 +316,28 @@ struct YouTubeServiceTests {
         #expect(selected?.id == "active")
     }
 
+    @Test func treatsAStartingBroadcastAsActive() {
+        let starting = broadcast(
+            id: "starting",
+            title: "Starting now",
+            status: "liveStarting",
+            scheduledStartTime: "2026-08-19T06:00:00Z"
+        )
+        let future = broadcast(
+            id: "future",
+            title: "Tomorrow",
+            status: "ready",
+            scheduledStartTime: "2026-08-20T06:00:00Z"
+        )
+
+        let selected = YouTubeBroadcastDiscovery.selectCurrentOrMostRecent(
+            from: [future, starting]
+        )
+
+        #expect(selected?.id == "starting")
+        #expect(selected?.isActive == true)
+    }
+
     @Test @MainActor
     func authenticatedRequestRefreshesExactlyOnceAfterA401() async throws {
         let fixedNow = Date(timeIntervalSince1970: 1_800_000_000)
@@ -505,6 +527,84 @@ struct YouTubeServiceTests {
         #expect(requests.map(\.httpMethod) == ["GET", "GET", "POST", "POST"])
         #expect(requests[2].url?.path.hasSuffix("/liveBroadcasts") == true)
         #expect(requests[3].url?.path.hasSuffix("/liveBroadcasts/bind") == true)
+    }
+
+    @Test @MainActor
+    func streamingPreflightCreatesAReadySuccessorBeforeReturningTheEndpoint() async throws {
+        let transport = MockYouTubeAPITransport(responses: [
+            YouTubeAPIResponse(
+                data: Data(#"{"items":[{"id":"stream-1","cdn":{"ingestionType":"hls","ingestionInfo":{"streamName":"test-key","ingestionAddress":"https://a.upload.youtube.com/http_upload_hls?cid=test-key&file="}}}]}"#.utf8),
+                statusCode: 200
+            ),
+            YouTubeAPIResponse(
+                data: Data(#"{"items":[{"id":"completed","snippet":{"title":"Previous","scheduledStartTime":"2024-01-01T00:00:00Z"},"status":{"privacyStatus":"unlisted","lifeCycleStatus":"complete"},"contentDetails":{"boundStreamId":"stream-1"}}]}"#.utf8),
+                statusCode: 200
+            ),
+            YouTubeAPIResponse(
+                data: Data(#"{"id":"inserted","snippet":{"title":"Previous"},"status":{"privacyStatus":"unlisted","lifeCycleStatus":"ready"},"contentDetails":{}}"#.utf8),
+                statusCode: 200
+            ),
+            YouTubeAPIResponse(
+                data: Data(#"{"id":"bound","snippet":{"title":"Previous"},"status":{"privacyStatus":"unlisted","lifeCycleStatus":"ready"},"contentDetails":{"boundStreamId":"stream-1"}}"#.utf8),
+                statusCode: 200
+            ),
+        ])
+        let service = YouTubeService(
+            transport: transport,
+            tokenStore: validMemoryTokenStore()
+        )
+
+        let preparation = try await service.prepareForStreaming(streamKey: "test-key")
+
+        #expect(preparation.broadcast.id == "bound")
+        #expect(preparation.broadcast.lifeCycleStatus == "ready")
+        let mediaURL = try preparation.endpoint.requestURL(filename: "media_0.ts")
+        #expect(mediaURL.host == "a.upload.youtube.com")
+        #expect(mediaURL.lastPathComponent == "http_upload_hls")
+        let requests = await transport.requests
+        #expect(requests.map(\.httpMethod) == ["GET", "GET", "POST", "POST"])
+    }
+
+    @Test @MainActor
+    func streamingPreflightReusesReadyAndRejectsStillActiveBroadcasts() async throws {
+        let readyTransport = MockYouTubeAPITransport(responses: [
+            YouTubeAPIResponse(
+                data: Data(#"{"items":[{"id":"stream-1","cdn":{"ingestionType":"hls","ingestionInfo":{"streamName":"test-key","ingestionAddress":"https://a.upload.youtube.com/http_upload_hls?cid=test-key&file="}}}]}"#.utf8),
+                statusCode: 200
+            ),
+            YouTubeAPIResponse(
+                data: Data(#"{"items":[{"id":"ready","snippet":{"title":"Next"},"status":{"privacyStatus":"unlisted","lifeCycleStatus":"ready"},"contentDetails":{"boundStreamId":"stream-1"}}]}"#.utf8),
+                statusCode: 200
+            ),
+        ])
+        let readyService = YouTubeService(
+            transport: readyTransport,
+            tokenStore: validMemoryTokenStore()
+        )
+
+        let preparation = try await readyService.prepareForStreaming(streamKey: "test-key")
+        #expect(preparation.broadcast.id == "ready")
+        #expect(await readyTransport.requestCount == 2)
+
+        let activeTransport = MockYouTubeAPITransport(responses: [
+            YouTubeAPIResponse(
+                data: Data(#"{"items":[{"id":"stream-1","cdn":{"ingestionType":"hls","ingestionInfo":{"streamName":"test-key","ingestionAddress":"https://a.upload.youtube.com/http_upload_hls?cid=test-key&file="}}}]}"#.utf8),
+                statusCode: 200
+            ),
+            YouTubeAPIResponse(
+                data: Data(#"{"items":[{"id":"active","snippet":{"title":"Previous"},"status":{"privacyStatus":"unlisted","lifeCycleStatus":"liveStarting"},"contentDetails":{"boundStreamId":"stream-1"}}]}"#.utf8),
+                statusCode: 200
+            ),
+        ])
+        let activeService = YouTubeService(
+            transport: activeTransport,
+            tokenStore: validMemoryTokenStore()
+        )
+
+        await #expect(throws: YouTubeError.broadcastNotReady("starting live stream")) {
+            _ = try await activeService.prepareForStreaming(streamKey: "test-key")
+        }
+        #expect(await activeTransport.requestCount == 2)
     }
 
     @Test @MainActor

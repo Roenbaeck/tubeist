@@ -1,13 +1,15 @@
 # Tubeist YouTube-only hardening plan
 
-- Status: automated implementation and CI verification complete; physical
-  acceptance remains open
-- Last reviewed: 2026-08-20
+- Status: repeat-stream fix locally verified; physical acceptance remains open
+- Last reviewed: 2026-08-21
 - Baseline: codex/direct-youtube-hls at e82bb7b
 - Supersedes: the completed direct-YouTube implementation plan in Git history
 
 ## Current verification status
 
+- The 2026-08-21 repeat-stream lifecycle fix passes the complete 100-test unit
+  suite on the iPhone 16 Pro iOS 18.2 simulator, Swift parsing, the YouTube-only
+  source check, and an unsigned generic-device Release build.
 - Xcode 26.6 builds the unsigned generic-device Debug and Release configurations,
   and Xcode static analysis passes without findings.
 - The complete Swift 6 unit and UI suite passes on an iPhone 17 Pro iOS 26.5
@@ -292,6 +294,9 @@ credentials cannot travel over HTTP, and shipping privacy metadata is accurate.
   session; handle secure-random failures.
 - [x] Separate read-only broadcast lookup from serialized, idempotent successor
   creation.
+- [x] Make signed-in Start preflight the YouTube broadcast: reuse `ready`, create
+  and bind a successor after `complete`, and reject active or incomplete states
+  before capture or uploads begin.
 - [x] Replace the shared isLoading Boolean with operation-aware state.
 - [x] Add pagination and idempotent playlist membership.
 - [x] Reject thumbnails still over the size limit after compression.
@@ -377,6 +382,9 @@ legacy behavior or accidental development-only gate.
 - [x] On 2026-08-20, verify on iPhone 16 Pro with iOS 26.6 that the restored
   compact landscape UI keeps the preview and controls on-screen and that a
   direct YouTube stream can start, appear on YouTube, and stop cleanly.
+- [ ] On a signed-in device, start, stop, wait for `complete`, then start again
+  without opening Settings; verify Tubeist creates a new `ready` broadcast and
+  that the second broadcast appears live on YouTube.
 - [ ] Test stream-only and stream-and-record at 1080p30, 1080p60, and a supported
   4K preset, covering mono/stereo where applicable.
 - [ ] Run a 60-minute session and a longer soak for drift, memory, thermal, and

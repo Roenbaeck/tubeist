@@ -139,6 +139,14 @@ actor StreamingActor {
         self.outputPlan = outputPlan
     }
 
+    func setYouTubeBroadcast(id: String?, status: String?) async {
+        let appState = self.appState
+        await MainActor.run {
+            appState?.youtubeBroadcastId = id
+            appState?.youtubeStatus = status
+        }
+    }
+
     func activeOutputPlan() -> StreamOutputPlan? {
         outputPlan
     }
@@ -541,9 +549,15 @@ final class Streamer: Sendable {
         let endpoint: YouTubeHLSEndpoint
         if Settings.youtubeRefreshToken != nil {
             let service = await YouTubeService()
-            endpoint = try await service.findHLSIngestionEndpoint(forStreamKey: streamKey)
+            let preparation = try await service.prepareForStreaming(streamKey: streamKey)
+            endpoint = preparation.endpoint
+            await streamingActor.setYouTubeBroadcast(
+                id: preparation.broadcast.id,
+                status: preparation.broadcast.lifeCycleStatus
+            )
         } else {
             endpoint = try YouTubeHLSEndpoint.manualPrimary(streamKey: streamKey)
+            await streamingActor.setYouTubeBroadcast(id: nil, status: nil)
         }
         let model = await MainActor.run { UIDevice.current.model.replacingOccurrences(of: " ", with: "_") }
         let userAgent = "Apple / \(model) / Tubeist-\(Bundle.main.appVersion ?? "unknown")"

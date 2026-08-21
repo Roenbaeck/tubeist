@@ -35,7 +35,10 @@ struct YouTubeBroadcast: Identifiable, Sendable, Equatable {
 
     var isLive: Bool { lifeCycleStatus == "live" }
     var isTesting: Bool { lifeCycleStatus == "testing" }
-    var isActive: Bool { isLive || isTesting }
+    var isStarting: Bool {
+        lifeCycleStatus == "liveStarting" || lifeCycleStatus == "testStarting"
+    }
+    var isActive: Bool { isLive || isTesting || isStarting }
 
     var statusLabel: String {
         Self.label(for: lifeCycleStatus)
@@ -45,7 +48,9 @@ struct YouTubeBroadcast: Identifiable, Sendable, Equatable {
         switch status {
         case "ready": return "Ready"
         case "testing": return "Testing"
+        case "testStarting": return "Starting test"
         case "live": return "Live"
+        case "liveStarting": return "Starting live stream"
         case "complete": return "Complete"
         case "revoked": return "Revoked"
         case "created": return "Created"
@@ -56,7 +61,9 @@ struct YouTubeBroadcast: Identifiable, Sendable, Equatable {
     var statusColor: String {
         switch lifeCycleStatus {
         case "live": return "red"
+        case "liveStarting": return "red"
         case "testing": return "orange"
+        case "testStarting": return "orange"
         case "ready": return "green"
         case "complete": return "gray"
         default: return "secondary"
@@ -76,6 +83,11 @@ struct YouTubeStream: Sendable, Equatable {
     let ingestionType: String
     let ingestionAddress: String
     let backupIngestionAddress: String?
+}
+
+struct YouTubeStreamingPreparation: Sendable, Equatable {
+    let endpoint: YouTubeHLSEndpoint
+    let broadcast: YouTubeBroadcast
 }
 
 struct YouTubeListResponse<Item: Decodable & Sendable>: Decodable, Sendable {
@@ -354,12 +366,14 @@ enum YouTubeBroadcastDiscovery {
     private static func statusPriority(_ status: String?) -> Int {
         switch status {
         case "live": return 5
-        case "testing": return 4
-        case "ready": return 3
-        case "created": return 2
-        case "complete": return 1
-        case "revoked": return 0
-        default: return 0
+        case "liveStarting": return 4
+        case "testing": return 3
+        case "testStarting": return 2
+        case "ready": return 1
+        case "created": return 0
+        case "complete": return -1
+        case "revoked": return -3
+        default: return -2
         }
     }
 }
@@ -717,33 +731,55 @@ final class YouTubeService {
         defer { endLoading() }
 
         let selection = try await selectedBroadcast(forStreamKey: streamKey)
+        return try await ensureCurrentBroadcast(from: selection)
+    }
+
+    func prepareForStreaming(streamKey: String) async throws -> YouTubeStreamingPreparation {
+        beginLoading()
+        defer { endLoading() }
+
+        let selection = try await selectedBroadcast(forStreamKey: streamKey)
+        let endpoint = try YouTubeStreamDiscovery.hlsEndpoint(for: selection.stream)
+        let broadcast = try await ensureCurrentBroadcast(from: selection)
+        guard broadcast.lifeCycleStatus == "ready" else {
+            throw YouTubeError.broadcastNotReady(broadcast.statusLabel.lowercased())
+        }
+        return YouTubeStreamingPreparation(
+            endpoint: endpoint,
+            broadcast: broadcast
+        )
+    }
+
+    private func ensureCurrentBroadcast(
+        from selection: (broadcast: YouTubeBroadcast, stream: YouTubeStream, token: String)
+    ) async throws -> YouTubeBroadcast {
         guard selection.broadcast.lifeCycleStatus == "complete" else {
             return selection.broadcast
         }
-        if let existingTask = successorCreationTasks[selection.streamID] {
+        if let existingTask = successorCreationTasks[selection.stream.id] {
             return try await existingTask.value
         }
         let task = Task { @MainActor in
             try await self.createSuccessorBroadcast(
                 from: selection.broadcast,
-                streamId: selection.streamID,
+                streamId: selection.stream.id,
                 token: selection.token
             )
         }
-        successorCreationTasks[selection.streamID] = task
+        successorCreationTasks[selection.stream.id] = task
         do {
             let successor = try await task.value
-            successorCreationTasks[selection.streamID] = nil
+            successorCreationTasks[selection.stream.id] = nil
             return successor
         } catch {
-            successorCreationTasks[selection.streamID] = nil
+            successorCreationTasks[selection.stream.id] = nil
             throw error
         }
     }
 
     private func selectedBroadcast(
         forStreamKey streamKey: String
-    ) async throws -> (broadcast: YouTubeBroadcast, streamID: String, token: String) {
+    ) async throws -> (broadcast: YouTubeBroadcast, stream: YouTubeStream, token: String) {
 
         let token = try await getValidAccessToken()
         let stream = try await findStream(for: streamKey, token: token)
@@ -754,7 +790,7 @@ final class YouTubeService {
         ) else {
             throw YouTubeError.noBroadcastFound
         }
-        return (selectedBroadcast, stream.id, token)
+        return (selectedBroadcast, stream, token)
     }
 
     // MARK: - YouTube API: Update Broadcast

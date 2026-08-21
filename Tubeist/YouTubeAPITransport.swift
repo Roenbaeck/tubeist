@@ -12,6 +12,7 @@ enum YouTubeError: LocalizedError, Equatable {
     case apiError(Int, String)
     case noBroadcastFound
     case noStreamFound
+    case broadcastNotReady(String)
     case incompatibleIngestionType(String)
     case invalidIngestionAddress
     case thumbnailTooLarge
@@ -26,6 +27,8 @@ enum YouTubeError: LocalizedError, Equatable {
         case .apiError(let code, let message): "YouTube API error (\(code)): \(message)"
         case .noBroadcastFound: "No broadcast found for this stream key"
         case .noStreamFound: "No stream found matching this key"
+        case .broadcastNotReady(let status):
+            "The YouTube broadcast is \(status) and cannot start. If the previous stream is still finishing, wait and try again; otherwise review its YouTube setup."
         case .incompatibleIngestionType(let type):
             "This YouTube stream key uses \(type.uppercased()) ingestion. YouTube streaming requires an HLS stream key."
         case .invalidIngestionAddress: "YouTube did not return a valid HLS ingestion address"
