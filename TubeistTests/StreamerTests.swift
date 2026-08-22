@@ -17,6 +17,18 @@ private actor CommandOrderRecorder {
 }
 
 struct StreamerTests {
+    @Test @MainActor
+    func idlePreviewInterruptionDoesNotPresentAFatalAlert() async {
+        let appState = AppState()
+        let streamer = Streamer()
+        await streamer.setAppState(appState)
+
+        await streamer.handleCaptureSessionInterruption()
+
+        #expect(appState.activeAlert == nil)
+        #expect(appState.streamSessionState == .idle)
+    }
+
     @Test func stabilizedVideoMustReachTheStopTimestamp() {
         let stop = CMTime(value: 900_000, timescale: 90_000)
 

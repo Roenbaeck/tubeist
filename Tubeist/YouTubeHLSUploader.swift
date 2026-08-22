@@ -313,6 +313,39 @@ actor YouTubeHLSUploader {
         await transport.invalidate()
     }
 
+    /// Publishes the terminal playlist only after every media segment has been
+    /// acknowledged. This makes the last accepted segment unambiguously final
+    /// before the persistent ingestion connection is closed.
+    func finish() async throws {
+        await acquireUploadTurn()
+        defer { releaseUploadTurn() }
+        do {
+            guard !stopped, !Task.isCancelled else {
+                throw YouTubeHLSUploadError.stopped
+            }
+            guard playlist.outstandingCount == 0 else {
+                throw YouTubeHLSUploadError.invalidResponse
+            }
+            if playlist.nextSequence > 0 {
+                _ = try await send(
+                    filename: playlist.playlistFilename,
+                    contentType: "application/vnd.apple.mpegurl",
+                    body: Data(playlist.render(endList: true).utf8),
+                    priorRetryCount: 0
+                )
+            }
+            stopped = true
+            await transport.invalidate()
+        } catch {
+            stopped = true
+            await transport.invalidate()
+            if error is CancellationError {
+                throw YouTubeHLSUploadError.stopped
+            }
+            throw error
+        }
+    }
+
     private func send(
         filename: String,
         contentType: String,

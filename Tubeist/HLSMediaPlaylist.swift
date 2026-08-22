@@ -90,7 +90,7 @@ struct HLSMediaPlaylist: Sendable, Equatable {
         trimAcknowledgedPrefix()
     }
 
-    func render() -> String {
+    func render(endList: Bool = false) -> String {
         var lines = [
             "#EXTM3U",
             "#EXT-X-VERSION:3",
@@ -104,6 +104,9 @@ struct HLSMediaPlaylist: Sendable, Equatable {
             }
             lines.append("#EXTINF:\(Self.formattedDuration(entry.duration)),")
             lines.append(entry.filename)
+        }
+        if endList {
+            lines.append("#EXT-X-ENDLIST")
         }
         return lines.joined(separator: "\n") + "\n"
     }

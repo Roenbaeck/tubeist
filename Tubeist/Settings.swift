@@ -196,6 +196,8 @@ private struct AppliedSettingsSnapshot {
     let journalInfo: Bool
     let journalDebug: Bool
     let selectedPlaylistID: String?
+    let youtubeBroadcastPreferences: YouTubeBroadcastPreferences?
+    let youtubeThumbnailData: Data?
     let overlays: [OverlaySetting]
 #if DEBUG
     let captureRemuxFixtures: Bool
@@ -218,6 +220,8 @@ private struct AppliedSettingsSnapshot {
             journalInfo: Settings.journalInfo,
             journalDebug: Settings.journalDebug,
             selectedPlaylistID: Settings.youtubeSelectedPlaylistId,
+            youtubeBroadcastPreferences: Settings.youtubeBroadcastPreferences,
+            youtubeThumbnailData: try Settings.loadYouTubeThumbnailData(),
             overlays: overlays,
             captureRemuxFixtures: Settings.captureRemuxFixtures,
             recordHLSAcceptance: Settings.recordHLSAcceptance
@@ -237,6 +241,8 @@ private struct AppliedSettingsSnapshot {
             journalInfo: Settings.journalInfo,
             journalDebug: Settings.journalDebug,
             selectedPlaylistID: Settings.youtubeSelectedPlaylistId,
+            youtubeBroadcastPreferences: Settings.youtubeBroadcastPreferences,
+            youtubeThumbnailData: try Settings.loadYouTubeThumbnailData(),
             overlays: overlays
         )
 #endif
@@ -256,6 +262,8 @@ private struct AppliedSettingsSnapshot {
         Settings.journalInfo = journalInfo
         Settings.journalDebug = journalDebug
         Settings.youtubeSelectedPlaylistId = selectedPlaylistID
+        Settings.youtubeBroadcastPreferences = youtubeBroadcastPreferences
+        try Settings.setYouTubeThumbnailData(youtubeThumbnailData)
         manager.replaceOverlays(with: overlays)
 #if DEBUG
         Settings.captureRemuxFixtures = captureRemuxFixtures
@@ -306,7 +314,6 @@ struct SettingsView: View {
     @State private var selectedPhotoItem: PhotosPickerItem? = nil
     @State private var thumbnailImage: UIImage? = nil
     @State private var broadcastId: String? = nil
-    @State private var broadcastScheduledStartTime: String? = nil
     @State private var broadcastLifeCycleStatus: String? = nil
     @State private var broadcastEnableDvr: Bool = true
     @State private var broadcastLatencyPreference: String = "normal"
@@ -316,8 +323,8 @@ struct SettingsView: View {
     @State private var editingOverlay: OverlaySetting? = nil
     @State private var editedOverlayURL: String = ""
     @State private var overlayDraft: [OverlaySetting] = []
-    @State private var isApplying = false
-    @State private var applyErrorMessage: String?
+    @State private var isSaving = false
+    @State private var saveErrorMessage: String?
         
     var body: some View {
         NavigationView {
@@ -389,7 +396,7 @@ struct SettingsView: View {
                 }
 
                 if stream && !streamKeyManager.currentKey.isEmpty {
-                    Section(header: Text("YouTube Stream Configuration"), footer: Text(youtubeService.isSignedIn ? "Configure the YouTube broadcast tied to your stream key. Changes here are sent to YouTube only after Apply succeeds." : "Sign in with your Google account to configure YouTube broadcast settings for the current stream key.")) {
+                    Section(header: Text("YouTube Stream Configuration"), footer: Text(youtubeService.isSignedIn ? "These are staged preferences for your next stream. Save keeps them in Tubeist; YouTube is updated and, if necessary, one upcoming event is created only when you tap Start stream." : "Sign in with your Google account to configure YouTube broadcast settings for the current stream key.")) {
                         if !youtubeService.isSignedIn {
                             Button("Sign in with Google") {
                                 Task {
@@ -766,15 +773,14 @@ struct SettingsView: View {
             }
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
-            .navigationBarItems(leading: Button("Close") {
+            .navigationBarItems(leading: Button("Cancel") {
                 presentationMode.wrappedValue.dismiss()
-            }.disabled(isApplying), trailing: Button("Apply") {
+            }.disabled(isSaving), trailing: Button("Save") {
                 Task {
-                    isApplying = true
-                    defer { isApplying = false }
+                    isSaving = true
+                    defer { isSaving = false }
                     var previousSettings: AppliedSettingsSnapshot?
                     var localSettingsCommitted = false
-                    var attemptedYouTubeMutation = false
                     do {
                         try validateDraft()
                         previousSettings = try AppliedSettingsSnapshot.capture(
@@ -785,14 +791,13 @@ struct SettingsView: View {
                         }
                         try commitDraft()
                         localSettingsCommitted = true
-                        try await Streamer.shared.cycleSessions()
-                        if broadcastId != nil && youtubeService.isSignedIn {
-                            attemptedYouTubeMutation = true
-                            try await applyYouTubeChanges()
+                        if loadedBroadcast != nil && youtubeService.isSignedIn {
+                            try saveYouTubePreferences()
                         }
+                        try await Streamer.shared.cycleSessions()
                         Settings.configureJournal()
                         youtubeService.errorMessage = nil
-                        applyErrorMessage = nil
+                        saveErrorMessage = nil
                         presentationMode.wrappedValue.dismiss()
                     } catch {
                         var failureMessage = error.localizedDescription
@@ -805,16 +810,13 @@ struct SettingsView: View {
                                 failureMessage += " Restoring the previous app settings also failed: \(error.localizedDescription)"
                             }
                         }
-                        if attemptedYouTubeMutation {
-                            failureMessage += " YouTube may have accepted an earlier part of the request; refresh before trying again."
-                        }
                         youtubeService.errorMessage = failureMessage
-                        applyErrorMessage = failureMessage
-                        LOG("Could not apply settings: \(error.localizedDescription)", level: .error)
+                        saveErrorMessage = failureMessage
+                        LOG("Could not save settings: \(error.localizedDescription)", level: .error)
                     }
                 }
             }
-            .disabled(isApplying)
+            .disabled(isSaving)
             .buttonStyle(.borderedProminent))
             .onAppear {
                 overlayDraft = overlayManager.overlays
@@ -833,15 +835,15 @@ struct SettingsView: View {
                 }
             }
             .alert(
-                "Could Not Apply Settings",
+                "Could Not Save Settings",
                 isPresented: Binding(
-                    get: { applyErrorMessage != nil },
-                    set: { if !$0 { applyErrorMessage = nil } }
+                    get: { saveErrorMessage != nil },
+                    set: { if !$0 { saveErrorMessage = nil } }
                 )
             ) {
-                Button("OK") { applyErrorMessage = nil }
+                Button("OK") { saveErrorMessage = nil }
             } message: {
-                Text(applyErrorMessage ?? "The settings could not be applied")
+                Text(saveErrorMessage ?? "The settings could not be saved")
             }
             .sheet(item: $editingOverlay) { overlay in
                 NavigationView {
@@ -942,7 +944,6 @@ struct SettingsView: View {
         broadcastId = nil
         broadcastTitle = ""
         broadcastVisibility = "public"
-        broadcastScheduledStartTime = nil
         broadcastLifeCycleStatus = nil
         broadcastEnableDvr = true
         broadcastLatencyPreference = "normal"
@@ -968,16 +969,27 @@ struct SettingsView: View {
                 return
             }
             broadcastId = broadcast.id
-            broadcastTitle = broadcast.title
-            broadcastVisibility = broadcast.privacyStatus
-            broadcastScheduledStartTime = broadcast.scheduledStartTime
+            let savedPreferences = Settings.youtubeBroadcastPreferences
+            let matchingPreferences = savedPreferences?.streamId == broadcast.boundStreamId
+                ? savedPreferences
+                : nil
+            broadcastTitle = matchingPreferences?.title ?? broadcast.title
+            broadcastVisibility = matchingPreferences?.privacyStatus ?? broadcast.privacyStatus
             broadcastLifeCycleStatus = broadcast.lifeCycleStatus
-            broadcastEnableDvr = broadcast.enableDvr
-            broadcastLatencyPreference = broadcast.latencyPreference
+            broadcastEnableDvr = matchingPreferences?.enableDvr ?? broadcast.enableDvr
+            broadcastLatencyPreference = matchingPreferences?.latencyPreference
+                ?? broadcast.latencyPreference
             loadedBroadcast = broadcast
             appState.youtubeBroadcastId = broadcast.id
             appState.youtubeStatus = broadcast.lifeCycleStatus
             playlists = loadedPlaylists
+            selectedPlaylistId = matchingPreferences?.playlistId
+            if matchingPreferences != nil,
+               let thumbnailData = try? Settings.loadYouTubeThumbnailData() {
+                thumbnailImage = UIImage(data: thumbnailData)
+            } else {
+                thumbnailImage = nil
+            }
             if let selectedPlaylistId, !playlists.contains(where: { $0.id == selectedPlaylistId }) {
                 self.selectedPlaylistId = nil
             }
@@ -994,56 +1006,44 @@ struct SettingsView: View {
         }
     }
 
-    func applyYouTubeChanges() async throws {
+    func saveYouTubePreferences() throws {
         guard let currentBroadcast = loadedBroadcast else { return }
-        let current = try await youtubeService.ensureCurrentBroadcastForStreamKey(
-            streamKeyManager.currentKey
+        guard let streamId = currentBroadcast.boundStreamId else {
+            throw YouTubeError.invalidResponse
+        }
+        let previousPreferences = Settings.youtubeBroadcastPreferences
+        Settings.youtubeBroadcastPreferences = YouTubeBroadcastPreferences(
+            streamId: streamId,
+            title: broadcastTitle,
+            privacyStatus: broadcastVisibility,
+            enableDvr: broadcastEnableDvr,
+            latencyPreference: broadcastLatencyPreference,
+            enableMonitorStream: currentBroadcast.enableMonitorStream,
+            broadcastStreamDelayMs: currentBroadcast.broadcastStreamDelayMs,
+            enableEmbed: currentBroadcast.enableEmbed,
+            recordFromStart: currentBroadcast.recordFromStart,
+            enableAutoStart: currentBroadcast.enableAutoStart,
+            enableAutoStop: currentBroadcast.enableAutoStop,
+            playlistId: selectedPlaylistId
         )
-        let targetBroadcastID = current.id
 
-        try await youtubeService.updateBroadcast(
-                id: targetBroadcastID,
-                title: broadcastTitle,
-                privacyStatus: broadcastVisibility,
-                scheduledStartTime: broadcastScheduledStartTime,
-                enableDvr: broadcastEnableDvr,
-                latencyPreference: broadcastLatencyPreference,
-                enableMonitorStream: currentBroadcast.enableMonitorStream,
-                broadcastStreamDelayMs: currentBroadcast.broadcastStreamDelayMs,
-                enableEmbed: currentBroadcast.enableEmbed,
-                recordFromStart: currentBroadcast.recordFromStart,
-                enableAutoStart: currentBroadcast.enableAutoStart,
-                enableAutoStop: currentBroadcast.enableAutoStop
-            )
-            var updatedBroadcast = current
-            updatedBroadcast.title = broadcastTitle
-            updatedBroadcast.privacyStatus = broadcastVisibility
-            updatedBroadcast.lifeCycleStatus = broadcastLifeCycleStatus
-            updatedBroadcast.enableDvr = broadcastEnableDvr
-            updatedBroadcast.latencyPreference = broadcastLatencyPreference
-            loadedBroadcast = updatedBroadcast
-            broadcastId = targetBroadcastID
-
-        if let thumbnailImage,
+        if selectedPhotoItem != nil,
+           let thumbnailImage,
            let resized = thumbnailImage.scaledToFit(maxWidth: 1280, maxHeight: 720) {
             guard let imageData = resized.jpegDataWithinLimit(maxBytes: 2_000_000) else {
                 throw YouTubeError.thumbnailTooLarge
             }
-            LOG("Uploading thumbnail (\(imageData.count) bytes, \(Int(resized.size.width))x\(Int(resized.size.height)))", level: .debug)
-            try await youtubeService.uploadThumbnail(videoId: targetBroadcastID, imageData: imageData)
-        }
-
-        if let playlistId = selectedPlaylistId {
-            LOG("Adding broadcast to playlist \(playlistId)", level: .debug)
-            try await youtubeService.addToPlaylist(playlistId: playlistId, videoId: targetBroadcastID)
+            try Settings.setYouTubeThumbnailData(imageData)
+        } else if previousPreferences?.streamId != streamId {
+            try Settings.setYouTubeThumbnailData(nil)
         }
         Settings.youtubeSelectedPlaylistId = selectedPlaylistId
-        LOG("YouTube broadcast settings applied successfully", level: .info)
+        LOG("Saved YouTube preferences for the next stream", level: .info)
     }
 
     private func validateDraft() throws {
         guard stream || record else {
-            throw SettingsApplyError.noOutputSelected
+            throw SettingsSaveError.noOutputSelected
         }
         if stream {
             guard !streamKeyManager.currentKey.isEmpty else {
@@ -1052,7 +1052,7 @@ struct SettingsView: View {
             _ = try YouTubeHLSEndpoint.manualPrimary(streamKey: streamKeyManager.currentKey)
         }
         guard measuredBandwidth >= 1_000_000 else {
-            throw SettingsApplyError.invalidBandwidth
+            throw SettingsSaveError.invalidBandwidth
         }
     }
 
@@ -1079,7 +1079,7 @@ struct SettingsView: View {
 
 }
 
-enum SettingsApplyError: LocalizedError, Equatable {
+enum SettingsSaveError: LocalizedError, Equatable {
     case noOutputSelected
     case invalidBandwidth
 
@@ -1406,6 +1406,58 @@ final class Settings: Sendable {
         set {
             UserDefaults.standard.set(newValue, forKey: "YouTubeSelectedPlaylistId")
         }
+    }
+    static var youtubeBroadcastPreferences: YouTubeBroadcastPreferences? {
+        get {
+            guard let data = UserDefaults.standard.data(forKey: "YouTubeBroadcastPreferences") else {
+                return nil
+            }
+            return try? JSONDecoder().decode(YouTubeBroadcastPreferences.self, from: data)
+        }
+        set {
+            let data = newValue.flatMap { try? JSONEncoder().encode($0) }
+            UserDefaults.standard.set(data, forKey: "YouTubeBroadcastPreferences")
+        }
+    }
+
+    static func loadYouTubeThumbnailData() throws -> Data? {
+        let fileManager = FileManager.default
+        let url = try youtubeThumbnailURL(fileManager: fileManager, createDirectory: false)
+        guard fileManager.fileExists(atPath: url.path) else { return nil }
+        return try Data(contentsOf: url, options: .mappedIfSafe)
+    }
+
+    static func setYouTubeThumbnailData(_ data: Data?) throws {
+        let fileManager = FileManager.default
+        let url = try youtubeThumbnailURL(fileManager: fileManager, createDirectory: data != nil)
+        if let data {
+            try data.write(to: url, options: .atomic)
+        } else if fileManager.fileExists(atPath: url.path) {
+            try fileManager.removeItem(at: url)
+        }
+    }
+
+    private static func youtubeThumbnailURL(
+        fileManager: FileManager,
+        createDirectory: Bool
+    ) throws -> URL {
+        guard let applicationSupport = fileManager.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        ).first else {
+            throw CocoaError(.fileNoSuchFile)
+        }
+        let directory = applicationSupport.appendingPathComponent(
+            Bundle.main.bundleIdentifier ?? "Tubeist",
+            isDirectory: true
+        )
+        if createDirectory {
+            try fileManager.createDirectory(
+                at: directory,
+                withIntermediateDirectories: true
+            )
+        }
+        return directory.appendingPathComponent("youtube-broadcast-thumbnail.jpg")
     }
 
     private static func credential(_ credential: TubeistCredential) -> String? {

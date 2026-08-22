@@ -87,6 +87,33 @@ struct YouTubeHLSUploaderTests {
         #expect(diagnostics.lastHTTPStatus == 200)
     }
 
+    @Test func finishPublishesAnEndListAfterTheLastAcknowledgedSegment() async throws {
+        let transport = MockYouTubeHLSTransport(statuses: [200, 200, 200])
+        let endpoint = try YouTubeHLSEndpoint(URL(
+            string: "https://upload.youtube.com/http_upload_hls?cid=redacted&file="
+        )!)
+        let uploader = try YouTubeHLSUploader(
+            endpoint: endpoint,
+            sessionIdentifier: "final_session",
+            userAgent: "Tubeist/Test",
+            transport: transport,
+            retryPolicy: testRetryPolicy,
+            sleeper: { _ in }
+        )
+
+        _ = try await uploader.upload(segment: Data([0x47]), duration: 1.75)
+        try await uploader.finish()
+
+        let records = await transport.recordedRequests()
+        #expect(records.count == 3)
+        #expect(records[0].url.hasSuffix("file=tubeist_final_session.m3u8"))
+        #expect(records[1].url.hasSuffix("file=tubeist_final_session_0.ts"))
+        #expect(records[2].url.hasSuffix("file=tubeist_final_session.m3u8"))
+        let finalPlaylist = try #require(String(data: records[2].body, encoding: .utf8))
+        #expect(finalPlaylist.contains("tubeist_final_session_0.ts"))
+        #expect(finalPlaylist.hasSuffix("#EXT-X-ENDLIST\n"))
+    }
+
     @Test func rejectsLateSuccessAfterStopOrTaskCancellation() async throws {
         let endpoint = try YouTubeHLSEndpoint(URL(
             string: "https://upload.youtube.com/http_upload_hls?cid=redacted&file="

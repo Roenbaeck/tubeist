@@ -24,12 +24,20 @@ protocol CredentialStoring {
 
 struct KeychainCredentialStore: CredentialStoring, Sendable {
     private let service: String
+#if DEBUG
+    private static let uiTestingStorage = UITestingCredentialStorage()
+#endif
 
     init(service: String = Bundle.main.bundleIdentifier ?? "com.subside.Tubeist") {
         self.service = service
     }
 
     func value(for credential: TubeistCredential) throws -> String? {
+#if DEBUG
+        if CommandLine.arguments.contains("-ui-testing") {
+            return Self.uiTestingStorage.value(for: credential)
+        }
+#endif
         var query = baseQuery(for: credential)
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
@@ -50,6 +58,12 @@ struct KeychainCredentialStore: CredentialStoring, Sendable {
     }
 
     func setValue(_ value: String?, for credential: TubeistCredential) throws {
+#if DEBUG
+        if CommandLine.arguments.contains("-ui-testing") {
+            Self.uiTestingStorage.setValue(value, for: credential)
+            return
+        }
+#endif
         guard let value, !value.isEmpty else {
             let status = SecItemDelete(baseQuery(for: credential) as CFDictionary)
             guard status == errSecSuccess || status == errSecItemNotFound else {
@@ -89,6 +103,21 @@ struct KeychainCredentialStore: CredentialStoring, Sendable {
         ]
     }
 }
+
+#if DEBUG
+private final class UITestingCredentialStorage: @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [TubeistCredential: String] = [:]
+
+    func value(for credential: TubeistCredential) -> String? {
+        lock.withLock { values[credential] }
+    }
+
+    func setValue(_ value: String?, for credential: TubeistCredential) {
+        lock.withLock { values[credential] = value }
+    }
+}
+#endif
 
 struct LegacySettingsMigrationResult: Equatable {
     let performed: Bool

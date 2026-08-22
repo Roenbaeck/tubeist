@@ -37,9 +37,11 @@ struct YouTubeHLSStreamSinkTests {
         try await sink.finish(timeout: successfulSinkShutdownTimeout)
 
         let requests = await transport.requests()
-        #expect(requests.count == 2)
+        #expect(requests.count == 3)
         #expect(requests[0].contentType == "application/vnd.apple.mpegurl")
         #expect(requests[1].contentType == "video/mp2t")
+        #expect(requests[2].contentType == "application/vnd.apple.mpegurl")
+        #expect(String(decoding: requests[2].body, as: UTF8.self).hasSuffix("#EXT-X-ENDLIST\n"))
         #expect(requests[1].body.count.isMultiple(of: MPEGTransportStreamMuxer.packetSize))
         #expect(requests[1].body.first == 0x47)
         #expect(!requests.contains { $0.body == FMP4Fixture.initialization() })
@@ -96,7 +98,7 @@ struct YouTubeHLSStreamSinkTests {
         try await sink.finish(timeout: successfulSinkShutdownTimeout)
 
         let requests = await newTransport.requests()
-        #expect(requests.count == 2)
+        #expect(requests.count == 3)
         #expect(requests[1].contentType == "video/mp2t")
         let metrics = await sink.metrics()
         #expect(metrics.lastAcceptedMediaSequence == 0)
@@ -143,7 +145,7 @@ struct YouTubeHLSStreamSinkTests {
         try await sink.finish(timeout: successfulSinkShutdownTimeout)
 
         let requests = await transport.requests()
-        #expect(requests.count == 2)
+        #expect(requests.count == 3)
         let playlist = String(decoding: requests[0].body, as: UTF8.self)
         let formattedDuration = String(
             format: "%.6f",
@@ -187,10 +189,13 @@ struct YouTubeHLSStreamSinkTests {
             type: .finalization
         ))
 
+        let bufferedMetrics = await sink.metrics()
+        #expect(bufferedMetrics.queuedFragments == 1)
+
         try await sink.finish(timeout: successfulSinkShutdownTimeout)
 
         let requests = await transport.requests()
-        #expect(requests.count == 2)
+        #expect(requests.count == 3)
         #expect(requests[0].contentType == "application/vnd.apple.mpegurl")
         #expect(requests[1].contentType == "video/mp2t")
         #expect(requests[1].body.first == 0x47)
@@ -241,7 +246,7 @@ struct YouTubeHLSStreamSinkTests {
         try await sink.finish(timeout: successfulSinkShutdownTimeout)
 
         let requests = await transport.requests()
-        #expect(requests.count == 2)
+        #expect(requests.count == 3)
         #expect(requests[1].contentType == "video/mp2t")
         let metrics = await sink.metrics()
         #expect(metrics.lastAcceptedMediaSequence == 0)
@@ -343,7 +348,7 @@ struct YouTubeHLSStreamSinkTests {
         try await sink.finish(timeout: successfulSinkShutdownTimeout)
 
         let requests = await transport.requests()
-        #expect(requests.count == 62)
+        #expect(requests.count == 63)
         for sequence in 0..<31 {
             let playlistRequest = requests[sequence * 2]
             let segmentRequest = requests[sequence * 2 + 1]
@@ -353,6 +358,8 @@ struct YouTubeHLSStreamSinkTests {
             #expect(playlist.contains("tubeist_recovery_session_\(sequence).ts"))
             #expect(!playlist.contains("#EXT-X-DISCONTINUITY"))
         }
+        let finalPlaylist = String(decoding: requests[62].body, as: UTF8.self)
+        #expect(finalPlaylist.hasSuffix("#EXT-X-ENDLIST\n"))
         let finishedMetrics = await sink.metrics()
         #expect(finishedMetrics.lastAcceptedMediaSequence == 30)
         #expect(finishedMetrics.droppedFragments == 0)

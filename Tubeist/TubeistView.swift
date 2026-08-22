@@ -195,8 +195,9 @@ struct TubeistView: View {
             appState.youtubeStatus = broadcast.lifeCycleStatus
         } catch {
             LOG("YouTube \(logContext) status failed: \(error.localizedDescription)", level: .debug)
-            appState.youtubeStatus = nil
-            appState.youtubeBroadcastId = nil
+            // A transient status request must not make the YouTube indicator
+            // disappear. Keep the last known state until a successful refresh
+            // replaces it or the user signs out/removes the stream key.
         }
     }
 

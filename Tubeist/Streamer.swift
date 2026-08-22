@@ -348,6 +348,28 @@ final class Streamer: Sendable {
         }
     }
 
+    func handleCaptureSessionInterruption() async {
+        let state = await streamingActor.sessionState()
+        switch state {
+        case .preparing, .live:
+            let appIsNotActive = await MainActor.run {
+                UIApplication.shared.applicationState != .active
+            }
+            if appIsNotActive {
+                LOG("Camera session paused while Tubeist became inactive", level: .debug)
+            } else {
+                await handleRuntimeFailure(
+                    CaptureSetupError.configuration("The camera session was interrupted")
+                )
+            }
+        case .idle, .stopping, .failed:
+            // iOS normally interrupts an idle preview when the app moves to the
+            // background. The session resumes on return, so this is not an
+            // end-user failure and must not be promoted to an alert.
+            LOG("Camera preview session was interrupted", level: .debug)
+        }
+    }
+
     func handleMediaServicesReset() async {
         let resetError = CaptureSetupError.configuration("Camera media services were reset")
         await handleRuntimeFailure(resetError)
@@ -587,7 +609,15 @@ final class Streamer: Sendable {
         let endpoint: YouTubeHLSEndpoint
         if Settings.youtubeRefreshToken != nil {
             let service = await YouTubeService()
-            let preparation = try await service.prepareForStreaming(streamKey: streamKey)
+            let preferences = Settings.youtubeBroadcastPreferences
+            let thumbnailData = preferences == nil
+                ? nil
+                : try Settings.loadYouTubeThumbnailData()
+            let preparation = try await service.prepareForStreaming(
+                streamKey: streamKey,
+                preferences: preferences,
+                thumbnailData: thumbnailData
+            )
             endpoint = preparation.endpoint
             await streamingActor.setYouTubeBroadcast(
                 id: preparation.broadcast.id,

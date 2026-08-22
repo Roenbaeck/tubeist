@@ -9,6 +9,7 @@ The scenarios verify:
 
 - exact POST paths with an unencoded filename after `file=`;
 - playlist/segment request order, content types, and body bytes;
+- terminal playlist publication with `#EXT-X-ENDLIST` after the final segment;
 - reuse of one persistent HTTP/1.1 connection during normal delivery;
 - retrying identical bytes on a replacement connection after a socket close;
 - request timeout recovery;

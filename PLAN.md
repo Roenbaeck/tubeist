@@ -1,12 +1,28 @@
 # Tubeist YouTube-only hardening plan
 
-- Status: repeat-stream fix verified; buffer continuity and Stop-tail fixes await physical acceptance
-- Last reviewed: 2026-08-21
+- Status: repeat-stream and no-litter Settings fixes verified; buffer continuity and Stop-tail fixes await physical acceptance
+- Last reviewed: 2026-08-22
 - Baseline: codex/direct-youtube-hls at e82bb7b
 - Supersedes: the completed direct-YouTube implementation plan in Git history
 
 ## Current verification status
 
+- Settings now uses explicit Cancel/Save draft semantics. Save persists the
+  next-stream preferences locally and performs no YouTube mutation; signed-in
+  Start reuses an existing `ready` broadcast before it creates and binds one.
+  The Save path contains no YouTube API operation, while request-level tests
+  prove that Start does not insert or bind when a `ready` event already exists.
+- The 2026-08-22 Settings fix passes all 103 unit tests and all 9 UI tests on the
+  iPhone 16 Pro iOS 18.2 simulator, plus Swift parsing, property-list and
+  YouTube-only source checks, and an unsigned generic-device Release build.
+- The 2026-08-22 background/status/Stop-tail follow-up suppresses expected idle
+  preview interruptions, preserves the last known YouTube indicator across
+  transient status failures, counts split final audio/video callbacks as one
+  pending output segment, and publishes a terminal `#EXT-X-ENDLIST` playlist
+  only after the last segment is acknowledged. All 105 unit tests, all 9 UI
+  tests, all five local HTTPS socket scenarios, Swift parsing, property-list and
+  YouTube-only source checks, and the unsigned generic-device Release build
+  pass; physical archive-tail proof remains pending.
 - The 2026-08-21 repeat-stream, buffer-continuity, and Stop-tail fixes pass all
   103 unit tests on the iPhone 16 Pro iOS 18.2 simulator, Swift parsing, the
   YouTube-only source check, and an unsigned generic-device Release build.
@@ -227,6 +243,9 @@ Stream always selects one YouTube sink.
 - [x] Freeze an immutable configuration for each active session.
 - [x] During Stop: close intake, drain accepted samples, finish AVAssetWriter,
   route every final callback, finish recording and upload, then become idle.
+- [x] Classify writer callbacks at delegate time, coalesce split final audio and
+  video callbacks into one displayed/output segment, and publish a terminal
+  playlist after the final segment acknowledgement before closing ingestion.
 - [ ] Physically verify timestamp-aligned Stop: audio freezes at the button press,
   stabilized video catches up to that instant, and the archive includes the
   spoken Stop marker without an unmatched audio-only tail.
@@ -253,6 +272,8 @@ previous session's tail.
   startup succeed.
 - [x] Handle interruptions, runtime errors, media-services reset, permissions, and
   device connection changes.
+- [x] Treat an idle preview interruption caused by backgrounding as recoverable
+  lifecycle state rather than presenting a fatal camera-configuration alert.
 - [x] Escalate AVAssetWriter append/status failures to the session coordinator.
 - [x] Select cameras by unique ID, refresh hot-plugged devices, and derive frame
   rates from the selected camera.
@@ -310,14 +331,14 @@ credentials cannot travel over HTTP, and shipping privacy metadata is accurate.
 - [x] Replace the shared isLoading Boolean with operation-aware state.
 - [x] Add pagination and idempotent playlist membership.
 - [x] Reject thumbnails still over the size limit after compression.
-- [x] Edit a settings draft: Close discards; Apply validates and completes before
-  dismissal.
+- [x] Edit a settings draft: Cancel discards; Save validates and persists before
+  dismissal. Saving remains local-only and cannot create a YouTube event.
 - [x] Keep manual-key streaming clearly independent from optional sign-in.
 - [x] Mock every API mutation, status, retry, page, cancellation, and concurrency
   case.
 
 Exit gate: each YouTube operation validates server state or returns a typed error,
-and Settings Apply/Close behavior is truthful.
+and Settings Save/Cancel behavior is truthful.
 
 ### Phase 7 — Performance and diagnostics
 
@@ -357,7 +378,7 @@ budgets; each optimization has before/after traces.
   sizes without sacrificing simultaneous access to its ten controls.
 - [x] Never communicate health only by color or an unlabeled symbol.
 - [x] Unify stream, YouTube, recording, queue, and finalization status.
-- [x] Add simulator UI tests for manual-key Apply/Close, visible validation
+- [x] Add simulator UI tests for manual-key Save/Cancel, visible validation
   errors, settings persistence, launch, accessible primary-control names, and
   essential controls at the largest accessibility Dynamic Type category.
 - [ ] Complete device UI acceptance for Google sign-in, record, stream, Stop,
@@ -395,6 +416,8 @@ legacy behavior or accidental development-only gate.
 - [x] On 2026-08-20, verify on iPhone 16 Pro with iOS 26.6 that the restored
   compact landscape UI keeps the preview and controls on-screen and that a
   direct YouTube stream can start, appear on YouTube, and stop cleanly.
+- [ ] On a signed-in device, open and save Settings repeatedly before streaming;
+  verify that no additional upcoming YouTube events are created.
 - [ ] On a signed-in device, start, stop, wait for `complete`, then start again
   without opening Settings; verify Tubeist creates a new `ready` broadcast and
   that the second broadcast appears live on YouTube.

@@ -90,6 +90,52 @@ struct YouTubeStreamingPreparation: Sendable, Equatable {
     let broadcast: YouTubeBroadcast
 }
 
+/// Tubeist's saved template for the next broadcast on a particular reusable
+/// YouTube stream. Saving this value is local-only; YouTube is mutated only as
+/// part of the explicit Start preflight.
+struct YouTubeBroadcastPreferences: Codable, Sendable, Equatable {
+    let streamId: String
+    var title: String
+    var privacyStatus: String
+    var enableDvr: Bool
+    var latencyPreference: String
+    var enableMonitorStream: Bool
+    var broadcastStreamDelayMs: Int
+    var enableEmbed: Bool
+    var recordFromStart: Bool
+    var enableAutoStart: Bool
+    var enableAutoStop: Bool
+    var playlistId: String?
+
+    func requiresUpdate(to broadcast: YouTubeBroadcast) -> Bool {
+        title != broadcast.title
+            || privacyStatus != broadcast.privacyStatus
+            || enableDvr != broadcast.enableDvr
+            || latencyPreference != broadcast.latencyPreference
+            || enableMonitorStream != broadcast.enableMonitorStream
+            || broadcastStreamDelayMs != broadcast.broadcastStreamDelayMs
+            || enableEmbed != broadcast.enableEmbed
+            || recordFromStart != broadcast.recordFromStart
+            || enableAutoStart != broadcast.enableAutoStart
+            || enableAutoStop != broadcast.enableAutoStop
+    }
+
+    func applying(to broadcast: YouTubeBroadcast) -> YouTubeBroadcast {
+        var updated = broadcast
+        updated.title = title
+        updated.privacyStatus = privacyStatus
+        updated.enableDvr = enableDvr
+        updated.latencyPreference = latencyPreference
+        updated.enableMonitorStream = enableMonitorStream
+        updated.broadcastStreamDelayMs = broadcastStreamDelayMs
+        updated.enableEmbed = enableEmbed
+        updated.recordFromStart = recordFromStart
+        updated.enableAutoStart = enableAutoStart
+        updated.enableAutoStop = enableAutoStop
+        return updated
+    }
+}
+
 struct YouTubeListResponse<Item: Decodable & Sendable>: Decodable, Sendable {
     let items: [Item]
     let nextPageToken: String?
@@ -334,7 +380,18 @@ enum YouTubeBroadcastDiscovery {
     ) -> YouTubeBroadcast? {
         let eligible = broadcasts.filter { $0.lifeCycleStatus != "revoked" }
         let active = eligible.filter(\.isActive)
-        return (active.isEmpty ? eligible : active).max(by: isOlder)
+        if let current = active.max(by: isOlder) {
+            return current
+        }
+        // A ready broadcast is already the channel's unconsumed upcoming event.
+        // Prefer and reuse it even when a completed broadcast has a newer actual
+        // start time, otherwise each preflight can litter YouTube Studio with a
+        // second successor bound to the same reusable stream.
+        let ready = eligible.filter { $0.lifeCycleStatus == "ready" }
+        if let upcoming = ready.max(by: isOlder) {
+            return upcoming
+        }
+        return eligible.max(by: isOlder)
     }
 
     private static func isOlder(_ lhs: YouTubeBroadcast, _ rhs: YouTubeBroadcast) -> Bool {
@@ -726,23 +783,44 @@ final class YouTubeService {
         return try await selectedBroadcast(forStreamKey: streamKey).broadcast
     }
 
-    func ensureCurrentBroadcastForStreamKey(_ streamKey: String) async throws -> YouTubeBroadcast {
-        beginLoading()
-        defer { endLoading() }
-
-        let selection = try await selectedBroadcast(forStreamKey: streamKey)
-        return try await ensureCurrentBroadcast(from: selection)
-    }
-
-    func prepareForStreaming(streamKey: String) async throws -> YouTubeStreamingPreparation {
+    func prepareForStreaming(
+        streamKey: String,
+        preferences: YouTubeBroadcastPreferences? = nil,
+        thumbnailData: Data? = nil
+    ) async throws -> YouTubeStreamingPreparation {
         beginLoading()
         defer { endLoading() }
 
         let selection = try await selectedBroadcast(forStreamKey: streamKey)
         let endpoint = try YouTubeStreamDiscovery.hlsEndpoint(for: selection.stream)
-        let broadcast = try await ensureCurrentBroadcast(from: selection)
+        var broadcast = try await ensureCurrentBroadcast(from: selection)
         guard broadcast.lifeCycleStatus == "ready" else {
             throw YouTubeError.broadcastNotReady(broadcast.statusLabel.lowercased())
+        }
+        if let preferences, preferences.streamId == selection.stream.id {
+            if preferences.requiresUpdate(to: broadcast) {
+                try await updateBroadcast(
+                    id: broadcast.id,
+                    title: preferences.title,
+                    privacyStatus: preferences.privacyStatus,
+                    scheduledStartTime: broadcast.scheduledStartTime,
+                    enableDvr: preferences.enableDvr,
+                    latencyPreference: preferences.latencyPreference,
+                    enableMonitorStream: preferences.enableMonitorStream,
+                    broadcastStreamDelayMs: preferences.broadcastStreamDelayMs,
+                    enableEmbed: preferences.enableEmbed,
+                    recordFromStart: preferences.recordFromStart,
+                    enableAutoStart: preferences.enableAutoStart,
+                    enableAutoStop: preferences.enableAutoStop
+                )
+                broadcast = preferences.applying(to: broadcast)
+            }
+            if let thumbnailData {
+                try await uploadThumbnail(videoId: broadcast.id, imageData: thumbnailData)
+            }
+            if let playlistId = preferences.playlistId {
+                try await addToPlaylist(playlistId: playlistId, videoId: broadcast.id)
+            }
         }
         return YouTubeStreamingPreparation(
             endpoint: endpoint,

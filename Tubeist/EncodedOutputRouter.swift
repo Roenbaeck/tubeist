@@ -58,6 +58,8 @@ actor YouTubeHLSStreamSink {
     private var uploader: YouTubeHLSUploader?
     private var queue: [Fragment] = []
     private var isProcessing = false
+    private var currentFragmentType: Fragment.SegmentType?
+    private var isUploadingFinalization = false
     private var isPrepared = false
     private var currentDuration = 0.0
     private var pendingDiscontinuity = false
@@ -86,6 +88,8 @@ actor YouTubeHLSStreamSink {
         muxer.reset()
         queue.removeAll(keepingCapacity: true)
         isProcessing = false
+        currentFragmentType = nil
+        isUploadingFinalization = false
         currentDuration = 0
         pendingDiscontinuity = false
         clearFinalizationBuffer()
@@ -195,7 +199,17 @@ actor YouTubeHLSStreamSink {
         isPrepared = false
         let finishingFailure = failure
         if let finishingUploader {
-            await finishingUploader.stop()
+            if finishingFailure == nil {
+                do {
+                    try await finishingUploader.finish()
+                } catch {
+                    failure = String(describing: error)
+                    LOG("YouTube final playlist publication failed: \(error)", level: .error)
+                    throw YouTubeHLSPackagingError.packagingFailed
+                }
+            } else {
+                await finishingUploader.stop()
+            }
         }
         guard generation == sessionGeneration else {
             throw YouTubeHLSPackagingError.notPrepared
@@ -218,6 +232,8 @@ actor YouTubeHLSStreamSink {
         queue.removeAll(keepingCapacity: true)
         isPrepared = false
         isProcessing = false
+        currentFragmentType = nil
+        isUploadingFinalization = false
         currentDuration = 0
         clearFinalizationBuffer()
         if let cancelledUploader {
@@ -231,10 +247,18 @@ actor YouTubeHLSStreamSink {
     func metrics() async -> YouTubeHLSPackagingMetrics {
         let uploadDuration = await uploader?.queuedDuration ?? 0
         let performance = await uploader?.performance ?? (0, 0)
+        let queuedSeparableFragments = queue.lazy.filter { $0.type == .separable }.count
+        let currentSeparableFragment = currentFragmentType == .separable ? 1 : 0
+        let hasFinalizationSegment = isUploadingFinalization
+            || currentFragmentType == .finalization
+            || !finalizationSamples.isEmpty
+            || queue.contains { $0.type == .finalization }
         return YouTubeHLSPackagingMetrics(
             networkMbps: performance.0,
             networkUtilization: performance.1,
-            queuedFragments: queue.count + finalizationFragmentCount + (isProcessing ? 1 : 0),
+            queuedFragments: queuedSeparableFragments
+                + currentSeparableFragment
+                + (hasFinalizationSegment ? 1 : 0),
             queuedDuration: queue.reduce(
                 max(currentDuration, uploadDuration, finalizationReportedDuration)
             ) { $0 + $1.duration },
@@ -250,6 +274,7 @@ actor YouTubeHLSStreamSink {
               failure == nil,
               !queue.isEmpty {
             let fragment = queue.removeFirst()
+            currentFragmentType = fragment.type
             currentDuration = fragment.duration
             do {
                 try await process(fragment, sessionGeneration: generation)
@@ -258,6 +283,7 @@ actor YouTubeHLSStreamSink {
                 await handleProcessingFailure(error, sessionGeneration: generation)
             }
             currentDuration = 0
+            currentFragmentType = nil
         }
         if generation == sessionGeneration {
             isProcessing = false
@@ -310,6 +336,7 @@ actor YouTubeHLSStreamSink {
         let fragmentCount = finalizationFragmentCount
         let reportedDuration = finalizationReportedDuration
         let discontinuity = finalizationDiscontinuity
+        isUploadingFinalization = true
         clearFinalizationBuffer()
         currentDuration = reportedDuration
 
@@ -344,6 +371,7 @@ actor YouTubeHLSStreamSink {
             )
         }
         currentDuration = 0
+        isUploadingFinalization = false
         if generation == sessionGeneration {
             isProcessing = false
         }

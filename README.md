@@ -39,7 +39,7 @@ Tubeist requires iOS 18 or later and a physical iPhone with an HDR-capable captu
 
 Create a YouTube Live stream configured for **HLS ingestion**, then enter its stream key in Tubeist Settings. An RTMP or RTMPS key is not interchangeable with an HLS key.
 
-Manual-key streaming does not require Google sign-in. Signing in is optional and lets Tubeist discover the matching HLS ingestion resource, display broadcast state, and apply supported metadata and broadcast settings. For signed-in streaming, Start verifies that the bound broadcast is ready and automatically creates and binds a successor after the previous broadcast completes. Manual-key-only users must prepare the next broadcast in YouTube. Opening Settings never creates or modifies a broadcast; changes are sent only when you choose Apply.
+Manual-key streaming does not require Google sign-in. Signing in is optional and lets Tubeist discover the matching HLS ingestion resource, display broadcast state, and apply supported metadata and broadcast settings. For signed-in streaming, Start verifies that the bound broadcast is ready and automatically creates and binds a successor after the previous broadcast completes. Manual-key-only users must prepare the next broadcast in YouTube. Settings uses standard Cancel/Save semantics: Cancel discards the staged edits, while Save stores them locally. Saving never creates or modifies a YouTube event; the saved broadcast preferences are sent during the next explicit Start preflight.
 
 See YouTube's official [HLS ingestion guide](https://developers.google.com/youtube/v3/live/guides/hls-ingestion) for help creating a compatible stream.
 
@@ -71,7 +71,7 @@ Web overlays can add live graphics and information to the encoded output. Tubeis
 
 ## iOS behavior
 
-iOS does not permit indefinite camera capture in the background. If Tubeist moves to the background during capture, it stops capture and uses finite background execution time to finalize the local recording and accepted YouTube tail. Keep the app in the foreground for an active stream.
+iOS does not permit indefinite camera capture in the background. If Tubeist moves to the background during capture, it stops capture and uses finite background execution time to finalize the local recording and accepted YouTube tail. Keep the app in the foreground for an active stream. When no stream is running, an expected background camera-preview interruption is recovered silently when Tubeist returns to the foreground.
 
 Battery-saving mode can reduce display power use during long sessions while leaving the capture pipeline active.
 

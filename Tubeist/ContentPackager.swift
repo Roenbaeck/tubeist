@@ -70,6 +70,19 @@ private final class OneShotBoolContinuation: @unchecked Sendable {
     }
 }
 
+private final class AssetWriterFinalizationFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+
+    func set(_ value: Bool) {
+        lock.withLock { self.value = value }
+    }
+
+    func read() -> Bool {
+        lock.withLock { value }
+    }
+}
+
 @PipelineActor
 private class AssetWriterActor {
     private var fragmentAssetWriter: AVAssetWriter?
@@ -77,7 +90,7 @@ private class AssetWriterActor {
     private var audioInput: AVAssetWriterInput?
     private var stream: Bool = Settings.stream
     private var record: Bool = Settings.record
-    private var finalizing: Bool = false
+    private let finalizationFlag: AssetWriterFinalizationFlag
     private var hasStartedSession: Bool = false
     private var baseVideoPTS: CMTime? = nil
     private let writerTimeScale: CMTimeScale = 90000
@@ -90,9 +103,13 @@ private class AssetWriterActor {
     private var lastTrimLogTime: Date?
     private let trimLogInterval: TimeInterval = 5
     private var terminalError: ContentPackagingError?
+
+    init(finalizationFlag: AssetWriterFinalizationFlag) {
+        self.finalizationFlag = finalizationFlag
+    }
     
     func setupFragmentAssetWriter(stream: Bool, record: Bool) async -> Bool {
-        finalizing = false
+        finalizationFlag.set(false)
         terminalError = nil
         guard let contentType = UTType(AVFileType.mp4.rawValue) else {
             LOG("MP4 is not a valid type", level: .error)
@@ -215,7 +232,11 @@ private class AssetWriterActor {
         // Give already-enqueued segment delegate work one executor turn before
         // callbacks produced by finishWriting are classified as finalization.
         await Task.yield()
-        finalizing = true
+        // The delegate may enqueue classification work onto PipelineActor after
+        // this method starts. Publish the flag synchronously so each callback
+        // captures whether it was emitted by finishWriting rather than reading
+        // a later, raced actor state.
+        finalizationFlag.set(true)
         let sendableAssetWriter = SendableAssetWriterFinishHandle(fragmentAssetWriter)
         let finishResult = await withCheckedContinuation { continuation in
             let finishContinuation = AssetWriterFinishContinuation(continuation)
@@ -592,9 +613,6 @@ private class AssetWriterActor {
         record
     }
     
-    func isFinalizing() -> Bool {
-        finalizing
-    }
 }
 
 final class FragmentSequenceNumber: @unchecked Sendable {
@@ -865,7 +883,10 @@ actor OrderedFragmentDispatcher {
 
 final class ContentPackager: NSObject, AVAssetWriterDelegate, Sendable {
     @PipelineActor public static let shared = ContentPackager()
-    @PipelineActor private static let assetWriter = AssetWriterActor()
+    private static let assetWriterFinalizationFlag = AssetWriterFinalizationFlag()
+    @PipelineActor private static let assetWriter = AssetWriterActor(
+        finalizationFlag: assetWriterFinalizationFlag
+    )
     private let fragmentSequenceNumber = FragmentSequenceNumber()
     private let recording = RecordingActor()
     private let fragmentDispatcher = OrderedFragmentDispatcher()
@@ -980,11 +1001,12 @@ final class ContentPackager: NSObject, AVAssetWriterDelegate, Sendable {
                      segmentType: AVAssetSegmentType,
                      segmentReport: AVAssetSegmentReport?) {
         let sequenceNumber = fragmentSequenceNumber.next()
+        let isFinalizing = Self.assetWriterFinalizationFlag.read()
         fragmentDispatchGroup.enter()
         Task { @PipelineActor in
             defer { self.fragmentDispatchGroup.leave() }
             guard let fragmentType: Fragment.SegmentType = {
-                switch (segmentType, ContentPackager.assetWriter.isFinalizing()) {
+                switch (segmentType, isFinalizing) {
                 case (.separable, false): .separable
                 case (.initialization, _): .initialization
                 case (.separable, true): .finalization

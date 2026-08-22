@@ -972,9 +972,7 @@ private final class CaptureEventMonitor: @unchecked Sendable {
             queue: nil
         ) { _ in
             Task {
-                await Streamer.shared.handleRuntimeFailure(
-                    CaptureSetupError.configuration("The camera session was interrupted")
-                )
+                await Streamer.shared.handleCaptureSessionInterruption()
             }
         })
         newObservers.append(center.addObserver(

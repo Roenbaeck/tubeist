@@ -61,7 +61,7 @@ final class TubeistUITests: XCTestCase {
     }
 
     @MainActor
-    func testClosingSettingsDiscardsStreamKeyDraft() throws {
+    func testCancellingSettingsDiscardsStreamKeyDraft() throws {
         let app = XCUIApplication()
         app.launchArguments = ["-ui-testing"]
         app.launch()
@@ -77,7 +77,7 @@ final class TubeistUITests: XCTestCase {
         XCTAssertTrue(keyField.waitForExistence(timeout: 5))
         keyField.tap()
         keyField.typeText("draft-key-1234")
-        app.buttons["Close"].tap()
+        app.buttons["Cancel"].tap()
 
         XCTAssertTrue(settings.waitForExistence(timeout: 3))
         settings.tap()
@@ -87,23 +87,23 @@ final class TubeistUITests: XCTestCase {
     }
 
     @MainActor
-    func testInvalidManualKeyShowsAnActionableApplyError() throws {
+    func testInvalidManualKeyShowsAnActionableSaveError() throws {
         let app = launchForUITesting()
         app.buttons["Settings"].tap()
         let keyField = app.secureTextFields["YouTube HLS Stream Key"]
         XCTAssertTrue(keyField.waitForExistence(timeout: 5))
         keyField.tap()
         keyField.typeText("invalid/key")
-        app.buttons["Apply"].tap()
+        app.buttons["Save"].tap()
 
-        XCTAssertTrue(app.alerts["Could Not Apply Settings"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.alerts["Could Not Save Settings"].waitForExistence(timeout: 3))
         XCTAssertTrue(app.staticTexts["The YouTube HLS ingestion endpoint is invalid"].exists)
-        app.alerts["Could Not Apply Settings"].buttons["OK"].tap()
+        app.alerts["Could Not Save Settings"].buttons["OK"].tap()
         XCTAssertTrue(keyField.exists)
     }
 
     @MainActor
-    func testApplyingAValidManualKeyPersistsTheDraft() throws {
+    func testSavingAValidManualKeyPersistsTheDraft() throws {
         let app = launchForUITesting()
         let settings = app.buttons["Settings"]
         settings.tap()
@@ -111,8 +111,14 @@ final class TubeistUITests: XCTestCase {
         XCTAssertTrue(keyField.waitForExistence(timeout: 5))
         keyField.tap()
         keyField.typeText("abcd-efgh-1234")
-        app.buttons["Apply"].tap()
+        app.buttons["Save"].tap()
 
+        let saveError = app.alerts["Could Not Save Settings"]
+        XCTAssertFalse(
+            saveError.waitForExistence(timeout: 1),
+            "Saving a valid manual key unexpectedly failed: \(saveError.debugDescription)"
+        )
+        XCTAssertFalse(keyField.exists, "Settings should dismiss after a successful Save")
         XCTAssertTrue(settings.waitForExistence(timeout: 5))
         settings.tap()
         let persistedField = app.secureTextFields["YouTube HLS Stream Key"]
@@ -135,8 +141,8 @@ final class TubeistUITests: XCTestCase {
         settings.tap()
         let keyField = app.secureTextFields["YouTube HLS Stream Key"]
         XCTAssertTrue(keyField.waitForExistence(timeout: 5))
-        XCTAssertTrue(app.buttons["Apply"].exists)
-        XCTAssertTrue(app.buttons["Close"].exists)
+        XCTAssertTrue(app.buttons["Save"].exists)
+        XCTAssertTrue(app.buttons["Cancel"].exists)
     }
 
     @MainActor

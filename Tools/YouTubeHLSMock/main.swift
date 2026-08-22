@@ -81,6 +81,7 @@ private struct YouTubeHLSUploaderSocketTest {
             guard first.sequence == 0, second.sequence == 1 else {
                 throw SocketValidationError.unexpectedReceipt(second)
             }
+            try await uploader.finish()
 
         case "reconnect", "timeout":
             let receipt = try await uploader.upload(

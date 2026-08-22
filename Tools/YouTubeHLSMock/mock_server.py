@@ -50,7 +50,7 @@ class ValidationServer(http.server.ThreadingHTTPServer):
         self.records: list[RequestRecord] = []
         self.records_lock = threading.Lock()
         self.expected_requests = {
-            "contract": 4,
+            "contract": 5,
             "reconnect": 3,
             "timeout": 3,
             "stop": 1,
@@ -127,7 +127,7 @@ class ValidationHandler(http.server.BaseHTTPRequestHandler):
         return
 
 
-def expected_playlist(second: bool) -> bytes:
+def expected_playlist(second: bool, end_list: bool = False) -> bytes:
     lines = [
         "#EXTM3U",
         "#EXT-X-VERSION:3",
@@ -139,6 +139,8 @@ def expected_playlist(second: bool) -> bytes:
     ]
     if second:
         lines.extend(["#EXTINF:2.500000,", "tubeist_socket_session_1.ts"])
+    if end_list:
+        lines.append("#EXT-X-ENDLIST")
     return ("\n".join(lines) + "\n").encode()
 
 
@@ -167,10 +169,17 @@ def validate(scenario: str, records: list[RequestRecord]) -> None:
             "tubeist_socket_session_0.ts",
             "tubeist_socket_session.m3u8",
             "tubeist_socket_session_1.ts",
+            "tubeist_socket_session.m3u8",
         ]
         if [record.filename for record in records] != expected_files:
             raise AssertionError("playlist/segment request order or filenames differ")
-        expected_bodies = [expected_playlist(False), b"\x01\x02\x03", expected_playlist(True), b"\x04\x05"]
+        expected_bodies = [
+            expected_playlist(False),
+            b"\x01\x02\x03",
+            expected_playlist(True),
+            b"\x04\x05",
+            expected_playlist(True, end_list=True),
+        ]
         if [record.body for record in records] != expected_bodies:
             raise AssertionError("playlist or segment request bytes differ")
         if len({record.client_port for record in records}) != 1:

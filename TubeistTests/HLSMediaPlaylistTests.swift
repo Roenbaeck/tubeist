@@ -38,6 +38,8 @@ struct HLSMediaPlaylistTests {
         #expect(playlist.entries.map(\.sequence) == [1, 2])
         #expect(playlist.mediaSequence == 1)
         #expect(playlist.targetDuration == 4) // target duration never decreases
+        #expect(!playlist.render().contains("#EXT-X-ENDLIST"))
+        #expect(playlist.render(endList: true).hasSuffix("#EXT-X-ENDLIST\n"))
     }
 
     @Test func capsOutstandingWindowAtFive() throws {
