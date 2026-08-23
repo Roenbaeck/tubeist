@@ -91,6 +91,11 @@ struct StreamerTests {
 
         #expect(appState.youtubeBroadcastId == "next-broadcast")
         #expect(appState.youtubeStatus == "ready")
+        #expect(await actor.activeYouTubeBroadcastID() == "next-broadcast")
+
+        await actor.completeStop()
+        #expect(await actor.activeYouTubeBroadcastID() == nil)
+        #expect(appState.youtubeBroadcastId == "next-broadcast")
     }
 
     @Test @MainActor

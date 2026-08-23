@@ -104,6 +104,32 @@ struct BackgroundExecutionLeaseTests {
         #expect(manager.endedIdentifiers == [manager.taskIdentifier])
     }
 
+    @Test @MainActor
+    func explicitCancellationEndsTheLeaseAndCancelsPendingWork() async throws {
+        let manager = FakeBackgroundTaskManager()
+        let probe = BackgroundLeaseProbe()
+        let lease = BackgroundExecutionLease(manager: manager)
+
+        lease.run(name: "grace-period") {
+            await probe.start(.captureDrain)
+            do {
+                try await Task.sleep(for: .seconds(30))
+                await probe.complete()
+            } catch {
+                await probe.cancel(.captureDrain)
+            }
+        }
+
+        try await waitUntil { await probe.startedStage == .captureDrain }
+        lease.cancel()
+        try await waitUntil { await probe.cancelledStage == .captureDrain }
+
+        #expect(!lease.isActive)
+        #expect(manager.beginCount == 1)
+        #expect(manager.endedIdentifiers == [manager.taskIdentifier])
+        #expect(!(await probe.completed))
+    }
+
     @MainActor
     private func waitUntil(
         timeout: Duration = .seconds(2),

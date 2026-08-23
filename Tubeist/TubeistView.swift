@@ -280,6 +280,10 @@ struct TubeistView: View {
     func stopYouTubePolling() {
         youtubePollingTask?.cancel()
         youtubePollingTask = nil
+        // Keychain-protected OAuth credentials may become unavailable after the
+        // device locks. The explicit Stop path owns completion; status polling
+        // resumes when Tubeist becomes active again.
+        guard !appState.soonGoingToBackground else { return }
         guard let broadcastId = appState.youtubeBroadcastId else {
             appState.youtubeStatus = nil
             return
@@ -1101,6 +1105,16 @@ struct TubeistView: View {
             if newValue && appState.hadToStopStreaming {
                 appState.activeAlert = "The stream was stopped because Tubeist entered the background."
                 appState.hadToStopStreaming = false
+            }
+        }
+        .onChange(of: appState.soonGoingToBackground) { _, isBackgrounded in
+            if isBackgrounded {
+                youtubePollingTask?.cancel()
+                youtubePollingTask = nil
+            } else if appState.isStreamActive {
+                startYouTubePolling()
+            } else if appState.youtubeBroadcastId != nil {
+                stopYouTubePolling()
             }
         }
         .onChange(of: appState.activeMonitor) { _, newMonitor in

@@ -107,19 +107,6 @@ struct YouTubeBroadcastPreferences: Codable, Sendable, Equatable {
     var enableAutoStop: Bool
     var playlistId: String?
 
-    func requiresUpdate(to broadcast: YouTubeBroadcast) -> Bool {
-        title != broadcast.title
-            || privacyStatus != broadcast.privacyStatus
-            || enableDvr != broadcast.enableDvr
-            || latencyPreference != broadcast.latencyPreference
-            || enableMonitorStream != broadcast.enableMonitorStream
-            || broadcastStreamDelayMs != broadcast.broadcastStreamDelayMs
-            || enableEmbed != broadcast.enableEmbed
-            || recordFromStart != broadcast.recordFromStart
-            || enableAutoStart != broadcast.enableAutoStart
-            || enableAutoStop != broadcast.enableAutoStop
-    }
-
     func applying(to broadcast: YouTubeBroadcast) -> YouTubeBroadcast {
         var updated = broadcast
         updated.title = title
@@ -530,7 +517,7 @@ final class YouTubeService {
                 "enableEmbed": broadcast.enableEmbed,
                 "recordFromStart": broadcast.recordFromStart,
                 "enableAutoStart": broadcast.enableAutoStart,
-                "enableAutoStop": broadcast.enableAutoStop,
+                "enableAutoStop": false,
             ],
         ]
 
@@ -797,24 +784,32 @@ final class YouTubeService {
         guard broadcast.lifeCycleStatus == "ready" else {
             throw YouTubeError.broadcastNotReady(broadcast.statusLabel.lowercased())
         }
-        if let preferences, preferences.streamId == selection.stream.id {
-            if preferences.requiresUpdate(to: broadcast) {
-                try await updateBroadcast(
-                    id: broadcast.id,
-                    title: preferences.title,
-                    privacyStatus: preferences.privacyStatus,
-                    scheduledStartTime: broadcast.scheduledStartTime,
-                    enableDvr: preferences.enableDvr,
-                    latencyPreference: preferences.latencyPreference,
-                    enableMonitorStream: preferences.enableMonitorStream,
-                    broadcastStreamDelayMs: preferences.broadcastStreamDelayMs,
-                    enableEmbed: preferences.enableEmbed,
-                    recordFromStart: preferences.recordFromStart,
-                    enableAutoStart: preferences.enableAutoStart,
-                    enableAutoStop: preferences.enableAutoStop
-                )
-                broadcast = preferences.applying(to: broadcast)
-            }
+        let applicablePreferences = preferences?.streamId == selection.stream.id
+            ? preferences
+            : nil
+        var preparedBroadcast = applicablePreferences?.applying(to: broadcast) ?? broadcast
+        // Tubeist explicitly completes signed-in broadcasts after the final HLS
+        // playlist is acknowledged. YouTube auto-stop can otherwise race a
+        // locally buffered tail after an ingestion interruption.
+        preparedBroadcast.enableAutoStop = false
+        if preparedBroadcast != broadcast {
+            try await updateBroadcast(
+                id: broadcast.id,
+                title: preparedBroadcast.title,
+                privacyStatus: preparedBroadcast.privacyStatus,
+                scheduledStartTime: broadcast.scheduledStartTime,
+                enableDvr: preparedBroadcast.enableDvr,
+                latencyPreference: preparedBroadcast.latencyPreference,
+                enableMonitorStream: preparedBroadcast.enableMonitorStream,
+                broadcastStreamDelayMs: preparedBroadcast.broadcastStreamDelayMs,
+                enableEmbed: preparedBroadcast.enableEmbed,
+                recordFromStart: preparedBroadcast.recordFromStart,
+                enableAutoStart: preparedBroadcast.enableAutoStart,
+                enableAutoStop: false
+            )
+            broadcast = preparedBroadcast
+        }
+        if let preferences = applicablePreferences {
             if let thumbnailData {
                 try await uploadThumbnail(videoId: broadcast.id, imageData: thumbnailData)
             }
@@ -943,7 +938,8 @@ final class YouTubeService {
             token: token,
             jsonBody: Data()
         )
-        guard resource.id == id else {
+        guard resource.id == id,
+              resource.status?.lifeCycleStatus == "complete" else {
             throw YouTubeError.invalidResponse
         }
 

@@ -1023,7 +1023,8 @@ struct SettingsView: View {
             enableEmbed: currentBroadcast.enableEmbed,
             recordFromStart: currentBroadcast.recordFromStart,
             enableAutoStart: currentBroadcast.enableAutoStart,
-            enableAutoStop: currentBroadcast.enableAutoStop,
+            // Tubeist owns signed-in completion after the accepted HLS tail.
+            enableAutoStop: false,
             playlistId: selectedPlaylistId
         )
 
