@@ -517,7 +517,7 @@ final class YouTubeService {
                 "enableEmbed": broadcast.enableEmbed,
                 "recordFromStart": broadcast.recordFromStart,
                 "enableAutoStart": broadcast.enableAutoStart,
-                "enableAutoStop": false,
+                "enableAutoStop": true,
             ],
         ]
 
@@ -788,10 +788,10 @@ final class YouTubeService {
             ? preferences
             : nil
         var preparedBroadcast = applicablePreferences?.applying(to: broadcast) ?? broadcast
-        // Tubeist explicitly completes signed-in broadcasts after the final HLS
-        // playlist is acknowledged. YouTube auto-stop can otherwise race a
-        // locally buffered tail after an ingestion interruption.
-        preparedBroadcast.enableAutoStop = false
+        // YouTube owns the final broadcast transition after Tubeist has drained
+        // and closed HLS ingestion. Its backend has the only authoritative view
+        // of when the final accepted media is safe to archive.
+        preparedBroadcast.enableAutoStop = true
         if preparedBroadcast != broadcast {
             try await updateBroadcast(
                 id: broadcast.id,
@@ -805,7 +805,7 @@ final class YouTubeService {
                 enableEmbed: preparedBroadcast.enableEmbed,
                 recordFromStart: preparedBroadcast.recordFromStart,
                 enableAutoStart: preparedBroadcast.enableAutoStart,
-                enableAutoStop: false
+                enableAutoStop: true
             )
             broadcast = preparedBroadcast
         }
@@ -932,6 +932,10 @@ final class YouTubeService {
         defer { endLoading() }
 
         let token = try await getValidAccessToken()
+        try await transitionBroadcastToComplete(id: id, token: token)
+    }
+
+    private func transitionBroadcastToComplete(id: String, token: String) async throws {
         let url = "\(YOUTUBE_API_BASE)/liveBroadcasts/transition?broadcastStatus=complete&id=\(id)&part=status"
         let resource: YouTubeBroadcastResource = try await apiPost(
             url: url,

@@ -513,7 +513,7 @@ struct YouTubeServiceTests {
                 statusCode: 200
             ),
             YouTubeAPIResponse(
-                data: Data(#"{"id":"bound","snippet":{"title":"Previous"},"status":{"privacyStatus":"unlisted","lifeCycleStatus":"ready"},"contentDetails":{"boundStreamId":"stream-1","enableAutoStop":false}}"#.utf8),
+                data: Data(#"{"id":"bound","snippet":{"title":"Previous"},"status":{"privacyStatus":"unlisted","lifeCycleStatus":"ready"},"contentDetails":{"boundStreamId":"stream-1","enableAutoStop":true}}"#.utf8),
                 statusCode: 200
             ),
         ])
@@ -526,7 +526,7 @@ struct YouTubeServiceTests {
 
         #expect(preparation.broadcast.id == "bound")
         #expect(preparation.broadcast.lifeCycleStatus == "ready")
-        #expect(!preparation.broadcast.enableAutoStop)
+        #expect(preparation.broadcast.enableAutoStop)
         let mediaURL = try preparation.endpoint.requestURL(filename: "media_0.ts")
         #expect(mediaURL.host == "a.upload.youtube.com")
         #expect(mediaURL.lastPathComponent == "http_upload_hls")
@@ -534,7 +534,7 @@ struct YouTubeServiceTests {
         #expect(requests.map(\.httpMethod) == ["GET", "GET", "POST", "POST"])
         #expect(requests[2].url?.path.hasSuffix("/liveBroadcasts") == true)
         #expect(requests[3].url?.path.hasSuffix("/liveBroadcasts/bind") == true)
-        #expect(requests[2].httpBody?.range(of: Data(#""enableAutoStop":false"#.utf8)) != nil)
+        #expect(requests[2].httpBody?.range(of: Data(#""enableAutoStop":true"#.utf8)) != nil)
     }
 
     @Test @MainActor
@@ -545,11 +545,11 @@ struct YouTubeServiceTests {
                 statusCode: 200
             ),
             YouTubeAPIResponse(
-                data: Data(#"{"items":[{"id":"ready","snippet":{"title":"Next"},"status":{"privacyStatus":"unlisted","lifeCycleStatus":"ready"},"contentDetails":{"boundStreamId":"stream-1"}}]}"#.utf8),
+                data: Data(#"{"items":[{"id":"ready","snippet":{"title":"Next"},"status":{"privacyStatus":"unlisted","lifeCycleStatus":"ready"},"contentDetails":{"boundStreamId":"stream-1","enableAutoStop":false}}]}"#.utf8),
                 statusCode: 200
             ),
             YouTubeAPIResponse(
-                data: Data(#"{"id":"ready"}"#.utf8),
+                data: Data(#"{"id":"ready","snippet":{"title":"Next"},"status":{"privacyStatus":"unlisted","lifeCycleStatus":"ready"},"contentDetails":{"boundStreamId":"stream-1","enableAutoStop":true}}"#.utf8),
                 statusCode: 200
             ),
         ])
@@ -560,10 +560,10 @@ struct YouTubeServiceTests {
 
         let preparation = try await readyService.prepareForStreaming(streamKey: "test-key")
         #expect(preparation.broadcast.id == "ready")
-        #expect(!preparation.broadcast.enableAutoStop)
+        #expect(preparation.broadcast.enableAutoStop)
         let readyRequests = await readyTransport.requests
         #expect(readyRequests.map(\.httpMethod) == ["GET", "GET", "PUT"])
-        #expect(readyRequests[2].httpBody?.range(of: Data(#""enableAutoStop":false"#.utf8)) != nil)
+        #expect(readyRequests[2].httpBody?.range(of: Data(#""enableAutoStop":true"#.utf8)) != nil)
         #expect(!readyRequests.contains { $0.url?.path.hasSuffix("/liveBroadcasts/bind") == true })
 
         let activeTransport = MockYouTubeAPITransport(responses: [
@@ -630,10 +630,10 @@ struct YouTubeServiceTests {
         #expect(preparation.broadcast.id == "ready")
         #expect(preparation.broadcast.title == "Saved title")
         #expect(preparation.broadcast.privacyStatus == "private")
-        #expect(!preparation.broadcast.enableAutoStop)
+        #expect(preparation.broadcast.enableAutoStop)
         let requests = await transport.requests
         #expect(requests.map(\.httpMethod) == ["GET", "GET", "PUT"])
-        #expect(requests[2].httpBody?.range(of: Data(#""enableAutoStop":false"#.utf8)) != nil)
+        #expect(requests[2].httpBody?.range(of: Data(#""enableAutoStop":true"#.utf8)) != nil)
         #expect(!requests.contains { $0.url?.path.hasSuffix("/liveBroadcasts/bind") == true })
     }
 

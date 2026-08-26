@@ -119,7 +119,6 @@ actor StreamingActor {
     private var mediaIntakeActive = false
     private var isHandlingRuntimeFailure = false
     private var outputPlan: StreamOutputPlan?
-    private var youtubeBroadcastID: String?
 
     func setAppState(_ appState: AppState) {
         self.appState = appState
@@ -137,7 +136,6 @@ actor StreamingActor {
         case .idle, .failed:
             mediaIntakeActive = false
             outputPlan = nil
-            youtubeBroadcastID = nil
             await transition(to: .preparing)
         case .preparing, .live, .stopping:
             throw StreamSessionError.sessionBusy(state)
@@ -157,16 +155,12 @@ actor StreamingActor {
     }
 
     func setYouTubeBroadcast(id: String?, status: String?) async {
-        youtubeBroadcastID = id
         let appState = self.appState
         await MainActor.run {
+            appState?.isYouTubeSignedIn = id != nil
             appState?.youtubeBroadcastId = id
             appState?.youtubeStatus = status
         }
-    }
-
-    func activeYouTubeBroadcastID() -> String? {
-        youtubeBroadcastID
     }
 
     func activeOutputPlan() -> StreamOutputPlan? {
@@ -191,7 +185,6 @@ actor StreamingActor {
         mediaIntakeActive = false
         isHandlingRuntimeFailure = false
         outputPlan = nil
-        youtubeBroadcastID = nil
         await transition(to: .idle)
     }
 
@@ -199,7 +192,6 @@ actor StreamingActor {
         mediaIntakeActive = false
         isHandlingRuntimeFailure = false
         outputPlan = nil
-        youtubeBroadcastID = nil
         await transition(to: .failed(error.localizedDescription))
     }
 
@@ -545,25 +537,6 @@ final class Streamer: Sendable {
         } catch {
             youTubeStatus = .failed(error.localizedDescription)
             LOG("Encoded output shutdown failed: \(error.localizedDescription)", level: .error)
-        }
-        if youTubeStatus.failedMessage == nil,
-           let broadcastID = await streamingActor.activeYouTubeBroadcastID() {
-            do {
-                // Signed-in sessions disable YouTube auto-stop during Start.
-                // Own the lifecycle transition here, strictly after every media
-                // segment and the terminal playlist have been acknowledged.
-                let service = await YouTubeService()
-                try await service.stopBroadcast(id: broadcastID)
-                await streamingActor.setYouTubeBroadcast(id: broadcastID, status: "complete")
-            } catch {
-                youTubeStatus = .failed(
-                    "Final media was accepted, but the YouTube broadcast could not be completed: \(error.localizedDescription)"
-                )
-                LOG(
-                    "YouTube broadcast completion failed after HLS shutdown: \(error.localizedDescription)",
-                    level: .error
-                )
-            }
         }
         let result = StreamStopResult(
             outcome: .stopped,

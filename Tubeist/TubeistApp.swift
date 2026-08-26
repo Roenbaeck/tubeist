@@ -107,6 +107,7 @@ final class AppState {
     var hadToStopStreaming = false
     var isBackgroundStopCommitted = false
     var streamHealth = StreamHealth.silenced
+    var isYouTubeSignedIn = false
     var youtubeStatus: String? = nil
     var youtubeBroadcastId: String? = nil
     var activeAlert: String?

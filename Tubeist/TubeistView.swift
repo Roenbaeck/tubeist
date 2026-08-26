@@ -737,7 +737,16 @@ struct TubeistView: View {
                             .cornerRadius(25)
                             .accessibilityLabel("Settings")
                             .accessibilityHint("Opens streaming, recording, camera, and overlay settings")
-                            .sheet(isPresented: $showSettings) {
+                            .sheet(isPresented: $showSettings, onDismiss: {
+                                youtubeService = YouTubeService()
+                                appState.isYouTubeSignedIn = youtubeService.isSignedIn
+                                if youtubeService.isSignedIn {
+                                    bootstrapYouTubeStatus()
+                                } else {
+                                    appState.youtubeStatus = nil
+                                    appState.youtubeBroadcastId = nil
+                                }
+                            }) {
                                 SettingsView(overlayManager: overlayManager)
                             }
                             .padding(.bottom, 10)
@@ -767,12 +776,13 @@ struct TubeistView: View {
                                 }
                             }
                             
-                            if let ytStatus = appState.youtubeStatus {
+                            if appState.isYouTubeSignedIn,
+                               let ytStatus = appState.youtubeStatus {
                                 var ytColor: Color {
                                     switch ytStatus {
-                                    case "live": return .red
-                                    case "testing": return .orange
-                                    case "ready": return .white
+                                    case "live", "liveStarting": return .red
+                                    case "testing", "testStarting": return .orange
+                                    case "ready": return .green
                                     default: return .gray
                                     }
                                 }
@@ -781,23 +791,12 @@ struct TubeistView: View {
                                         await refreshYouTubeStatusFromIcon()
                                     }
                                 } label: {
-                                    ZStack {
-                                        RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                            .fill(Color(red: 1.0, green: 0.0, blue: 0.0))
-                                            .frame(width: 26, height: 18)
-                                            .overlay {
-                                                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                                    .stroke(ytColor, lineWidth: 2)
-                                                    .padding(-3)
-                                                    .opacity(0.95)
-                                            }
-
-                                        Image(systemName: "play.fill")
-                                            .foregroundColor(.white)
-                                            .font(.system(size: 9, weight: .bold))
-                                    }
+                                    Image(systemName: "play.rectangle.fill")
+                                        .symbolRenderingMode(.monochrome)
+                                        .foregroundStyle(ytColor)
+                                        .font(.system(size: 27, weight: .semibold))
                                     .frame(width: 44, height: 44)
-                                    .opacity(appState.isStreamActive && !isYouTubeRefreshCoolingDown ? 1 : 0.7)
+                                    .opacity(isYouTubeRefreshCoolingDown ? 0.6 : 1)
                                 }
                                 .buttonStyle(.plain)
                                 .disabled(!appState.isStreamActive || isYouTubeRefreshCoolingDown)
@@ -1160,6 +1159,7 @@ struct TubeistView: View {
                 }
             }
             bootstrapYouTubeStatus()
+            appState.isYouTubeSignedIn = youtubeService.isSignedIn
             if appState.isStreamActive {
                 startYouTubePolling()
             }

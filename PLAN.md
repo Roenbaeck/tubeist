@@ -1,7 +1,7 @@
 # Tubeist YouTube-only hardening plan
 
-- Status: repeat-stream and no-litter Settings fixes verified; buffer continuity and Stop-tail fixes await physical acceptance
-- Last reviewed: 2026-08-22
+- Status: repeat-stream and no-litter Settings fixes verified; YouTube-owned auto-stop experiment awaits physical acceptance
+- Last reviewed: 2026-08-23
 - Baseline: codex/direct-youtube-hls at e82bb7b
 - Supersedes: the completed direct-YouTube implementation plan in Git history
 
@@ -23,20 +23,27 @@
   tests, all five local HTTPS socket scenarios, Swift parsing, property-list and
   YouTube-only source checks, and the unsigned generic-device Release build
   pass; physical archive-tail proof remains pending.
-- Signed-in Start now disables YouTube automatic stop for the selected `ready`
-  event, including existing events and newly created successors. Stop retains
-  that event identity, drains and acknowledges the complete HLS tail, publishes
-  and acknowledges `#EXT-X-ENDLIST`, and only then explicitly transitions the
-  event to `complete`, requiring YouTube to confirm that lifecycle state. All
-  106 unit tests, the YouTube-only source check, Swift parsing, property-list
-  checks, and the unsigned generic-device Release build pass; throttled physical
-  proof remains pending.
+- The explicit-completion experiment disabled YouTube automatic stop, drained
+  and acknowledged the HLS tail, published `#EXT-X-ENDLIST`, waited for ingest
+  settlement, and then transitioned the event to `complete`. Physical tests
+  still lost approximately six, four, and two seconds under successively longer
+  waits, so HTTP and live-stream status are not accepted as archive-tail proof.
 - Backgrounding now has a three-second recovery grace period before Stop is
   committed. YouTube status polling pauses immediately to avoid locked-device
   Keychain reads; returning during the grace period preserves the media pipeline
   and same broadcast, while a longer absence proceeds through the normal drained
   Stop path. All 106 unit tests and the unsigned generic-device Release build
   pass; physical interruption/recovery verification remains pending.
+- Signed-in Start now explicitly enables YouTube automatic stop for existing
+  `ready` events and newly created successors. Tubeist Stop still drains and
+  acknowledges all media and `#EXT-X-ENDLIST`, but no longer sends an explicit
+  `complete` transition; YouTube owns completion using its internal ingest and
+  archive state. Wind-down polling keeps the indicator red until YouTube reports
+  a non-live state. The indicator remains monochrome, entirely status-colored,
+  and hidden when the user is not signed in. All 106 unit tests, the YouTube-only
+  source check, Swift parsing, property-list and diff-hygiene checks, and the
+  unsigned generic-device Release build pass; physical archive-tail proof
+  remains pending.
 - The 2026-08-21 repeat-stream, buffer-continuity, and Stop-tail fixes pass all
   103 unit tests on the iPhone 16 Pro iOS 18.2 simulator, Swift parsing, the
   YouTube-only source check, and an unsigned generic-device Release build.
@@ -260,10 +267,9 @@ Stream always selects one YouTube sink.
 - [x] Classify writer callbacks at delegate time, coalesce split final audio and
   video callbacks into one displayed/output segment, and publish a terminal
   playlist after the final segment acknowledgement before closing ingestion.
-- [x] For signed-in streaming, disable YouTube automatic stop during Start and
-  explicitly complete the same broadcast only after terminal playlist
-  acknowledgement; surface transition failure instead of silently claiming a
-  successful Stop.
+- [x] For signed-in streaming, explicitly enable YouTube automatic stop during
+  Start. After terminal playlist acknowledgement, close ingestion without an
+  explicit `complete` transition and poll until YouTube reports the event ended.
 - [ ] Physically verify timestamp-aligned Stop: audio freezes at the button press,
   stabilized video catches up to that instant, and the archive includes the
   spoken Stop marker without an unmatched audio-only tail.

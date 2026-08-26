@@ -402,6 +402,7 @@ struct SettingsView: View {
                                 Task {
                                     await youtubeService.signIn()
                                     if youtubeService.isSignedIn {
+                                        appState.isYouTubeSignedIn = true
                                         await loadYouTubeBroadcast()
                                     }
                                 }
@@ -885,6 +886,7 @@ struct SettingsView: View {
         selectedPlaylistId = nil
         thumbnailImage = nil
         youtubeConfigLoaded = false
+        appState.isYouTubeSignedIn = false
         appState.youtubeStatus = nil
         appState.youtubeBroadcastId = nil
     }
@@ -1023,8 +1025,8 @@ struct SettingsView: View {
             enableEmbed: currentBroadcast.enableEmbed,
             recordFromStart: currentBroadcast.recordFromStart,
             enableAutoStart: currentBroadcast.enableAutoStart,
-            // Tubeist owns signed-in completion after the accepted HLS tail.
-            enableAutoStop: false,
+            // YouTube owns completion after Tubeist closes HLS ingestion.
+            enableAutoStop: true,
             playlistId: selectedPlaylistId
         )
 
