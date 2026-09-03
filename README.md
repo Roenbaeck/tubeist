@@ -6,7 +6,7 @@ Tubeist is a native Swift 6 camera app for recording and streaming HDR video fro
 
 Tubeist is designed for events, sports, education, performances, and other long-form productions where image quality matters more than conversational latency. Watch [Tubeist demos on YouTube](https://youtube.com/playlist?list=PLFnkPgO2HxdAp_YiFVSWVpyak--0y6m5U&si=b2vjD-jVe0FY2egZ).
 
-![Tubeist camera interface with the Blackbright style, Grain effect, and two web overlays](https://github.com/user-attachments/assets/c48ee5ce-86a9-49a1-b859-8c88c4a341d9)
+![Tubeist camera interface without effects](screenshots/6.3-inch/iPhone16_Pro_Without_effects.PNG)
 
 ## Features
 
