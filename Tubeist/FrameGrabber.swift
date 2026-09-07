@@ -348,7 +348,8 @@ private actor FrameTinkerer {
             LOG("Could not create command buffer to render the combined overlay", level: .error)
             return
         }
-        context.render(image, to: texture, commandBuffer: commandBuffer, bounds: image.extent, colorSpace: image.colorSpace ?? CG_COLOR_SPACE)
+        // The imprint kernel expects HLG/BT.2020 RGB, regardless of the overlay's source color space.
+        context.render(image, to: texture, commandBuffer: commandBuffer, bounds: image.extent, colorSpace: CG_COLOR_SPACE)
 
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()

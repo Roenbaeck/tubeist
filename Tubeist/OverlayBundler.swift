@@ -375,8 +375,9 @@ final class OverlayBundler: Sendable {
                 boundingBoxes.append(boundingBox)
             }
         }
+        // Preserve the renderer's source color space so Core Image can convert it to HLG.
         guard let imageComposition = UIImage.composite(images: images),
-              let flippedCIImage = CIImage(image: imageComposition, options: [.expandToHDR: true, .colorSpace: CG_COLOR_SPACE])
+              let flippedCIImage = CIImage(image: imageComposition)
         else {
             LOG("Images could not be combined", level: .error)
             return
