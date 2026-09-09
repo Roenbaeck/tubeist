@@ -909,3 +909,56 @@ kernel void imprint(constant ImprintArguments &args [[buffer(0)]],
             quantizeImprintSample(result.x), quantizeImprintSample(result.y), 0, 0), cbcrPos);
     }
 }
+
+// ----================== OUTPUT PRESENTATION ==================----
+// Read the finished camera buffer; only write the separate display drawable.
+struct OutputPreviewArguments {
+    float lumaOffset;
+    float lumaRange;
+    float chromaRange;
+    float headroom;
+    float2 chromaOffset;
+};
+
+struct OutputPreviewVertex {
+    float4 position [[position]];
+    float2 uv;
+};
+
+vertex OutputPreviewVertex outputPreviewVertex(uint index [[vertex_id]]) {
+    const float2 positions[] = { float2(-1, -1), float2(3, -1), float2(-1, 3) };
+    float2 p = positions[index];
+    return { float4(p, 0, 1), float2((p.x + 1) / 2, (1 - p.y) / 2) };
+}
+
+fragment float4 outputPreviewFragment(
+    OutputPreviewVertex in [[stage_in]],
+    texture2d<float> luma [[texture(0)]],
+    texture2d<float> chroma [[texture(1)]],
+    constant OutputPreviewArguments &args [[buffer(0)]]) {
+    constexpr sampler sample(coord::normalized, address::clamp_to_edge, filter::linear);
+    float y = (luma.sample(sample, in.uv).r * (65535.0 / 64.0) - args.lumaOffset) / args.lumaRange;
+    float2 cbcr = (chroma.sample(sample, in.uv + args.chromaOffset).rg * (65535.0 / 64.0) - 512.0) / args.chromaRange;
+    float r = y + 1.4746 * cbcr.y;
+    float b = y + 1.8814 * cbcr.x;
+    float g = (y - 0.2627 * r - 0.0593 * b) / 0.6780;
+
+    // The same fixed HLG reference used by the compositor, now expressed as
+    // linear BT.2020 EDR. 203-nit graphics white becomes ordinary UI white (1).
+    // The layer is linear with toneMapMode = .never: no second HLG tone map.
+    const float referencePeak = 1000.0 / 203.0;
+    float3 light = imprintHLGToLight(float3(r, g, b)) * referencePeak;
+    float peak = max(light.r, max(light.g, light.b));
+    if (peak > 1.0) {
+        float limit = max(args.headroom, 1.0);
+        float mappedPeak = min(peak, limit);
+        if (limit > 1.0 && limit < referencePeak) {
+            // Preserve SDR values and the slope at white. Compress only HDR
+            // highlights, mapping the reference peak to the available peak.
+            float compression = 1.0 / (limit - 1.0) - 1.0 / (referencePeak - 1.0);
+            mappedPeak = min(1.0 + (peak - 1.0) / (1.0 + compression * (peak - 1.0)), limit);
+        }
+        light *= mappedPeak / peak;
+    }
+    return float4(light, 1);
+}

@@ -405,11 +405,7 @@ struct TubeistView: View {
                             .gesture(magnification)
                             .frame(width: width, height: height)
                             .onAppear {
-                                Task {
-                                    OutputMonitorView.createDisplayLayer()
-                                    appState.refreshOutputView()
-                                    LOG("Viewing output monitor", level: .debug)
-                                }
+                                LOG("Viewing output monitor", level: .debug)
                             }
                             .onTapGesture { location in
                                 if enableFocusAndExposureTap {
@@ -704,6 +700,7 @@ struct TubeistView: View {
                             VStack {
                                 Spacer()
                                 Text("OUTPUT MONITORING")
+                                    .accessibilityIdentifier("output-preview-label")
                                     .font(.system(size: 10))
                                     .foregroundColor(BRIGHTER_THAN_WHITE)
                                     .fontWeight(.black)
@@ -927,6 +924,8 @@ struct TubeistView: View {
                         }
                         fade("Switching to \(appState.activeMonitor) monitor")
                     }
+                    .accessibilityValue(appState.activeMonitor == .output ? "Output" : "Input")
+                    .accessibilityHint("Tap to switch input and output.")
                     
                     SmallButton(imageName: "camera.filters",
                                 foregroundColor: Purchaser.shared.isProductPurchased("tubeist_lifetime_styling") ? showStylingPicker ? .yellow : .white : .red) {

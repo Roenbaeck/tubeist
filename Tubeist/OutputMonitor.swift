@@ -1,76 +1,95 @@
-//
-//  OutputMonitor.swift
-//  Tubeist
-//
-//  Created by Lars Rönnbäck on 2024-12-27.
-//
-
 import SwiftUI
-@preconcurrency import AVFoundation
+import Metal
+import CoreMedia
 
 @MainActor
 struct OutputMonitorView: UIViewControllerRepresentable {
     private static var frameNumber: UInt32 = 0
-    public static var isBatterySavingOn: Bool = false
-    public static private(set) var displayLayer: AVSampleBufferDisplayLayer?
-    
+    static var isBatterySavingOn = false
+    private static weak var controller: OutputMonitorController?
+
     static func enqueue(_ sampleBuffer: CMSampleBuffer) {
-        guard let renderer = displayLayer?.sampleBufferRenderer else {
-            LOG("Cannot enque sample buffer: renderer not yet available", level: .warning)
-            return
-        }
-        frameNumber += 1
-        frameNumber %= 600
-        if isBatterySavingOn && frameNumber % 6 != 0 {
-            return
-        }
-        if renderer.isReadyForMoreMediaData {
-            renderer.enqueue(sampleBuffer)
-        }
-        else if renderer.status == .failed {
-            renderer.flush()
-        }
+        frameNumber = (frameNumber + 1) % 600
+        if isBatterySavingOn && frameNumber % 6 != 0 { return }
+        controller?.enqueue(sampleBuffer)
     }
 
-    static func createDisplayLayer() {
-        if OutputMonitorView.displayLayer == nil {
-            let displayLayer = AVSampleBufferDisplayLayer()
-            if #available(iOS 26.0, *) {
-                displayLayer.preferredDynamicRange = .high
-            }
-            displayLayer.preventsDisplaySleepDuringVideoPlayback = true
-            OutputMonitorView.displayLayer = displayLayer
-            LOG("Created output video display layer", level: .debug)
-        }
+    static func stop() {
+        controller?.stop()
+        controller = nil
     }
 
-    static func deleteDisplayLayer() {
-        OutputMonitorView.displayLayer?.removeFromSuperlayer()
-        OutputMonitorView.displayLayer = nil
+    func makeUIViewController(context: Context) -> OutputMonitorController {
+        let controller = OutputMonitorController()
+        controller.loadViewIfNeeded()
+        Self.controller = controller
+        return controller
     }
-    
-    func makeUIViewController(context: Context) -> UIViewController {
-        let viewController = UIViewController()
-        viewController.loadViewIfNeeded()
-        
-        guard let displayLayer = OutputMonitorView.displayLayer else {
-            LOG("Waiting for display layer to become available", level: .debug) // can happen naturally
-            return viewController
-        }
-        
-        displayLayer.removeFromSuperlayer()
-        displayLayer.videoGravity = .resizeAspect
-        viewController.view.layer.addSublayer(displayLayer)
-        return viewController
-    }
-    
-    func updateUIViewController(_ uiViewController: UIViewController, context: Context) {
-        CATransaction.begin()
-        CATransaction.setAnimationDuration(0)
-        let height = uiViewController.view.bounds.height
-        let width = height * (16.0/9.0)
-        OutputMonitorView.displayLayer?.frame = CGRect(x: 0, y: 0, width: width, height: height)
-        CATransaction.commit()
+
+    func updateUIViewController(_ controller: OutputMonitorController, context: Context) {}
+
+    static func dismantleUIViewController(_ controller: OutputMonitorController, coordinator: ()) {
+        controller.stop()
+        if Self.controller === controller { Self.controller = nil }
     }
 }
 
+@MainActor
+final class OutputMonitorController: UIViewController {
+    private var metalView: MetalOutputView?
+    private var errorLabel: UILabel?
+
+    override func loadView() {
+        view = UIView()
+        view.backgroundColor = .black
+        view.isOpaque = true
+    }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        do {
+            guard let device = MTLCreateSystemDefaultDevice() else { throw OutputPreviewError.unavailable }
+            let metalView = try MetalOutputView(previewDevice: device)
+            metalView.onFailure = { [weak self] error in self?.show(error) }
+            view.addSubview(metalView)
+            self.metalView = metalView
+        } catch {
+            show(error)
+        }
+        view.setNeedsLayout()
+        LOG("Created output monitor", level: .debug)
+    }
+
+    func enqueue(_ sampleBuffer: CMSampleBuffer) {
+        metalView?.enqueue(sampleBuffer)
+    }
+
+    func stop() {
+        metalView?.stop()
+        metalView?.removeFromSuperview()
+        metalView = nil
+        errorLabel?.removeFromSuperview()
+        errorLabel = nil
+    }
+
+    private func show(_ error: Error) {
+        guard errorLabel == nil else { return }
+        metalView?.stop()
+        let label = UILabel()
+        label.text = "\(error.localizedDescription)\nTap Monitor to return to input."
+        label.numberOfLines = 0
+        label.textAlignment = .center
+        label.textColor = .white
+        label.backgroundColor = .black
+        view.addSubview(label)
+        errorLabel = label
+        view.setNeedsLayout()
+        LOG(error.localizedDescription, level: .error)
+    }
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        metalView?.frame = view.bounds
+        errorLabel?.frame = view.bounds.insetBy(dx: 24, dy: 24)
+    }
+}

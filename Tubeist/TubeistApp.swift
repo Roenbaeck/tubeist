@@ -170,7 +170,7 @@ struct TubeistApp: App {
                     appState.justCameFromBackground = false
                     appState.isBackgroundStopCommitted = false
                     LOG("App is entering background", level: .debug)
-                    OutputMonitorView.deleteDisplayLayer()
+                    OutputMonitorView.stop()
                     CameraMonitorView.deletePreviewLayer()
                     backgroundExecutionLease.run(name: "Finalize Tubeist stream") {
                         do {
@@ -236,7 +236,6 @@ struct TubeistApp: App {
                         await CameraMonitorView.createPreviewLayer()
                         appState.refreshCameraView()
                         if appState.activeMonitor == .output {
-                            OutputMonitorView.createDisplayLayer()
                             appState.refreshOutputView()
                         }
                         await Streamer.shared.setMonitor(appState.activeMonitor)

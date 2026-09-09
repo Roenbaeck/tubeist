@@ -61,6 +61,56 @@ final class TubeistUITests: XCTestCase {
     }
 
     @MainActor
+    func testOutputPreviewCanBeOpenedAndRestored() throws {
+        let app = launchForUITesting()
+        let monitor = app.buttons["Monitor selection"]
+        let label = app.staticTexts["output-preview-label"]
+        let metalPreview = app.otherElements["metal-output-preview"]
+        let unavailablePreview = app.staticTexts[
+            "Output preview is unavailable.\nTap Monitor to return to input."
+        ]
+
+        func checkMetalPreview() {
+            // Virtual CI hosts may not expose a Metal device. The monitor
+            // toggle must still work and explain how to return to input.
+            XCTAssertTrue(metalPreview.waitForExistence(timeout: 3) || unavailablePreview.exists)
+        }
+
+        func openOutput() {
+            XCTAssertEqual(monitor.value as? String, "Input")
+            monitor.tap()
+            XCTAssertTrue(label.waitForExistence(timeout: 3))
+            XCTAssertEqual(label.label, "OUTPUT MONITORING")
+            XCTAssertEqual(monitor.value as? String, "Output")
+            checkMetalPreview()
+        }
+
+        openOutput()
+
+        XCUIDevice.shared.press(.home)
+        app.activate()
+        XCTAssertTrue(label.waitForExistence(timeout: 5))
+        checkMetalPreview()
+        XCTAssertEqual(label.label, "OUTPUT MONITORING")
+
+        monitor.tap()
+        XCTAssertFalse(label.exists)
+        XCTAssertFalse(metalPreview.exists)
+        openOutput()
+
+        app.terminate()
+        app.launch()
+        XCTAssertTrue(monitor.waitForExistence(timeout: 5))
+        openOutput()
+
+        monitor.tap()
+        XCTAssertFalse(metalPreview.exists)
+        XCTAssertFalse(unavailablePreview.exists)
+        XCTAssertFalse(label.exists)
+        XCTAssertEqual(monitor.value as? String, "Input")
+    }
+
+    @MainActor
     func testCancellingSettingsDiscardsStreamKeyDraft() throws {
         let app = XCUIApplication()
         app.launchArguments = ["-ui-testing"]
