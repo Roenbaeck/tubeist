@@ -127,6 +127,81 @@ final class TubeistUITests: XCTestCase {
     }
 
     @MainActor
+    func testOverlayOrderCanBeSavedAndCancelled() throws {
+        let originalOrientation = XCUIDevice.shared.orientation
+        XCUIDevice.shared.orientation = .landscapeRight
+        defer { XCUIDevice.shared.orientation = originalOrientation }
+        let app = launchForUITesting()
+        app.buttons["Settings"].tap()
+        let keyField = app.secureTextFields["YouTube HLS Stream Key"]
+        XCTAssertTrue(keyField.waitForExistence(timeout: 5))
+        keyField.tap()
+        keyField.typeText("abcd-efgh-1234\n")
+
+        func scrollTo(_ element: XCUIElement) {
+            let form = app.collectionViews.firstMatch
+            XCTAssertTrue(form.exists)
+            for _ in 0..<25 {
+                if element.exists && element.isHittable { return }
+                form.swipeUp()
+            }
+            XCTAssertTrue(element.isHittable, "Could not reach \(element)\n\(app.debugDescription)")
+        }
+
+        let suffix = UUID().uuidString.prefix(8)
+        let backURL = "http://127.0.0.1:9/back-\(suffix)"
+        let frontURL = "http://127.0.0.1:9/front-\(suffix)"
+        let urlField = app.textFields["New Overlay URL"]
+        for url in [backURL, frontURL] {
+            scrollTo(urlField)
+            urlField.tap()
+            urlField.typeText(url)
+            app.buttons["Add overlay"].tap()
+            urlField.typeText("\n")
+        }
+
+        func openOrder() {
+            let reorder = app.buttons["reorder-overlays"]
+            scrollTo(reorder)
+            reorder.tap()
+            XCTAssertTrue(app.navigationBars["Overlay Order"].waitForExistence(timeout: 3))
+        }
+        func row(_ url: String) -> XCUIElement {
+            app.cells.containing(.staticText, identifier: "overlay-order-\(url)").firstMatch
+        }
+        func moveBelow(_ source: String, _ destination: String) {
+            let start = row(source).coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.5))
+            let end = row(destination).coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.9))
+            start.press(forDuration: 0.5, thenDragTo: end)
+        }
+
+        openOrder()
+        XCTAssertLessThan(row(frontURL).frame.minY, row(backURL).frame.minY, "New overlay should start on top")
+        moveBelow(frontURL, backURL)
+        XCTAssertLessThan(row(backURL).frame.minY, row(frontURL).frame.minY)
+        app.buttons["Done"].tap()
+        app.buttons["Save"].tap()
+        XCTAssertTrue(app.buttons["Settings"].waitForExistence(timeout: 5))
+
+        app.terminate()
+        app.launch()
+        XCTAssertTrue(app.buttons["Settings"].waitForExistence(timeout: 5))
+        app.buttons["Settings"].tap()
+        openOrder()
+        XCTAssertLessThan(row(backURL).frame.minY, row(frontURL).frame.minY, "Save should preserve the new order")
+        moveBelow(backURL, frontURL)
+        XCTAssertLessThan(row(frontURL).frame.minY, row(backURL).frame.minY)
+        app.buttons["Done"].tap()
+        app.buttons["Cancel"].tap()
+
+        app.buttons["Settings"].tap()
+        openOrder()
+        XCTAssertLessThan(row(backURL).frame.minY, row(frontURL).frame.minY, "Cancel should discard the draft order")
+        app.buttons["Done"].tap()
+        app.buttons["Cancel"].tap()
+    }
+
+    @MainActor
     func testEssentialControlsRemainReachableAtLargestDynamicTypeSize() throws {
         let app = launchForUITesting(additionalArguments: [
             "-UIPreferredContentSizeCategoryName",

@@ -71,6 +71,8 @@ The interface displays operational information—including current throughput, u
 
 Web overlays can add live graphics and information to the encoded output. Tubeist also includes visual styles and effects that can be combined with overlays while recording or streaming. Some styles and effects are available through an in-app purchase.
 
+In Settings, overlays are listed from front to back: the top row appears above the others in both INPUT and OUTPUT. New overlays start on top. Tap **Reorder overlays** in the Overlays section, drag the handles, and tap **Done**, then **Save** to apply the order. **Cancel** in Settings discards the draft changes.
+
 ## iOS behavior
 
 iOS does not permit indefinite camera capture in the background. If Tubeist moves to the background during capture, it stops capture and uses finite background execution time to finalize the local recording and accepted YouTube tail. Keep the app in the foreground for an active stream. When no stream is running, an expected background camera-preview interruption is recovered silently when Tubeist returns to the foreground.

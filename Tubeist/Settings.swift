@@ -91,6 +91,7 @@ struct OverlaySetting: Identifiable, Codable, Hashable {
 
 @Observable
 class OverlaySettingsManager {
+    // Persisted back to front. Appending puts a new overlay above existing ones.
     var overlays: [OverlaySetting] = []
 
     init() {
@@ -322,7 +323,9 @@ struct SettingsView: View {
     @State private var isYouTubeRefreshCoolingDown: Bool = false
     @State private var editingOverlay: OverlaySetting? = nil
     @State private var editedOverlayURL: String = ""
+    // Settings presents the stack front to back, with the top layer first.
     @State private var overlayDraft: [OverlaySetting] = []
+    @State private var showingOverlayOrder = false
     @State private var isSaving = false
     @State private var saveErrorMessage: String?
         
@@ -681,7 +684,7 @@ struct SettingsView: View {
                     }
                 }
                 
-                Section(header: Text("Overlays"), footer: Text("Add multiple web overlay URLs that will be imprinted onto the video frames. Overlays are updated on content changes and at most once per second. Audio is captured from the last playing overlay if audio from multiple overlays overlap.")) {
+                Section {
                     ForEach(overlayDraft) { overlay in
                         Button {
                             editingOverlay = overlay
@@ -710,7 +713,15 @@ struct SettingsView: View {
                             Image(systemName: "plus.circle.fill")
                                 .frame(width: 44, height: 44)
                         }
+                        .accessibilityLabel("Add overlay")
                     }
+                    Button("Reorder overlays") { showingOverlayOrder = true }
+                        .disabled(overlayDraft.count < 2)
+                        .accessibilityIdentifier("reorder-overlays")
+                } header: {
+                    Text("Overlays")
+                } footer: {
+                    Text("The top overlay in this list appears in front in both INPUT and OUTPUT. New overlays are added on top. Tap Reorder overlays to change the stack, then Save to apply it. Overlays are updated on content changes and at most once per second. Audio is captured from the last playing overlay if audio from multiple overlays overlap.")
                 }
                 
                 Section(header: Text("Journal"), footer: Text("Configure which types of messages to record in the journal")) {
@@ -820,7 +831,7 @@ struct SettingsView: View {
             .disabled(isSaving)
             .buttonStyle(.borderedProminent))
             .onAppear {
-                overlayDraft = overlayManager.overlays
+                overlayDraft = Array(overlayManager.overlays.reversed())
                 if let preset = try? JSONDecoder().decode(Preset.self, from: selectedPresetData) {
                     selectedPreset = preset
                 } else {
@@ -868,6 +879,9 @@ struct SettingsView: View {
                     )
                 }
             }
+            .sheet(isPresented: $showingOverlayOrder) {
+                OverlayOrderView(overlays: $overlayDraft)
+            }
         }
     }
 
@@ -912,7 +926,7 @@ struct SettingsView: View {
         let trimmedURL = newOverlayURL.trimmingCharacters(in: .whitespacesAndNewlines)
         guard OverlayURLValidator.isAllowed(trimmedURL),
               !overlayDraft.contains(where: { $0.url == trimmedURL }) else { return }
-        overlayDraft.append(OverlaySetting(url: trimmedURL))
+        overlayDraft.insert(OverlaySetting(url: trimmedURL), at: 0)
         newOverlayURL = ""
     }
 
@@ -1073,7 +1087,7 @@ struct SettingsView: View {
         Settings.journalInfo = journalInfo
         Settings.journalDebug = journalDebug
         Settings.youtubeSelectedPlaylistId = selectedPlaylistId
-        overlayManager.replaceOverlays(with: overlayDraft)
+        overlayManager.replaceOverlays(with: Array(overlayDraft.reversed()))
 #if DEBUG
         Settings.captureRemuxFixtures = captureRemuxFixtures
         Settings.recordHLSAcceptance = recordHLSAcceptance

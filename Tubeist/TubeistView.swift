@@ -1089,6 +1089,10 @@ struct TubeistView: View {
         }
         .edgesIgnoringSafeArea(.all)
         .persistentSystemOverlays(.hidden)
+        .onChange(of: overlayManager.overlays) {
+            // Reordering existing views does not take a new WebKit snapshot.
+            Task { await OverlayBundler.shared.combineOverlayImages() }
+        }
         .onChange(of: appState.isBatterySavingOn) { oldValue, newValue in
             appState.isAudioLevelRunning = !appState.isBatterySavingOn
             if newValue {

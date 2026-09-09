@@ -779,7 +779,15 @@ struct ImprintArguments {
     uint offsetY;
     uint widthRatio;
     uint heightRatio;
+    uint videoRange;
 };
+
+float quantizeImprintSample(float value) {
+    // CVPixelBuffer stores ten-bit codes in the high bits of each 16-bit word.
+    // Round before storing: leaving fractional codes in the low bits biases
+    // the subsequent ten-bit read toward darker values.
+    return clamp(round(value * (65535.0 / 64.0)), 0.0, 1023.0) * (64.0 / 65535.0);
+}
 
 kernel void imprint(constant ImprintArguments &args [[buffer(0)]],
                     texture2d<float, access::read_write> yTexture [[texture(0)]],
@@ -795,21 +803,26 @@ kernel void imprint(constant ImprintArguments &args [[buffer(0)]],
     float overlayY = dot(overlay.rgb, float3(0.2627, 0.6780, 0.0593));
     
     float alpha = overlay.a;
-    // This is a simplified "delinearization" of alpha, where 0.42 = 1 / 2.4 (gamma)
-    float adjustedAlpha = alpha * (alpha + (0.42 * (1.0 - alpha)));
-    float blendedY = overlayY * alpha + y * (1.0 - adjustedAlpha);
+    // Core Image supplies premultiplied HLG RGB. Apply source-over once;
+    // alpha is coverage and must not have a transfer function applied to it.
+    // Video-range 10-bit samples occupy the most significant bits of R16Unorm.
+    float lumaScale = (args.videoRange ? 876.0 : 1023.0) * (64.0 / 65535.0);
+    float lumaOffset = args.videoRange ? (64.0 * 64.0 / 65535.0) : 0.0;
+    float blendedY = overlayY * lumaScale + lumaOffset * alpha + y * (1.0 - alpha);
     
-    yTexture.write(blendedY, pos);
+    yTexture.write(quantizeImprintSample(blendedY), pos);
     
     if ((pos.x % args.widthRatio == 0) && (pos.y % args.heightRatio == 0)) {
         uint2 cbcrGid = pos / uint2(args.widthRatio, args.heightRatio);
         float4 cbcr = cbcrTexture.read(cbcrGid);
-        float overlayCb = (overlay.b - overlayY) / 1.8814 + 0.5;
-        float overlayCr = (overlay.r - overlayY) / 1.4746 + 0.5;
+        // Chroma is centered at 512: full range 1...1023, video range 64...960.
+        float chromaScale = (args.videoRange ? 896.0 : 1022.0) * (64.0 / 65535.0);
+        float chromaCenter = 512.0 * 64.0 / 65535.0;
+        float overlayCb = (overlay.b - overlayY) / 1.8814 * chromaScale + chromaCenter * alpha;
+        float overlayCr = (overlay.r - overlayY) / 1.4746 * chromaScale + chromaCenter * alpha;
         cbcrTexture.write(float4(
-            mix(cbcr.r, overlayCb, adjustedAlpha),
-            mix(cbcr.g, overlayCr, adjustedAlpha),
+            quantizeImprintSample(overlayCb + cbcr.r * (1.0 - alpha)),
+            quantizeImprintSample(overlayCr + cbcr.g * (1.0 - alpha)),
             0, 0), cbcrGid);
     }
 }
-

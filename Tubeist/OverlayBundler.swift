@@ -10,6 +10,7 @@
 import WebKit
 
 extension UIImage {
+    // Images are ordered back to front, just like the INPUT monitor's ZStack.
     static func composite(images: [UIImage]) -> UIImage? {
         guard let firstImage = images.first else { return nil }
         let size = firstImage.size
@@ -21,7 +22,7 @@ extension UIImage {
         let renderer = UIGraphicsImageRenderer(size: size, format: format)
 
         let composedImage = renderer.image { context in
-            for image in images.reversed() { // Draw from back to front
+            for image in images {
                 image.draw(in: CGRect(origin: .zero, size: size))
             }
         }
@@ -290,28 +291,23 @@ final class Overlay: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
 
 actor OverlayBundleActor {
     private var url2overlay: [URL: Overlay] = [:]
-    private var order: [URL] = []
     func addOverlay(url: URL, overlay: Overlay) {
-        if url2overlay[url] == nil {
-            order.append(url)
-        }
         url2overlay[url] = overlay
     }
     func removeOverlay(url: URL) async {
         guard let overlay = url2overlay.removeValue(forKey: url) else { return }
-        order.removeAll { $0 == url }
         await overlay.prepareForRemoval()
     }
-    func getOverlays() -> [Overlay] {
+    func getOverlays(in order: [URL]) -> [Overlay] {
+        // Web views can register in any order. Only the saved layer order counts.
         order.compactMap { url2overlay[$0] }
     }
     func removeAllOverlays() async {
-        let overlays = getOverlays()
+        let overlays = Array(url2overlay.values)
         await MainActor.run {
             overlays.forEach { $0.prepareForRemoval() }
         }
         url2overlay.removeAll()
-        order.removeAll()
     }
 }
 
@@ -345,11 +341,15 @@ final class OverlayBundler: Sendable {
     
     func refreshCombinedImage() {
         Task {
-            let overlays = await overlayBundle.getOverlays()
+            let overlays = await overlayBundle.getOverlays(in: savedOverlayOrder)
             for overlay in overlays {
                 await overlay.captureWebViewImageOrSchedule()
             }
         }
+    }
+
+    private var savedOverlayOrder: [URL] {
+        OverlaySettingsManager.loadOverlaysFromStorage().compactMap { URL(string: $0.url) }
     }
 
     func combineOverlayImages() async {
@@ -358,12 +358,15 @@ final class OverlayBundler: Sendable {
             await FrameGrabber.shared.setCombinedOverlay(nil)
             return
         }
+        let order = savedOverlayOrder
         var images: [UIImage] = []
-        for overlay in await overlayBundle.getOverlays() {
+        for overlay in await overlayBundle.getOverlays(in: order) {
             if let image = await overlay.getOverlayImage() {
                 images.append(image)
             }
         }
+        // A Settings save may have changed the stack while snapshots were read.
+        guard order == savedOverlayOrder else { return }
         if images.isEmpty {
             LOG("There are no images to combine", level: .debug)
             await FrameGrabber.shared.setCombinedOverlay(nil)
@@ -396,6 +399,7 @@ final class OverlayBundler: Sendable {
         LOG("Combined \(images.count) images to single overlay with color space: \(colorSpace ?? "unknown")", level: .debug)
         let coveragePercentage = Int(100 * (combinedOverlay.coverage))
         LOG("Bounding boxes: \(String(describing: combinedOverlay.boundingBoxes)) covering \(coveragePercentage)%", level: .debug)
+        guard order == savedOverlayOrder else { return }
         await FrameGrabber.shared.setCombinedOverlay(combinedOverlay)
     }
 }

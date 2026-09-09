@@ -29,13 +29,6 @@ struct KernelSettings {
     var args: MTLBuffer // of type KernelArguments
 }
 
-struct ImprintArguments {
-    var offsetX: UInt32 = 0
-    var offsetY: UInt32 = 0
-    var widthRatio: UInt32 = 1
-    var heightRatio: UInt32 = 1
-}
-
 private actor FrameTinkerer {
     // frame grabbing settings
     private var grabbingFrames: Bool = false
@@ -59,6 +52,8 @@ private actor FrameTinkerer {
     private var overlayTexture: MTLTexture?
     private var imprintPipeline: MTLComputePipelineState?
     private var boundingBoxData: [(MTLBuffer, MTLSize, MTLSize)] = []
+    private var imprintArguments = ImprintArguments()
+    private var pixelFormat: OSType?
     
     // resettable
     private var measureTextures: Bool = true
@@ -281,9 +276,7 @@ private actor FrameTinkerer {
         let threadsPerThreadgroup = MTLSizeMake(w, h, 1)
 
         if combinedOverlay.coverage > 0.75 {
-            var imprintArguments = ImprintArguments()
-            imprintArguments.widthRatio = lumaChromaWidthRatio
-            imprintArguments.heightRatio = lumaChromaHeightRatio
+            var imprintArguments = self.imprintArguments
             imprintArguments.offsetX = 0
             imprintArguments.offsetY = 0
 
@@ -304,9 +297,7 @@ private actor FrameTinkerer {
         }
         else {
             for box in combinedOverlay.boundingBoxes {
-                var imprintArguments = ImprintArguments()
-                imprintArguments.widthRatio = lumaChromaWidthRatio
-                imprintArguments.heightRatio = lumaChromaHeightRatio
+                var imprintArguments = self.imprintArguments
                 imprintArguments.offsetX = UInt32(box.origin.x)
                 imprintArguments.offsetY = UInt32(box.origin.y)
 
@@ -371,7 +362,8 @@ private actor FrameTinkerer {
             return false
         }
 
-        if measureTextures {
+        let currentPixelFormat = CVPixelBufferGetPixelFormatType(pixelBuffer)
+        if measureTextures || pixelFormat != currentPixelFormat {
             let measuredLumaWidth = CVPixelBufferGetWidthOfPlane(pixelBuffer, 0)
             let measuredLumaHeight = CVPixelBufferGetHeightOfPlane(pixelBuffer, 0)
             let measuredChromaWidth = CVPixelBufferGetWidthOfPlane(pixelBuffer, 1)
@@ -389,6 +381,10 @@ private actor FrameTinkerer {
             chromaHeight = measuredChromaHeight
             lumaChromaWidthRatio = UInt32(lumaWidth / chromaWidth)
             lumaChromaHeightRatio = UInt32(lumaHeight / chromaHeight)
+            pixelFormat = currentPixelFormat
+            imprintArguments.widthRatio = lumaChromaWidthRatio
+            imprintArguments.heightRatio = lumaChromaHeightRatio
+            imprintArguments.setPixelFormat(currentPixelFormat)
             
             for kernel in kernels.keys {
                 let args = kernels[kernel]!.args
@@ -400,6 +396,7 @@ private actor FrameTinkerer {
                 let argsPointer = args.contents().bindMemory(to: ImprintArguments.self, capacity: 1)
                 argsPointer.pointee.widthRatio = lumaChromaWidthRatio
                 argsPointer.pointee.heightRatio = lumaChromaHeightRatio
+                argsPointer.pointee.videoRange = imprintArguments.videoRange
             }
 
             threadsPerGrid = MTLSize(
