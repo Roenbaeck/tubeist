@@ -11,6 +11,10 @@ concurrency:
   group: tubeist-${{ github.ref }}
   cancel-in-progress: true
 
+# The output monitor's HDR preference requires the iOS 26 SDK.
+env:
+  DEVELOPER_DIR: /Applications/Xcode_26.2.app/Contents/Developer
+
 jobs:
   source-policy:
     runs-on: macos-15
@@ -37,7 +41,7 @@ jobs:
           xcodebuild test
           -project Tubeist.xcodeproj
           -scheme Tubeist
-          -destination 'platform=iOS Simulator,OS=latest,name=iPhone 16 Pro'
+          -destination 'platform=iOS Simulator,OS=26.2,name=iPhone 16 Pro'
           -derivedDataPath '${{ runner.temp }}/TubeistDerivedData'
           -parallel-testing-enabled NO
       - name: Analyze Debug

@@ -29,7 +29,7 @@ Tubeist is available on the [App Store](https://apps.apple.com/us/app/tubeist/id
 To build from source:
 
 1. Clone this repository.
-2. Open `Tubeist.xcodeproj` in Xcode.
+2. Open `Tubeist.xcodeproj` in Xcode 26 or later (CI uses Xcode 26.2).
 3. Select your development team and a connected iPhone.
 4. Build and run.
 
