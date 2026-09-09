@@ -191,11 +191,29 @@ final class TubeistUITests: XCTestCase {
         func scrollTo(_ element: XCUIElement) {
             let form = app.collectionViews.firstMatch
             XCTAssertTrue(form.exists)
-            for _ in 0..<25 {
-                if element.exists && element.isHittable { return }
-                form.swipeUp()
+            let window = app.windows.firstMatch
+            for _ in 0..<40 {
+                let bounds = window.frame
+                let top = app.navigationBars.firstMatch.frame.maxY + 8
+                let bottom = app.keyboards.firstMatch.exists
+                    ? app.keyboards.firstMatch.frame.minY - 8 : bounds.maxY - 24
+                let target = element.exists ? element.frame : nil
+                if let target, target.minY >= top, target.maxY <= bottom, element.isHittable { return }
+
+                // Short, overlapping scrolls cannot jump past a control.
+                // Keep the entire target clear of the navigation bar/keyboard;
+                // isHittable alone can accept a partially covered button.
+                let middle = (top + bottom) / 2
+                let distance = min(60, (bottom - top) / 4)
+                let direction: CGFloat = target.map { $0.minY < top ? -1 : 1 } ?? 1
+                let origin = window.coordinate(withNormalizedOffset: .zero)
+                let start = origin.withOffset(CGVector(dx: bounds.width / 2,
+                                                       dy: middle + direction * distance - bounds.minY))
+                let end = origin.withOffset(CGVector(dx: bounds.width / 2,
+                                                     dy: middle - direction * distance - bounds.minY))
+                start.press(forDuration: 0.05, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 0.1)
             }
-            XCTAssertTrue(element.isHittable, "Could not reach \(element)\n\(app.debugDescription)")
+            XCTFail("Could not reach \(element)\n\(app.debugDescription)")
         }
 
         let suffix = UUID().uuidString.prefix(8)
@@ -220,15 +238,35 @@ final class TubeistUITests: XCTestCase {
             app.cells.containing(.staticText, identifier: "overlay-order-\(url)").firstMatch
         }
         func moveBelow(_ source: String, _ destination: String) {
-            let start = row(source).coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.5))
-            let end = row(destination).coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.9))
-            start.press(forDuration: 0.5, thenDragTo: end)
+            let sourceFrame = row(source).frame
+            let destinationFrame = row(destination).frame
+            let window = app.windows.firstMatch
+            let windowFrame = window.frame
+            let origin = window.coordinate(withNormalizedOffset: .zero)
+            // Anchor the gesture to the window: the destination row moves
+            // while reordering. Give slower CI simulators time to accept the
+            // drag and settle the drop before checking the final row order.
+            let start = origin.withOffset(CGVector(
+                dx: sourceFrame.minX + sourceFrame.width * 0.95 - windowFrame.minX,
+                dy: sourceFrame.midY - windowFrame.minY
+            ))
+            let end = origin.withOffset(CGVector(
+                dx: destinationFrame.minX + destinationFrame.width * 0.95 - windowFrame.minX,
+                dy: destinationFrame.minY + destinationFrame.height * 0.9 - windowFrame.minY
+            ))
+            start.press(forDuration: 1, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 1)
+            let reordered = XCTNSPredicateExpectation(
+                predicate: NSPredicate { _, _ in
+                    row(destination).frame.minY < row(source).frame.minY
+                }, object: nil
+            )
+            XCTAssertEqual(XCTWaiter.wait(for: [reordered], timeout: 5), .completed,
+                           "Dragging \(source) below \(destination) should change their order")
         }
 
         openOrder()
         XCTAssertLessThan(row(frontURL).frame.minY, row(backURL).frame.minY, "New overlay should start on top")
         moveBelow(frontURL, backURL)
-        XCTAssertLessThan(row(backURL).frame.minY, row(frontURL).frame.minY)
         app.buttons["Done"].tap()
         app.buttons["Save"].tap()
         XCTAssertTrue(app.buttons["Settings"].waitForExistence(timeout: 5))
@@ -240,7 +278,6 @@ final class TubeistUITests: XCTestCase {
         openOrder()
         XCTAssertLessThan(row(backURL).frame.minY, row(frontURL).frame.minY, "Save should preserve the new order")
         moveBelow(backURL, frontURL)
-        XCTAssertLessThan(row(frontURL).frame.minY, row(backURL).frame.minY)
         app.buttons["Done"].tap()
         app.buttons["Cancel"].tap()
 
