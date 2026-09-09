@@ -789,40 +789,123 @@ float quantizeImprintSample(float value) {
     return clamp(round(value * (65535.0 / 64.0)), 0.0, 1023.0) * (64.0 / 65535.0);
 }
 
+float imprintHLGDecode(float value) {
+    float x = abs(value);
+    float linear = x <= 0.5 ? x * x / 3.0
+        : (exp((x - 0.55991073) / 0.17883277) + 0.28466892) / 12.0;
+    return copysign(linear, value);
+}
+
+float imprintHLGEncode(float value) {
+    float x = abs(value);
+    float encoded = x <= 1.0 / 12.0 ? sqrt(3.0 * x)
+        : 0.17883277 * log(12.0 * x - 0.28466892) + 0.55991073;
+    return copysign(encoded, value);
+}
+
+constant float3 imprintLumaWeights = float3(0.2627, 0.6780, 0.0593);
+
+// BT.2100 HLG reference display light: inverse OETF followed by the OOTF.
+// Use the fixed 1,000-nit reference's system gamma (1.2), never screen headroom.
+// Return light normalized to that reference peak; the web conversion below
+// anchors SDR graphics white at 203 nits.
+float3 imprintHLGToLight(float3 rgb) {
+    float3 scene = float3(imprintHLGDecode(rgb.r), imprintHLGDecode(rgb.g), imprintHLGDecode(rgb.b));
+    return scene * pow(max(abs(dot(scene, imprintLumaWeights)), 1e-12), 0.2);
+}
+
+float3 imprintLightToHLG(float3 light) {
+    float3 scene = light * pow(max(abs(dot(light, imprintLumaWeights)), 1e-12), 1.0 / 1.2 - 1.0);
+    return float3(imprintHLGEncode(scene.r), imprintHLGEncode(scene.g), imprintHLGEncode(scene.b));
+}
+
+float imprintSRGBEncode(float value) {
+    float x = abs(value);
+    return copysign(x <= 0.0031308 ? 12.92 * x : 1.055 * pow(x, 1.0 / 2.4) - 0.055, value);
+}
+
+float imprintSRGBDecode(float value) {
+    float x = abs(value);
+    return copysign(x <= 0.04045 ? x / 12.92 : pow((x + 0.055) / 1.055, 2.4), value);
+}
+
+// Evaluate web-style source-over in extended sRGB. These are only temporary
+// shader values: negative and above-white components remain unclipped, and
+// the camera buffer itself stays HLG/BT.2020. 203 nits anchors graphics white.
+float3 imprintHLGToWebRGB(float3 rgb) {
+    float3 light = imprintHLGToLight(rgb) * (1000.0 / 203.0);
+    float3 srgb = float3(
+        dot(light, float3(1.660491002, -0.587641139, -0.072849863)),
+        dot(light, float3(-0.124550475, 1.132899897, -0.008349423)),
+        dot(light, float3(-0.018150763, -0.100578898, 1.118729661)));
+    return float3(imprintSRGBEncode(srgb.r), imprintSRGBEncode(srgb.g), imprintSRGBEncode(srgb.b));
+}
+
+float3 imprintWebRGBToHLG(float3 rgb) {
+    float3 srgb = float3(imprintSRGBDecode(rgb.r), imprintSRGBDecode(rgb.g), imprintSRGBDecode(rgb.b));
+    float3 light = float3(
+        dot(srgb, float3(0.627403896, 0.329283038, 0.043313066)),
+        dot(srgb, float3(0.069097289, 0.919540395, 0.011362316)),
+        dot(srgb, float3(0.016391439, 0.088013308, 0.895595253)));
+    return imprintLightToHLG(light * (203.0 / 1000.0));
+}
+
 kernel void imprint(constant ImprintArguments &args [[buffer(0)]],
                     texture2d<float, access::read_write> yTexture [[texture(0)]],
                     texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
                     texture2d<float, access::read> overlayTexture [[texture(2)]],
                     uint2 gid [[thread_position_in_grid]]) {
-    uint2 pos = uint2(args.offsetX, args.offsetY) + gid;
-    float4 overlay = overlayTexture.read(pos);
-    if (overlay.a == 0) return;
-    
-    float y = yTexture.read(pos).r;
-    // BT.2020 RGB to YCbCr conversion https://en.wikipedia.org/wiki/YCbCr
-    float overlayY = dot(overlay.rgb, float3(0.2627, 0.6780, 0.0593));
-    
-    float alpha = overlay.a;
-    // Core Image supplies premultiplied HLG RGB. Apply source-over once;
-    // alpha is coverage and must not have a transfer function applied to it.
-    // Video-range 10-bit samples occupy the most significant bits of R16Unorm.
+    uint2 origin = uint2(args.offsetX, args.offsetY) + gid;
+    uint2 ratio = uint2(args.widthRatio, args.heightRatio);
+    // One invocation owns every luma sample sharing this chroma sample. This
+    // prevents in-place RGB reconstruction from reading another thread's edits.
+    if (any(origin % ratio != uint2(0))) return;
+    uint2 size = uint2(yTexture.get_width(), yTexture.get_height());
+    if (any(origin >= size)) return;
+
     float lumaScale = (args.videoRange ? 876.0 : 1023.0) * (64.0 / 65535.0);
     float lumaOffset = args.videoRange ? (64.0 * 64.0 / 65535.0) : 0.0;
-    float blendedY = overlayY * lumaScale + lumaOffset * alpha + y * (1.0 - alpha);
-    
-    yTexture.write(quantizeImprintSample(blendedY), pos);
-    
-    if ((pos.x % args.widthRatio == 0) && (pos.y % args.heightRatio == 0)) {
-        uint2 cbcrGid = pos / uint2(args.widthRatio, args.heightRatio);
-        float4 cbcr = cbcrTexture.read(cbcrGid);
-        // Chroma is centered at 512: full range 1...1023, video range 64...960.
-        float chromaScale = (args.videoRange ? 896.0 : 1022.0) * (64.0 / 65535.0);
-        float chromaCenter = 512.0 * 64.0 / 65535.0;
-        float overlayCb = (overlay.b - overlayY) / 1.8814 * chromaScale + chromaCenter * alpha;
-        float overlayCr = (overlay.r - overlayY) / 1.4746 * chromaScale + chromaCenter * alpha;
+    float chromaScale = (args.videoRange ? 896.0 : 1022.0) * (64.0 / 65535.0);
+    float chromaCenter = 512.0 * 64.0 / 65535.0;
+    uint2 cbcrPos = origin / ratio;
+    float2 originalChroma = cbcrTexture.read(cbcrPos).rg;
+    float2 chroma = (originalChroma - chromaCenter) / chromaScale;
+    float2 chromaDelta = 0;
+    bool changed = false;
+    uint count = 0;
+    for (uint dy = 0; dy < ratio.y && origin.y + dy < size.y; ++dy) {
+        for (uint dx = 0; dx < ratio.x && origin.x + dx < size.x; ++dx) {
+            ++count;
+            uint2 pos = origin + uint2(dx, dy);
+            if (pos.x >= overlayTexture.get_width() || pos.y >= overlayTexture.get_height()) continue;
+            float4 overlay = overlayTexture.read(pos);
+            float alpha = overlay.a;
+            if (alpha == 0) continue; // Preserve the original luma word exactly.
+
+            float3 result = overlay.rgb;
+            if (alpha < 1) {
+                float y = (yTexture.read(pos).r - lumaOffset) / lumaScale;
+                float r = y + 1.4746 * chroma.y;
+                float b = y + 1.8814 * chroma.x;
+                float g = (y - 0.2627 * r - 0.0593 * b) / 0.6780;
+                // Unpremultiply before color conversion. Apply alpha once in
+                // the web compositing space; alpha has no gamma adjustment.
+                float3 foreground = imprintHLGToWebRGB(overlay.rgb / alpha);
+                float3 background = imprintHLGToWebRGB(float3(r, g, b));
+                result = imprintWebRGBToHLG(alpha * foreground + (1.0 - alpha) * background);
+            }
+            float resultY = dot(result, imprintLumaWeights);
+            yTexture.write(quantizeImprintSample(resultY * lumaScale + lumaOffset), pos);
+            float2 resultChroma = float2((result.b - resultY) / 1.8814, (result.r - resultY) / 1.4746);
+            chromaDelta += resultChroma - chroma;
+            changed = true;
+        }
+    }
+    if (changed) {
+        // Average only the changes into the shared sample. An uncovered block
+        // is never rewritten; uncovered luma within a boundary block is retained.
+        float2 result = originalChroma + chromaDelta * (chromaScale / float(count));
         cbcrTexture.write(float4(
-            quantizeImprintSample(overlayCb + cbcr.r * (1.0 - alpha)),
-            quantizeImprintSample(overlayCr + cbcr.g * (1.0 - alpha)),
-            0, 0), cbcrGid);
+            quantizeImprintSample(result.x), quantizeImprintSample(result.y), 0, 0), cbcrPos);
     }
 }

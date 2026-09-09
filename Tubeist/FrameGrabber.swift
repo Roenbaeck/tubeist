@@ -275,49 +275,29 @@ private actor FrameTinkerer {
         let h = imprintPipeline.maxTotalThreadsPerThreadgroup / w
         let threadsPerThreadgroup = MTLSizeMake(w, h, 1)
 
-        if combinedOverlay.coverage > 0.75 {
+        let regions = ImprintArguments.regions(
+            bounds: combinedOverlay.image.extent,
+            boundingBoxes: combinedOverlay.boundingBoxes,
+            coverage: combinedOverlay.coverage
+        )
+        for box in regions {
             var imprintArguments = self.imprintArguments
-            imprintArguments.offsetX = 0
-            imprintArguments.offsetY = 0
-
+            imprintArguments.offsetX = UInt32(box.origin.x)
+            imprintArguments.offsetY = UInt32(box.origin.y)
             let imprintArgumentBuffer = metalDevice.makeBuffer(
                 bytes: &imprintArguments,
                 length: MemoryLayout<ImprintArguments>.size,
                 options: [.cpuCacheModeWriteCombined]
             )
             let threadsPerGrid = MTLSize(
-                width: Int(combinedOverlay.image.extent.width),
-                height: Int(combinedOverlay.image.extent.height),
-                depth: 1
+                width: Int(box.size.width), height: Int(box.size.height), depth: 1
             )
             if let imprintArgumentBuffer {
                 boundingBoxData.append((imprintArgumentBuffer, threadsPerGrid, threadsPerThreadgroup))
             }
-            LOG("Created Metal buffer for the entire overlay", level: .debug)
         }
-        else {
-            for box in combinedOverlay.boundingBoxes {
-                var imprintArguments = self.imprintArguments
-                imprintArguments.offsetX = UInt32(box.origin.x)
-                imprintArguments.offsetY = UInt32(box.origin.y)
+        LOG("Created Metal buffers for \(regions.count) overlay regions", level: .debug)
 
-                let imprintArgumentBuffer = metalDevice.makeBuffer(
-                    bytes: &imprintArguments,
-                    length: MemoryLayout<ImprintArguments>.size,
-                    options: [.cpuCacheModeWriteCombined]
-                )
-                let threadsPerGrid = MTLSize(
-                    width: Int(box.size.width),
-                    height: Int(box.size.height),
-                    depth: 1
-                )
-                if let imprintArgumentBuffer {
-                    boundingBoxData.append((imprintArgumentBuffer, threadsPerGrid, threadsPerThreadgroup))
-                }
-            }
-            LOG("Created Metal buffers for \(boundingBoxData.count) bounding boxes in the overlay", level: .debug)
-        }
-        
         let image = combinedOverlay.image
         
         // create a texture from the CIImage
