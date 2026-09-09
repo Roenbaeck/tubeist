@@ -35,6 +35,9 @@ struct OutputMonitorView: UIViewControllerRepresentable {
     static func createDisplayLayer() {
         if OutputMonitorView.displayLayer == nil {
             let displayLayer = AVSampleBufferDisplayLayer()
+            if #available(iOS 26.0, *) {
+                displayLayer.preferredDynamicRange = .high
+            }
             displayLayer.preventsDisplaySleepDuringVideoPlayback = true
             OutputMonitorView.displayLayer = displayLayer
             LOG("Created output video display layer", level: .debug)
