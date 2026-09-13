@@ -735,6 +735,12 @@ struct TubeistView: View {
                             .accessibilityLabel("Settings")
                             .accessibilityHint("Opens streaming, recording, camera, and overlay settings")
                             .sheet(isPresented: $showSettings, onDismiss: {
+                                // Save, Cancel, and swipe-to-dismiss all reload
+                                // the applied URLs; unsaved drafts stay unused.
+                                let overlayURLs = overlayManager.overlays.compactMap { URL(string: $0.url) }
+                                Task {
+                                    await OverlayBundler.shared.reloadOverlays(in: overlayURLs)
+                                }
                                 youtubeService = YouTubeService()
                                 appState.isYouTubeSignedIn = youtubeService.isSignedIn
                                 if youtubeService.isSignedIn {

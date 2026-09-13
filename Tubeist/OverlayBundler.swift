@@ -112,6 +112,12 @@ enum OverlayURLValidator {
     }
 }
 
+struct OverlayRetryPolicy: Sendable {
+    var initialDelay: TimeInterval = 2
+    var maximumDelay: TimeInterval = 30
+    var requestTimeout: TimeInterval = 15
+}
+
 @MainActor
 final class Overlay: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     private let url: URL
@@ -122,14 +128,26 @@ final class Overlay: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     private var lastCaptureTime: Date = Date.distantPast
     private var captureTimer: Timer?
     private let minimumCaptureInterval: TimeInterval = 1.0 // at least 1 second between snapshots
+    private let retryPolicy: OverlayRetryPolicy
+    private var retryDelay: TimeInterval
+    private var retryTask: Task<Void, Never>?
+    private var currentNavigation: WKNavigation?
+    private var isPageReady = false
     
-    init(url: URL, bundler: OverlayBundler) {
+    init(url: URL, bundler: OverlayBundler, retryPolicy: OverlayRetryPolicy = OverlayRetryPolicy()) {
         self.url = url
         self.bundler = bundler
+        self.retryPolicy = retryPolicy
+        self.retryDelay = retryPolicy.initialDelay
         super.init()
     }
     
     func prepareForRemoval() {
+        retryTask?.cancel()
+        retryTask = nil
+        currentNavigation = nil
+        isPageReady = false
+        overlayImage = nil
         self.captureTimer?.invalidate()
         self.captureTimer = nil
 
@@ -150,11 +168,16 @@ final class Overlay: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     }
 
     func createWebView(width: Int, height: Int) -> WKWebView {
+        prepareForRemoval()
+        retryDelay = retryPolicy.initialDelay
         let config = WKWebViewConfiguration()
         config.suppressesIncrementalRendering = true
         config.mediaTypesRequiringUserActionForPlayback = []
         config.allowsInlineMediaPlayback = true
         config.websiteDataStore = WKWebsiteDataStore.nonPersistent()
+        // Register once per web view; adding it on every didFinish crashes
+        // when an overlay reloads or recovers after a later failure.
+        config.userContentController.add(self, name: "domChanged")
         
         let webView = WKWebView(frame: CGRect(x: 0, y: 0, width: width, height: height), configuration: config)
         webView.isUserInteractionEnabled = false
@@ -171,10 +194,51 @@ final class Overlay: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         webView.scrollView.contentInset = UIEdgeInsets.zero
         webView.scrollView.contentInsetAdjustmentBehavior = .never
 
-        webView.load(URLRequest(url: url))
-        
         self.webView = webView
+        loadOverlay()
         return webView
+    }
+
+    private func loadOverlay() {
+        guard let webView else { return }
+        // Always retry the saved URL, even if the first navigation never
+        // committed. Bypass cached error responses when the server returns.
+        let request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData,
+                                 timeoutInterval: retryPolicy.requestTimeout)
+        currentNavigation = webView.load(request)
+    }
+
+    func reload() {
+        guard let webView else { return }
+        retryTask?.cancel()
+        retryTask = nil
+        retryDelay = retryPolicy.initialDelay
+        captureTimer?.invalidate()
+        captureTimer = nil
+        isPageReady = false
+        currentNavigation = nil
+        webView.stopLoading()
+        loadOverlay()
+    }
+
+    private func scheduleRetry(reason: String) {
+        guard let webView, retryTask == nil else { return }
+        isPageReady = false
+        captureTimer?.invalidate()
+        captureTimer = nil
+        let delay = retryDelay
+        retryDelay = min(retryPolicy.maximumDelay, retryDelay * 2)
+        LOG("Overlay at \(url.host ?? "unknown host") could not load: \(reason). Retrying in \(delay)s", level: .warning)
+        retryTask = Task { @MainActor [weak self, weak webView] in
+            do {
+                try await Task.sleep(for: .seconds(delay))
+            } catch {
+                return
+            }
+            guard !Task.isCancelled, let self, let webView, self.webView === webView else { return }
+            self.retryTask = nil
+            self.loadOverlay()
+        }
     }
 
     func getOverlayImage() -> UIImage? {
@@ -189,6 +253,17 @@ final class Overlay: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     }
     
     // MARK: - WKNavigationDelegate
+    func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        guard self.webView === webView else { return }
+        retryTask?.cancel()
+        retryTask = nil
+        currentNavigation = navigation
+        mimeType = nil
+        isPageReady = false
+        captureTimer?.invalidate()
+        captureTimer = nil
+    }
+
     func webView(
         _ webView: WKWebView,
         decidePolicyFor navigationAction: WKNavigationAction
@@ -202,13 +277,47 @@ final class Overlay: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     }
 
     func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse) async -> WKNavigationResponsePolicy {
-        if let mimeType = navigationResponse.response.mimeType {
-            self.mimeType = mimeType
+        guard self.webView === webView else { return .cancel }
+        if navigationResponse.isForMainFrame {
+            if let response = navigationResponse.response as? HTTPURLResponse, response.statusCode >= 400 {
+                // An error page is not an overlay. Leave the last good
+                // snapshot in OUTPUT and keep trying the configured URL.
+                scheduleRetry(reason: "HTTP \(response.statusCode)")
+                return .cancel
+            }
+            mimeType = navigationResponse.response.mimeType
         }
         return .allow
     }
+
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        navigationFailed(in: webView, navigation: navigation, error: error)
+    }
+
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        navigationFailed(in: webView, navigation: navigation, error: error)
+    }
+
+    private func navigationFailed(in webView: WKWebView, navigation: WKNavigation?, error: Error) {
+        guard self.webView === webView, currentNavigation === navigation else { return }
+        let error = error as NSError
+        // A replacement navigation or deliberate policy cancellation is not
+        // a connectivity failure. HTTP errors schedule their own retry above.
+        guard !(error.domain == NSURLErrorDomain && error.code == NSURLErrorCancelled) else { return }
+        scheduleRetry(reason: error.localizedDescription)
+    }
+
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        guard self.webView === webView else { return }
+        scheduleRetry(reason: "Web content process terminated")
+    }
     
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        guard self.webView === webView, currentNavigation === navigation else { return }
+        retryTask?.cancel()
+        retryTask = nil
+        retryDelay = retryPolicy.initialDelay
+        isPageReady = true
         LOG("Web view finished loading", level: .debug)
         captureWebViewImageOrSchedule()
         
@@ -240,14 +349,13 @@ final class Overlay: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
                 LOG("Error injecting JavaScript: \(error)", level: .error)
             }
         }
-
-        webView.configuration.userContentController.add(self, name: "domChanged")
     }
     
     // Both throttling and debouncing the capture so we ensure that at least the minimum capture interval passes
     // between snapshots, and that the last call is always executed even in a situation where several are coming
     // in quick succession
     func captureWebViewImageOrSchedule() {
+        guard isPageReady else { return }
         let currentTime = Date()
         if currentTime.timeIntervalSince(lastCaptureTime) >= minimumCaptureInterval {
             captureWebViewImage()
@@ -262,17 +370,21 @@ final class Overlay: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     }
     
     private func captureWebViewImage() {
+        guard isPageReady, let webView else { return }
+        let navigation = currentNavigation
         lastCaptureTime = Date()
         Task {
             guard let width = await CaptureDirector.shared.getResolution()?.width else {
                 LOG("Cannot get width from the camera input", level: .error)
                 return
             }
+            guard isPageReady, self.webView === webView, currentNavigation === navigation else { return }
             
             let config = WKSnapshotConfiguration()
             config.snapshotWidth = NSNumber(value: width / Int(UIScreen.main.scale))
             
-            webView?.takeSnapshot(with: config) { (image, error) in
+            webView.takeSnapshot(with: config) { (image, error) in
+                guard self.isPageReady, self.webView === webView, self.currentNavigation === navigation else { return }
                 guard let uiImage = image else {
                     LOG("Error capturing snapshot: \(String(describing: error))", level: .error)
                     return
@@ -345,6 +457,13 @@ final class OverlayBundler: Sendable {
             for overlay in overlays {
                 await overlay.captureWebViewImageOrSchedule()
             }
+        }
+    }
+
+    func reloadOverlays(in order: [URL]) async {
+        let overlays = await overlayBundle.getOverlays(in: order)
+        for overlay in overlays {
+            await overlay.reload()
         }
     }
 
