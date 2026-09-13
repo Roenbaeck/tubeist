@@ -16,18 +16,18 @@ enum ShutdownComponentStatus: Sendable, Equatable {
 }
 
 struct ContentPackagingShutdownReport: Sendable, Equatable {
-    let assetWriter: ShutdownComponentStatus
+    let mediaEncoding: ShutdownComponentStatus
     let fragmentDispatch: ShutdownComponentStatus
     let recording: ShutdownComponentStatus
 
     static let notRequested = ContentPackagingShutdownReport(
-        assetWriter: .notRequested,
+        mediaEncoding: .notRequested,
         fragmentDispatch: .notRequested,
         recording: .notRequested
     )
 
     var succeeded: Bool {
-        assetWriter.failedMessage == nil &&
+        mediaEncoding.failedMessage == nil &&
         fragmentDispatch.failedMessage == nil &&
         recording.failedMessage == nil
     }
@@ -84,7 +84,7 @@ struct StreamShutdownError: LocalizedError, Sendable, Equatable {
 private extension ContentPackagingShutdownReport {
     var failureDescriptions: [String] {
         [
-            assetWriter.failedMessage.map { "Media writer: \($0)" },
+            mediaEncoding.failedMessage.map { "Media encoding: \($0)" },
             fragmentDispatch.failedMessage.map { "Fragment ordering: \($0)" },
             recording.failedMessage.map { "Local recording: \($0)" },
         ].compactMap { $0 }

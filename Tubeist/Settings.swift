@@ -564,7 +564,7 @@ struct SettingsView: View {
                 
                 // Figure out "sane" presets given some additional information, unless the user wants a custom mode
                 if cameraPosition != "custom" {
-                    Section(header: Text("Bandwidth"), footer: Text("Measured upload bandwidth in kbit/s (click 'Show More Info' on https://fast.com for example).")) {
+                    Section(header: Text("Bandwidth"), footer: Text("Enter the upload speed in Mbps shown at https://speed.cloudflare.com.")) {
                         Text("Measured upload bandwidth: \(String(format: "%.1f", Double(measuredBandwidth) / 1_000_000.0)) Mbps")
                             .font(.callout)
                         Slider(value: Binding(
