@@ -8,6 +8,32 @@ import Testing
 @testable import Tubeist
 
 struct MPEGTransportStreamMuxerTests {
+    @Test func discontinuityPreservesElementaryPayloadAndProgramTables() throws {
+        let reader = ISOBMFFReader()
+        let initialization = try reader.parseInitializationSegment(FMP4Fixture.initialization())
+        let media = try reader.parseMediaSegment(FMP4Fixture.mediaSegment(), initialization: initialization)
+        var muxer = MPEGTransportStreamMuxer()
+        let original = try muxer.mux(media, initialization: initialization).data
+        let marked = try MPEGTransportStreamMuxer.markingDiscontinuity(original)
+        let before = transportPackets(original)
+        let after = transportPackets(marked)
+        #expect(pid(of: after[0]) == MPEGTransportStreamMuxer.programAssociationPID)
+        #expect(pid(of: after[1]) == MPEGTransportStreamMuxer.programMapPID)
+        #expect(sectionHasValidCRC(after[0]))
+        #expect(sectionHasValidCRC(after[1]))
+        for track in [MPEGTransportStreamMuxer.videoPID, MPEGTransportStreamMuxer.audioPID] {
+            let first = try #require(after.first { pid(of: $0) == track })
+            #expect(first[3] & 0x20 != 0)
+            #expect(first[5] & 0x80 != 0)
+            func payload(_ packets: [[UInt8]]) -> [UInt8] {
+                packets.filter { pid(of: $0) == track && $0[3] & 0x10 != 0 }
+                    .flatMap { Array($0[payloadStart(of: $0)...]) }
+            }
+            #expect(payload(before) == payload(after))
+        }
+        #expect(try MPEGTransportStreamMuxer.markingDiscontinuity(marked) == marked)
+    }
+
     @Test func emitsConformantTablesElementaryStreamsAndTimestamps() throws {
         let reader = ISOBMFFReader()
         let initialization = try reader.parseInitializationSegment(FMP4Fixture.initialization())

@@ -188,11 +188,13 @@ struct YouTubeHLSUploadReceipt: Sendable, Equatable {
     let sequence: Int
     let segmentFilename: String
     let playlistFilename: String
+    var elapsedSeconds: Double = 0
 }
 
 struct YouTubeHLSUploaderDiagnostics: Sendable, Equatable {
     let retryCount: Int
     let lastHTTPStatus: Int?
+    var isReconnecting: Bool = false
 }
 
 actor YouTubeHLSUploader {
@@ -203,6 +205,7 @@ actor YouTubeHLSUploader {
     private let transport: any YouTubeHLSHTTPTransport
     private let retryPolicy: YouTubeHLSRetryPolicy
     private let sleeper: Sleeper
+    private let keepRetrying: Bool
     private var playlist: HLSMediaPlaylist
     private var stopped = false
     private var uploadInProgress = false
@@ -211,6 +214,7 @@ actor YouTubeHLSUploader {
     private var lastUtilization = 0
     private var lastRetryCount = 0
     private var lastHTTPStatus: Int?
+    private var isReconnecting = false
 
     init(
         endpoint: YouTubeHLSEndpoint,
@@ -218,6 +222,7 @@ actor YouTubeHLSUploader {
         userAgent: String,
         transport: any YouTubeHLSHTTPTransport = URLSessionYouTubeHLSHTTPTransport(),
         retryPolicy: YouTubeHLSRetryPolicy = .default,
+        keepRetrying: Bool = false,
         sleeper: @escaping Sleeper = { try await Task.sleep(for: $0) }
     ) throws {
         guard retryPolicy.maximumAttempts > 0,
@@ -232,6 +237,7 @@ actor YouTubeHLSUploader {
         self.transport = transport
         self.retryPolicy = retryPolicy
         self.sleeper = sleeper
+        self.keepRetrying = keepRetrying
         self.playlist = try HLSMediaPlaylist(sessionIdentifier: sessionIdentifier)
     }
 
@@ -250,7 +256,8 @@ actor YouTubeHLSUploader {
     var diagnostics: YouTubeHLSUploaderDiagnostics {
         YouTubeHLSUploaderDiagnostics(
             retryCount: lastRetryCount,
-            lastHTTPStatus: lastHTTPStatus
+            lastHTTPStatus: lastHTTPStatus,
+            isReconnecting: isReconnecting
         )
     }
 
@@ -285,6 +292,7 @@ actor YouTubeHLSUploader {
             )
             lastRetryCount = playlistRetries + segmentRetries
             try playlist.acknowledge(sequence: entry.sequence)
+            isReconnecting = false
             let durationComponents = uploadStart.duration(to: clock.now).components
             let measuredElapsed = Double(durationComponents.seconds)
                 + Double(durationComponents.attoseconds) / 1_000_000_000_000_000_000
@@ -294,7 +302,8 @@ actor YouTubeHLSUploader {
             return YouTubeHLSUploadReceipt(
                 sequence: entry.sequence,
                 segmentFilename: entry.filename,
-                playlistFilename: playlist.playlistFilename
+                playlistFilename: playlist.playlistFilename,
+                elapsedSeconds: elapsed
             )
         } catch {
             if !stopped {
@@ -316,7 +325,17 @@ actor YouTubeHLSUploader {
     /// Publishes the terminal playlist only after every media segment has been
     /// acknowledged. This makes the last accepted segment unambiguously final
     /// before the persistent ingestion connection is closed.
-    func finish() async throws {
+    func finish(deadline: ContinuousClock.Instant? = nil) async throws {
+        // Stop also interrupts URLSession, rather than only timing the sleeps
+        // between requests. Never outlive the caller's shutdown budget.
+        let timeout = deadline.map { deadline in
+            Task {
+                do { try await Task.sleep(until: deadline, clock: .continuous) }
+                catch { return }
+                await self.stop()
+            }
+        }
+        defer { timeout?.cancel() }
         await acquireUploadTurn()
         defer { releaseUploadTurn() }
         do {
@@ -360,7 +379,7 @@ actor YouTubeHLSUploader {
 
         var attempt = 1
         let clock = ContinuousClock()
-        let retryDeadline = clock.now.advanced(
+        var retryDeadline = clock.now.advanced(
             by: .seconds(retryPolicy.maximumRetryDuration)
         )
         while true {
@@ -377,7 +396,8 @@ actor YouTubeHLSUploader {
                 if response.statusCode == 200 || response.statusCode == 202 {
                     return attempt - 1
                 }
-                if (400...499).contains(response.statusCode) {
+                if (400...499).contains(response.statusCode),
+                   response.statusCode != 408, response.statusCode != 429 {
                     throw YouTubeHLSUploadError.rejected(statusCode: response.statusCode)
                 }
             } catch let error as YouTubeHLSUploadError {
@@ -395,11 +415,15 @@ actor YouTubeHLSUploader {
             guard !stopped, !Task.isCancelled else {
                 throw YouTubeHLSUploadError.stopped
             }
-            guard attempt < retryPolicy.maximumAttempts,
-                  clock.now < retryDeadline else {
-                throw YouTubeHLSUploadError.retriesExhausted
+            isReconnecting = true
+            if attempt >= retryPolicy.maximumAttempts || clock.now >= retryDeadline {
+                guard keepRetrying else { throw YouTubeHLSUploadError.retriesExhausted }
+                // Keep the frozen playlist, media bytes and filename until ACK.
+                // A lost response must never allocate another media sequence.
+                // Stay at maximum backoff during a prolonged outage.
+                retryDeadline = clock.now.advanced(by: .seconds(retryPolicy.maximumRetryDuration))
             }
-            let exponent = pow(2, Double(attempt - 1))
+            let exponent = pow(2, Double(min(attempt - 1, 30)))
             let baseDelay = min(retryPolicy.maximumDelay, retryPolicy.initialDelay * exponent)
             let jitter = retryPolicy.jitterFraction == 0
                 ? 1

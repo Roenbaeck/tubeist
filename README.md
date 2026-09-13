@@ -2,7 +2,7 @@
 
 # Tubeist
 
-Tubeist is a native Swift 6 camera app for recording and streaming HDR video from an iPhone. It sends HEVC Main10 HLG video and AAC audio directly to YouTube over HLS, without an intermediate relay server. When local recording is enabled, the same encoded media is saved as fragmented MP4 while it is remuxed to MPEG-2 TS for streaming—no second video or audio encoder is required.
+Tubeist is a native Swift 6 camera app for recording and streaming HDR video from an iPhone. It sends HEVC Main10 HLG video and AAC audio directly to YouTube over HLS, without an intermediate relay server. VideoToolbox and an AAC encoder feed MPEG-2 TS segments directly. When local recording is enabled, AVAssetWriter saves the same compressed samples as fragmented MP4 without another encode.
 
 Tubeist is designed for events, sports, education, performances, and other long-form productions where image quality matters more than conversational latency. Watch [Tubeist demos on YouTube](https://youtube.com/playlist?list=PLFnkPgO2HxdAp_YiFVSWVpyak--0y6m5U&si=b2vjD-jVe0FY2egZ).
 
@@ -18,6 +18,7 @@ Tubeist is designed for events, sports, education, performances, and other long-
 - Manual focus, exposure, white balance, zoom, stabilization, and camera controls
 - Local and external monitoring options
 - Live bandwidth, buffer, CPU, battery, and thermal information
+- Gradual bitrate reduction for sustained congestion, with a quality floor and prompt recovery
 - Web overlays for graphics and live information
 - Built-in image styles and effects
 - Optional Google sign-in for YouTube broadcast discovery and management
@@ -36,6 +37,14 @@ To build from source:
 Tubeist requires iOS 18 or later and a physical iPhone with an HDR-capable capture format. The project has no external framework dependencies.
 
 ## Streaming to YouTube
+
+The selected video bitrate is a ceiling. During sustained congestion, Tubeist
+adjusts it at two-second segment boundaries and restores quality as soon as the
+connection improves. Simultaneous recordings follow these bitrate changes;
+recording-only sessions keep the selected bitrate. If bandwidth cannot support
+the quality floor, the monitor warns that a lower-resolution preset is needed.
+See the [controller design and offline validation](Tools/VideoToolboxProbe/README.md)
+for tuning assumptions and limitations.
 
 Create a YouTube Live stream configured for **HLS ingestion**, then enter its stream key in Tubeist Settings. An RTMP or RTMPS key is not interchangeable with an HLS key.
 
@@ -67,6 +76,8 @@ Tubeist uses a fixed landscape interface with a central 16:9 preview and a compa
 
 The interface displays operational information—including current throughput, upload utilization, buffered media, CPU load, battery level, and thermal state—without covering the primary camera controls.
 
+Choose **Settings → Monitoring → System health bar position** to place the bar at the top or bottom, then tap **Save**. At the top, the order is audio meter, system health, and fading messages; at the bottom, the order is reversed. The adaptive video bitrate appears yellow whenever it is below the selected preset's target. Bandwidth below the quality threshold produces a fading warning instead of widening the health bar.
+
 ## Overlays, styles, and effects
 
 Web overlays can add live graphics and information to the encoded output. Tubeist also includes visual styles and effects that can be combined with overlays while recording or streaming. Some styles and effects are available through an in-app purchase.
@@ -96,6 +107,17 @@ If Start is unavailable or a stream fails:
 5. Read the persistent in-app error first, then open the journal for additional detail.
 
 After a successful stop, YouTube may need additional time to process the live archive before every quality level is available.
+
+For Google sign-in or YouTube configuration errors, enable **Info**, **Warning**,
+and **Error** under Settings' journal options and save. Reproduce the problem,
+then open **Journal** and capture the entries beginning with **YouTube**, including
+the authorized channel and the failing request. Debug logging is not required.
+These entries identify OAuth stages, API operations, HTTP status, Google's error
+reason, request timing, and discovery counts. Settings also performs a brief,
+best-effort lookup of the authorized channel's public name and ID so it can be
+compared with the intended channel in YouTube Studio. Credentials and complete
+request URLs are omitted or redacted. A generic Google internal error may still
+require investigation by Google; the journal identifies where it occurred.
 
 ## Development and verification
 

@@ -29,9 +29,11 @@ actor HLSAcceptanceRecorder {
     private var bufferedLines: [Data] = []
     private var eventCount = 0
     private var sessionStartedAt: ContinuousClock.Instant?
+    private var activeSessionIdentifier: String?
 
     func begin(sessionIdentifier: String, enabled: Bool) {
         closeFile()
+        activeSessionIdentifier = sessionIdentifier
         guard enabled,
               let documents = FileManager.default.urls(
                 for: .documentDirectory,
@@ -79,6 +81,11 @@ actor HLSAcceptanceRecorder {
 
     func segmentDropped(sequence: Int, droppedFragments: Int) {
         append(kind: "segmentDropped", sequence: sequence, droppedFragments: droppedFragments)
+    }
+
+    func segmentsDropped(_ events: [(sequence: Int, total: Int)], sessionIdentifier: String) {
+        guard activeSessionIdentifier == sessionIdentifier else { return }
+        for event in events { segmentDropped(sequence: event.sequence, droppedFragments: event.total) }
     }
 
     func failed(_ detail: String) {

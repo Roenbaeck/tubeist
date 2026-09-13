@@ -1,0 +1,151 @@
+import AVFoundation
+import Foundation
+
+@main struct ResilienceProbe {
+    static func main() async throws {
+        guard CommandLine.arguments.count == 3 else { fatalError("Usage: resilience-probe <directory> <scenario>") }
+        try await run(folder: URL(fileURLWithPath: CommandLine.arguments[1]), scenario: CommandLine.arguments[2])
+    }
+
+    @PipelineActor static func run(folder: URL, scenario: String) async throws {
+        if scenario == "watchdog" { try await checkWatchdog(); return }
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let clock = ProbeClock()
+        let transport = ProbeTransport(folder: folder, blocked: scenario == "network-overflow")
+        let sink = YouTubeHLSStreamSink()
+        try await sink.prepare(endpoint: .manualPrimary(streamKey: "offline-probe"),
+                               sessionIdentifier: "probe", userAgent: "Tubeist/Probe", transport: transport)
+        let collector = RecordingCollector()
+        let recording = try RecordingAssetWriter(delegate: collector, finalizationFlag: AssetWriterFinalizationFlag())
+        let pipeline = LiveEncodingPipeline(now: { clock.read() }, automaticWatchdog: false,
+                                            publish: { await sink.enqueue($0) })
+        try pipeline.start(preset: Preset(), stream: true, recording: recording)
+        let rate = 48_000.0
+        let duration = scenario == "network-overflow" ? 70.4 : 10.4
+        let totalFrames = Int(duration * 30)
+        var audioOffset = 0
+        var recoveryObserved = false
+
+        func captureTime(_ time: Double) -> Double {
+            scenario == "clock-reset" && time >= 3 ? 10 + time - 3 : 100 + time
+        }
+        func missing(_ time: Double, video: Bool) -> Bool {
+            if scenario == "short-gaps" { return time >= 2 && time < 2.2 }
+            guard time >= 3 && time < 6 else { return false }
+            return scenario == "both-stall" || scenario == (video ? "video-stall" : "audio-stall")
+        }
+
+        for frame in 0..<totalFrames {
+            let time = Double(frame) / 30
+            clock.set(time)
+            while Double(audioOffset) / rate <= time {
+                let audioTime = Double(audioOffset) / rate
+                if !missing(audioTime, video: false) {
+                    let sample = try ProbeMediaFixtures.makeAudio(offset: audioOffset, frames: 1024, rate: rate)
+                    let timed = try retime(sample, to: captureTime(audioTime))
+                    try await pipeline.appendAudio(timed)
+                    if scenario == "short-gaps", frame == 90 {
+                        try await pipeline.appendAudio(timed) // exact duplicate
+                        try await pipeline.appendAudio(retime(sample, to: captureTime(audioTime - 0.1)))
+                    }
+                }
+                audioOffset += 1024
+            }
+            if !missing(time, video: true) {
+                let sample = try videoSample(frame: frame, pts: captureTime(time))
+                try await pipeline.appendVideo(sample)
+                if scenario == "short-gaps", frame == 90 {
+                    try await pipeline.appendVideo(sample)
+                    try await pipeline.appendVideo(videoSample(frame: frame - 3, pts: captureTime(time - 0.1)))
+                }
+            }
+            if frame.isMultiple(of: 3) { try await pipeline.checkCapture() }
+            if pipeline.captureState == .recovering { recoveryObserved = true }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        try await pipeline.finish(deadline: ContinuousClock().now.advanced(by: .seconds(20)))
+        await transport.release()
+        try await sink.finish(timeout: 20)
+        try collector.save(to: folder.appendingPathComponent("recording.mp4"))
+        let metrics = await sink.metrics()
+        if ["both-stall", "audio-stall", "video-stall", "clock-reset"].contains(scenario) {
+            precondition(recoveryObserved, "Did not exercise coordinated capture recovery")
+        }
+        if scenario == "network-overflow" {
+            precondition(metrics.droppedFragments > 0)
+            let uploaded = await transport.uploaded
+            precondition(uploaded < 10, "Recovery retained excessive live latency")
+        }
+        let metadata: [String: Any] = ["scenario": scenario, "inputVideoFrames": totalFrames,
+            "droppedSegments": metrics.droppedFragments, "captureRecovery": recoveryObserved]
+        try JSONSerialization.data(withJSONObject: metadata).write(to: folder.appendingPathComponent("result.json"))
+        print("PASS: \(scenario), recording finalized, \(metrics.droppedFragments) discarded network segments")
+    }
+
+    @PipelineActor static func checkWatchdog() async throws {
+        let clock = ProbeClock()
+        let failures = ProbeFailures()
+        let pipeline = LiveEncodingPipeline(now: { clock.read() },
+                                            reportFailure: { await failures.record($0) })
+        try pipeline.start(preset: Preset(), stream: false, recording: nil)
+        try await pipeline.appendVideo(videoSample(frame: 0, pts: 100))
+        try await pipeline.appendAudio(retime(ProbeMediaFixtures.makeAudio(offset: 0, frames: 1024, rate: 48_000), to: 100))
+        clock.set(3)
+        try await Task.sleep(for: .milliseconds(250))
+        precondition(pipeline.captureState == .recovering, "Independent timer failed to detect a silent stall")
+        clock.set(3.1)
+        for frame in 0..<2 {
+            try await pipeline.appendVideo(videoSample(frame: frame, pts: 200 + Double(frame) / 30))
+            try await pipeline.appendAudio(retime(ProbeMediaFixtures.makeAudio(offset: frame * 1024, frames: 1024, rate: 48_000),
+                                                 to: 200 + Double(frame * 1024) / 48_000))
+        }
+        precondition(pipeline.captureState == .healthy, "Capture did not recover")
+        clock.set(40)
+        try await Task.sleep(for: .milliseconds(250))
+        let reported = await failures.count
+        precondition(reported == 1, "Watchdog stopped across an encoder restart or reported a failure repeatedly")
+        try await pipeline.finish(deadline: ContinuousClock().now.advanced(by: .seconds(5)))
+        // A previous session's timer must not fail or modify the next session.
+        try pipeline.start(preset: Preset(), stream: false, recording: nil)
+        try await pipeline.appendVideo(videoSample(frame: 0, pts: 300))
+        try await pipeline.appendAudio(retime(ProbeMediaFixtures.makeAudio(offset: 0, frames: 1024, rate: 48_000), to: 300))
+        try await Task.sleep(for: .milliseconds(250))
+        let finalReports = await failures.count
+        precondition(finalReports == 1 && pipeline.captureState == .healthy)
+        pipeline.beginFinalization()
+        clock.set(80)
+        try await pipeline.checkCapture()
+        try await Task.sleep(for: .milliseconds(250))
+        let stoppingReports = await failures.count
+        precondition(stoppingReports == 1 && pipeline.captureState == nil,
+                     "Intentional capture shutdown triggered the watchdog")
+        try await pipeline.finish(deadline: ContinuousClock().now.advanced(by: .seconds(5)))
+        print("PASS: automatic watchdog detects total silence, survives recovery and is cancelled between sessions")
+    }
+
+    static func videoSample(frame: Int, pts: Double) throws -> CMSampleBuffer {
+        let pixels = try ProbeMediaFixtures.makePixels(frame: frame)
+        var format: CMVideoFormatDescription?
+        try checkMediaStatus(CMVideoFormatDescriptionCreateForImageBuffer(allocator: nil, imageBuffer: pixels,
+                                                                         formatDescriptionOut: &format), "Video format")
+        var timing = CMSampleTimingInfo(duration: CMTime(value: 1, timescale: 30),
+            presentationTimeStamp: CMTime(seconds: pts, preferredTimescale: 90_000), decodeTimeStamp: .invalid)
+        var buffer: CMSampleBuffer?
+        try checkMediaStatus(CMSampleBufferCreateReadyWithImageBuffer(allocator: nil, imageBuffer: pixels,
+            formatDescription: format!, sampleTiming: &timing, sampleBufferOut: &buffer), "Video sample")
+        return buffer!
+    }
+
+    static func retime(_ sample: CMSampleBuffer, to pts: Double) throws -> CMSampleBuffer {
+        var timing = CMSampleTimingInfo(duration: CMSampleBufferGetDuration(sample),
+            presentationTimeStamp: CMTime(seconds: pts, preferredTimescale: 90_000), decodeTimeStamp: .invalid)
+        // For PCM the single timing entry describes one sample, not the block.
+        let format = CMSampleBufferGetFormatDescription(sample)!
+        let rate = CMAudioFormatDescriptionGetStreamBasicDescription(format)!.pointee.mSampleRate
+        timing.duration = CMTime(value: 1, timescale: Int32(rate))
+        var copy: CMSampleBuffer?
+        try checkMediaStatus(CMSampleBufferCreateCopyWithNewTiming(allocator: nil, sampleBuffer: sample,
+            sampleTimingEntryCount: 1, sampleTimingArray: &timing, sampleBufferOut: &copy), "Audio timestamp")
+        return copy!
+    }
+}

@@ -238,26 +238,31 @@ final class TubeistUITests: XCTestCase {
             app.cells.containing(.staticText, identifier: "overlay-order-\(url)").firstMatch
         }
         func moveBelow(_ source: String, _ destination: String) {
-            let sourceFrame = row(source).frame
+            let handle = row(source).buttons["Reorder \(source)"]
+            XCTAssertTrue(handle.waitForExistence(timeout: 5))
+            XCTAssertTrue(handle.isHittable)
+            XCTAssertTrue(row(destination).waitForExistence(timeout: 5))
+            let handleFrame = handle.frame
             let destinationFrame = row(destination).frame
             let window = app.windows.firstMatch
             let windowFrame = window.frame
             let origin = window.coordinate(withNormalizedOffset: .zero)
-            // Anchor the gesture to the window: the destination row moves
-            // while reordering. Give slower CI simulators time to accept the
-            // drag and settle the drop before checking the final row order.
+            // Use the native reorder handle, whose hit target does not scale
+            // with the row width. Freeze the coordinates against the window
+            // because both rows move while the drag is in progress.
             let start = origin.withOffset(CGVector(
-                dx: sourceFrame.minX + sourceFrame.width * 0.95 - windowFrame.minX,
-                dy: sourceFrame.midY - windowFrame.minY
+                dx: handleFrame.midX - windowFrame.minX,
+                dy: handleFrame.midY - windowFrame.minY
             ))
             let end = origin.withOffset(CGVector(
-                dx: destinationFrame.minX + destinationFrame.width * 0.95 - windowFrame.minX,
+                dx: handleFrame.midX - windowFrame.minX,
                 dy: destinationFrame.minY + destinationFrame.height * 0.9 - windowFrame.minY
             ))
             start.press(forDuration: 1, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 1)
             let reordered = XCTNSPredicateExpectation(
                 predicate: NSPredicate { _, _ in
-                    row(destination).frame.minY < row(source).frame.minY
+                    guard row(source).exists, row(destination).exists else { return false }
+                    return row(destination).frame.minY < row(source).frame.minY
                 }, object: nil
             )
             XCTAssertEqual(XCTWaiter.wait(for: [reordered], timeout: 5), .completed,

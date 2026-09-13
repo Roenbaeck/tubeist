@@ -56,6 +56,7 @@ struct SystemCPUSampler: Sendable {
 
 struct SystemMetricsView: View {
     @Environment(AppState.self) var appState
+    var onBandwidthWarning: () -> Void = {}
     private let processInfo = ProcessInfo()
     @State private var cpuUsage: Float = 0
     @State private var batteryLevel: Float = 0
@@ -63,6 +64,8 @@ struct SystemMetricsView: View {
     @State private var networkMbps: Int = 0
     @State private var networkUtilization: Int = 0
     @State private var fragmentBufferCount: Int = 0
+    @State private var videoBitrate: Int?
+    @State private var belowQualityFloor = false
     @State private var updateSystemMetricsTask: Task<Void, Never>?
     private let cpuSampler = SystemCPUSampler()
             
@@ -101,6 +104,10 @@ struct SystemMetricsView: View {
         Text("Battery: \(String(format: "%.0f", batteryLevel))%")
         Text("Temp: \(thermalLevel)")
         Text("\(networkMbps) Mbps | \(networkUtilization)% utilization | \(fragmentBufferCount) buffered")
+        if let videoBitrate {
+            Text("Target: \(Double(videoBitrate) / 1_000_000, specifier: "%.1f") Mbps")
+                .foregroundStyle(videoBitrate < Settings.selectedPreset.videoBitrate ? ULTRAYELLOW : BRIGHTER_THAN_WHITE)
+        }
     }
     
     private func updateSystemMetrics() async {
@@ -108,15 +115,16 @@ struct SystemMetricsView: View {
         let batteryLevel = getBatteryLevel()
         let thermalLevel = getThermalLevel()
         let outputMetrics = await EncodedOutputRouter.shared.metrics()
+        let captureState = await ContentPackager.shared.captureState()
         let networkMbps = outputMetrics.networkMbps
         let networkUtilization = outputMetrics.networkUtilization
         let fragmentBufferCount = outputMetrics.bufferedFragments
         let streamHealth: StreamHealth = await {
             if await Streamer.shared.isStreaming() {
-                if outputMetrics.hasFailure {
+                if outputMetrics.hasFailure || captureState == .failed || captureState == .recovering {
                     return .unusable
                 }
-                if networkUtilization >= 100 || fragmentBufferCount > 1 {
+                if networkUtilization >= 100 || fragmentBufferCount > 1 || outputMetrics.belowQualityFloor || captureState == .concealing {
                     return .degraded
                 }
                 else {
@@ -138,6 +146,11 @@ struct SystemMetricsView: View {
             self.networkMbps = networkMbps
             self.networkUtilization = networkUtilization
             self.fragmentBufferCount = fragmentBufferCount
+            self.videoBitrate = outputMetrics.videoBitrate
+            if outputMetrics.belowQualityFloor && !belowQualityFloor {
+                onBandwidthWarning()
+            }
+            self.belowQualityFloor = outputMetrics.belowQualityFloor
             self.appState.streamHealth = streamHealth
         }
     }

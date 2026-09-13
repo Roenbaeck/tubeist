@@ -22,6 +22,7 @@ xcrun swiftc \
   -parse-as-library \
   -module-cache-path "${artifact_root}/module-cache-remux" \
   "${repository_root}/Tubeist/ISOBMFFReader.swift" \
+  "${repository_root}/Tubeist/EncodedMedia.swift" \
   "${repository_root}/Tubeist/MPEGTransportStreamMuxer.swift" \
   "${repository_root}/Tools/RemuxFixture/main.swift" \
   -o "${remux_binary}"

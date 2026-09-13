@@ -34,7 +34,10 @@ struct HLSMediaPlaylist: Sendable, Equatable {
 
     let sessionIdentifier: String
     let playlistFilename: String
-    private(set) var targetDuration: Int = 1
+    // HLS requires this value to remain constant for the entire playlist.
+    // Five seconds also covers a delayed keyframe without changing the header.
+    let targetDuration: Int = 5
+    private(set) var discontinuitySequence = 0
     private(set) var entries: [HLSPlaylistEntry] = []
     private(set) var nextSequence: Int = 0
     private let acknowledgedTailCount: Int
@@ -78,7 +81,6 @@ struct HLSMediaPlaylist: Sendable, Equatable {
         )
         entries.append(entry)
         nextSequence += 1
-        targetDuration = max(targetDuration, Int(ceil(duration)))
         return entry
     }
 
@@ -96,6 +98,7 @@ struct HLSMediaPlaylist: Sendable, Equatable {
             "#EXT-X-VERSION:3",
             "#EXT-X-TARGETDURATION:\(targetDuration)",
             "#EXT-X-MEDIA-SEQUENCE:\(mediaSequence)",
+            "#EXT-X-DISCONTINUITY-SEQUENCE:\(discontinuitySequence)",
             "#EXT-X-INDEPENDENT-SEGMENTS",
         ]
         for entry in entries {
@@ -130,6 +133,7 @@ struct HLSMediaPlaylist: Sendable, Equatable {
             firstIndexToKeep = max(0, entries.count - acknowledgedTailCount)
         }
         if firstIndexToKeep > 0 {
+            discontinuitySequence += entries.prefix(firstIndexToKeep).filter(\.discontinuity).count
             entries.removeFirst(firstIndexToKeep)
         }
     }

@@ -8,6 +8,65 @@ import Testing
 @testable import Tubeist
 
 struct YouTubeHLSUploaderTests {
+
+    @Test func reconnectsBeyondTheRetryBudgetWithIdenticalAdvertisedBytes() async throws {
+        let transport = MockYouTubeHLSTransport(statuses: [200] + Array(repeating: 503, count: 12) + [200])
+        let uploader = try YouTubeHLSUploader(
+            endpoint: .manualPrimary(streamKey: "test"), sessionIdentifier: "long_outage",
+            userAgent: "Tubeist/Test", transport: transport, retryPolicy: testRetryPolicy,
+            keepRetrying: true, sleeper: { _ in })
+        let data = Data([0x47, 42])
+        let receipt = try await uploader.upload(segment: data, duration: 2)
+        let requests = await transport.recordedRequests()
+        #expect(receipt.sequence == 0)
+        #expect(requests.count == 14)
+        #expect(Set(requests.dropFirst().map(\.url)).count == 1)
+        #expect(requests.dropFirst().allSatisfy { $0.body == data })
+        #expect(await uploader.outstandingCount == 0)
+        #expect(await uploader.diagnostics.isReconnecting == false)
+    }
+
+    @Test(arguments: [408, 429])
+    func retriesTemporaryClientErrors(_ status: Int) async throws {
+        let transport = MockYouTubeHLSTransport(statuses: [status, 200, 200])
+        let uploader = try YouTubeHLSUploader(
+            endpoint: .manualPrimary(streamKey: "test"), sessionIdentifier: "temporary_error",
+            userAgent: "Tubeist/Test", transport: transport, retryPolicy: testRetryPolicy, sleeper: { _ in })
+        _ = try await uploader.upload(segment: Data([0x47]), duration: 2)
+        #expect(await transport.recordedRequests().count == 3)
+    }
+
+    @Test func stopInterruptsPersistentRetryBackoff() async throws {
+        let transport = MockYouTubeHLSTransport(statuses: Array(repeating: 503, count: 20))
+        let uploader = try YouTubeHLSUploader(
+            endpoint: .manualPrimary(streamKey: "test"), sessionIdentifier: "cancel_outage",
+            userAgent: "Tubeist/Test", transport: transport,
+            retryPolicy: .init(maximumAttempts: 1, initialDelay: 0.01, maximumDelay: 0.01, jitterFraction: 0),
+            keepRetrying: true)
+        let upload = Task { try await uploader.upload(segment: Data([0x47]), duration: 2) }
+        await waitForRequest(on: transport)
+        await uploader.stop()
+        do { _ = try await upload.value; Issue.record("Expected stopped upload") }
+        catch let error as YouTubeHLSUploadError { #expect(error == .stopped) }
+    }
+
+    @Test func finalPlaylistObeysShutdownDeadlineDuringAnOutage() async throws {
+        let transport = MockYouTubeHLSTransport(statuses: [200, 200] + Array(repeating: 503, count: 100))
+        let uploader = try YouTubeHLSUploader(
+            endpoint: .manualPrimary(streamKey: "test"), sessionIdentifier: "final_deadline",
+            userAgent: "Tubeist/Test", transport: transport,
+            retryPolicy: .init(maximumAttempts: 1, initialDelay: 0.01, maximumDelay: 0.01, jitterFraction: 0),
+            keepRetrying: true)
+        _ = try await uploader.upload(segment: Data([0x47]), duration: 2)
+        let clock = ContinuousClock()
+        let start = clock.now
+        do {
+            try await uploader.finish(deadline: start.advanced(by: .milliseconds(30)))
+            Issue.record("Expected the final playlist to stop at its deadline")
+        } catch let error as YouTubeHLSUploadError { #expect(error == .stopped) }
+        #expect(start.duration(to: clock.now) < .seconds(1))
+    }
+
     @Test func defaultRetryBudgetOutlivesAOneMinuteConnectivityGap() {
         let policy = YouTubeHLSRetryPolicy.default
 

@@ -10,6 +10,52 @@ import Testing
 private let successfulSinkShutdownTimeout: TimeInterval = 10
 
 struct YouTubeHLSStreamSinkTests {
+    @Test func overflowDuringAnUploadMarksTheNextSegmentDiscontinuous() async throws {
+        let transport = RecoveringDirectSinkTransport()
+        let endpoint = try YouTubeHLSEndpoint(URL(string: "https://upload.youtube.com/http_upload_hls?cid=not-a-real-key&file=")!)
+        let sink = YouTubeHLSStreamSink()
+        try await sink.prepare(endpoint: endpoint, sessionIdentifier: "overflow_session", userAgent: "Tubeist/Test", transport: transport)
+        await sink.enqueue(Fragment(sequence: 0, segment: directSentinel(0), duration: 2, container: .mpegTransportStream))
+        try await transport.waitUntilRequested()
+        for sequence in 1...31 {
+            // The queue handles opaque, already-muxed payloads; distinguish
+            // these small sentinels to verify which segment survives overflow.
+            await sink.enqueue(Fragment(sequence: sequence, segment: directSentinel(UInt8(sequence)), duration: 2,
+                                        container: .mpegTransportStream))
+        }
+        await transport.releaseFirstRequest()
+        try await sink.finish(timeout: successfulSinkShutdownTimeout)
+        let requests = await transport.requests()
+        #expect(!String(decoding: requests[0].body, as: UTF8.self).contains("#EXT-X-DISCONTINUITY\n"))
+        #expect(String(decoding: requests[2].body, as: UTF8.self).contains("#EXT-X-DISCONTINUITY\n"))
+        #expect(requests[3].body == (try MPEGTransportStreamMuxer.markingDiscontinuity(directSentinel(29))))
+        #expect(await sink.metrics().droppedFragments == 28)
+    }
+
+    @Test func directlyUploadsTransportSegmentsWithoutMP4Initialization() async throws {
+        let reader = ISOBMFFReader()
+        let initialization = try reader.parseInitializationSegment(FMP4Fixture.initialization())
+        let media = try reader.parseMediaSegment(FMP4Fixture.mediaSegment(), initialization: initialization)
+        var muxer = MPEGTransportStreamMuxer()
+        let ts = try muxer.mux(media, initialization: initialization)
+        let transport = DirectSinkTransport()
+        let endpoint = try YouTubeHLSEndpoint(URL(string: "https://upload.youtube.com/http_upload_hls?cid=not-a-real-key&file=")!)
+        let sink = YouTubeHLSStreamSink()
+        try await sink.prepare(endpoint: endpoint, sessionIdentifier: "vt_direct_session", userAgent: "Tubeist/Test",
+                               transport: transport, bitrateController: AdaptiveBitrateController(
+                                maximumBitrate: 4_000_000, minimumBitrate: 1_000_000, audioBitrate: 128_000))
+        await sink.enqueue(Fragment(sequence: 0, segment: ts.data, duration: ts.duration, container: .mpegTransportStream))
+        try await sink.finish(timeout: successfulSinkShutdownTimeout)
+        let requests = await transport.requests()
+        #expect(requests.count == 3)
+        #expect(requests[1].contentType == "video/mp2t")
+        #expect(requests[1].body == ts.data)
+        #expect(String(decoding: requests[2].body, as: UTF8.self).contains("#EXT-X-ENDLIST"))
+        let metrics = await sink.metrics()
+        #expect(metrics.failure == nil)
+        #expect(metrics.videoBitrate == 4_000_000)
+    }
+
     @Test func remuxesWriterFragmentsWithoutUploadingTheInitializationSegment() async throws {
         let transport = DirectSinkTransport()
         let endpoint = try YouTubeHLSEndpoint(URL(
@@ -356,7 +402,7 @@ struct YouTubeHLSStreamSinkTests {
             #expect(playlistRequest.contentType == "application/vnd.apple.mpegurl")
             #expect(segmentRequest.contentType == "video/mp2t")
             #expect(playlist.contains("tubeist_recovery_session_\(sequence).ts"))
-            #expect(!playlist.contains("#EXT-X-DISCONTINUITY"))
+            #expect(!playlist.contains("#EXT-X-DISCONTINUITY\n"))
         }
         let finalPlaylist = String(decoding: requests[62].body, as: UTF8.self)
         #expect(finalPlaylist.hasSuffix("#EXT-X-ENDLIST\n"))
@@ -579,4 +625,8 @@ private actor RecoveringDirectSinkTransport: YouTubeHLSHTTPTransport {
     func requests() -> [DirectSinkRequest] {
         sent
     }
+}
+
+private func directSentinel(_ sequence: UInt8) -> Data {
+    Data([0x47, 0x41, 0x00, 0x10]) + Data(repeating: sequence, count: 184)
 }

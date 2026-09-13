@@ -131,8 +131,9 @@ def expected_playlist(second: bool, end_list: bool = False) -> bytes:
     lines = [
         "#EXTM3U",
         "#EXT-X-VERSION:3",
-        f"#EXT-X-TARGETDURATION:{3 if second else 2}",
+        "#EXT-X-TARGETDURATION:5",
         "#EXT-X-MEDIA-SEQUENCE:0",
+        "#EXT-X-DISCONTINUITY-SEQUENCE:0",
         "#EXT-X-INDEPENDENT-SEGMENTS",
         "#EXTINF:2.000000,",
         "tubeist_socket_session_0.ts",

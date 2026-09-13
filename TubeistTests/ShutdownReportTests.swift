@@ -12,7 +12,7 @@ struct ShutdownReportTests {
             outcome: .stopped,
             captureIntake: .completed,
             packaging: ContentPackagingShutdownReport(
-                assetWriter: .completed,
+                mediaEncoding: .completed,
                 fragmentDispatch: .completed,
                 recording: .completed
             ),
@@ -30,7 +30,7 @@ struct ShutdownReportTests {
             outcome: .stopped,
             captureIntake: .failed("audio drain timed out"),
             packaging: ContentPackagingShutdownReport(
-                assetWriter: .failed("writer timed out"),
+                mediaEncoding: .failed("writer timed out"),
                 fragmentDispatch: .completed,
                 recording: .failed("disk full")
             ),
@@ -42,7 +42,7 @@ struct ShutdownReportTests {
         #expect(!report.succeeded)
         #expect(error.report == report)
         #expect(description.contains("Capture intake: audio drain timed out"))
-        #expect(description.contains("Media writer: writer timed out"))
+        #expect(description.contains("Media encoding: writer timed out"))
         #expect(description.contains("Local recording: disk full"))
         #expect(description.contains("YouTube upload: upload deadline expired"))
     }
