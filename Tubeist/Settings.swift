@@ -188,6 +188,7 @@ private struct AppliedSettingsSnapshot {
     let stream: Bool
     let record: Bool
     let inputSyncsWithOutput: Bool
+    let areSystemMetricsAtTop: Bool
     let measuredBandwidth: Int
     let networkSharing: String
     let cameraPosition: String
@@ -212,6 +213,7 @@ private struct AppliedSettingsSnapshot {
             stream: Settings.stream,
             record: Settings.record,
             inputSyncsWithOutput: Settings.isInputSyncedWithOutput,
+            areSystemMetricsAtTop: Settings.areSystemMetricsAtTop,
             measuredBandwidth: Settings.measuredBandwidth,
             networkSharing: Settings.networkSharing,
             cameraPosition: Settings.cameraPosition,
@@ -233,6 +235,7 @@ private struct AppliedSettingsSnapshot {
             stream: Settings.stream,
             record: Settings.record,
             inputSyncsWithOutput: Settings.isInputSyncedWithOutput,
+            areSystemMetricsAtTop: Settings.areSystemMetricsAtTop,
             measuredBandwidth: Settings.measuredBandwidth,
             networkSharing: Settings.networkSharing,
             cameraPosition: Settings.cameraPosition,
@@ -254,6 +257,7 @@ private struct AppliedSettingsSnapshot {
         Settings.stream = stream
         Settings.record = record
         Settings.isInputSyncedWithOutput = inputSyncsWithOutput
+        Settings.areSystemMetricsAtTop = areSystemMetricsAtTop
         Settings.measuredBandwidth = measuredBandwidth
         Settings.networkSharing = networkSharing
         Settings.cameraPosition = cameraPosition
@@ -281,6 +285,7 @@ struct SettingsView: View {
     @State private var stream: Bool = Settings.stream
     @State private var record: Bool = Settings.record
     @State private var inputSyncsWithOutput: Bool = Settings.isInputSyncedWithOutput
+    @State private var areSystemMetricsAtTop = Settings.areSystemMetricsAtTop
     @State private var measuredBandwidth: Int = Settings.measuredBandwidth
     @State private var networkSharing: String = Settings.networkSharing
     @State private var cameraPosition: String = Settings.cameraPosition
@@ -724,6 +729,13 @@ struct SettingsView: View {
                     Text("The top overlay in this list appears in front in both INPUT and OUTPUT. New overlays are added on top. Tap Reorder overlays to change the stack, then Save to apply it. Overlays are updated on content changes and at most once per second. Audio is captured from the last playing overlay if audio from multiple overlays overlap.")
                 }
                 
+                Section(header: Text("Monitoring")) {
+                    Picker("System health bar position", selection: $areSystemMetricsAtTop) {
+                        Text("Bottom").tag(false)
+                        Text("Top").tag(true)
+                    }
+                }
+
                 Section(header: Text("Journal"), footer: Text("Configure which types of messages to record in the journal")) {
                     HStack {
                         Toggle("Error", isOn: $journalError).labelsHidden()
@@ -979,8 +991,9 @@ struct SettingsView: View {
         }
         resetLoadedYouTubeBroadcast()
         do {
-            let broadcast = try await youtubeService.findBroadcastForStreamKey(streamKey)
-            let loadedPlaylists = try await youtubeService.listPlaylists()
+            let configuration = try await youtubeService.loadSettingsConfiguration(forStreamKey: streamKey)
+            let broadcast = configuration.broadcast
+            let loadedPlaylists = configuration.playlists
             guard streamKey == streamKeyManager.currentKey, !Task.isCancelled else {
                 return
             }
@@ -1016,9 +1029,12 @@ struct SettingsView: View {
             guard streamKey == streamKeyManager.currentKey, !Task.isCancelled else {
                 return
             }
-            youtubeService.errorMessage = error.localizedDescription
+            let message = YouTubeDiagnostics.text(error.localizedDescription, secrets: [
+                streamKey, Settings.youtubeAccessToken ?? "", Settings.youtubeRefreshToken ?? "",
+            ])
+            youtubeService.errorMessage = message
             youtubeConfigLoaded = true
-            LOG("Failed to load YouTube broadcast: \(error.localizedDescription)", level: .error)
+            LOG("Failed to load YouTube configuration: \(message)", level: .error)
         }
     }
 
@@ -1078,6 +1094,7 @@ struct SettingsView: View {
         Settings.stream = stream
         Settings.record = record
         Settings.isInputSyncedWithOutput = inputSyncsWithOutput
+        Settings.areSystemMetricsAtTop = areSystemMetricsAtTop
         Settings.measuredBandwidth = measuredBandwidth
         Settings.networkSharing = networkSharing
         Settings.cameraPosition = cameraPosition

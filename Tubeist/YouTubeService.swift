@@ -128,6 +128,12 @@ struct YouTubeListResponse<Item: Decodable & Sendable>: Decodable, Sendable {
     let nextPageToken: String?
 }
 
+struct YouTubeChannelResource: Decodable, Sendable {
+    struct Snippet: Decodable, Sendable { let title: String? }
+    let id: String?
+    let snippet: Snippet?
+}
+
 struct YouTubeLiveStreamResource: Decodable, Sendable {
     struct CDN: Decodable, Sendable {
         struct IngestionInfo: Decodable, Sendable {
@@ -238,6 +244,7 @@ struct YouTubeTokenResponse: Decodable, Sendable {
     let expiresIn: Int?
     let error: String?
     let errorDescription: String?
+    let scope: String?
 
     enum CodingKeys: String, CodingKey {
         case accessToken = "access_token"
@@ -245,6 +252,7 @@ struct YouTubeTokenResponse: Decodable, Sendable {
         case expiresIn = "expires_in"
         case error
         case errorDescription = "error_description"
+        case scope
     }
 }
 
@@ -432,6 +440,7 @@ final class YouTubeService {
     var errorMessage: String?
     private var loadingOperationCount = 0
     private let requestExecutor: YouTubeAPIRequestExecutor
+    private let diagnostics: YouTubeDiagnostics
     private var tokenStore: any YouTubeTokenStoring
     private let now: @Sendable () -> Date
     private var authenticationSession: ASWebAuthenticationSession?
@@ -441,9 +450,11 @@ final class YouTubeService {
     init(
         transport: any YouTubeAPITransport = URLSessionYouTubeAPITransport(),
         tokenStore: any YouTubeTokenStoring = SettingsYouTubeTokenStore(),
-        now: @escaping @Sendable () -> Date = Date.init
+        now: @escaping @Sendable () -> Date = Date.init,
+        diagnostics: YouTubeDiagnostics = YouTubeDiagnostics()
     ) {
-        requestExecutor = YouTubeAPIRequestExecutor(transport: transport)
+        requestExecutor = YouTubeAPIRequestExecutor(transport: transport, diagnostics: diagnostics)
+        self.diagnostics = diagnostics
         self.tokenStore = tokenStore
         self.now = now
         isSignedIn = tokenStore.refreshToken != nil
@@ -464,8 +475,11 @@ final class YouTubeService {
         let streamsURL = "\(YOUTUBE_API_BASE)/liveStreams?part=cdn,snippet&mine=true&maxResults=50"
         let streamItems: [YouTubeLiveStreamResource] = try await paginatedItems(
             url: streamsURL,
-            token: token
+            token: token,
+            operation: .streams
         )
+        let matches = streamItems.filter { $0.cdn?.ingestionInfo?.streamName == streamKey }.count
+        diagnostics.log("YouTube stream discovery: \(streamItems.count) streams; \(matches) match the configured key", .info)
         return try YouTubeStreamDiscovery.findStream(
             in: streamItems,
             matchingStreamKey: streamKey
@@ -476,15 +490,18 @@ final class YouTubeService {
         let broadcastsURL = "\(YOUTUBE_API_BASE)/liveBroadcasts?part=snippet,contentDetails,status&mine=true&maxResults=50"
         let resources: [YouTubeBroadcastResource] = try await paginatedItems(
             url: broadcastsURL,
-            token: token
+            token: token,
+            operation: .broadcasts
         )
 
-        return resources.compactMap { resource in
+        let matching: [YouTubeBroadcast] = resources.compactMap { resource in
             guard resource.contentDetails?.boundStreamId == streamId else {
                 return nil
             }
             return resource.broadcast
         }
+        diagnostics.log("YouTube broadcast discovery: \(resources.count) broadcasts; \(matching.count) bound to the matching stream", .info)
+        return matching
     }
 
     private func successorScheduledStartTime(from broadcast: YouTubeBroadcast) -> String {
@@ -525,7 +542,8 @@ final class YouTubeService {
         let insertResource: YouTubeBroadcastResource = try await apiPost(
             url: insertURL,
             token: token,
-            jsonBody: insertData
+            jsonBody: insertData,
+            operation: .createBroadcast
         )
         guard let insertedBroadcast = insertResource.broadcast else {
             throw YouTubeError.invalidResponse
@@ -535,7 +553,8 @@ final class YouTubeService {
         let bindResource: YouTubeBroadcastResource = try await apiPost(
             url: bindURL,
             token: token,
-            jsonBody: Data()
+            jsonBody: Data(),
+            operation: .bindBroadcast
         )
         guard let boundBroadcast = bindResource.broadcast else {
             throw YouTubeError.invalidResponse
@@ -548,6 +567,7 @@ final class YouTubeService {
     // MARK: - OAuth2 Authentication
 
     func signIn() async {
+        diagnostics.log("YouTube OAuth: starting sign-in (shared browser session; consent requested)", .info)
         guard YOUTUBE_CLIENT_ID != "YOUR_GOOGLE_OAUTH2_CLIENT_ID" else {
             errorMessage = "YouTube Client ID not configured in Constants.swift"
             LOG("YouTube Client ID not configured", level: .error)
@@ -638,6 +658,7 @@ final class YouTubeService {
                 throw YouTubeError.authFailed("No authorization code received")
             }
 
+            diagnostics.log("YouTube OAuth: callback verified; authorization code received", .info)
             try await exchangeCodeForTokens(code: code, codeVerifier: codeVerifier)
             isSignedIn = true
             errorMessage = nil
@@ -647,8 +668,11 @@ final class YouTubeService {
             LOG("YouTube sign-in cancelled by user", level: .debug)
         } catch {
             authenticationSession = nil
-            errorMessage = error.localizedDescription
-            LOG("YouTube sign-in failed: \(error.localizedDescription)", level: .error)
+            let message = YouTubeDiagnostics.text(error.localizedDescription, secrets: [
+                codeVerifier, oauthState, tokenStore.accessToken ?? "", tokenStore.refreshToken ?? "",
+            ])
+            errorMessage = message
+            LOG("YouTube sign-in failed: \(message)", level: .error)
         }
     }
 
@@ -682,8 +706,8 @@ final class YouTubeService {
             "code_verifier": codeVerifier,
         ]
 
-        let tokenData = try await postForm(url: YOUTUBE_TOKEN_URL, body: body)
-        try parseAndStoreTokens(from: tokenData)
+        let tokenData = try await postForm(url: YOUTUBE_TOKEN_URL, body: body, operation: .exchangeCode)
+        try parseAndStoreTokens(from: tokenData, operation: .exchangeCode)
     }
 
     private func performAccessTokenRefresh() async throws -> String {
@@ -697,8 +721,8 @@ final class YouTubeService {
             "grant_type": "refresh_token",
         ]
 
-        let tokenData = try await postForm(url: YOUTUBE_TOKEN_URL, body: body)
-        try parseAndStoreTokens(from: tokenData)
+        let tokenData = try await postForm(url: YOUTUBE_TOKEN_URL, body: body, operation: .refreshToken)
+        try parseAndStoreTokens(from: tokenData, operation: .refreshToken)
         guard let token = tokenStore.accessToken else {
             throw YouTubeError.tokenRefreshFailed
         }
@@ -724,8 +748,8 @@ final class YouTubeService {
         }
     }
 
-    private func parseAndStoreTokens(from data: Data) throws {
-        let response = try requestExecutor.decode(YouTubeTokenResponse.self, from: data)
+    private func parseAndStoreTokens(from data: Data, operation: YouTubeAPIOperation) throws {
+        let response = try requestExecutor.decode(YouTubeTokenResponse.self, from: data, operation: operation)
         if let error = response.error {
             let description = response.errorDescription ?? error
             throw YouTubeError.authFailed(description)
@@ -741,6 +765,11 @@ final class YouTubeService {
         }
         try tokenStore.setAccessToken(accessToken)
         tokenStore.expiry = now().addingTimeInterval(TimeInterval(expiresIn - 60))
+        let granted = response.scope.map { Set($0.split(separator: " ").map(String.init)) }
+        let requested = Set(YOUTUBE_SCOPES.split(separator: " ").map(String.init))
+        let scopeStatus = granted.map { requested.isSubset(of: $0) ? "all requested scopes granted" : "some requested scopes missing" }
+            ?? "granted scopes not returned"
+        diagnostics.log("YouTube \(operation.rawValue): credentials stored; refresh token present=\(tokenStore.refreshToken != nil); \(scopeStatus)", .info)
     }
 
     private func getValidAccessToken() async throws -> String {
@@ -753,6 +782,51 @@ final class YouTubeService {
     }
 
     // MARK: - YouTube API: Streams
+
+    /// The extra channel lookup is best-effort diagnostics for Settings only.
+    /// It must not prevent normal discovery or change streaming preflight.
+    func loadSettingsConfiguration(forStreamKey streamKey: String) async throws
+        -> (broadcast: YouTubeBroadcast, playlists: [YouTubePlaylist]) {
+        beginLoading()
+        defer { endLoading() }
+        diagnostics.log("YouTube Settings: loading configuration; saved authorization present=\(tokenStore.refreshToken != nil)", .info)
+        let token = try await getValidAccessToken()
+        try await logAuthorizedChannel(token: token, streamKey: streamKey)
+        try Task.checkCancellation()
+        let broadcast = try await findBroadcastForStreamKey(streamKey)
+        let playlists = try await listPlaylists()
+        diagnostics.log("YouTube Settings: configuration loaded; \(playlists.count) playlists", .info)
+        return (broadcast, playlists)
+    }
+
+    private func logAuthorizedChannel(token: String, streamKey: String) async throws {
+        do {
+            let url = URL(string: "\(YOUTUBE_API_BASE)/channels?part=snippet&mine=true&maxResults=50&fields=items(id,snippet/title),nextPageToken")!
+            var request = URLRequest(url: url)
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+            request.timeoutInterval = 5
+            // Observe the current authorization without refreshing or retrying
+            // solely for a diagnostic request. Normal discovery owns recovery.
+            let channels = try await requestExecutor.decode(
+                YouTubeListResponse<YouTubeChannelResource>.self,
+                for: request, operation: .channels
+            )
+            try Task.checkCancellation()
+            let secrets = [streamKey, tokenStore.accessToken ?? "", tokenStore.refreshToken ?? ""]
+            diagnostics.log("YouTube authorized channel lookup: \(channels.items.count) returned; more pages=\(channels.nextPageToken != nil)", .info)
+            for channel in channels.items.prefix(50) {
+                let name = YouTubeDiagnostics.text(channel.snippet?.title ?? "(no title)", secrets: secrets)
+                let id = YouTubeDiagnostics.text(channel.id ?? "(no ID)", secrets: secrets)
+                diagnostics.log("YouTube authorized channel: \(name) [\(id)]", .info)
+            }
+            if channels.items.isEmpty {
+                diagnostics.log("YouTube: no channel returned for this authorization; check the channel selected in Google sign-in", .warning)
+            }
+        } catch {
+            if YouTubeDiagnostics.failure(error) == "cancelled" { throw error }
+            diagnostics.log("YouTube authorized channel check unavailable (\(YouTubeDiagnostics.failure(error))); continuing normal stream discovery", .warning)
+        }
+    }
 
     func findHLSIngestionEndpoint(forStreamKey streamKey: String) async throws -> YouTubeHLSEndpoint {
         beginLoading()
@@ -863,6 +937,7 @@ final class YouTubeService {
         ) else {
             throw YouTubeError.noBroadcastFound
         }
+        diagnostics.log("YouTube broadcast selected; status=\(YouTubeDiagnostics.text(selectedBroadcast.statusLabel))", .info)
         return (selectedBroadcast, stream, token)
     }
 
@@ -904,7 +979,8 @@ final class YouTubeService {
         let resource: YouTubeBroadcastResource = try await apiPut(
             url: url,
             token: token,
-            jsonBody: jsonData
+            jsonBody: jsonData,
+            operation: .updateBroadcast
         )
         guard resource.id == id else {
             throw YouTubeError.invalidResponse
@@ -920,7 +996,8 @@ final class YouTubeService {
         let url = "\(YOUTUBE_API_BASE)/liveBroadcasts?part=status&id=\(broadcastId)"
         let response: YouTubeListResponse<YouTubeBroadcastResource> = try await apiGet(
             url: url,
-            token: token
+            token: token,
+            operation: .broadcastStatus
         )
         return response.items.first?.status?.lifeCycleStatus
     }
@@ -940,7 +1017,8 @@ final class YouTubeService {
         let resource: YouTubeBroadcastResource = try await apiPost(
             url: url,
             token: token,
-            jsonBody: Data()
+            jsonBody: Data(),
+            operation: .transitionBroadcast
         )
         guard resource.id == id,
               resource.status?.lifeCycleStatus == "complete" else {
@@ -970,7 +1048,7 @@ final class YouTubeService {
         request.httpBody = imageData
 
         request.timeoutInterval = 30
-        _ = try await authenticatedData(for: request, fallbackToken: token)
+        _ = try await authenticatedData(for: request, fallbackToken: token, operation: .thumbnail)
 
         LOG("Uploaded thumbnail for broadcast \(videoId)", level: .info)
     }
@@ -985,7 +1063,8 @@ final class YouTubeService {
         let url = "\(YOUTUBE_API_BASE)/playlists?part=snippet&mine=true&maxResults=50"
         let items: [YouTubePlaylistResource] = try await paginatedItems(
             url: url,
-            token: token
+            token: token,
+            operation: .playlists
         )
 
         return items.compactMap { item in
@@ -1014,7 +1093,8 @@ final class YouTubeService {
         }
         let existing: YouTubeListResponse<YouTubeIdentifierResource> = try await apiGet(
             url: lookupURL.absoluteString,
-            token: token
+            token: token,
+            operation: .playlistItems
         )
         if !existing.items.isEmpty {
             LOG("Broadcast is already in playlist \(playlistId)", level: .debug)
@@ -1038,7 +1118,8 @@ final class YouTubeService {
         let inserted: YouTubeIdentifierResource = try await apiPost(
             url: url,
             token: token,
-            jsonBody: jsonData
+            jsonBody: jsonData,
+            operation: .insertPlaylistItem
         )
         guard inserted.id != nil else {
             throw YouTubeError.invalidResponse
@@ -1051,7 +1132,8 @@ final class YouTubeService {
 
     private func apiGet<Response: Decodable & Sendable>(
         url: String,
-        token: String
+        token: String,
+        operation: YouTubeAPIOperation
     ) async throws -> Response {
         guard let requestURL = URL(string: url) else {
             throw YouTubeError.invalidResponse
@@ -1059,13 +1141,14 @@ final class YouTubeService {
         var request = URLRequest(url: requestURL)
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.timeoutInterval = 30
-        let data = try await authenticatedData(for: request, fallbackToken: token)
-        return try requestExecutor.decode(Response.self, from: data)
+        let data = try await authenticatedData(for: request, fallbackToken: token, operation: operation)
+        return try requestExecutor.decode(Response.self, from: data, operation: operation)
     }
 
     private func paginatedItems<Item: Decodable & Sendable>(
         url: String,
-        token: String
+        token: String,
+        operation: YouTubeAPIOperation
     ) async throws -> [Item] {
         guard let baseComponents = URLComponents(string: url) else {
             throw YouTubeError.invalidResponse
@@ -1074,6 +1157,7 @@ final class YouTubeService {
         var items: [Item] = []
         var pageToken: String?
         var seenPageTokens: Set<String> = []
+        var pageNumber = 0
 
         repeat {
             var components = baseComponents
@@ -1088,8 +1172,11 @@ final class YouTubeService {
 
             let page: YouTubeListResponse<Item> = try await apiGet(
                 url: pageURL.absoluteString,
-                token: token
+                token: token,
+                operation: operation
             )
+            pageNumber += 1
+            diagnostics.log("YouTube \(operation.rawValue): page \(pageNumber), \(page.items.count) items; more pages=\(page.nextPageToken?.isEmpty == false)", .info)
             items.append(contentsOf: page.items)
 
             guard let nextPageToken = page.nextPageToken,
@@ -1098,6 +1185,7 @@ final class YouTubeService {
                 continue
             }
             guard seenPageTokens.insert(nextPageToken).inserted else {
+                diagnostics.log("YouTube \(operation.rawValue): repeated pagination token", .error)
                 throw YouTubeError.invalidResponse
             }
             pageToken = nextPageToken
@@ -1109,7 +1197,8 @@ final class YouTubeService {
     private func apiPut<Response: Decodable & Sendable>(
         url: String,
         token: String,
-        jsonBody: Data
+        jsonBody: Data,
+        operation: YouTubeAPIOperation
     ) async throws -> Response {
         guard let requestURL = URL(string: url) else {
             throw YouTubeError.invalidResponse
@@ -1120,14 +1209,15 @@ final class YouTubeService {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = jsonBody
         request.timeoutInterval = 30
-        let data = try await authenticatedData(for: request, fallbackToken: token)
-        return try requestExecutor.decode(Response.self, from: data)
+        let data = try await authenticatedData(for: request, fallbackToken: token, operation: operation)
+        return try requestExecutor.decode(Response.self, from: data, operation: operation)
     }
 
     private func apiPost<Response: Decodable & Sendable>(
         url: String,
         token: String,
-        jsonBody: Data
+        jsonBody: Data,
+        operation: YouTubeAPIOperation
     ) async throws -> Response {
         guard let requestURL = URL(string: url) else {
             throw YouTubeError.invalidResponse
@@ -1138,11 +1228,11 @@ final class YouTubeService {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = jsonBody
         request.timeoutInterval = 30
-        let data = try await authenticatedData(for: request, fallbackToken: token)
-        return try requestExecutor.decode(Response.self, from: data)
+        let data = try await authenticatedData(for: request, fallbackToken: token, operation: operation)
+        return try requestExecutor.decode(Response.self, from: data, operation: operation)
     }
 
-    private func postForm(url: String, body: [String: String]) async throws -> Data {
+    private func postForm(url: String, body: [String: String], operation: YouTubeAPIOperation) async throws -> Data {
         guard let requestURL = URL(string: url) else {
             throw YouTubeError.invalidResponse
         }
@@ -1151,12 +1241,13 @@ final class YouTubeService {
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
         request.httpBody = FormURLEncoder.encode(body)
         request.timeoutInterval = 30
-        return try await requestExecutor.data(for: request)
+        return try await requestExecutor.data(for: request, operation: operation)
     }
 
     private func authenticatedData(
         for originalRequest: URLRequest,
-        fallbackToken: String
+        fallbackToken: String,
+        operation: YouTubeAPIOperation
     ) async throws -> Data {
         var request = originalRequest
         var token = fallbackToken
@@ -1164,8 +1255,9 @@ final class YouTubeService {
         for attempt in 0...1 {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
             do {
-                return try await requestExecutor.data(for: request)
+                return try await requestExecutor.data(for: request, operation: operation)
             } catch YouTubeError.apiError(let statusCode, _) where statusCode == 401 && attempt == 0 {
+                diagnostics.log("YouTube \(operation.rawValue): HTTP 401; refreshing authorization before one retry", .warning)
                 token = try await refreshAccessToken()
             }
         }

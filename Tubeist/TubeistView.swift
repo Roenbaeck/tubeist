@@ -73,6 +73,7 @@ struct TubeistView: View {
     @State private var splashOpacity: Double = 1.0
     @State private var fadeMessage: String?
     @State private var fading: Bool = false
+    @State private var fadeTask: Task<Void, Never>?
     @State private var isYouTubeRefreshCoolingDown: Bool = false
 
     private var isUITesting: Bool {
@@ -107,14 +108,47 @@ struct TubeistView: View {
     
     func fade(_ message: String) {
         LOG(message, level: .debug)
-        fading = false
-        fadeMessage = message
-        var transaction = Transaction(animation: .easeInOut(duration: 2.0).delay(1.0))
+        fadeTask?.cancel()
+        var transaction = Transaction()
         transaction.disablesAnimations = true
         withTransaction(transaction) {
-            fading = true
-            fadeMessage = nil
+            fading = false
+            fadeMessage = message
         }
+        fadeTask = Task { @MainActor in
+            do {
+                try await Task.sleep(for: .seconds(1))
+                withAnimation(.easeInOut(duration: 2)) {
+                    fading = true
+                }
+                try await Task.sleep(for: .seconds(2))
+                fadeMessage = nil
+            } catch {
+                // A newer message owns the display and its fade timing.
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var fadingMessage: some View {
+        if let message = fadeMessage {
+            Text(message)
+                .fontWeight(.bold)
+                .font(.system(size: 24))
+                .foregroundColor(ULTRAYELLOW)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: .infinity)
+                .padding(.horizontal, 12)
+                .opacity(fading ? 0 : 1)
+                .allowsHitTesting(false)
+        }
+    }
+
+    private var systemMetrics: some View {
+        SystemMetricsView {
+            fade("Bandwidth too low for selected quality")
+        }
+        .opacity(showJournal ? 0 : 1)
     }
     
     func updateCameraProperties() {
@@ -159,15 +193,6 @@ struct TubeistView: View {
         interaction.scheduleAction {
             showFocusAndExposureArea = false
         }
-    }
-
-    func setSystemMetricsPosition(top: Bool) {
-        guard areSystemMetricsAtTop != top else {
-            return
-        }
-        areSystemMetricsAtTop = top
-        Settings.areSystemMetricsAtTop = top
-        fade(top ? "Status bar moved to top" : "Status bar moved to bottom")
     }
 
     func bootstrapYouTubeStatus() {
@@ -430,19 +455,10 @@ struct TubeistView: View {
                     
                     VStack {
                         if areSystemMetricsAtTop {
-                            SystemMetricsView()
-                                .offset(y: 3)
-                                .opacity(showJournal ? 0 : 1)
-                            if let message = fadeMessage {
-                                Text(message)
-                                    .fontWeight(.bold)
-                                    .font(.system(size: 24))
-                                    .foregroundColor(ULTRAYELLOW)
-                                    .opacity(fading ? 0 : 1)
-                                    .animation(.easeInOut(duration: 0.5), value: message)
-                            }
                             AudioMonitorView(width: width, height: AUDIO_METER_HEIGHT)
                                 .frame(width: width, height: AUDIO_METER_HEIGHT)
+                            systemMetrics
+                            fadingMessage
                             Spacer()
                         }
                         else {
@@ -454,42 +470,14 @@ struct TubeistView: View {
                                 .foregroundColor(Color.yellow)
                                 .fontWeight(.black)
                         }
-                        if !areSystemMetricsAtTop, let message = fadeMessage {
-                            Text(message)
-                                .fontWeight(.bold)
-                                .font(.system(size: 24))
-                                .foregroundColor(ULTRAYELLOW)
-                                .opacity(fading ? 0 : 1)
-                                .animation(.easeInOut(duration: 0.5), value: message)
-                        }
                         if !areSystemMetricsAtTop {
-                            SystemMetricsView()
-                                .offset(y: 3)
-                                .opacity(showJournal ? 0 : 1)
+                            fadingMessage
+                            systemMetrics
                             AudioMonitorView(width: width, height: AUDIO_METER_HEIGHT)
                                 .frame(width: width, height: AUDIO_METER_HEIGHT)
                         }
                     }
 
-                    HStack {
-                        Color.clear
-                            .contentShape(Rectangle())
-                            .frame(width: 44, height: height)
-                            .gesture(
-                                DragGesture(minimumDistance: 24)
-                                    .onEnded { gesture in
-                                        let verticalTravel = gesture.translation.height
-                                        let horizontalTravel = abs(gesture.translation.width)
-                                        guard abs(verticalTravel) > horizontalTravel,
-                                              abs(verticalTravel) >= 40 else {
-                                            return
-                                        }
-                                        setSystemMetricsPosition(top: verticalTravel < 0)
-                                    }
-                            )
-                        Spacer()
-                    }
-                    
                     VStack(spacing: 0) {
                         Spacer()
                         
@@ -735,6 +723,7 @@ struct TubeistView: View {
                             .accessibilityLabel("Settings")
                             .accessibilityHint("Opens streaming, recording, camera, and overlay settings")
                             .sheet(isPresented: $showSettings, onDismiss: {
+                                areSystemMetricsAtTop = Settings.areSystemMetricsAtTop
                                 // Save, Cancel, and swipe-to-dismiss all reload
                                 // the applied URLs; unsaved drafts stay unused.
                                 let overlayURLs = overlayManager.overlays.compactMap { URL(string: $0.url) }
@@ -1094,6 +1083,9 @@ struct TubeistView: View {
         }
         .edgesIgnoringSafeArea(.all)
         .persistentSystemOverlays(.hidden)
+        .onDisappear {
+            fadeTask?.cancel()
+        }
         .onChange(of: overlayManager.overlays) {
             // Reordering existing views does not take a new WebKit snapshot.
             Task { await OverlayBundler.shared.combineOverlayImages() }

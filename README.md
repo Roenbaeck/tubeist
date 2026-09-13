@@ -76,6 +76,8 @@ Tubeist uses a fixed landscape interface with a central 16:9 preview and a compa
 
 The interface displays operational information—including current throughput, upload utilization, buffered media, CPU load, battery level, and thermal state—without covering the primary camera controls.
 
+Choose **Settings → Monitoring → System health bar position** to place the bar at the top or bottom, then tap **Save**. At the top, the order is audio meter, system health, and fading messages; at the bottom, the order is reversed. The adaptive video bitrate appears yellow whenever it is below the selected preset's target. Bandwidth below the quality threshold produces a fading warning instead of widening the health bar.
+
 ## Overlays, styles, and effects
 
 Web overlays can add live graphics and information to the encoded output. Tubeist also includes visual styles and effects that can be combined with overlays while recording or streaming. Some styles and effects are available through an in-app purchase.
@@ -105,6 +107,17 @@ If Start is unavailable or a stream fails:
 5. Read the persistent in-app error first, then open the journal for additional detail.
 
 After a successful stop, YouTube may need additional time to process the live archive before every quality level is available.
+
+For Google sign-in or YouTube configuration errors, enable **Info**, **Warning**,
+and **Error** under Settings' journal options and save. Reproduce the problem,
+then open **Journal** and capture the entries beginning with **YouTube**, including
+the authorized channel and the failing request. Debug logging is not required.
+These entries identify OAuth stages, API operations, HTTP status, Google's error
+reason, request timing, and discovery counts. Settings also performs a brief,
+best-effort lookup of the authorized channel's public name and ID so it can be
+compared with the intended channel in YouTube Studio. Credentials and complete
+request URLs are omitted or redacted. A generic Google internal error may still
+require investigation by Google; the journal identifies where it occurred.
 
 ## Development and verification
 

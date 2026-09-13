@@ -681,6 +681,164 @@ struct YouTubeServiceTests {
         #expect(await transport.requestCount == 2)
     }
 
+    @Test func requestDiagnosticsReportGoogleReasonsWithoutCredentials() async throws {
+        let captured = CapturedYouTubeDiagnostics()
+        let secret = "access-canary-123"
+        let response = YouTubeAPIResponse(
+            data: Data(#"{"error":{"message":"Bearer access-canary-123 at https://example.invalid/?cid=key-canary","status":"INTERNAL","errors":[{"domain":"global","reason":"backendError"}]}}"#.utf8),
+            statusCode: 500, requestID: "google-request-123"
+        )
+        let transport = MockYouTubeAPITransport(responses: [response])
+        let executor = YouTubeAPIRequestExecutor(transport: transport, diagnostics: captured.diagnostics)
+        var request = URLRequest(url: URL(string: "https://example.invalid/liveStreams?pageToken=page-canary")!)
+        request.setValue("Bearer \(secret)", forHTTPHeaderField: "Authorization")
+        do {
+            _ = try await executor.data(for: request, operation: .streams)
+            Issue.record("Expected HTTP 500")
+        } catch let error as YouTubeError {
+            #expect(!error.localizedDescription.contains(secret))
+            #expect(!error.localizedDescription.contains("key-canary"))
+        }
+        let log = captured.text
+        #expect(log.contains("liveStreams.list: HTTP 500"))
+        #expect(log.contains("Google request ID=google-request-123"))
+        #expect(log.contains("status=INTERNAL; domain=global; reason=backendError"))
+        #expect(!log.contains(secret))
+        #expect(!log.contains("key-canary"))
+        #expect(!log.contains("page-canary"))
+        #expect(!log.contains("https://"))
+        #expect(captured.entries.last?.1 == .error)
+        #expect(await transport.requestCount == 1)
+    }
+
+    @Test(arguments: [YouTubeAPIOperation.exchangeCode, .refreshToken])
+    func oauthDiagnosticsIdentifyTokenStageAndRedactFormValues(_ operation: YouTubeAPIOperation) async throws {
+        let captured = CapturedYouTubeDiagnostics()
+        let secret = "credential+canary/123="
+        let data = try JSONSerialization.data(withJSONObject: [
+            "error": "invalid_grant", "error_description": "Rejected \(secret)",
+        ])
+        let executor = YouTubeAPIRequestExecutor(
+            transport: MockYouTubeAPITransport(responses: [.init(data: data, statusCode: 400)]),
+            diagnostics: captured.diagnostics
+        )
+        var request = URLRequest(url: URL(string: "https://oauth2.googleapis.com/token")!)
+        request.httpMethod = "POST"
+        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        request.httpBody = FormURLEncoder.encode(["code": secret, "refresh_token": secret, "code_verifier": secret])
+        do {
+            _ = try await executor.data(for: request, operation: operation)
+            Issue.record("Expected OAuth failure")
+        } catch let error as YouTubeError {
+            #expect(!error.localizedDescription.contains(secret))
+        }
+        #expect(captured.text.contains("\(operation.rawValue): HTTP 400"))
+        #expect(captured.text.contains("OAuth reason=invalid_grant"))
+        #expect(!captured.text.contains(secret))
+    }
+
+    @Test func diagnosticTextRedactsBeforeTruncationAndRemovesNewlines() {
+        let secret = "sensitive-credential-canary"
+        let result = YouTubeDiagnostics.text(String(repeating: "a", count: 990) + secret, secrets: [secret])
+        #expect(!result.contains("sensitive-"))
+        #expect(YouTubeDiagnostics.text("backendError\nforged entry\rnext") == "backendError forged entry next")
+    }
+
+    @Test func transportFailureDiagnosticsOmitUnderlyingURLAndErrorDescription() async throws {
+        let captured = CapturedYouTubeDiagnostics()
+        let executor = YouTubeAPIRequestExecutor(transport: FailingYouTubeAPITransport(), diagnostics: captured.diagnostics)
+        do {
+            _ = try await executor.data(for: URLRequest(url: URL(string: "https://example.invalid")!), operation: .channels)
+            Issue.record("Expected timeout")
+        } catch let error as URLError {
+            #expect(error.code == .timedOut)
+        }
+        #expect(captured.text.contains("channels.list: NSURLErrorDomain code=-1001"))
+        #expect(!captured.text.contains("transport-canary"))
+        #expect(captured.entries.last?.1 == .warning)
+    }
+
+    @Test @MainActor
+    func settingsDiagnosticsIdentifyAuthorizedChannelAndSuccessfulDiscovery() async throws {
+        let captured = CapturedYouTubeDiagnostics()
+        let transport = MockYouTubeAPITransport(responses: settingsDiagnosticResponses())
+        let service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore(), diagnostics: captured.diagnostics)
+        let settings = try await service.loadSettingsConfiguration(forStreamKey: "test-key")
+        #expect(settings.broadcast.id == "ready")
+        #expect(settings.playlists.isEmpty)
+        #expect(captured.text.contains("authorized channel: Brand channel [UC-test-channel]"))
+        #expect(captured.text.contains("1 streams; 1 match the configured key"))
+        #expect(captured.text.contains("1 broadcasts; 1 bound to the matching stream"))
+        #expect(!captured.text.contains("test-key"))
+        #expect(!captured.text.contains("valid-access"))
+        let requests = await transport.requests
+        #expect(requests.map(\.httpMethod) == ["GET", "GET", "GET", "GET"])
+        #expect(requests.first?.timeoutInterval == 5)
+        #expect(!service.isLoading)
+    }
+
+    @Test(arguments: [1, 2, 3]) @MainActor
+    func settingsDiagnosticsNameEachFailingDiscoveryStage(_ stage: Int) async throws {
+        let captured = CapturedYouTubeDiagnostics()
+        let operations: [YouTubeAPIOperation] = [.channels, .streams, .broadcasts, .playlists]
+        var responses = Array(settingsDiagnosticResponses().prefix(stage + 1))
+        responses[stage] = .init(data: Data(#"{"error":{"message":"Internal error encountered.","errors":[{"reason":"backendError"}]}}"#.utf8), statusCode: 500)
+        let transport = MockYouTubeAPITransport(responses: responses)
+        let service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore(), diagnostics: captured.diagnostics)
+        await #expect(throws: YouTubeError.apiError(500, "Internal error encountered.")) {
+            _ = try await service.loadSettingsConfiguration(forStreamKey: "test-key")
+        }
+        #expect(captured.text.contains("\(operations[stage].rawValue): HTTP 500"))
+        #expect(captured.text.contains("reason=backendError"))
+        #expect(captured.text.contains("authorized channel: Brand channel"))
+        #expect(await transport.requestCount == stage + 1)
+        #expect(!service.isLoading)
+    }
+
+    @Test(arguments: [401, 500]) @MainActor
+    func optionalChannelFailureDoesNotBlockSettingsOrRefreshAuthorization(_ status: Int) async throws {
+        let captured = CapturedYouTubeDiagnostics()
+        var responses = settingsDiagnosticResponses()
+        responses[0] = .init(data: Data(#"{"error":{"message":"Channel check failed"}}"#.utf8), statusCode: status)
+        let transport = MockYouTubeAPITransport(responses: responses)
+        let service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore(), diagnostics: captured.diagnostics)
+        let settings = try await service.loadSettingsConfiguration(forStreamKey: "test-key")
+        #expect(settings.broadcast.id == "ready")
+        #expect(captured.text.contains("authorized channel check unavailable (HTTP \(status)); continuing"))
+        #expect(!captured.entries.contains { $0.1 == .error })
+        #expect(await transport.requestCount == 4)
+        #expect(service.errorMessage == nil)
+    }
+
+    @Test @MainActor
+    func initialTokenFailureIsReportedOnceBeforeChannelOrStreamDiscovery() async throws {
+        let captured = CapturedYouTubeDiagnostics()
+        let transport = MockYouTubeAPITransport(responses: [
+            .init(data: Data(#"{"error":{"message":"Internal error encountered."}}"#.utf8), statusCode: 500),
+        ])
+        let store = MemoryYouTubeTokenStore(accessToken: nil, refreshToken: "refresh-canary", expiry: nil)
+        let service = YouTubeService(transport: transport, tokenStore: store, diagnostics: captured.diagnostics)
+        await #expect(throws: YouTubeError.apiError(500, "Internal error encountered.")) {
+            _ = try await service.loadSettingsConfiguration(forStreamKey: "test-key")
+        }
+        #expect(captured.text.contains("oauth.refreshToken: HTTP 500"))
+        #expect(!captured.text.contains("channels.list"))
+        #expect(!captured.text.contains("refresh-canary"))
+        #expect(await transport.requestCount == 1)
+        #expect(!service.isLoading)
+    }
+
+    @Test @MainActor
+    func cancellingChannelDiagnosticDoesNotContinueToStreamDiscovery() async throws {
+        let transport = SuspendingYouTubeAPITransport()
+        let service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore())
+        let task = Task { try await service.loadSettingsConfiguration(forStreamKey: "test-key") }
+        await transport.waitUntilStarted()
+        task.cancel()
+        await #expect(throws: CancellationError.self) { _ = try await task.value }
+        #expect(!service.isLoading)
+    }
+
     @Test @MainActor
     func cancellationPropagatesAndClearsLoadingState() async throws {
         let transport = SuspendingYouTubeAPITransport()
@@ -700,6 +858,31 @@ struct YouTubeServiceTests {
         #expect(!service.isLoading)
         #expect(await transport.observedCancellation)
     }
+}
+
+private final class CapturedYouTubeDiagnostics: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [(String, LogLevel)] = []
+    var diagnostics: YouTubeDiagnostics {
+        YouTubeDiagnostics(log: { [self] message, level in lock.withLock { storage.append((message, level)) } })
+    }
+    var entries: [(String, LogLevel)] { lock.withLock { storage } }
+    var text: String { entries.map(\.0).joined(separator: "\n") }
+}
+
+private struct FailingYouTubeAPITransport: YouTubeAPITransport {
+    func response(for request: URLRequest) async throws -> YouTubeAPIResponse {
+        throw URLError(.timedOut, userInfo: [NSLocalizedDescriptionKey: "https://example.invalid/?cid=transport-canary"])
+    }
+}
+
+private func settingsDiagnosticResponses() -> [YouTubeAPIResponse] {
+    [
+        .init(data: Data(#"{"items":[{"id":"UC-test-channel","snippet":{"title":"Brand channel"}}]}"#.utf8), statusCode: 200),
+        .init(data: Data(#"{"items":[{"id":"stream-1","cdn":{"ingestionType":"hls","ingestionInfo":{"streamName":"test-key","ingestionAddress":"https://a.upload.youtube.com/http_upload_hls?cid=test-key&file="}}}]}"#.utf8), statusCode: 200),
+        .init(data: Data(#"{"items":[{"id":"ready","snippet":{"title":"Next"},"status":{"privacyStatus":"unlisted","lifeCycleStatus":"ready"},"contentDetails":{"boundStreamId":"stream-1"}}]}"#.utf8), statusCode: 200),
+        .init(data: Data(#"{"items":[]}"#.utf8), statusCode: 200),
+    ]
 }
 
 private final class MemoryYouTubeTokenStore: YouTubeTokenStoring {

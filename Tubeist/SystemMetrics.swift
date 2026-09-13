@@ -56,6 +56,7 @@ struct SystemCPUSampler: Sendable {
 
 struct SystemMetricsView: View {
     @Environment(AppState.self) var appState
+    var onBandwidthWarning: () -> Void = {}
     private let processInfo = ProcessInfo()
     @State private var cpuUsage: Float = 0
     @State private var batteryLevel: Float = 0
@@ -105,9 +106,7 @@ struct SystemMetricsView: View {
         Text("\(networkMbps) Mbps | \(networkUtilization)% utilization | \(fragmentBufferCount) buffered")
         if let videoBitrate {
             Text("Target: \(Double(videoBitrate) / 1_000_000, specifier: "%.1f") Mbps")
-        }
-        if belowQualityFloor {
-            Text("Bandwidth below quality floor").foregroundStyle(ULTRAYELLOW)
+                .foregroundStyle(videoBitrate < Settings.selectedPreset.videoBitrate ? ULTRAYELLOW : BRIGHTER_THAN_WHITE)
         }
     }
     
@@ -148,6 +147,9 @@ struct SystemMetricsView: View {
             self.networkUtilization = networkUtilization
             self.fragmentBufferCount = fragmentBufferCount
             self.videoBitrate = outputMetrics.videoBitrate
+            if outputMetrics.belowQualityFloor && !belowQualityFloor {
+                onBandwidthWarning()
+            }
             self.belowQualityFloor = outputMetrics.belowQualityFloor
             self.appState.streamHealth = streamHealth
         }
