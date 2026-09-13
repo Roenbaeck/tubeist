@@ -2,7 +2,7 @@
 //
 // Build from the repository root:
 //   xcrun swiftc -parse-as-library Tubeist/ISOBMFFReader.swift \
-//     Tubeist/EncodedMedia.swift Tubeist/MPEGTransportStreamMuxer.swift Tools/RemuxFixture/main.swift \
+//     Tubeist/MPEGTransportStreamMuxer.swift Tools/RemuxFixture/main.swift \
 //     -o /tmp/tubeist-remux-fixture
 //
 // Run with an initialization segment, an output directory, and ordered media

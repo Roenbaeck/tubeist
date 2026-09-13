@@ -16,7 +16,6 @@ xcrun swiftc \
   -parse-as-library \
   -module-cache-path "${work_directory}/module-cache" \
   "${repository_root}/Tubeist/ISOBMFFReader.swift" \
-  "${repository_root}/Tubeist/EncodedMedia.swift" \
   "${repository_root}/Tubeist/MPEGTransportStreamMuxer.swift" \
   "${tool_directory}/main.swift" \
   -o "${tool_binary}"

@@ -188,7 +188,6 @@ struct YouTubeHLSUploadReceipt: Sendable, Equatable {
     let sequence: Int
     let segmentFilename: String
     let playlistFilename: String
-    var elapsedSeconds: Double = 0
 }
 
 struct YouTubeHLSUploaderDiagnostics: Sendable, Equatable {
@@ -295,8 +294,7 @@ actor YouTubeHLSUploader {
             return YouTubeHLSUploadReceipt(
                 sequence: entry.sequence,
                 segmentFilename: entry.filename,
-                playlistFilename: playlist.playlistFilename,
-                elapsedSeconds: elapsed
+                playlistFilename: playlist.playlistFilename
             )
         } catch {
             if !stopped {

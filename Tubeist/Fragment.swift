@@ -5,20 +5,13 @@
 
 import Foundation
 
-/// A complete encoded container fragment. Live upload uses MPEG-TS; the MP4
-/// case remains useful for recording delegate output and fixture validation.
+/// An encoded ISOBMFF fragment shared by the recording and YouTube pipelines.
 struct Fragment: Sendable, CustomStringConvertible {
     let sequence: Int
     let segment: Data
     let duration: Double
     var discontinuity: Bool = false
     var type: SegmentType = .separable
-    var container: Container = .fragmentedMP4
-
-    enum Container: Sendable, Equatable {
-        case fragmentedMP4
-        case mpegTransportStream
-    }
 
     enum SegmentType: Sendable, Equatable {
         case initialization

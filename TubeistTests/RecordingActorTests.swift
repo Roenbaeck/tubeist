@@ -66,20 +66,6 @@ private struct InjectedRecordingFileFactory: RecordingFileCreating {
 }
 
 struct RecordingActorTests {
-    @Test func obsoleteRecordingCallbacksCannotEnterANewSession() {
-        let firstWriter = NSObject()
-        let nextWriter = NSObject()
-        let callbacks = RecordingCallbackState()
-        callbacks.prepare(writerID: ObjectIdentifier(firstWriter))
-        let old = callbacks.next(writerID: ObjectIdentifier(firstWriter))!
-        #expect(old.sequence == 0)
-        callbacks.prepare(writerID: ObjectIdentifier(nextWriter))
-        #expect(!callbacks.isCurrent(old.generation))
-        #expect(callbacks.next(writerID: ObjectIdentifier(firstWriter)) == nil)
-        #expect(callbacks.next(writerID: ObjectIdentifier(nextWriter))?.sequence == 0)
-        #expect(callbacks.next(writerID: ObjectIdentifier(nextWriter))?.sequence == 1)
-    }
-
     @Test func finishClosesTheCompleteRecording() async throws {
         let folder = FileManager.default.temporaryDirectory
             .appendingPathComponent("tubeist-recording-\(UUID().uuidString)", isDirectory: true)

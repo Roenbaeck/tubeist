@@ -185,9 +185,9 @@ struct StreamerTests {
 
     @Test func outputPlanCoversTheYouTubeOnlyRegressionMatrix() throws {
         let cases: [(StreamOutputPlan, Bool, Bool)] = [
-            (StreamOutputPlan(streamsToYouTube: false, recordsLocally: true), false, true),
-            (StreamOutputPlan(streamsToYouTube: true, recordsLocally: false), true, false),
-            (StreamOutputPlan(streamsToYouTube: true, recordsLocally: true), true, true),
+            (StreamOutputPlan(streamsToYouTube: false, recordsOriginalFMP4: true), false, true),
+            (StreamOutputPlan(streamsToYouTube: true, recordsOriginalFMP4: false), true, false),
+            (StreamOutputPlan(streamsToYouTube: true, recordsOriginalFMP4: true), true, true),
         ]
 
         for (expected, stream, record) in cases {

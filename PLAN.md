@@ -1,6 +1,3 @@
-> The encoding architecture below records the earlier AssetWriter migration.
-> The VideoToolbox branch replaces that live path; see [the current design and validation](Tools/VideoToolboxProbe/README.md).
-
 # Tubeist YouTube-only hardening plan
 
 - Status: repeat-stream and no-litter Settings fixes verified; YouTube-owned auto-stop experiment awaits physical acceptance

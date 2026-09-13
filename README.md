@@ -2,7 +2,7 @@
 
 # Tubeist
 
-Tubeist is a native Swift 6 camera app for recording and streaming HDR video from an iPhone. It sends HEVC Main10 HLG video and AAC audio directly to YouTube over HLS, without an intermediate relay server. VideoToolbox and an AAC encoder feed MPEG-2 TS segments directly. When local recording is enabled, AVAssetWriter saves the same compressed samples as fragmented MP4 without another encode.
+Tubeist is a native Swift 6 camera app for recording and streaming HDR video from an iPhone. It sends HEVC Main10 HLG video and AAC audio directly to YouTube over HLS, without an intermediate relay server. When local recording is enabled, the same encoded media is saved as fragmented MP4 while it is remuxed to MPEG-2 TS for streaming—no second video or audio encoder is required.
 
 Tubeist is designed for events, sports, education, performances, and other long-form productions where image quality matters more than conversational latency. Watch [Tubeist demos on YouTube](https://youtube.com/playlist?list=PLFnkPgO2HxdAp_YiFVSWVpyak--0y6m5U&si=b2vjD-jVe0FY2egZ).
 
@@ -18,7 +18,6 @@ Tubeist is designed for events, sports, education, performances, and other long-
 - Manual focus, exposure, white balance, zoom, stabilization, and camera controls
 - Local and external monitoring options
 - Live bandwidth, buffer, CPU, battery, and thermal information
-- Gradual bitrate reduction for sustained congestion, with a quality floor and prompt recovery
 - Web overlays for graphics and live information
 - Built-in image styles and effects
 - Optional Google sign-in for YouTube broadcast discovery and management
@@ -37,14 +36,6 @@ To build from source:
 Tubeist requires iOS 18 or later and a physical iPhone with an HDR-capable capture format. The project has no external framework dependencies.
 
 ## Streaming to YouTube
-
-The selected video bitrate is a ceiling. During sustained congestion, Tubeist
-adjusts it at two-second segment boundaries and restores quality as soon as the
-connection improves. Simultaneous recordings follow these bitrate changes;
-recording-only sessions keep the selected bitrate. If bandwidth cannot support
-the quality floor, the monitor warns that a lower-resolution preset is needed.
-See the [controller design and offline validation](Tools/VideoToolboxProbe/README.md)
-for tuning assumptions and limitations.
 
 Create a YouTube Live stream configured for **HLS ingestion**, then enter its stream key in Tubeist Settings. An RTMP or RTMPS key is not interchangeable with an HLS key.
 

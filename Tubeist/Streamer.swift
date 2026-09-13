@@ -79,7 +79,7 @@ extension StreamSessionState {
 
 struct StreamOutputPlan: Sendable, Equatable {
     let streamsToYouTube: Bool
-    let recordsLocally: Bool
+    let recordsOriginalFMP4: Bool
 
     var routesEncodedFragments: Bool { streamsToYouTube }
     var remuxesToTransportStream: Bool { streamsToYouTube }
@@ -92,9 +92,9 @@ struct StreamOutputPlan: Sendable, Equatable {
             throw StreamStartError.noOutputSelected
         }
         guard stream else {
-            return StreamOutputPlan(streamsToYouTube: false, recordsLocally: record)
+            return StreamOutputPlan(streamsToYouTube: false, recordsOriginalFMP4: record)
         }
-        return StreamOutputPlan(streamsToYouTube: true, recordsLocally: record)
+        return StreamOutputPlan(streamsToYouTube: true, recordsOriginalFMP4: record)
     }
 }
 
@@ -395,7 +395,7 @@ final class Streamer: Sendable {
 
         do {
             guard await !ContentPackager.shared.isPackaging() else {
-                throw ContentPackagingError.alreadyEncoding
+                throw ContentPackagingError.assetWriterAlreadyWriting
             }
             let outputPlan = try StreamOutputPlan.resolve(
                 stream: Settings.stream,
@@ -405,7 +405,7 @@ final class Streamer: Sendable {
             try await prepareEncodedOutput(streamID: streamID, plan: outputPlan)
             try await ContentPackager.shared.beginPackaging(
                 stream: outputPlan.routesEncodedFragments,
-                record: outputPlan.recordsLocally
+                record: outputPlan.recordsOriginalFMP4
             )
             packagingStarted = true
             await SoundGrabber.shared.commenceGrabbing()
@@ -521,9 +521,9 @@ final class Streamer: Sendable {
             LOG("Local output shutdown failed: \(error.localizedDescription)", level: .error)
         } catch {
             packagingReport = ContentPackagingShutdownReport(
-                mediaEncoding: .failed(error.localizedDescription),
+                assetWriter: .failed(error.localizedDescription),
                 fragmentDispatch: .notRequested,
-                recording: outputPlan?.recordsLocally == true
+                recording: outputPlan?.recordsOriginalFMP4 == true
                     ? .failed("Recording completion could not be determined")
                     : .notRequested
             )
