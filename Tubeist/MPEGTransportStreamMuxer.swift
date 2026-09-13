@@ -45,7 +45,7 @@ struct MPEGTransportStreamMuxer {
 
     private var continuityCounters: [UInt16: UInt8] = [:]
     private var timestampShift: Int64?
-    private var lastDecodeTimeByTrack: [UInt32: UInt64] = [:]
+    private var lastDecodeTimeByTrack: [UInt32: Int64] = [:]
 
     mutating func reset() {
         continuityCounters.removeAll(keepingCapacity: true)
@@ -57,16 +57,8 @@ struct MPEGTransportStreamMuxer {
         _ segment: ISOBMFFMediaSegment,
         initialization: ISOBMFFInitialization
     ) throws -> MPEGTransportStreamSegment {
-        var candidate = self
-        let output = try candidate.makeSegment(segment, initialization: initialization)
-        self = candidate
-        return output
-    }
-
-    private mutating func makeSegment(
-        _ segment: ISOBMFFMediaSegment,
-        initialization: ISOBMFFInitialization
-    ) throws -> MPEGTransportStreamSegment {
+        // Compatibility adapter for archived Apple-writer fixtures. Live
+        // streaming supplies encoded samples directly, without parsing MP4.
         guard let videoTrack = initialization.videoTrack,
               let hevc = videoTrack.hevc else {
             throw MPEGTransportStreamError.missingConfiguration("HEVC track and hvcC")
@@ -75,6 +67,28 @@ struct MPEGTransportStreamMuxer {
               let aac = audioTrack.aac else {
             throw MPEGTransportStreamError.missingConfiguration("AAC track and AudioSpecificConfig")
         }
+        let samples = try segment.samples.map { sample in
+            guard let track = initialization.tracks[sample.trackID],
+                  let decodeTime = Int64(exactly: sample.decodeTime) else {
+                throw MPEGTransportStreamError.timestamp("invalid source track or DTS")
+            }
+            return EncodedMediaSample(trackID: sample.trackID, kind: sample.kind, timescale: track.timescale,
+                decodeTime: decodeTime, presentationTime: sample.presentationTime, duration: Int64(sample.duration),
+                isRandomAccess: sample.isRandomAccess, data: sample.data)
+        }
+        return try mux(EncodedMediaSegment(samples: samples, hevc: hevc, aac: aac))
+    }
+
+    mutating func mux(_ segment: EncodedMediaSegment) throws -> MPEGTransportStreamSegment {
+        var candidate = self
+        let output = try candidate.makeSegment(segment)
+        self = candidate
+        return output
+    }
+
+    private mutating func makeSegment(_ segment: EncodedMediaSegment) throws -> MPEGTransportStreamSegment {
+        let hevc = segment.hevc
+        let aac = segment.aac
         guard !segment.samples.isEmpty else {
             throw MPEGTransportStreamError.malformedSample("empty media segment")
         }
@@ -87,12 +101,9 @@ struct MPEGTransportStreamMuxer {
 
         try validateMonotonicDecodeTimes(segment.samples)
         var encoded = try segment.samples.enumerated().map { order, sample in
-            guard let track = initialization.tracks[sample.trackID] else {
-                throw MPEGTransportStreamError.missingConfiguration("track \(sample.trackID)")
-            }
-            let decodeTime = try rescale(Int64(sample.decodeTime), from: track.timescale)
-            let presentationTime = try rescale(sample.presentationTime, from: track.timescale)
-            let duration = try rescale(Int64(sample.duration), from: track.timescale)
+            let decodeTime = try rescale(sample.decodeTime, from: sample.timescale)
+            let presentationTime = try rescale(sample.presentationTime, from: sample.timescale)
+            let duration = try rescale(sample.duration, from: sample.timescale)
             guard duration > 0 else {
                 throw MPEGTransportStreamError.timestamp("sample duration rounded to zero")
             }
@@ -200,7 +211,7 @@ struct MPEGTransportStreamMuxer {
         }
         return MPEGTransportStreamSegment(
             data: output,
-            duration: Double(lastPresentation - firstPresentation) / Double(Self.clockRate),
+            duration: segment.presentationDuration ?? Double(lastPresentation - firstPresentation) / Double(Self.clockRate),
             startsWithRandomAccess: true,
             firstPresentationTimestamp: UInt64(firstPresentation),
             lastPresentationTimestamp: UInt64(lastPresentation)
@@ -212,7 +223,7 @@ struct MPEGTransportStreamMuxer {
 
 private struct EncodedSample {
     let order: Int
-    let source: ISOBMFFSample
+    let source: EncodedMediaSample
     let decodeTime: Int64
     let presentationTime: Int64
     let duration: Int64
@@ -532,10 +543,10 @@ private extension MPEGTransportStreamMuxer {
 // MARK: - Timeline
 
 private extension MPEGTransportStreamMuxer {
-    mutating func validateMonotonicDecodeTimes(_ samples: [ISOBMFFSample]) throws {
+    mutating func validateMonotonicDecodeTimes(_ samples: [EncodedMediaSample]) throws {
         let grouped = Dictionary(grouping: samples, by: \.trackID)
         for (trackID, trackSamples) in grouped {
-            let times = trackSamples.map(\.decodeTime).sorted()
+            let times = try trackSamples.map { try rescale($0.decodeTime, from: $0.timescale) }.sorted()
             guard let first = times.first, let last = times.last else { continue }
             guard zip(times, times.dropFirst()).allSatisfy({ $0 < $1 }) else {
                 throw MPEGTransportStreamError.timestamp(

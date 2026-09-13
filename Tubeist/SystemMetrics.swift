@@ -63,6 +63,8 @@ struct SystemMetricsView: View {
     @State private var networkMbps: Int = 0
     @State private var networkUtilization: Int = 0
     @State private var fragmentBufferCount: Int = 0
+    @State private var videoBitrate: Int?
+    @State private var belowQualityFloor = false
     @State private var updateSystemMetricsTask: Task<Void, Never>?
     private let cpuSampler = SystemCPUSampler()
             
@@ -101,6 +103,12 @@ struct SystemMetricsView: View {
         Text("Battery: \(String(format: "%.0f", batteryLevel))%")
         Text("Temp: \(thermalLevel)")
         Text("\(networkMbps) Mbps | \(networkUtilization)% utilization | \(fragmentBufferCount) buffered")
+        if let videoBitrate {
+            Text("Target: \(Double(videoBitrate) / 1_000_000, specifier: "%.1f") Mbps")
+        }
+        if belowQualityFloor {
+            Text("Bandwidth below quality floor").foregroundStyle(ULTRAYELLOW)
+        }
     }
     
     private func updateSystemMetrics() async {
@@ -116,7 +124,7 @@ struct SystemMetricsView: View {
                 if outputMetrics.hasFailure {
                     return .unusable
                 }
-                if networkUtilization >= 100 || fragmentBufferCount > 1 {
+                if networkUtilization >= 100 || fragmentBufferCount > 1 || outputMetrics.belowQualityFloor {
                     return .degraded
                 }
                 else {
@@ -138,6 +146,8 @@ struct SystemMetricsView: View {
             self.networkMbps = networkMbps
             self.networkUtilization = networkUtilization
             self.fragmentBufferCount = fragmentBufferCount
+            self.videoBitrate = outputMetrics.videoBitrate
+            self.belowQualityFloor = outputMetrics.belowQualityFloor
             self.appState.streamHealth = streamHealth
         }
     }
