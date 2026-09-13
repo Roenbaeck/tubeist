@@ -54,6 +54,28 @@ struct EncodedSegmentAssemblerTests {
         #expect(throws: MPEGTransportStreamError.self) { try assembler.append(sample(.video, pts: 9000, sync: true)) }
     }
 
+    @Test func boundsSamplesEvenIfPresentationTimeStopsAdvancing() throws {
+        var assembler = EncodedSegmentAssembler()
+        try assembler.append(sample(.video, pts: 0, sync: true))
+        for index in 0..<2048 {
+            try assembler.append(sample(.audio, pts: 0, dts: Int64(index)))
+        }
+        #expect(throws: MPEGTransportStreamError.self) {
+            try assembler.append(sample(.audio, pts: 0, dts: 2048))
+        }
+    }
+
+    @Test func rejectsDuplicateDecodeTimesBeforeSegmentAssembly() throws {
+        var assembler = EncodedSegmentAssembler()
+        try assembler.append(sample(.audio, pts: 0))
+        #expect(throws: MPEGTransportStreamError.self) {
+            try assembler.append(sample(.audio, pts: 0))
+        }
+        #expect(throws: MPEGTransportStreamError.self) {
+            try assembler.append(sample(.audio, pts: -1))
+        }
+    }
+
     @Test func unsignedArchiveTimestampOverflowThrowsInsteadOfTrapping() throws {
         let initData = ISOBMFFInitialization(tracks: [
             1: ISOBMFFTrack(id: 1, kind: .video, timescale: 1000, defaultSampleDuration: 0, defaultSampleSize: 0,

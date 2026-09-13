@@ -30,6 +30,7 @@ struct EncodedSegmentAssembler {
     private var video: [EncodedMediaSample] = []
     private var audio: [EncodedMediaSample] = []
     private var audioEnd = -Double.infinity
+    private var lastDecodeTime: [UInt32: Double] = [:]
     let segmentDuration: Double
 
     init(segmentDuration: Double = 2) { self.segmentDuration = segmentDuration }
@@ -38,6 +39,14 @@ struct EncodedSegmentAssembler {
         guard sample.timescale > 0, sample.duration > 0 else {
             throw MPEGTransportStreamError.timestamp("invalid encoded sample timing")
         }
+        let decodeTime = Double(sample.decodeTime) / Double(sample.timescale)
+        guard lastDecodeTime[sample.trackID].map({ decodeTime > $0 }) ?? true else {
+            throw MPEGTransportStreamError.timestamp("encoded decode times must increase within each track")
+        }
+        guard video.count < 2048, audio.count < 2048 else {
+            throw MPEGTransportStreamError.malformedSample("encoded track queue exceeded its sample limit")
+        }
+        lastDecodeTime[sample.trackID] = decodeTime
         if sample.kind == .video {
             if video.isEmpty, !sample.isRandomAccess {
                 throw MPEGTransportStreamError.malformedSample("video must start with a closed GOP")

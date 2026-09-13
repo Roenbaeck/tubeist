@@ -50,6 +50,7 @@ final class HEVCVideoEncoder {
     private let maximumFrameDelay = 8
     private var submittedFrames = 0
     private var emittedFrames = 0
+    private var lastSubmittedPTS: CMTime?
     let frameDuration: CMTime
     private(set) var bitrate: Int
 
@@ -113,6 +114,10 @@ final class HEVCVideoEncoder {
 
     func encode(_ pixels: CVPixelBuffer, presentationTime: CMTime, forceKeyframe: Bool) throws {
         guard let session else { throw MediaEncodingError.invalid("HEVC encoder is not active") }
+        guard presentationTime.isNumeric,
+              lastSubmittedPTS.map({ presentationTime > $0 }) ?? true else {
+            throw MediaEncodingError.invalid("HEVC input timestamps must increase")
+        }
         // Submit the pipeline's original HLG pixel buffer; no RGB intermediate.
         let properties = forceKeyframe ? [kVTEncodeFrameOptionKey_ForceKeyFrame: true] as CFDictionary : nil
         try checkMediaStatus(VTCompressionSessionEncodeFrame(
@@ -120,6 +125,7 @@ final class HEVCVideoEncoder {
             frameProperties: properties, sourceFrameRefcon: nil, infoFlagsOut: nil
         ), "Submitting HEVC frame")
         submittedFrames += 1
+        lastSubmittedPTS = presentationTime
     }
 
     func takeOutput() throws -> [CMSampleBuffer] {
@@ -228,6 +234,9 @@ final class AACAudioEncoder {
     private var converter: AVAudioConverter?
     private var inputFormat: AVAudioFormat?
     private var timeline: AudioSampleTimeline?
+    private var repair: AudioCaptureRepair?
+    private(set) var acceptedInput = false
+    var inputEndPTS: CMTime? { repair?.expectedPTS }
     private var outputFrames: Int64 = 0
     private var formatDescription: CMAudioFormatDescription?
     private(set) var configuration: AACDecoderConfiguration?
@@ -243,6 +252,7 @@ final class AACAudioEncoder {
     }
 
     func encode(_ sample: CMSampleBuffer, basePTS: CMTime) throws -> [CMSampleBuffer] {
+        acceptedInput = false
         guard let description = CMSampleBufferGetFormatDescription(sample) else {
             throw MediaEncodingError.invalid("Audio has no format description")
         }
@@ -253,15 +263,52 @@ final class AACAudioEncoder {
         }
         let pts = CMTimeSubtract(CMSampleBufferGetPresentationTimeStamp(sample), basePTS)
         let count = CMSampleBufferGetNumSamples(sample)
-        try timeline?.append(presentationTime: pts, frames: count)
-        guard let pcm = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(count)) else {
+        guard count > 0, Double(count) <= format.sampleRate else { throw CaptureContinuityError.invalidTiming }
+        guard let plan = try repair?.plan(pts: pts, frames: count) else { return [] }
+        var result = try silence(frames: plan.silenceFrames, at: plan.silencePTS)
+        let remaining = count - plan.trimFrames
+        try timeline?.append(presentationTime: plan.inputPTS, frames: remaining)
+        guard let pcm = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(remaining)) else {
             throw MediaEncodingError.invalid("Could not allocate audio input buffer")
         }
-        pcm.frameLength = AVAudioFrameCount(count)
+        pcm.frameLength = AVAudioFrameCount(remaining)
         try checkMediaStatus(CMSampleBufferCopyPCMDataIntoAudioBufferList(
-            sample, at: 0, frameCount: Int32(count), into: pcm.mutableAudioBufferList
+            sample, at: Int32(plan.trimFrames), frameCount: Int32(remaining), into: pcm.mutableAudioBufferList
         ), "Copying microphone PCM")
-        return try convert(pcm, finishing: false)
+        result += try convert(pcm, finishing: false)
+        repair?.accepted(pts: plan.inputPTS, frames: remaining)
+        acceptedInput = true
+        return result
+    }
+
+    func fillSilence(until pts: CMTime) throws -> [CMSampleBuffer] {
+        guard let inputFormat, let start = repair?.expectedPTS else { return [] }
+        let duration = CMTimeSubtract(pts, start).seconds
+        guard duration > 0 else { return [] }
+        guard duration <= CaptureLiveness.concealmentLimit else { throw CaptureContinuityError.discontinuity }
+        return try silence(frames: Int((duration * inputFormat.sampleRate).rounded(.down)), at: start)
+    }
+
+    private func silence(frames: Int, at start: CMTime) throws -> [CMSampleBuffer] {
+        guard let inputFormat, frames > 0 else { return [] }
+        var result: [CMSampleBuffer] = []
+        var offset = 0
+        while offset < frames {
+            let count = min(1024, frames - offset)
+            guard let pcm = AVAudioPCMBuffer(pcmFormat: inputFormat, frameCapacity: AVAudioFrameCount(count)) else {
+                throw MediaEncodingError.invalid("Could not allocate silence buffer")
+            }
+            pcm.frameLength = AVAudioFrameCount(count)
+            for buffer in UnsafeMutableAudioBufferListPointer(pcm.mutableAudioBufferList) {
+                if let bytes = buffer.mData { memset(bytes, 0, Int(buffer.mDataByteSize)) }
+            }
+            let pts = CMTimeAdd(start, CMTime(seconds: Double(offset) / inputFormat.sampleRate, preferredTimescale: 90_000))
+            try timeline?.append(presentationTime: pts, frames: count)
+            result += try convert(pcm, finishing: false)
+            repair?.accepted(pts: pts, frames: count)
+            offset += count
+        }
+        return result
     }
 
     func finish() throws -> [CMSampleBuffer] {
@@ -283,6 +330,7 @@ final class AACAudioEncoder {
         self.converter = converter
         inputFormat = input
         timeline = AudioSampleTimeline(sourceSampleRate: input.sampleRate)
+        repair = AudioCaptureRepair(sampleRate: input.sampleRate)
         let rates: [Double] = [96_000, 88_200, 64_000, 48_000, 44_100, 32_000, 24_000, 22_050, 16_000, 12_000, 11_025, 8_000, 7_350]
         guard let frequencyIndex = rates.firstIndex(of: sampleRate) else {
             throw MediaEncodingError.invalid("Unsupported AAC sample rate")
@@ -372,6 +420,7 @@ struct AudioSampleTimeline {
     private var anchors: [Anchor] = []
     private var inputFrames: Int64 = 0
     private var expectedNextPTS: CMTime?
+    private var lastPTS: CMTime?
 
     init(sourceSampleRate: Double) {
         self.sourceSampleRate = sourceSampleRate
@@ -381,10 +430,14 @@ struct AudioSampleTimeline {
         guard presentationTime.isNumeric, frames > 0 else {
             throw MediaEncodingError.invalid("Invalid microphone timing")
         }
-        if let expectedNextPTS, abs(CMTimeSubtract(presentationTime, expectedNextPTS).seconds) >= 0.1 {
+        if let lastPTS, presentationTime <= lastPTS {
+            throw MediaEncodingError.invalid("Microphone timestamps must increase")
+        }
+        if let expectedNextPTS, abs(CMTimeSubtract(presentationTime, expectedNextPTS).seconds) >= 0.001 {
             throw MediaEncodingError.invalid("Microphone timestamps became discontinuous")
         }
         anchors.append(Anchor(frame: inputFrames, pts: presentationTime))
+        lastPTS = presentationTime
         inputFrames += Int64(frames)
         expectedNextPTS = CMTimeAdd(presentationTime, CMTime(seconds: Double(frames) / sourceSampleRate,
                                                             preferredTimescale: 90_000))

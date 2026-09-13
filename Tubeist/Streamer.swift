@@ -441,6 +441,7 @@ final class Streamer: Sendable {
         guard await streamingActor.beginStopping() else {
             return .alreadyIdle
         }
+        await ContentPackager.shared.beginFinalization()
         let clock = ContinuousClock()
         let deadline = clock.now.advanced(by: .seconds(max(1, shutdownTimeout)))
         let outputPlan = await streamingActor.activeOutputPlan()

@@ -116,15 +116,16 @@ struct SystemMetricsView: View {
         let batteryLevel = getBatteryLevel()
         let thermalLevel = getThermalLevel()
         let outputMetrics = await EncodedOutputRouter.shared.metrics()
+        let captureState = await ContentPackager.shared.captureState()
         let networkMbps = outputMetrics.networkMbps
         let networkUtilization = outputMetrics.networkUtilization
         let fragmentBufferCount = outputMetrics.bufferedFragments
         let streamHealth: StreamHealth = await {
             if await Streamer.shared.isStreaming() {
-                if outputMetrics.hasFailure {
+                if outputMetrics.hasFailure || captureState == .failed || captureState == .recovering {
                     return .unusable
                 }
-                if networkUtilization >= 100 || fragmentBufferCount > 1 || outputMetrics.belowQualityFloor {
+                if networkUtilization >= 100 || fragmentBufferCount > 1 || outputMetrics.belowQualityFloor || captureState == .concealing {
                     return .degraded
                 }
                 else {

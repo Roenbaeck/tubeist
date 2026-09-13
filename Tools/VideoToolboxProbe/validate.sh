@@ -10,7 +10,9 @@ xcrun swiftc -swift-version 6 -parse-as-library \
   "${repository_root}/Tubeist/EncodedMedia.swift" \
   "${repository_root}/Tubeist/MPEGTransportStreamMuxer.swift" \
   "${repository_root}/Tubeist/MediaEncoders.swift" \
+  "${repository_root}/Tubeist/CaptureContinuity.swift" \
   "${repository_root}/Tubeist/RecordingAssetWriter.swift" \
+  "${tool_directory}/MediaFixtures.swift" \
   "${tool_directory}/main.swift" -o "${artifact_root}/probe"
 for scenario in 30:2:44100 60:1:44100 30:2:48000; do
   parts=("${(@s/:/)scenario}")

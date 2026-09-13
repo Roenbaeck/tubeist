@@ -331,6 +331,14 @@ final class ContentPackager: NSObject, AVAssetWriterDelegate, Sendable {
         await Self.pipeline.isActive
     }
 
+    func captureState() async -> CaptureLiveness.State? {
+        await Self.pipeline.captureState
+    }
+
+    func beginFinalization() async {
+        await Self.pipeline.beginFinalization()
+    }
+
     func beginPackaging(stream: Bool, record: Bool) async throws {
         guard await !Self.pipeline.isActive else { throw ContentPackagingError.alreadyEncoding }
         recordingCallbacks.prepare(writerID: nil)

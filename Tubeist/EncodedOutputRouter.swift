@@ -56,6 +56,8 @@ actor YouTubeHLSStreamSink {
     // entries absorb at least sixty seconds of a temporary network stall while
     // keeping worst-case high-bitrate 4K memory use bounded near 120 MB.
     static let maximumQueuedFragments = 30
+    static let maximumQueuedDuration: TimeInterval = 60
+    static let recoveryQueuedDuration: TimeInterval = 6
     private let reader = ISOBMFFReader()
     private var initialization: ISOBMFFInitialization?
     private var muxer = MPEGTransportStreamMuxer()
@@ -79,17 +81,27 @@ actor YouTubeHLSStreamSink {
     private var bitrateController: AdaptiveBitrateController?
     private var currentBytes = 0
     private var uploadStartedAt: TimeInterval?
+    private var processingTask: Task<Void, Never>?
+    private var needsLiveCatchup = false
+#if DEBUG
+    private var acceptanceSessionIdentifier = ""
+    private var dropReportingTask: Task<Void, Never>?
+#endif
 
     func prepare(
         endpoint: YouTubeHLSEndpoint,
         sessionIdentifier: String,
         userAgent: String,
         transport: (any YouTubeHLSHTTPTransport)? = nil,
-        bitrateController: AdaptiveBitrateController? = nil
+        bitrateController: AdaptiveBitrateController? = nil,
+        retryPolicy: YouTubeHLSRetryPolicy = .default,
+        sleeper: @escaping YouTubeHLSUploader.Sleeper = { try await Task.sleep(for: $0) }
     ) async throws {
         sessionGeneration &+= 1
         let generation = sessionGeneration
         let previousUploader = uploader
+        processingTask?.cancel()
+        processingTask = nil
         uploader = nil
         isPrepared = false
         initialization = nil
@@ -100,6 +112,12 @@ actor YouTubeHLSStreamSink {
         isUploadingFinalization = false
         currentDuration = 0
         pendingDiscontinuity = false
+        needsLiveCatchup = false
+#if DEBUG
+        dropReportingTask?.cancel()
+        dropReportingTask = nil
+        acceptanceSessionIdentifier = sessionIdentifier
+#endif
         clearFinalizationBuffer()
         droppedFragments = 0
         lastAcceptedMediaSequence = nil
@@ -118,13 +136,19 @@ actor YouTubeHLSStreamSink {
                 endpoint: endpoint,
                 sessionIdentifier: sessionIdentifier,
                 userAgent: userAgent,
-                transport: transport
+                transport: transport,
+                retryPolicy: retryPolicy,
+                keepRetrying: true,
+                sleeper: sleeper
             )
         } else {
             uploader = try YouTubeHLSUploader(
                 endpoint: endpoint,
                 sessionIdentifier: sessionIdentifier,
-                userAgent: userAgent
+                userAgent: userAgent,
+                retryPolicy: retryPolicy,
+                keepRetrying: true,
+                sleeper: sleeper
             )
         }
         isPrepared = true
@@ -142,29 +166,48 @@ actor YouTubeHLSStreamSink {
             LOG("Ignoring an encoded fragment because YouTube HLS output is unavailable", level: .warning)
             return
         }
-        if queue.count >= Self.maximumQueuedFragments {
-            if let dropIndex = queue.firstIndex(where: { $0.type != .initialization }) {
-                let dropped = queue.remove(at: dropIndex)
-                droppedFragments += 1
-                pendingDiscontinuity = true
-#if DEBUG
-                await HLSAcceptanceRecorder.shared.segmentDropped(
-                    sequence: dropped.sequence,
-                    droppedFragments: droppedFragments
-                )
-#endif
-                LOG("YouTube HLS queue dropped fragment \(dropped.sequence); the next segment will be discontinuous", level: .warning)
-                await Streamer.shared.setStreamHealth(.degraded)
-            }
+        if queue.count >= Self.maximumQueuedFragments ||
+            queue.reduce(fragment.duration, { $0 + $1.duration }) > Self.maximumQueuedDuration {
+            needsLiveCatchup = true
+            trimQueue(to: max(0, Self.recoveryQueuedDuration - fragment.duration))
         }
         queue.append(fragment)
         updateBitrateController()
         if !isProcessing {
             isProcessing = true
             let generation = sessionGeneration
-            Task(priority: .utility) {
+            processingTask = Task(priority: .utility) {
                 await self.drainQueue(sessionGeneration: generation)
             }
+        }
+    }
+
+    private func trimQueue(to duration: TimeInterval) {
+        var discarded = 0
+#if DEBUG
+        var events: [(sequence: Int, total: Int)] = []
+#endif
+        while queue.reduce(0, { $0 + $1.duration }) > duration || queue.count >= Self.maximumQueuedFragments {
+            guard let index = queue.firstIndex(where: { $0.type != .initialization }) else { break }
+#if DEBUG
+            events.append((queue[index].sequence, droppedFragments + discarded + 1))
+#endif
+            queue.remove(at: index)
+            discarded += 1
+        }
+        if discarded > 0 {
+            droppedFragments += discarded
+            pendingDiscontinuity = true
+            LOG("Discarded \(discarded) queued segments to recover live latency after overflow", level: .warning)
+#if DEBUG
+            let previous = dropReportingTask
+            let identifier = acceptanceSessionIdentifier
+            dropReportingTask = Task {
+                await previous?.value
+                guard !Task.isCancelled else { return }
+                await HLSAcceptanceRecorder.shared.segmentsDropped(events, sessionIdentifier: identifier)
+            }
+#endif
         }
     }
 
@@ -213,7 +256,7 @@ actor YouTubeHLSStreamSink {
         if let finishingUploader {
             if finishingFailure == nil {
                 do {
-                    try await finishingUploader.finish()
+                    try await finishingUploader.finish(deadline: deadline)
                 } catch {
                     failure = String(describing: error)
                     LOG("YouTube final playlist publication failed: \(error)", level: .error)
@@ -232,6 +275,7 @@ actor YouTubeHLSStreamSink {
             throw YouTubeHLSPackagingError.packagingFailed
         }
 #if DEBUG
+        await dropReportingTask?.value
         await HLSAcceptanceRecorder.shared.stopped()
 #endif
         LOG("YouTube HLS output stopped", level: .info)
@@ -239,6 +283,8 @@ actor YouTubeHLSStreamSink {
 
     func cancel() async {
         sessionGeneration &+= 1
+        processingTask?.cancel()
+        processingTask = nil
         let cancelledUploader = uploader
         uploader = nil
         queue.removeAll(keepingCapacity: true)
@@ -255,6 +301,7 @@ actor YouTubeHLSStreamSink {
             await cancelledUploader.stop()
         }
 #if DEBUG
+        await dropReportingTask?.value
         await HLSAcceptanceRecorder.shared.cancelled()
 #endif
     }
@@ -262,6 +309,7 @@ actor YouTubeHLSStreamSink {
     func metrics() async -> YouTubeHLSPackagingMetrics {
         let uploadDuration = await uploader?.queuedDuration ?? 0
         let performance = await uploader?.performance ?? (0, 0)
+        let reconnecting = await uploader?.diagnostics.isReconnecting ?? false
         let queuedSeparableFragments = queue.lazy.filter { $0.type == .separable }.count
         let currentSeparableFragment = currentFragmentType == .separable ? 1 : 0
         let hasFinalizationSegment = isUploadingFinalization
@@ -269,8 +317,8 @@ actor YouTubeHLSStreamSink {
             || !finalizationSamples.isEmpty
             || queue.contains { $0.type == .finalization }
         return YouTubeHLSPackagingMetrics(
-            networkMbps: performance.0,
-            networkUtilization: performance.1,
+            networkMbps: reconnecting ? 0 : performance.0,
+            networkUtilization: reconnecting ? max(100, performance.1) : performance.1,
             queuedFragments: queuedSeparableFragments
                 + currentSeparableFragment
                 + (hasFinalizationSegment ? 1 : 0),
@@ -310,6 +358,11 @@ actor YouTubeHLSStreamSink {
               isPrepared,
               failure == nil,
               !queue.isEmpty {
+            if needsLiveCatchup, uploadStartedAt == nil {
+                trimQueue(to: Self.recoveryQueuedDuration)
+                needsLiveCatchup = false
+            }
+            guard !queue.isEmpty else { break }
             let fragment = queue.removeFirst()
             currentFragmentType = fragment.type
             currentDuration = fragment.duration
@@ -319,6 +372,7 @@ actor YouTubeHLSStreamSink {
                 try await process(fragment, sessionGeneration: generation)
                 guard generation == sessionGeneration else { return }
             } catch {
+                guard generation == sessionGeneration else { return }
                 await handleProcessingFailure(error, sessionGeneration: generation)
             }
             currentDuration = 0
@@ -457,8 +511,9 @@ actor YouTubeHLSStreamSink {
         // Consume only the gap known at upload start. An overflow while this
         // request is in flight belongs to the next segment and must survive ACK.
         pendingDiscontinuity = false
+        let uploadData = signalDiscontinuity ? try MPEGTransportStreamMuxer.markingDiscontinuity(data) : data
         let receipt = try await uploader.upload(
-            segment: data,
+            segment: uploadData,
             duration: duration,
             discontinuity: signalDiscontinuity
         )
@@ -520,10 +575,10 @@ actor EncodedOutputRouter {
     }
 
     private var mode: Mode = .none
-    private var pendingFragments: [Int: Fragment] = [:]
-    private var nextExpectedSequence = 0
+    private var pendingFragments = FragmentReorderBuffer()
     private var isRouting = false
     private var routingGeneration: UInt64 = 0
+    private var routingTask: Task<Void, Never>?
 
     func prepareForRecordingOnly() {
         resetOrdering()
@@ -565,11 +620,12 @@ actor EncodedOutputRouter {
     }
 
     func route(_ fragment: Fragment) {
-        pendingFragments[fragment.sequence] = fragment
+        guard case .direct = mode else { return }
+        pendingFragments.insert(fragment)
         if !isRouting {
             isRouting = true
             let generation = routingGeneration
-            Task(priority: .utility) {
+            routingTask = Task(priority: .utility) {
                 await self.drainOrderedFragments(routingGeneration: generation)
             }
         }
@@ -652,10 +708,18 @@ actor EncodedOutputRouter {
     }
 
     private func drainOrderedFragments(routingGeneration generation: UInt64) async {
-        while generation == routingGeneration,
-              let fragment = pendingFragments.removeValue(forKey: nextExpectedSequence) {
-            nextExpectedSequence += 1
-            await routeInCurrentMode(fragment)
+        do {
+            while generation == routingGeneration, !pendingFragments.isEmpty, !Task.isCancelled {
+                if let fragment = try pendingFragments.takeNext(now: ProcessInfo.processInfo.systemUptime) {
+                    await routeInCurrentMode(fragment)
+                } else {
+                    try await Task.sleep(for: .milliseconds(50))
+                }
+            }
+        } catch {
+            guard generation == routingGeneration, !Task.isCancelled else { return }
+            await cancel()
+            await Streamer.shared.handleRuntimeFailure(error)
         }
         if generation == routingGeneration {
             isRouting = false
@@ -664,8 +728,9 @@ actor EncodedOutputRouter {
 
     private func resetOrdering() {
         routingGeneration &+= 1
-        pendingFragments.removeAll(keepingCapacity: true)
-        nextExpectedSequence = 0
+        routingTask?.cancel()
+        routingTask = nil
+        pendingFragments = FragmentReorderBuffer()
         isRouting = false
     }
 }

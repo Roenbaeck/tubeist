@@ -15,21 +15,21 @@ struct YouTubeHLSStreamSinkTests {
         let endpoint = try YouTubeHLSEndpoint(URL(string: "https://upload.youtube.com/http_upload_hls?cid=not-a-real-key&file=")!)
         let sink = YouTubeHLSStreamSink()
         try await sink.prepare(endpoint: endpoint, sessionIdentifier: "overflow_session", userAgent: "Tubeist/Test", transport: transport)
-        await sink.enqueue(Fragment(sequence: 0, segment: Data([0]), duration: 2, container: .mpegTransportStream))
+        await sink.enqueue(Fragment(sequence: 0, segment: directSentinel(0), duration: 2, container: .mpegTransportStream))
         try await transport.waitUntilRequested()
         for sequence in 1...31 {
             // The queue handles opaque, already-muxed payloads; distinguish
             // these small sentinels to verify which segment survives overflow.
-            await sink.enqueue(Fragment(sequence: sequence, segment: Data([UInt8(sequence)]), duration: 2,
+            await sink.enqueue(Fragment(sequence: sequence, segment: directSentinel(UInt8(sequence)), duration: 2,
                                         container: .mpegTransportStream))
         }
         await transport.releaseFirstRequest()
         try await sink.finish(timeout: successfulSinkShutdownTimeout)
         let requests = await transport.requests()
-        #expect(!String(decoding: requests[0].body, as: UTF8.self).contains("#EXT-X-DISCONTINUITY"))
-        #expect(String(decoding: requests[2].body, as: UTF8.self).contains("#EXT-X-DISCONTINUITY"))
-        #expect(requests[3].body == Data([2]))
-        #expect(await sink.metrics().droppedFragments == 1)
+        #expect(!String(decoding: requests[0].body, as: UTF8.self).contains("#EXT-X-DISCONTINUITY\n"))
+        #expect(String(decoding: requests[2].body, as: UTF8.self).contains("#EXT-X-DISCONTINUITY\n"))
+        #expect(requests[3].body == (try MPEGTransportStreamMuxer.markingDiscontinuity(directSentinel(29))))
+        #expect(await sink.metrics().droppedFragments == 28)
     }
 
     @Test func directlyUploadsTransportSegmentsWithoutMP4Initialization() async throws {
@@ -402,7 +402,7 @@ struct YouTubeHLSStreamSinkTests {
             #expect(playlistRequest.contentType == "application/vnd.apple.mpegurl")
             #expect(segmentRequest.contentType == "video/mp2t")
             #expect(playlist.contains("tubeist_recovery_session_\(sequence).ts"))
-            #expect(!playlist.contains("#EXT-X-DISCONTINUITY"))
+            #expect(!playlist.contains("#EXT-X-DISCONTINUITY\n"))
         }
         let finalPlaylist = String(decoding: requests[62].body, as: UTF8.self)
         #expect(finalPlaylist.hasSuffix("#EXT-X-ENDLIST\n"))
@@ -625,4 +625,8 @@ private actor RecoveringDirectSinkTransport: YouTubeHLSHTTPTransport {
     func requests() -> [DirectSinkRequest] {
         sent
     }
+}
+
+private func directSentinel(_ sequence: UInt8) -> Data {
+    Data([0x47, 0x41, 0x00, 0x10]) + Data(repeating: sequence, count: 184)
 }

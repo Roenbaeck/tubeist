@@ -9,6 +9,43 @@
 
 import Foundation
 
+extension MPEGTransportStreamMuxer {
+    /// Signal jumps in both the HLS playlist and the underlying TS. Adaptation-
+    /// only packets leave every elementary-stream payload byte untouched.
+    static func markingDiscontinuity(_ data: Data) throws -> Data {
+        guard !data.isEmpty, data.count.isMultiple(of: packetSize) else {
+            throw MPEGTransportStreamError.malformedSample("Invalid TS segment at discontinuity")
+        }
+        var result = Data()
+        var seen = Set<UInt16>()
+        let bytes = [UInt8](data)
+        for offset in stride(from: 0, to: bytes.count, by: packetSize) {
+            var packet = Array(bytes[offset..<(offset + packetSize)])
+            guard bytes[offset] == 0x47 else {
+                throw MPEGTransportStreamError.malformedSample("Invalid TS sync at discontinuity")
+            }
+            let pid = UInt16(bytes[offset + 1] & 0x1f) << 8 | UInt16(bytes[offset + 2])
+            if pid != 0x1fff, seen.insert(pid).inserted {
+                if packet[3] & 0x20 != 0, packet[4] >= 1, packet[4] <= 183 {
+                    packet[5] |= 0x80
+                } else if (pid == programAssociationPID || pid == programMapPID),
+                          packet[3] & 0x30 == 0x10, packet.suffix(2).allSatisfy({ $0 == 0xff }) {
+                    // Our program tables fit in one packet. Replace two stuffing
+                    // bytes with an adaptation field, keeping PAT/PMT first.
+                    packet[3] |= 0x20
+                    packet = Array(packet.prefix(4)) + [1, 0x80] + Array(packet[4..<186])
+                } else {
+                    let counter = (packet[3] &+ 15) & 0x0f
+                    result.append(contentsOf: [0x47, UInt8(pid >> 8), UInt8(pid & 255), 0x20 | counter, 183, 0x80])
+                    result.append(Data(repeating: 0xff, count: packetSize - 6))
+                }
+            }
+            result.append(contentsOf: packet)
+        }
+        return result
+    }
+}
+
 enum MPEGTransportStreamError: Error, Equatable, CustomStringConvertible {
     case missingConfiguration(String)
     case malformedSample(String)
