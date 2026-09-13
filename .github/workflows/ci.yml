@@ -6,6 +6,7 @@ on:
     branches:
       - main
       - codex/direct-youtube-hls
+      - feature/videotoolbox-adaptive-streaming
 
 concurrency:
   group: tubeist-${{ github.ref }}
@@ -44,6 +45,14 @@ jobs:
           -destination 'platform=iOS Simulator,OS=26.2,name=iPhone 16 Pro'
           -derivedDataPath '${{ runner.temp }}/TubeistDerivedData'
           -parallel-testing-enabled NO
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tubeist-test-results
+          path: ${{ runner.temp }}/TubeistDerivedData/Logs/Test/*.xcresult
+          if-no-files-found: ignore
+          retention-days: 7
       - name: Analyze Debug
         run: >-
           xcodebuild analyze
