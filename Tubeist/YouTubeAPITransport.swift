@@ -25,7 +25,7 @@ enum YouTubeError: LocalizedError, Equatable {
         case .noClientId: "YouTube Client ID not configured"
         case .authFailed(let message): "Authentication failed: \(message)"
         case .apiError(let code, let message): "YouTube API error (\(code)): \(message)"
-        case .noBroadcastFound: "No broadcast found for this stream key"
+        case .noBroadcastFound: "No active or upcoming broadcast. Tubeist will create one when you start streaming."
         case .noStreamFound: "No stream found matching this key"
         case .broadcastNotReady(let status):
             "The YouTube broadcast is \(status) and cannot start. If the previous stream is still finishing, wait and try again; otherwise review its YouTube setup."
@@ -54,6 +54,7 @@ enum YouTubeAPIOperation: String, Sendable {
     case streams = "liveStreams.list"
     case broadcasts = "liveBroadcasts.list"
     case broadcastStatus = "liveBroadcasts.list (status)"
+    case createStream = "liveStreams.insert"
     case createBroadcast = "liveBroadcasts.insert"
     case bindBroadcast = "liveBroadcasts.bind"
     case updateBroadcast = "liveBroadcasts.update"
@@ -63,7 +64,7 @@ enum YouTubeAPIOperation: String, Sendable {
     case playlistItems = "playlistItems.list"
     case insertPlaylistItem = "playlistItems.insert"
 
-    var successLevel: LogLevel { self == .broadcastStatus ? .debug : .info }
+    var successLevel: LogLevel { .debug }
     var failureLevel: LogLevel { self == .channels ? .warning : .error }
 }
 

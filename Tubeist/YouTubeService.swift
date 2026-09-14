@@ -33,6 +33,20 @@ struct YouTubeBroadcast: Identifiable, Sendable, Equatable {
     var enableAutoStart: Bool
     var enableAutoStop: Bool
 
+    var selfDeclaredMadeForKids: Bool? = nil
+
+    /// A local template, never a remote broadcast ID or a status-polling target.
+    static func draft(for stream: YouTubeStream) -> YouTubeBroadcast {
+        YouTubeBroadcast(
+            id: "", title: "Tubeist live stream", privacyStatus: "private",
+            boundStreamId: stream.id, scheduledStartTime: nil, actualStartTime: nil,
+            publishedAt: nil, lifeCycleStatus: "draft", enableDvr: true,
+            latencyPreference: "normal", enableMonitorStream: false,
+            broadcastStreamDelayMs: 0, enableEmbed: false, recordFromStart: true,
+            enableAutoStart: true, enableAutoStop: true, selfDeclaredMadeForKids: false
+        )
+    }
+
     var isLive: Bool { lifeCycleStatus == "live" }
     var isTesting: Bool { lifeCycleStatus == "testing" }
     var isStarting: Bool {
@@ -46,6 +60,7 @@ struct YouTubeBroadcast: Identifiable, Sendable, Equatable {
 
     static func label(for status: String?) -> String {
         switch status {
+        case "draft": return "Created when you start"
         case "ready": return "Ready"
         case "testing": return "Testing"
         case "testStarting": return "Starting test"
@@ -106,6 +121,7 @@ struct YouTubeBroadcastPreferences: Codable, Sendable, Equatable {
     var enableAutoStart: Bool
     var enableAutoStop: Bool
     var playlistId: String?
+    var selfDeclaredMadeForKids: Bool? = nil
 
     func applying(to broadcast: YouTubeBroadcast) -> YouTubeBroadcast {
         var updated = broadcast
@@ -119,6 +135,7 @@ struct YouTubeBroadcastPreferences: Codable, Sendable, Equatable {
         updated.recordFromStart = recordFromStart
         updated.enableAutoStart = enableAutoStart
         updated.enableAutoStop = enableAutoStop
+        updated.selfDeclaredMadeForKids = selfDeclaredMadeForKids ?? broadcast.selfDeclaredMadeForKids
         return updated
     }
 }
@@ -166,6 +183,7 @@ struct YouTubeBroadcastResource: Decodable, Sendable {
     struct Status: Decodable, Sendable {
         let privacyStatus: String?
         let lifeCycleStatus: String?
+        let selfDeclaredMadeForKids: Bool?
     }
 
     struct ContentDetails: Decodable, Sendable {
@@ -220,7 +238,8 @@ struct YouTubeBroadcastResource: Decodable, Sendable {
             enableEmbed: contentDetails?.enableEmbed ?? true,
             recordFromStart: contentDetails?.recordFromStart ?? true,
             enableAutoStart: contentDetails?.enableAutoStart ?? true,
-            enableAutoStop: contentDetails?.enableAutoStop ?? true
+            enableAutoStop: contentDetails?.enableAutoStop ?? true,
+            selfDeclaredMadeForKids: status?.selfDeclaredMadeForKids
         )
     }
 }
@@ -370,18 +389,15 @@ enum YouTubeTimestamp {
 }
 
 enum YouTubeBroadcastDiscovery {
-    static func selectCurrentOrMostRecent(
+    static func selectCurrentOrUpcoming(
         from broadcasts: [YouTubeBroadcast]
     ) -> YouTubeBroadcast? {
-        let eligible = broadcasts.filter { $0.lifeCycleStatus != "revoked" }
+        let eligible = broadcasts.filter { $0.isActive || $0.lifeCycleStatus == "ready" || $0.lifeCycleStatus == "created" }
         let active = eligible.filter(\.isActive)
         if let current = active.max(by: isOlder) {
             return current
         }
-        // A ready broadcast is already the channel's unconsumed upcoming event.
-        // Prefer and reuse it even when a completed broadcast has a newer actual
-        // start time, otherwise each preflight can litter YouTube Studio with a
-        // second successor bound to the same reusable stream.
+        // Prefer a ready event over an unconfigured upcoming broadcast.
         let ready = eligible.filter { $0.lifeCycleStatus == "ready" }
         if let upcoming = ready.max(by: isOlder) {
             return upcoming
@@ -423,10 +439,46 @@ enum YouTubeBroadcastDiscovery {
         case "testStarting": return 2
         case "ready": return 1
         case "created": return 0
-        case "complete": return -1
-        case "revoked": return -3
         default: return -2
         }
+    }
+}
+
+/// Stores identifiers only. OAuth grants isolate Google/Brand accounts; hashes
+/// keep refresh tokens and stream keys out of UserDefaults and diagnostics.
+@MainActor
+final class YouTubeDiscoveryCache {
+    static let shared = YouTubeDiscoveryCache(defaults: .standard)
+    private let defaults: UserDefaults?
+    private var identifiers: [String: String]
+    var preparations: [String: Task<YouTubeStreamingPreparation, Error>] = [:]
+    var streamSetups: [String: Task<YouTubeStream, Error>] = [:]
+
+    init(defaults: UserDefaults? = nil) {
+        self.defaults = defaults
+        identifiers = defaults?.dictionary(forKey: "YouTubeDiscoveryIDs") as? [String: String] ?? [:]
+    }
+
+    static func scope(refreshToken: String) -> String {
+        SHA256.hash(data: Data(refreshToken.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+
+    static func key(scope: String, streamKey: String) -> String {
+        scope + "/" + SHA256.hash(data: Data(streamKey.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+
+    func id(_ kind: String, for key: String) -> String? { identifiers[key + "/" + kind] }
+
+    func setID(_ value: String?, kind: String, for key: String) {
+        identifiers[key + "/" + kind] = value
+        defaults?.set(identifiers, forKey: "YouTubeDiscoveryIDs")
+    }
+
+    func clear(scope: String) {
+        for (key, task) in preparations where key.hasPrefix(scope + "/") { task.cancel() }
+        streamSetups[scope]?.cancel()
+        identifiers = identifiers.filter { !$0.key.hasPrefix(scope + "/") }
+        defaults?.set(identifiers, forKey: "YouTubeDiscoveryIDs")
     }
 }
 
@@ -442,20 +494,22 @@ final class YouTubeService {
     private let requestExecutor: YouTubeAPIRequestExecutor
     private let diagnostics: YouTubeDiagnostics
     private var tokenStore: any YouTubeTokenStoring
+    private let discoveryCache: YouTubeDiscoveryCache
     private let now: @Sendable () -> Date
     private var authenticationSession: ASWebAuthenticationSession?
     private var tokenRefreshTask: Task<String, Error>?
-    private var successorCreationTasks: [String: Task<YouTubeBroadcast, Error>] = [:]
 
     init(
         transport: any YouTubeAPITransport = URLSessionYouTubeAPITransport(),
         tokenStore: any YouTubeTokenStoring = SettingsYouTubeTokenStore(),
+        discoveryCache: YouTubeDiscoveryCache = .shared,
         now: @escaping @Sendable () -> Date = Date.init,
         diagnostics: YouTubeDiagnostics = YouTubeDiagnostics()
     ) {
         requestExecutor = YouTubeAPIRequestExecutor(transport: transport, diagnostics: diagnostics)
         self.diagnostics = diagnostics
         self.tokenStore = tokenStore
+        self.discoveryCache = discoveryCache
         self.now = now
         isSignedIn = tokenStore.refreshToken != nil
     }
@@ -471,103 +525,52 @@ final class YouTubeService {
         isLoading = loadingOperationCount > 0
     }
 
-    private func findStream(for streamKey: String, token: String) async throws -> YouTubeStream {
-        let streamsURL = "\(YOUTUBE_API_BASE)/liveStreams?part=cdn,snippet&mine=true&maxResults=50"
-        let streamItems: [YouTubeLiveStreamResource] = try await paginatedItems(
-            url: streamsURL,
-            token: token,
-            operation: .streams
-        )
-        let matches = streamItems.filter { $0.cdn?.ingestionInfo?.streamName == streamKey }.count
-        diagnostics.log("YouTube stream discovery: \(streamItems.count) streams; \(matches) match the configured key", .info)
-        return try YouTubeStreamDiscovery.findStream(
-            in: streamItems,
-            matchingStreamKey: streamKey
-        )
-    }
-
-    private func listBroadcasts(boundTo streamId: String, token: String) async throws -> [YouTubeBroadcast] {
-        let broadcastsURL = "\(YOUTUBE_API_BASE)/liveBroadcasts?part=snippet,contentDetails,status&mine=true&maxResults=50"
-        let resources: [YouTubeBroadcastResource] = try await paginatedItems(
-            url: broadcastsURL,
-            token: token,
-            operation: .broadcasts
-        )
-
-        let matching: [YouTubeBroadcast] = resources.compactMap { resource in
-            guard resource.contentDetails?.boundStreamId == streamId else {
-                return nil
-            }
-            return resource.broadcast
+    private func matchingSelection(
+        on page: [YouTubeBroadcastResource], streamKey: String, token: String
+    ) async throws -> (broadcast: YouTubeBroadcast, stream: YouTubeStream)? {
+        let broadcasts = page.compactMap(\.broadcast).filter {
+            $0.isActive || $0.lifeCycleStatus == "ready" || $0.lifeCycleStatus == "created"
         }
-        diagnostics.log("YouTube broadcast discovery: \(resources.count) broadcasts; \(matching.count) bound to the matching stream", .info)
-        return matching
-    }
+        let streamIDs = Set(broadcasts.compactMap(\.boundStreamId).filter { !$0.isEmpty })
+        guard !streamIDs.isEmpty else { return nil }
 
-    private func successorScheduledStartTime(from broadcast: YouTubeBroadcast) -> String {
-        if let scheduledStartTime = broadcast.scheduledStartTime,
-           let scheduledDate = ISO8601DateFormatter().date(from: scheduledStartTime),
-           scheduledDate > Date() {
-            return scheduledStartTime
-        }
-
-        return ISO8601DateFormatter().string(from: Date().addingTimeInterval(5))
-    }
-
-    private func createSuccessorBroadcast(from broadcast: YouTubeBroadcast, streamId: String, token: String) async throws -> YouTubeBroadcast {
-        let insertURL = "\(YOUTUBE_API_BASE)/liveBroadcasts?part=snippet,status,contentDetails"
-        let body: [String: Any] = [
-            "snippet": [
-                "title": broadcast.title,
-                "scheduledStartTime": successorScheduledStartTime(from: broadcast),
-            ],
-            "status": [
-                "privacyStatus": broadcast.privacyStatus,
-            ],
-            "contentDetails": [
-                "enableDvr": broadcast.enableDvr,
-                "latencyPreference": broadcast.latencyPreference,
-                "monitorStream": [
-                    "enableMonitorStream": broadcast.enableMonitorStream,
-                    "broadcastStreamDelayMs": broadcast.broadcastStreamDelayMs,
-                ],
-                "enableEmbed": broadcast.enableEmbed,
-                "recordFromStart": broadcast.recordFromStart,
-                "enableAutoStart": broadcast.enableAutoStart,
-                "enableAutoStop": true,
-            ],
+        // A broadcast page contains at most 50 distinct bound stream IDs.
+        // Resolve only these streams, rather than enumerating the channel's history.
+        var components = URLComponents(string: "\(YOUTUBE_API_BASE)/liveStreams")!
+        components.queryItems = [
+            URLQueryItem(name: "part", value: "cdn,snippet"),
+            URLQueryItem(name: "id", value: streamIDs.sorted().joined(separator: ",")),
+            URLQueryItem(name: "maxResults", value: "50"),
         ]
-
-        let insertData = try JSONSerialization.data(withJSONObject: body)
-        let insertResource: YouTubeBroadcastResource = try await apiPost(
-            url: insertURL,
-            token: token,
-            jsonBody: insertData,
-            operation: .createBroadcast
+        components.percentEncodedQuery = components.percentEncodedQuery?
+            .replacingOccurrences(of: "+", with: "%2B")
+        guard let url = components.url else { throw YouTubeError.invalidResponse }
+        let resources: YouTubeListResponse<YouTubeLiveStreamResource> = try await apiGet(
+            url: url.absoluteString, token: token, operation: .streams
         )
-        guard let insertedBroadcast = insertResource.broadcast else {
-            throw YouTubeError.invalidResponse
+        let matches = resources.items.filter {
+            guard let id = $0.id, streamIDs.contains(id) else { return false }
+            return $0.cdn?.ingestionInfo?.streamName == streamKey
         }
-
-        let bindURL = "\(YOUTUBE_API_BASE)/liveBroadcasts/bind?id=\(insertedBroadcast.id)&part=snippet,contentDetails,status&streamId=\(streamId)"
-        let bindResource: YouTubeBroadcastResource = try await apiPost(
-            url: bindURL,
-            token: token,
-            jsonBody: Data(),
-            operation: .bindBroadcast
+        diagnostics.log("YouTube stream discovery: \(resources.items.count) streams; \(matches.count) match the configured key", .debug)
+        let matchingIDs = Set(matches.compactMap(\.id))
+        let matchingBroadcasts = broadcasts.filter {
+            $0.boundStreamId.map { matchingIDs.contains($0) } == true
+        }
+        diagnostics.log("YouTube broadcast discovery: \(page.count) broadcasts; \(matchingBroadcasts.count) bound to the matching stream", .debug)
+        guard let broadcast = YouTubeBroadcastDiscovery.selectCurrentOrUpcoming(from: matchingBroadcasts) else {
+            return nil
+        }
+        let stream = try YouTubeStreamDiscovery.findStream(
+            in: matches.filter { $0.id == broadcast.boundStreamId }, matchingStreamKey: streamKey
         )
-        guard let boundBroadcast = bindResource.broadcast else {
-            throw YouTubeError.invalidResponse
-        }
-
-        LOG("Created successor YouTube broadcast \(boundBroadcast.id) for stream \(streamId)", level: .info)
-        return boundBroadcast
+        return (broadcast, stream)
     }
 
     // MARK: - OAuth2 Authentication
 
     func signIn() async {
-        diagnostics.log("YouTube OAuth: starting sign-in (shared browser session; consent requested)", .info)
+        diagnostics.log("YouTube OAuth: starting sign-in (shared browser session; consent requested)", .debug)
         guard YOUTUBE_CLIENT_ID != "YOUR_GOOGLE_OAUTH2_CLIENT_ID" else {
             errorMessage = "YouTube Client ID not configured in Constants.swift"
             LOG("YouTube Client ID not configured", level: .error)
@@ -658,11 +661,11 @@ final class YouTubeService {
                 throw YouTubeError.authFailed("No authorization code received")
             }
 
-            diagnostics.log("YouTube OAuth: callback verified; authorization code received", .info)
+            diagnostics.log("YouTube OAuth: callback verified; authorization code received", .debug)
             try await exchangeCodeForTokens(code: code, codeVerifier: codeVerifier)
             isSignedIn = true
             errorMessage = nil
-            LOG("Signed in to YouTube successfully", level: .info)
+            LOG("Signed in to YouTube successfully", level: .debug)
         } catch let error as ASWebAuthenticationSessionError where error.code == .canceledLogin {
             authenticationSession = nil
             LOG("YouTube sign-in cancelled by user", level: .debug)
@@ -683,10 +686,12 @@ final class YouTubeService {
         tokenRefreshTask?.cancel()
         tokenRefreshTask = nil
         do {
+            let scope = try? authorizationScope()
             try tokenStore.clearAuthorization()
+            if let scope { discoveryCache.clear(scope: scope) }
             isSignedIn = false
             errorMessage = nil
-            LOG("Signed out of YouTube", level: .info)
+            LOG("Signed out of YouTube", level: .debug)
             return true
         } catch {
             errorMessage = "Could not remove YouTube authorization: \(error.localizedDescription)"
@@ -769,7 +774,7 @@ final class YouTubeService {
         let requested = Set(YOUTUBE_SCOPES.split(separator: " ").map(String.init))
         let scopeStatus = granted.map { requested.isSubset(of: $0) ? "all requested scopes granted" : "some requested scopes missing" }
             ?? "granted scopes not returned"
-        diagnostics.log("YouTube \(operation.rawValue): credentials stored; refresh token present=\(tokenStore.refreshToken != nil); \(scopeStatus)", .info)
+        diagnostics.log("YouTube \(operation.rawValue): credentials stored; refresh token present=\(tokenStore.refreshToken != nil); \(scopeStatus)", .debug)
     }
 
     private func getValidAccessToken() async throws -> String {
@@ -789,13 +794,14 @@ final class YouTubeService {
         -> (broadcast: YouTubeBroadcast, playlists: [YouTubePlaylist]) {
         beginLoading()
         defer { endLoading() }
-        diagnostics.log("YouTube Settings: loading configuration; saved authorization present=\(tokenStore.refreshToken != nil)", .info)
+        diagnostics.log("YouTube Settings: loading configuration; saved authorization present=\(tokenStore.refreshToken != nil)", .debug)
         let token = try await getValidAccessToken()
         try await logAuthorizedChannel(token: token, streamKey: streamKey)
         try Task.checkCancellation()
-        let broadcast = try await findBroadcastForStreamKey(streamKey)
+        let selection = try await selectedBroadcast(forStreamKey: streamKey)
+        let broadcast = selection.broadcast ?? .draft(for: selection.stream)
         let playlists = try await listPlaylists()
-        diagnostics.log("YouTube Settings: configuration loaded; \(playlists.count) playlists", .info)
+        diagnostics.log("YouTube Settings: configuration loaded; broadcast=\(YouTubeDiagnostics.text(broadcast.statusLabel)); \(playlists.count) playlists", .info)
         return (broadcast, playlists)
     }
 
@@ -813,11 +819,11 @@ final class YouTubeService {
             )
             try Task.checkCancellation()
             let secrets = [streamKey, tokenStore.accessToken ?? "", tokenStore.refreshToken ?? ""]
-            diagnostics.log("YouTube authorized channel lookup: \(channels.items.count) returned; more pages=\(channels.nextPageToken != nil)", .info)
+            diagnostics.log("YouTube authorized channel lookup: \(channels.items.count) returned; more pages=\(channels.nextPageToken != nil)", .debug)
             for channel in channels.items.prefix(50) {
                 let name = YouTubeDiagnostics.text(channel.snippet?.title ?? "(no title)", secrets: secrets)
                 let id = YouTubeDiagnostics.text(channel.id ?? "(no ID)", secrets: secrets)
-                diagnostics.log("YouTube authorized channel: \(name) [\(id)]", .info)
+                diagnostics.log("YouTube authorized channel: \(name) [\(id)]", .debug)
             }
             if channels.items.isEmpty {
                 diagnostics.log("YouTube: no channel returned for this authorization; check the channel selected in Google sign-in", .warning)
@@ -832,16 +838,18 @@ final class YouTubeService {
         beginLoading()
         defer { endLoading() }
 
-        let token = try await getValidAccessToken()
-        let stream = try await findStream(for: streamKey, token: token)
-        return try YouTubeStreamDiscovery.hlsEndpoint(for: stream)
+        let selection = try await selectedBroadcast(forStreamKey: streamKey)
+        return try YouTubeStreamDiscovery.hlsEndpoint(for: selection.stream)
     }
 
     func findBroadcastForStreamKey(_ streamKey: String) async throws -> YouTubeBroadcast {
         beginLoading()
         defer { endLoading() }
 
-        return try await selectedBroadcast(forStreamKey: streamKey).broadcast
+        guard let broadcast = try await selectedBroadcast(forStreamKey: streamKey).broadcast else {
+            throw YouTubeError.noBroadcastFound
+        }
+        return broadcast
     }
 
     func prepareForStreaming(
@@ -852,9 +860,39 @@ final class YouTubeService {
         beginLoading()
         defer { endLoading() }
 
+        let scope = try authorizationScope()
+        let key = YouTubeDiscoveryCache.key(scope: scope, streamKey: streamKey)
+        if let existing = discoveryCache.preparations[key] { return try await existing.value }
+        let task = Task { @MainActor in
+            try await self.performStreamingPreparation(
+                streamKey: streamKey, preferences: preferences, thumbnailData: thumbnailData, scope: scope
+            )
+        }
+        discoveryCache.preparations[key] = task
+        defer { discoveryCache.preparations[key] = nil }
+        return try await withTaskCancellationHandler {
+            try await task.value
+        } onCancel: {
+            task.cancel()
+        }
+    }
+
+    private func performStreamingPreparation(
+        streamKey: String, preferences: YouTubeBroadcastPreferences?, thumbnailData: Data?, scope: String
+    ) async throws -> YouTubeStreamingPreparation {
         let selection = try await selectedBroadcast(forStreamKey: streamKey)
         let endpoint = try YouTubeStreamDiscovery.hlsEndpoint(for: selection.stream)
-        var broadcast = try await ensureCurrentBroadcast(from: selection)
+        try checkAuthorization(scope)
+        var broadcast: YouTubeBroadcast
+        if let current = selection.broadcast {
+            broadcast = current
+        } else {
+            var template = YouTubeBroadcast.draft(for: selection.stream)
+            if let preferences, preferences.streamId == selection.stream.id {
+                template = preferences.applying(to: template)
+            }
+            broadcast = try await createOrResumeBroadcast(template: template, stream: selection.stream, scope: scope)
+        }
         guard broadcast.lifeCycleStatus == "ready" else {
             throw YouTubeError.broadcastNotReady(broadcast.statusLabel.lowercased())
         }
@@ -862,6 +900,13 @@ final class YouTubeService {
             ? preferences
             : nil
         var preparedBroadcast = applicablePreferences?.applying(to: broadcast) ?? broadcast
+        if selection.broadcast == nil {
+            // App-created events go live on ingestion without a Studio preview
+            // or manual transition, even if an older saved template used one.
+            preparedBroadcast.enableAutoStart = true
+            preparedBroadcast.enableMonitorStream = false
+            preparedBroadcast.broadcastStreamDelayMs = 0
+        }
         // YouTube owns the final broadcast transition after Tubeist has drained
         // and closed HLS ingestion. Its backend has the only authoritative view
         // of when the final accepted media is safe to archive.
@@ -879,7 +924,8 @@ final class YouTubeService {
                 enableEmbed: preparedBroadcast.enableEmbed,
                 recordFromStart: preparedBroadcast.recordFromStart,
                 enableAutoStart: preparedBroadcast.enableAutoStart,
-                enableAutoStop: true
+                enableAutoStop: true,
+                selfDeclaredMadeForKids: preparedBroadcast.selfDeclaredMadeForKids
             )
             broadcast = preparedBroadcast
         }
@@ -897,53 +943,208 @@ final class YouTubeService {
         )
     }
 
-    private func ensureCurrentBroadcast(
-        from selection: (broadcast: YouTubeBroadcast, stream: YouTubeStream, token: String)
-    ) async throws -> YouTubeBroadcast {
-        guard selection.broadcast.lifeCycleStatus == "complete" else {
-            return selection.broadcast
-        }
-        if let existingTask = successorCreationTasks[selection.stream.id] {
-            return try await existingTask.value
-        }
-        let task = Task { @MainActor in
-            try await self.createSuccessorBroadcast(
-                from: selection.broadcast,
-                streamId: selection.stream.id,
-                token: selection.token
-            )
-        }
-        successorCreationTasks[selection.stream.id] = task
-        do {
-            let successor = try await task.value
-            successorCreationTasks[selection.stream.id] = nil
-            return successor
-        } catch {
-            successorCreationTasks[selection.stream.id] = nil
-            throw error
-        }
+    private func authorizationScope() throws -> String {
+        guard let refreshToken = tokenStore.refreshToken else { throw YouTubeError.notSignedIn }
+        return YouTubeDiscoveryCache.scope(refreshToken: refreshToken)
+    }
+
+    private func checkAuthorization(_ scope: String) throws {
+        try Task.checkCancellation()
+        guard try authorizationScope() == scope else { throw YouTubeError.notSignedIn }
+    }
+
+    private func resourceURL(_ resource: String, query: [URLQueryItem]) throws -> String {
+        var components = URLComponents(string: "\(YOUTUBE_API_BASE)/\(resource)")!
+        components.queryItems = query
+        components.percentEncodedQuery = components.percentEncodedQuery?.replacingOccurrences(of: "+", with: "%2B")
+        guard let url = components.url else { throw YouTubeError.invalidResponse }
+        return url.absoluteString
+    }
+
+    private func streamByID(_ id: String, token: String) async throws -> YouTubeLiveStreamResource? {
+        let url = try resourceURL("liveStreams", query: [
+            .init(name: "part", value: "cdn,snippet"), .init(name: "id", value: id)
+        ])
+        let page: YouTubeListResponse<YouTubeLiveStreamResource> = try await apiGet(url: url, token: token, operation: .streams)
+        return page.items.first { $0.id == id }
     }
 
     private func selectedBroadcast(
         forStreamKey streamKey: String
-    ) async throws -> (broadcast: YouTubeBroadcast, stream: YouTubeStream, token: String) {
-
+    ) async throws -> (broadcast: YouTubeBroadcast?, stream: YouTubeStream) {
+        let scope = try authorizationScope()
+        let key = YouTubeDiscoveryCache.key(scope: scope, streamKey: streamKey)
         let token = try await getValidAccessToken()
-        let stream = try await findStream(for: streamKey, token: token)
-        let matchingBroadcasts = try await listBroadcasts(boundTo: stream.id, token: token)
-
-        guard let selectedBroadcast = YouTubeBroadcastDiscovery.selectCurrentOrMostRecent(
-            from: matchingBroadcasts
-        ) else {
-            throw YouTubeError.noBroadcastFound
+        var knownStream: YouTubeStream?
+        if let id = discoveryCache.id("stream", for: key) {
+            // Validate ownership/access and the exact key; stale entries are hints only.
+            if let resource = try await streamByID(id, token: token), resource.cdn?.ingestionInfo?.streamName == streamKey {
+                knownStream = try YouTubeStreamDiscovery.findStream(in: [resource], matchingStreamKey: streamKey)
+                diagnostics.log("YouTube stream discovery: validated remembered stream ID", .debug)
+            } else {
+                try checkAuthorization(scope)
+                discoveryCache.setID(nil, kind: "stream", for: key)
+            }
         }
-        diagnostics.log("YouTube broadcast selected; status=\(YouTubeDiagnostics.text(selectedBroadcast.statusLabel))", .info)
-        return (selectedBroadcast, stream, token)
+        // Never enumerate completed broadcasts. Active matches take precedence.
+        for status in ["active", "upcoming"] {
+            diagnostics.log("YouTube broadcast discovery: searching \(status) broadcasts", .debug)
+            let url = "\(YOUTUBE_API_BASE)/liveBroadcasts?part=snippet,contentDetails,status&broadcastStatus=\(status)&broadcastType=all&maxResults=50"
+            var selection: (broadcast: YouTubeBroadcast, stream: YouTubeStream)?
+            let _: [YouTubeBroadcastResource] = try await paginatedItems(
+                url: url, token: token, operation: .broadcasts,
+                stopAfterPage: { page in
+                    if let knownStream {
+                        if let broadcast = YouTubeBroadcastDiscovery.selectCurrentOrUpcoming(
+                            from: page.compactMap(\.broadcast).filter { $0.boundStreamId == knownStream.id }
+                        ) {
+                            selection = (broadcast, knownStream)
+                        }
+                    } else {
+                        selection = try await self.matchingSelection(on: page, streamKey: streamKey, token: token)
+                    }
+                    return selection != nil
+                }
+            )
+            if let selection {
+                try checkAuthorization(scope)
+                discoveryCache.setID(selection.stream.id, kind: "stream", for: key)
+                diagnostics.log("YouTube broadcast selected; status=\(YouTubeDiagnostics.text(selection.broadcast.statusLabel))", .debug)
+                return selection
+            }
+        }
+        // A pasted key may have no current broadcast. Resolve it once, checking
+        // each page before advancing; subsequent loads use the remembered ID.
+        if knownStream == nil {
+            var found: YouTubeStream?
+            let _: [YouTubeLiveStreamResource] = try await paginatedItems(
+                url: "\(YOUTUBE_API_BASE)/liveStreams?part=cdn,snippet&mine=true&maxResults=50",
+                token: token, operation: .streams, stopAfterPage: { page in
+                    guard page.contains(where: { $0.cdn?.ingestionInfo?.streamName == streamKey }) else { return false }
+                    found = try YouTubeStreamDiscovery.findStream(in: page, matchingStreamKey: streamKey)
+                    return true
+                }
+            )
+            knownStream = found
+        }
+        guard let stream = knownStream else { throw YouTubeError.noStreamFound }
+        try checkAuthorization(scope)
+        discoveryCache.setID(stream.id, kind: "stream", for: key)
+        return (nil, stream)
+    }
+
+    /// Explicit Settings action. Reuses the app-created key, including after a
+    /// cancelled Settings edit, rather than creating another key on each visit.
+    func setUpStream() async throws -> YouTubeStream {
+        beginLoading()
+        defer { endLoading() }
+        let scope = try authorizationScope()
+        if let task = discoveryCache.streamSetups[scope] { return try await task.value }
+        let task = Task { @MainActor in try await self.performStreamSetup(scope: scope) }
+        discoveryCache.streamSetups[scope] = task
+        defer { discoveryCache.streamSetups[scope] = nil }
+        return try await withTaskCancellationHandler {
+            try await task.value
+        } onCancel: {
+            task.cancel()
+        }
+    }
+
+    private func performStreamSetup(scope: String) async throws -> YouTubeStream {
+        let token = try await getValidAccessToken()
+        try checkAuthorization(scope)
+        var resource: YouTubeLiveStreamResource?
+        if let id = discoveryCache.id("managedStream", for: scope) {
+            resource = try await streamByID(id, token: token)
+        }
+        if resource == nil {
+            try checkAuthorization(scope)
+            resource = try await apiPost(
+                url: "\(YOUTUBE_API_BASE)/liveStreams?part=snippet,cdn,contentDetails",
+                token: token, jsonBody: JSONSerialization.data(withJSONObject: [
+                    "snippet": ["title": "Tubeist"],
+                    "cdn": ["ingestionType": "hls", "resolution": "variable", "frameRate": "variable"],
+                    "contentDetails": ["isReusable": true]
+                ]), operation: .createStream
+            )
+        }
+        try checkAuthorization(scope)
+        guard let resource, let id = resource.id, !id.isEmpty,
+              let streamKey = resource.cdn?.ingestionInfo?.streamName, !streamKey.isEmpty else {
+            throw YouTubeError.invalidResponse
+        }
+        let stream = try YouTubeStreamDiscovery.findStream(in: [resource], matchingStreamKey: streamKey)
+        _ = try YouTubeStreamDiscovery.hlsEndpoint(for: stream)
+        discoveryCache.setID(id, kind: "managedStream", for: scope)
+        discoveryCache.setID(id, kind: "stream", for: YouTubeDiscoveryCache.key(scope: scope, streamKey: streamKey))
+        diagnostics.log("YouTube: reusable HLS stream configured", .debug)
+        return stream
+    }
+
+    private func createOrResumeBroadcast(template: YouTubeBroadcast, stream: YouTubeStream, scope: String) async throws -> YouTubeBroadcast {
+        let key = YouTubeDiscoveryCache.key(scope: scope, streamKey: stream.streamName)
+        let token = try await getValidAccessToken()
+        var pending: YouTubeBroadcast?
+        if let id = discoveryCache.id("createdBroadcast", for: key) {
+            // A successful insert followed by a failed bind must not create a
+            // duplicate on retry. Read only that known event, never its history.
+            let url = try resourceURL("liveBroadcasts", query: [
+                .init(name: "part", value: "snippet,status,contentDetails"), .init(name: "id", value: id)
+            ])
+            let page: YouTubeListResponse<YouTubeBroadcastResource> = try await apiGet(url: url, token: token, operation: .broadcasts)
+            pending = page.items.first { $0.id == id }?.broadcast
+            if let broadcast = pending, broadcast.lifeCycleStatus == "complete" || broadcast.lifeCycleStatus == "revoked" {
+                pending = nil
+            }
+        }
+        try checkAuthorization(scope)
+        if let broadcast = pending, broadcast.boundStreamId == stream.id {
+            return broadcast
+        }
+        if let broadcast = pending {
+            guard broadcast.lifeCycleStatus == "created", broadcast.boundStreamId == nil else {
+                throw YouTubeError.broadcastNotReady(broadcast.statusLabel.lowercased())
+            }
+        } else {
+            var status: [String: Any] = ["privacyStatus": template.privacyStatus]
+            if let madeForKids = template.selfDeclaredMadeForKids { status["selfDeclaredMadeForKids"] = madeForKids }
+            let inserted: YouTubeBroadcastResource = try await apiPost(
+                url: "\(YOUTUBE_API_BASE)/liveBroadcasts?part=snippet,status,contentDetails", token: token,
+                jsonBody: JSONSerialization.data(withJSONObject: [
+                    "snippet": ["title": template.title, "scheduledStartTime": ISO8601DateFormatter().string(from: now().addingTimeInterval(10))],
+                    "status": status,
+                    "contentDetails": [
+                        "enableDvr": template.enableDvr, "latencyPreference": template.latencyPreference,
+                        "monitorStream": ["enableMonitorStream": false, "broadcastStreamDelayMs": 0],
+                        "enableEmbed": template.enableEmbed, "recordFromStart": template.recordFromStart,
+                        "enableAutoStart": true, "enableAutoStop": true
+                    ]
+                ]), operation: .createBroadcast
+            )
+            try checkAuthorization(scope)
+            guard let id = inserted.id, !id.isEmpty else { throw YouTubeError.invalidResponse }
+            discoveryCache.setID(id, kind: "createdBroadcast", for: key)
+            guard let broadcast = inserted.broadcast else { throw YouTubeError.invalidResponse }
+            pending = broadcast
+        }
+        guard let pending else { throw YouTubeError.invalidResponse }
+        try checkAuthorization(scope)
+        let url = try resourceURL("liveBroadcasts/bind", query: [
+            .init(name: "id", value: pending.id), .init(name: "streamId", value: stream.id),
+            .init(name: "part", value: "snippet,status,contentDetails")
+        ])
+        let bound: YouTubeBroadcastResource = try await apiPost(url: url, token: token, jsonBody: Data(), operation: .bindBroadcast)
+        try checkAuthorization(scope)
+        guard let broadcast = bound.broadcast, broadcast.id == pending.id, broadcast.boundStreamId == stream.id else {
+            throw YouTubeError.invalidResponse
+        }
+        diagnostics.log("YouTube: created and bound the next broadcast", .debug)
+        return broadcast
     }
 
     // MARK: - YouTube API: Update Broadcast
 
-    func updateBroadcast(id: String, title: String, privacyStatus: String, scheduledStartTime: String?, enableDvr: Bool, latencyPreference: String, enableMonitorStream: Bool, broadcastStreamDelayMs: Int, enableEmbed: Bool, recordFromStart: Bool, enableAutoStart: Bool, enableAutoStop: Bool) async throws {
+    func updateBroadcast(id: String, title: String, privacyStatus: String, scheduledStartTime: String?, enableDvr: Bool, latencyPreference: String, enableMonitorStream: Bool, broadcastStreamDelayMs: Int, enableEmbed: Bool, recordFromStart: Bool, enableAutoStart: Bool, enableAutoStop: Bool, selfDeclaredMadeForKids: Bool? = nil) async throws {
         beginLoading()
         defer { endLoading() }
 
@@ -955,12 +1156,12 @@ final class YouTubeService {
             snippet["scheduledStartTime"] = scheduledStartTime
         }
 
+        var status: [String: Any] = ["privacyStatus": privacyStatus]
+        if let selfDeclaredMadeForKids { status["selfDeclaredMadeForKids"] = selfDeclaredMadeForKids }
         let body: [String: Any] = [
             "id": id,
             "snippet": snippet,
-            "status": [
-                "privacyStatus": privacyStatus,
-            ],
+            "status": status,
             "contentDetails": [
                 "enableDvr": enableDvr,
                 "latencyPreference": latencyPreference,
@@ -986,7 +1187,7 @@ final class YouTubeService {
             throw YouTubeError.invalidResponse
         }
 
-        LOG("Updated YouTube broadcast: \(title) (\(privacyStatus))", level: .info)
+        LOG("Updated YouTube broadcast: \(title) (\(privacyStatus))", level: .debug)
     }
 
     // MARK: - YouTube API: Broadcast Status (lightweight, 1 unit)
@@ -1025,7 +1226,7 @@ final class YouTubeService {
             throw YouTubeError.invalidResponse
         }
 
-        LOG("Stopped YouTube broadcast \(id)", level: .info)
+        LOG("Stopped YouTube broadcast \(id)", level: .debug)
     }
 
     // MARK: - YouTube API: Thumbnail
@@ -1050,7 +1251,7 @@ final class YouTubeService {
         request.timeoutInterval = 30
         _ = try await authenticatedData(for: request, fallbackToken: token, operation: .thumbnail)
 
-        LOG("Uploaded thumbnail for broadcast \(videoId)", level: .info)
+        LOG("Uploaded thumbnail for broadcast \(videoId)", level: .debug)
     }
 
     // MARK: - YouTube API: Playlists
@@ -1125,7 +1326,7 @@ final class YouTubeService {
             throw YouTubeError.invalidResponse
         }
 
-        LOG("Added broadcast to playlist \(playlistId)", level: .info)
+        LOG("Added broadcast to playlist \(playlistId)", level: .debug)
     }
 
     // MARK: - HTTP Helpers
@@ -1148,7 +1349,8 @@ final class YouTubeService {
     private func paginatedItems<Item: Decodable & Sendable>(
         url: String,
         token: String,
-        operation: YouTubeAPIOperation
+        operation: YouTubeAPIOperation,
+        stopAfterPage: @MainActor ([Item]) async throws -> Bool = { _ in false }
     ) async throws -> [Item] {
         guard let baseComponents = URLComponents(string: url) else {
             throw YouTubeError.invalidResponse
@@ -1186,8 +1388,12 @@ final class YouTubeService {
                 throw error
             }
             pageNumber += 1
-            diagnostics.log("YouTube \(operation.rawValue): page \(pageNumber), \(page.items.count) items; more pages=\(page.nextPageToken?.isEmpty == false)", .info)
+            diagnostics.log("YouTube \(operation.rawValue): page \(pageNumber), \(page.items.count) items; more pages=\(page.nextPageToken?.isEmpty == false)", .debug)
             items.append(contentsOf: page.items)
+            if try await stopAfterPage(page.items) {
+                diagnostics.log("YouTube \(operation.rawValue): matched on page \(pageNumber); stopping discovery", .debug)
+                break
+            }
 
             guard let nextPageToken = page.nextPageToken,
                   !nextPageToken.isEmpty else {

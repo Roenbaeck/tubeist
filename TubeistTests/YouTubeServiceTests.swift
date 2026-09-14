@@ -287,7 +287,7 @@ struct YouTubeServiceTests {
             scheduledStartTime: "2027-01-01T00:00:00Z"
         )
 
-        let selected = YouTubeBroadcastDiscovery.selectCurrentOrMostRecent(
+        let selected = YouTubeBroadcastDiscovery.selectCurrentOrUpcoming(
             from: [oldReady, recentComplete, revoked]
         )
 
@@ -309,7 +309,7 @@ struct YouTubeServiceTests {
             scheduledStartTime: "2026-08-20T06:00:00Z"
         )
 
-        let selected = YouTubeBroadcastDiscovery.selectCurrentOrMostRecent(
+        let selected = YouTubeBroadcastDiscovery.selectCurrentOrUpcoming(
             from: [future, active]
         )
 
@@ -330,7 +330,7 @@ struct YouTubeServiceTests {
             scheduledStartTime: "2026-08-20T06:00:00Z"
         )
 
-        let selected = YouTubeBroadcastDiscovery.selectCurrentOrMostRecent(
+        let selected = YouTubeBroadcastDiscovery.selectCurrentOrUpcoming(
             from: [future, starting]
         )
 
@@ -362,7 +362,7 @@ struct YouTubeServiceTests {
         ])
         let service = YouTubeService(
             transport: transport,
-            tokenStore: store,
+            tokenStore: store, discoveryCache: YouTubeDiscoveryCache(),
             now: { fixedNow }
         )
 
@@ -399,7 +399,7 @@ struct YouTubeServiceTests {
         ])
         let service = YouTubeService(
             transport: transport,
-            tokenStore: store,
+            tokenStore: store, discoveryCache: YouTubeDiscoveryCache(),
             now: { fixedNow }
         )
 
@@ -426,7 +426,7 @@ struct YouTubeServiceTests {
                 statusCode: 200
             ),
         ])
-        let service = YouTubeService(transport: transport, tokenStore: store)
+        let service = YouTubeService(transport: transport, tokenStore: store, discoveryCache: YouTubeDiscoveryCache())
 
         let playlists = try await service.listPlaylists()
 
@@ -438,21 +438,23 @@ struct YouTubeServiceTests {
     }
 
     @Test(arguments: [200, 500]) @MainActor
-    func streamLookupPreservesOpaqueTokensThroughFourPages(_ lastStatus: Int) async throws {
+    func broadcastLookupPreservesOpaqueTokensThroughFourPages(_ lastStatus: Int) async throws {
         let pageTokens = ["page-2", "page/3%2B=", "page+4&part=bad#? é"]
-        var responses = try pageTokens.enumerated().map { index, pageToken in
+        var responses = [emptyYouTubePage()]
+        responses += try pageTokens.enumerated().map { index, pageToken in
             YouTubeAPIResponse(data: try JSONSerialization.data(withJSONObject: [
-                "items": (0..<50).map { ["id": "unrelated-\(index)-\($0)"] },
+                "items": (0..<50).map { ["id": "unbound-\(index)-\($0)"] },
                 "nextPageToken": pageToken,
             ]), statusCode: 200)
         }
-        responses.append(lastStatus == 200 ? settingsDiagnosticResponses()[1] : .init(
+        responses.append(lastStatus == 200 ? currentBroadcastPage() : .init(
             data: Data(#"{"error":{"message":"Internal error encountered.","status":"INTERNAL","errors":[{"domain":"global","reason":"backendError"}]}}"#.utf8),
             statusCode: 500
         ))
+        if lastStatus == 200 { responses.append(matchingStreamPage()) }
         let captured = CapturedYouTubeDiagnostics()
         let transport = MockYouTubeAPITransport(responses: responses)
-        let service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore(), diagnostics: captured.diagnostics)
+        let service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore(), discoveryCache: YouTubeDiscoveryCache(), diagnostics: captured.diagnostics)
 
         if lastStatus == 200 {
             let endpoint = try await service.findHLSIngestionEndpoint(forStreamKey: "test-key")
@@ -462,36 +464,83 @@ struct YouTubeServiceTests {
             await #expect(throws: YouTubeError.apiError(500, "Internal error encountered.")) {
                 _ = try await service.findHLSIngestionEndpoint(forStreamKey: "test-key")
             }
-            #expect(captured.text.contains("liveStreams.list: page 4 failed after 150 items"))
+            #expect(captured.text.contains("liveBroadcasts.list: page 4 failed after 150 items"))
             #expect(captured.text.contains("page token present=true; token contains plus=true; HTTP 500"))
         }
 
         let requests = await transport.requests
-        #expect(requests.count == 4)
-        for (index, request) in requests.enumerated() {
+        #expect(requests.count == (lastStatus == 200 ? 6 : 5))
+        // The first request checks active broadcasts; these four pages are upcoming.
+        let pages = requests.filter { $0.url?.path.hasSuffix("/liveBroadcasts") == true }.dropFirst()
+        #expect(pages.count == 4)
+        for (index, request) in pages.enumerated() {
             #expect(request.httpMethod == "GET")
             #expect(request.httpBody == nil)
             #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer valid-access")
             let url = try #require(request.url)
             let components = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
-            #expect(components.path == "/youtube/v3/liveStreams")
             // Decode like a form-style server: a literal + means a space.
-            // URLComponents alone would hide this interoperability bug.
             let query = try #require(components.percentEncodedQuery)
             var decoded = URLComponents()
             decoded.percentEncodedQuery = query.replacingOccurrences(of: "+", with: "%20")
             let items = try #require(decoded.queryItems)
-            #expect(items.filter { $0.name == "part" }.map(\.value) == ["cdn,snippet"])
-            #expect(items.filter { $0.name == "mine" }.map(\.value) == ["true"])
+            #expect(items.filter { $0.name == "part" }.map(\.value) == ["snippet,contentDetails,status"])
+            #expect(items.filter { $0.name == "broadcastStatus" }.map(\.value) == ["upcoming"])
+            #expect(items.filter { $0.name == "broadcastType" }.map(\.value) == ["all"])
             #expect(items.filter { $0.name == "maxResults" }.map(\.value) == ["50"])
             let expectedTokens: [String?] = index == 0 ? [] : [pageTokens[index - 1]]
             #expect(items.filter { $0.name == "pageToken" }.map(\.value) == expectedTokens)
-            #expect(items.count == (index == 0 ? 3 : 4))
+            #expect(items.count == (index == 0 ? 4 : 5))
         }
         #expect(!service.isLoading)
         for token in pageTokens { #expect(!captured.text.contains(token)) }
         #expect(!captured.text.contains("valid-access"))
         #expect(!captured.text.contains("test-key"))
+    }
+
+    @Test(arguments: ["active", "upcoming"]) @MainActor
+    func matchingFirstPageStopsBeforeFetchingAnotherPage(_ status: String) async throws {
+        let lifecycle = status == "active" ? "live" : "ready"
+        var responses = status == "active" ? [] : [emptyYouTubePage()]
+        responses += [
+            currentBroadcastPage(status: lifecycle, nextPageToken: "must-not-fetch"),
+            matchingStreamPage(),
+            .init(data: Data(), statusCode: 500),
+        ]
+        let transport = MockYouTubeAPITransport(responses: responses)
+        let service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore(), discoveryCache: YouTubeDiscoveryCache())
+        let found = try await service.findBroadcastForStreamKey("test-key")
+        #expect(found.id == "ready")
+        #expect(found.lifeCycleStatus == lifecycle)
+        let requests = await transport.requests
+        #expect(requests.count == (status == "active" ? 2 : 3))
+        let statuses = requests.flatMap { queryItems(in: $0).filter { $0.name == "broadcastStatus" }.compactMap(\.value) }
+        #expect(statuses == (status == "active" ? ["active"] : ["active", "upcoming"]))
+        #expect(requests.allSatisfy { $0.httpMethod == "GET" && $0.httpBody == nil })
+        #expect(!requests.contains { queryItems(in: $0).contains { $0.name == "pageToken" || $0.name == "mine" } })
+        let streamRequest = try #require(requests.last)
+        #expect(streamRequest.url?.path == "/youtube/v3/liveStreams")
+        #expect(queryItems(in: streamRequest).filter { $0.name == "id" }.map(\.value) == ["stream-1"])
+    }
+
+    @Test @MainActor
+    func discoveryContinuesOnlyWhenThePageHasNoMatchingKey() async throws {
+        let wrongStream = YouTubeAPIResponse(data: try streamsResponse([
+            streamItem(id: "stream-1", key: "other-key", type: "hls",
+                       address: "https://a.upload.youtube.com/http_upload_hls?cid=other-key&file=")
+        ]), statusCode: 200)
+        let transport = MockYouTubeAPITransport(responses: [
+            emptyYouTubePage(),
+            currentBroadcastPage(nextPageToken: "second+page"), wrongStream,
+            currentBroadcastPage(nextPageToken: "must-not-fetch"), matchingStreamPage(),
+            .init(data: Data(), statusCode: 500),
+        ])
+        let service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore(), discoveryCache: YouTubeDiscoveryCache())
+        #expect(try await service.findBroadcastForStreamKey("test-key").id == "ready")
+        let requests = await transport.requests
+        #expect(requests.count == 5)
+        #expect(requests.map { $0.url?.lastPathComponent } == ["liveBroadcasts", "liveBroadcasts", "liveStreams", "liveBroadcasts", "liveStreams"])
+        #expect(queryItems(in: requests[3]).filter { $0.name == "pageToken" }.map(\.value) == ["second+page"])
     }
 
     @Test @MainActor
@@ -504,7 +553,7 @@ struct YouTubeServiceTests {
                 statusCode: 200
             ),
         ])
-        let service = YouTubeService(transport: transport, tokenStore: store)
+        let service = YouTubeService(transport: transport, tokenStore: store, discoveryCache: YouTubeDiscoveryCache())
 
         try await service.updateBroadcast(
             id: "broadcast-1",
@@ -535,7 +584,7 @@ struct YouTubeServiceTests {
         ])
         let existingService = YouTubeService(
             transport: existingTransport,
-            tokenStore: validMemoryTokenStore()
+            tokenStore: validMemoryTokenStore(), discoveryCache: YouTubeDiscoveryCache()
         )
         try await existingService.addToPlaylist(playlistId: "playlist", videoId: "video")
         #expect(await existingTransport.requestCount == 1)
@@ -546,7 +595,7 @@ struct YouTubeServiceTests {
         ])
         let insertionService = YouTubeService(
             transport: insertionTransport,
-            tokenStore: validMemoryTokenStore()
+            tokenStore: validMemoryTokenStore(), discoveryCache: YouTubeDiscoveryCache()
         )
         try await insertionService.addToPlaylist(playlistId: "playlist", videoId: "video")
         let insertionRequests = await insertionTransport.requests
@@ -554,55 +603,274 @@ struct YouTubeServiceTests {
         #expect(insertionRequests[1].httpMethod == "POST")
     }
 
-    @Test @MainActor
-    func streamingPreflightCreatesAReadySuccessorBeforeReturningTheEndpoint() async throws {
-        let transport = MockYouTubeAPITransport(responses: [
-            YouTubeAPIResponse(
-                data: Data(#"{"items":[{"id":"stream-1","cdn":{"ingestionType":"hls","ingestionInfo":{"streamName":"test-key","ingestionAddress":"https://a.upload.youtube.com/http_upload_hls?cid=test-key&file="}}}]}"#.utf8),
-                statusCode: 200
-            ),
-            YouTubeAPIResponse(
-                data: Data(#"{"items":[{"id":"completed","snippet":{"title":"Previous","scheduledStartTime":"2024-01-01T00:00:00Z"},"status":{"privacyStatus":"unlisted","lifeCycleStatus":"complete"},"contentDetails":{"boundStreamId":"stream-1"}}]}"#.utf8),
-                statusCode: 200
-            ),
-            YouTubeAPIResponse(
-                data: Data(#"{"id":"inserted","snippet":{"title":"Previous"},"status":{"privacyStatus":"unlisted","lifeCycleStatus":"ready"},"contentDetails":{}}"#.utf8),
-                statusCode: 200
-            ),
-            YouTubeAPIResponse(
-                data: Data(#"{"id":"bound","snippet":{"title":"Previous"},"status":{"privacyStatus":"unlisted","lifeCycleStatus":"ready"},"contentDetails":{"boundStreamId":"stream-1","enableAutoStop":true}}"#.utf8),
-                statusCode: 200
-            ),
-        ])
-        let service = YouTubeService(
-            transport: transport,
-            tokenStore: validMemoryTokenStore()
-        )
-
-        let preparation = try await service.prepareForStreaming(streamKey: "test-key")
-
-        #expect(preparation.broadcast.id == "bound")
-        #expect(preparation.broadcast.lifeCycleStatus == "ready")
-        #expect(preparation.broadcast.enableAutoStop)
-        let mediaURL = try preparation.endpoint.requestURL(filename: "media_0.ts")
-        #expect(mediaURL.host == "a.upload.youtube.com")
-        #expect(mediaURL.lastPathComponent == "http_upload_hls")
+    @Test(arguments: [false, true]) @MainActor
+    func statusLookupDoesNotCreateBroadcastsOrFetchCompletedHistory(_ staleCompletedResult: Bool) async throws {
+        let page = staleCompletedResult ? currentBroadcastPage(status: "complete") : emptyYouTubePage()
+        let transport = MockYouTubeAPITransport(responses: [page, page, matchingStreamPage()])
+        let service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore(), discoveryCache: YouTubeDiscoveryCache())
+        await #expect(throws: YouTubeError.noBroadcastFound) {
+            _ = try await service.findBroadcastForStreamKey("test-key")
+        }
         let requests = await transport.requests
-        #expect(requests.map(\.httpMethod) == ["GET", "GET", "POST", "POST"])
-        #expect(requests[2].url?.path.hasSuffix("/liveBroadcasts") == true)
-        #expect(requests[3].url?.path.hasSuffix("/liveBroadcasts/bind") == true)
-        #expect(requests[2].httpBody?.range(of: Data(#""enableAutoStop":true"#.utf8)) != nil)
+        #expect(requests.count == 3)
+        #expect(requests.allSatisfy { $0.httpMethod == "GET" })
+        #expect(requests.flatMap { queryItems(in: $0).filter { $0.name == "broadcastStatus" }.compactMap(\.value) } == ["active", "upcoming"])
+        #expect(!service.isLoading)
+    }
+
+    @Test @MainActor
+    func firstTimeSetupCreatesAReusableHLSKeyAndAReadOnlySettingsDraft() async throws {
+        let captured = CapturedYouTubeDiagnostics()
+        let cache = YouTubeDiscoveryCache()
+        let transport = MockYouTubeAPITransport(responses: [
+            streamResourceResponse(),
+            emptyYouTubePage(), matchingStreamPage(), emptyYouTubePage(), emptyYouTubePage(), emptyYouTubePage()
+        ])
+        let service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore(), discoveryCache: cache, diagnostics: captured.diagnostics)
+        let stream = try await service.setUpStream()
+        #expect(stream.id == "stream-1")
+        #expect(stream.streamName == "test-key")
+        let settings = try await service.loadSettingsConfiguration(forStreamKey: stream.streamName)
+        #expect(settings.broadcast.id.isEmpty)
+        #expect(settings.broadcast.boundStreamId == stream.id)
+        #expect(settings.broadcast.lifeCycleStatus == "draft")
+        #expect(settings.broadcast.privacyStatus == "private")
+        #expect(settings.broadcast.enableAutoStart)
+        #expect(settings.broadcast.selfDeclaredMadeForKids == false)
+        let requests = await transport.requests
+        #expect(requests.count == 6)
+        #expect(requests[0].httpMethod == "POST")
+        #expect(requests[0].url?.path.hasSuffix("/liveStreams") == true)
+        let body = try #require(JSONSerialization.jsonObject(with: requests[0].httpBody!) as? [String: Any])
+        let cdn = try #require(body["cdn"] as? [String: String])
+        #expect(cdn == ["ingestionType": "hls", "resolution": "variable", "frameRate": "variable"])
+        #expect((body["contentDetails"] as? [String: Bool])?["isReusable"] == true)
+        #expect(requests.dropFirst().allSatisfy { $0.httpMethod == "GET" })
+        #expect(!captured.text.contains("test-key"))
+    }
+
+    @Test @MainActor
+    func setupReusesItsKeyAcrossServiceInstancesAndClearsItOnSignOut() async throws {
+        let cache = YouTubeDiscoveryCache()
+        let store = validMemoryTokenStore()
+        let transport = MockYouTubeAPITransport(responses: [streamResourceResponse(), matchingStreamPage(), streamResourceResponse()])
+        let first = YouTubeService(transport: transport, tokenStore: store, discoveryCache: cache)
+        let a = try await first.setUpStream()
+        let second = YouTubeService(transport: transport, tokenStore: store, discoveryCache: cache)
+        let b = try await second.setUpStream()
+        #expect(a == b)
+        #expect(second.signOut())
+        // Another authorization must not reuse identifiers from the old grant.
+        let third = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore(), discoveryCache: cache)
+        _ = try await third.setUpStream()
+        #expect(await transport.requests.map(\.httpMethod) == ["POST", "GET", "POST"])
+    }
+
+    @Test @MainActor
+    func discoveryCachePersistsOnlyIdentifiersAndIsolatesAccountsAndKeys() async throws {
+        let name = "YouTubeDiscoveryTests-" + UUID().uuidString
+        let defaults = try #require(UserDefaults(suiteName: name))
+        defer { defaults.removePersistentDomain(forName: name) }
+        let store = validMemoryTokenStore()
+        let scope = YouTubeDiscoveryCache.scope(refreshToken: store.refreshToken!)
+        let key = YouTubeDiscoveryCache.key(scope: scope, streamKey: "test-key")
+        let cache = YouTubeDiscoveryCache(defaults: defaults)
+        cache.setID("stream-1", kind: "stream", for: key)
+        let restored = YouTubeDiscoveryCache(defaults: defaults)
+        let transport = MockYouTubeAPITransport(responses: [matchingStreamPage(), emptyYouTubePage(), currentBroadcastPage()])
+        let service = YouTubeService(transport: transport, tokenStore: store, discoveryCache: restored)
+        _ = try await service.findBroadcastForStreamKey("test-key")
+        let requests = await transport.requests
+        #expect(requests.count == 3)
+        #expect(queryItems(in: requests[0]).contains(.init(name: "id", value: "stream-1")))
+        #expect(!requests.flatMap { queryItems(in: $0) }.contains(.init(name: "mine", value: "true")))
+        let data = try JSONSerialization.data(withJSONObject: defaults.dictionary(forKey: "YouTubeDiscoveryIDs")!)
+        let stored = String(decoding: data, as: UTF8.self)
+        #expect(!stored.contains("test-key"))
+        #expect(!stored.contains("refresh-token"))
+        let differentScope = YouTubeDiscoveryCache.scope(refreshToken: "another-account")
+        #expect(restored.id("stream", for: YouTubeDiscoveryCache.key(scope: differentScope, streamKey: "test-key")) == nil)
+        #expect(restored.id("stream", for: YouTubeDiscoveryCache.key(scope: scope, streamKey: "another-key")) == nil)
+    }
+
+    @Test(arguments: [false, true]) @MainActor
+    func staleCachedStreamIsReplacedAfterAnExactKeyCheck(_ wrongKey: Bool) async throws {
+        let cache = YouTubeDiscoveryCache()
+        let key = YouTubeDiscoveryCache.key(scope: YouTubeDiscoveryCache.scope(refreshToken: "refresh-token"), streamKey: "test-key")
+        cache.setID("stale-id", kind: "stream", for: key)
+        let stale = wrongKey ? YouTubeAPIResponse(data: try streamsResponse([streamItem(id: "stale-id", key: "wrong-key", type: "hls", address: "https://a.upload.youtube.com/http_upload_hls?cid=wrong-key&file=")]), statusCode: 200) : emptyYouTubePage()
+        let transport = MockYouTubeAPITransport(responses: [stale, emptyYouTubePage(), currentBroadcastPage(), matchingStreamPage()])
+        let service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore(), discoveryCache: cache)
+        _ = try await service.findBroadcastForStreamKey("test-key")
+        #expect(await transport.requestCount == 4)
+        #expect(cache.id("stream", for: key) == "stream-1")
+    }
+
+    @Test @MainActor
+    func standaloneKeyLookupStopsBeforeAFailingLaterPage() async throws {
+        var match = try #require(JSONSerialization.jsonObject(with: matchingStreamPage().data) as? [String: Any])
+        match["nextPageToken"] = "never-fetch"
+        let transport = MockYouTubeAPITransport(responses: [
+            emptyYouTubePage(), emptyYouTubePage(), .init(data: try JSONSerialization.data(withJSONObject: match), statusCode: 200),
+            .init(data: Data(), statusCode: 500)
+        ])
+        let service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore(), discoveryCache: YouTubeDiscoveryCache())
+        _ = try await service.findHLSIngestionEndpoint(forStreamKey: "test-key")
+        #expect(await transport.requestCount == 3)
+    }
+
+    @Test @MainActor
+    func startCreatesAndBindsFromSavedPreferencesWithoutACompletedTemplate() async throws {
+        let fixedNow = Date(timeIntervalSince1970: 1_800_000_000)
+        let transport = MockYouTubeAPITransport(responses: [
+            emptyYouTubePage(), emptyYouTubePage(), matchingStreamPage(),
+            broadcastResourceResponse(status: "created", bound: false), broadcastResourceResponse(status: "ready", bound: true)
+        ])
+        let service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore(), discoveryCache: YouTubeDiscoveryCache(), now: { fixedNow })
+        let preferences = setupPreferences()
+        let result = try await service.prepareForStreaming(streamKey: "test-key", preferences: preferences)
+        #expect(result.broadcast.id == "new-event")
+        #expect(result.broadcast.boundStreamId == "stream-1")
+        let requests = await transport.requests
+        #expect(requests.map(\.httpMethod) == ["GET", "GET", "GET", "POST", "POST"])
+        let body = try #require(JSONSerialization.jsonObject(with: requests[3].httpBody!) as? [String: Any])
+        let snippet = try #require(body["snippet"] as? [String: String])
+        #expect(snippet["title"] == preferences.title)
+        #expect(ISO8601DateFormatter().date(from: snippet["scheduledStartTime"]!) == fixedNow.addingTimeInterval(10))
+        let status = try #require(body["status"] as? [String: Any])
+        #expect(status["privacyStatus"] as? String == "private")
+        #expect(status["selfDeclaredMadeForKids"] as? Bool == false)
+        let details = try #require(body["contentDetails"] as? [String: Any])
+        #expect(details["enableAutoStart"] as? Bool == true)
+        #expect(details["enableAutoStop"] as? Bool == true)
+        #expect(queryItems(in: requests[4]).contains(.init(name: "streamId", value: "stream-1")))
+        #expect(requests[4].httpBody?.isEmpty == true)
+    }
+
+    @Test @MainActor
+    func failedBindResumesTheSameBroadcastOnRetry() async throws {
+        let transport = MockYouTubeAPITransport(responses: [
+            emptyYouTubePage(), emptyYouTubePage(), matchingStreamPage(),
+            broadcastResourceResponse(status: "created", bound: false), .init(data: Data(), statusCode: 500),
+            matchingStreamPage(), emptyYouTubePage(), emptyYouTubePage(),
+            broadcastPageResponse(status: "created", bound: false), broadcastResourceResponse(status: "ready", bound: true)
+        ])
+        let cache = YouTubeDiscoveryCache()
+        let first = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore(), discoveryCache: cache)
+        await #expect(throws: YouTubeError.apiError(500, "The request was rejected")) {
+            _ = try await first.prepareForStreaming(streamKey: "test-key", preferences: setupPreferences())
+        }
+        let second = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore(), discoveryCache: cache)
+        let result = try await second.prepareForStreaming(streamKey: "test-key", preferences: setupPreferences())
+        #expect(result.broadcast.id == "new-event")
+        let requests = await transport.requests
+        #expect(requests.filter { $0.httpMethod == "POST" && $0.url?.path.hasSuffix("/liveBroadcasts") == true }.count == 1)
+        #expect(requests.filter { $0.httpMethod == "POST" && $0.url?.path.hasSuffix("/bind") == true }.count == 2)
+    }
+
+    @Test @MainActor
+    func aCompletedRememberedBroadcastAllowsANewEventWithoutHistoryPagination() async throws {
+        let cache = YouTubeDiscoveryCache()
+        let key = YouTubeDiscoveryCache.key(scope: YouTubeDiscoveryCache.scope(refreshToken: "refresh-token"), streamKey: "test-key")
+        cache.setID("stream-1", kind: "stream", for: key)
+        cache.setID("new-event", kind: "createdBroadcast", for: key)
+        let transport = MockYouTubeAPITransport(responses: [
+            matchingStreamPage(), emptyYouTubePage(), emptyYouTubePage(), broadcastPageResponse(status: "complete", bound: true),
+            broadcastResourceResponse(status: "created", bound: false), broadcastResourceResponse(status: "ready", bound: true)
+        ])
+        let service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore(), discoveryCache: cache)
+        _ = try await service.prepareForStreaming(streamKey: "test-key", preferences: setupPreferences())
+        let requests = await transport.requests
+        #expect(requests.count == 6)
+        #expect(requests.flatMap { queryItems(in: $0).filter { $0.name == "broadcastStatus" }.compactMap(\.value) } == ["active", "upcoming"])
+        #expect(queryItems(in: requests[3]).contains(.init(name: "id", value: "new-event")))
+    }
+
+    @Test @MainActor
+    func concurrentStartPreflightsShareOneCreation() async throws {
+        let transport = MockYouTubeAPITransport(responses: [
+            emptyYouTubePage(), emptyYouTubePage(), matchingStreamPage(),
+            broadcastResourceResponse(status: "created", bound: false), broadcastResourceResponse(status: "ready", bound: true)
+        ])
+        let cache = YouTubeDiscoveryCache()
+        let first = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore(), discoveryCache: cache)
+        let second = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore(), discoveryCache: cache)
+        async let a = first.prepareForStreaming(streamKey: "test-key", preferences: setupPreferences())
+        async let b = second.prepareForStreaming(streamKey: "test-key", preferences: setupPreferences())
+        let results = try await (a, b)
+        #expect(results.0 == results.1)
+        #expect(await transport.requestCount == 5)
+    }
+
+    @Test @MainActor
+    func aFailedLookupNeverCreatesAReplacement() async throws {
+        let transport = MockYouTubeAPITransport(responses: [.init(data: Data(), statusCode: 500)])
+        let service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore(), discoveryCache: YouTubeDiscoveryCache())
+        await #expect(throws: YouTubeError.apiError(500, "The request was rejected")) {
+            _ = try await service.prepareForStreaming(streamKey: "test-key")
+        }
+        #expect(await transport.requests.map(\.httpMethod) == ["GET"])
+    }
+
+    @Test @MainActor
+    func cancellationStopsStreamSetupAndClearsLoadingState() async throws {
+        let transport = SuspendingYouTubeAPITransport()
+        let cache = YouTubeDiscoveryCache()
+        let service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore(), discoveryCache: cache)
+        let task = Task { try await service.setUpStream() }
+        await transport.waitUntilStarted()
+        #expect(service.isLoading)
+        task.cancel()
+        do {
+            _ = try await task.value
+            Issue.record("Cancelled setup should not return a stream")
+        } catch {
+            #expect(YouTubeDiagnostics.failure(error) == "cancelled")
+        }
+        #expect(!service.isLoading)
+        #expect(cache.streamSetups.isEmpty)
+        #expect(await transport.observedCancellation)
+    }
+
+    @Test @MainActor
+    func cancellationStopsStreamingPreflightBeforeItCanCreateAnEvent() async throws {
+        let transport = SuspendingYouTubeAPITransport()
+        let cache = YouTubeDiscoveryCache()
+        let service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore(), discoveryCache: cache)
+        let task = Task { try await service.prepareForStreaming(streamKey: "test-key") }
+        await transport.waitUntilStarted()
+        task.cancel()
+        do {
+            _ = try await task.value
+            Issue.record("Cancelled preflight should not return a broadcast")
+        } catch {
+            #expect(YouTubeDiagnostics.failure(error) == "cancelled")
+        }
+        #expect(!service.isLoading)
+        #expect(cache.preparations.isEmpty)
+        #expect(await transport.observedCancellation)
+    }
+
+    @Test func savedPreferencesFromBeforeTheAudienceSettingStillDecode() throws {
+        let data = try JSONEncoder().encode(setupPreferences())
+        var object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        object.removeValue(forKey: "selfDeclaredMadeForKids")
+        let legacyData = try JSONSerialization.data(withJSONObject: object)
+        let preferences = try JSONDecoder().decode(YouTubeBroadcastPreferences.self, from: legacyData)
+        #expect(preferences.title == "Saved title")
+        #expect(preferences.selfDeclaredMadeForKids == nil)
     }
 
     @Test @MainActor
     func streamingPreflightReusesReadyAndRejectsStillActiveBroadcasts() async throws {
         let readyTransport = MockYouTubeAPITransport(responses: [
+            emptyYouTubePage(),
             YouTubeAPIResponse(
-                data: Data(#"{"items":[{"id":"stream-1","cdn":{"ingestionType":"hls","ingestionInfo":{"streamName":"test-key","ingestionAddress":"https://a.upload.youtube.com/http_upload_hls?cid=test-key&file="}}}]}"#.utf8),
+                data: Data(#"{"items":[{"id":"ready","snippet":{"title":"Next"},"status":{"privacyStatus":"unlisted","lifeCycleStatus":"ready"},"contentDetails":{"boundStreamId":"stream-1","enableAutoStop":false}}]}"#.utf8),
                 statusCode: 200
             ),
             YouTubeAPIResponse(
-                data: Data(#"{"items":[{"id":"ready","snippet":{"title":"Next"},"status":{"privacyStatus":"unlisted","lifeCycleStatus":"ready"},"contentDetails":{"boundStreamId":"stream-1","enableAutoStop":false}}]}"#.utf8),
+                data: Data(#"{"items":[{"id":"stream-1","cdn":{"ingestionType":"hls","ingestionInfo":{"streamName":"test-key","ingestionAddress":"https://a.upload.youtube.com/http_upload_hls?cid=test-key&file="}}}]}"#.utf8),
                 statusCode: 200
             ),
             YouTubeAPIResponse(
@@ -612,30 +880,30 @@ struct YouTubeServiceTests {
         ])
         let readyService = YouTubeService(
             transport: readyTransport,
-            tokenStore: validMemoryTokenStore()
+            tokenStore: validMemoryTokenStore(), discoveryCache: YouTubeDiscoveryCache()
         )
 
         let preparation = try await readyService.prepareForStreaming(streamKey: "test-key")
         #expect(preparation.broadcast.id == "ready")
         #expect(preparation.broadcast.enableAutoStop)
         let readyRequests = await readyTransport.requests
-        #expect(readyRequests.map(\.httpMethod) == ["GET", "GET", "PUT"])
-        #expect(readyRequests[2].httpBody?.range(of: Data(#""enableAutoStop":true"#.utf8)) != nil)
+        #expect(readyRequests.map(\.httpMethod) == ["GET", "GET", "GET", "PUT"])
+        #expect(readyRequests[3].httpBody?.range(of: Data(#""enableAutoStop":true"#.utf8)) != nil)
         #expect(!readyRequests.contains { $0.url?.path.hasSuffix("/liveBroadcasts/bind") == true })
 
         let activeTransport = MockYouTubeAPITransport(responses: [
             YouTubeAPIResponse(
-                data: Data(#"{"items":[{"id":"stream-1","cdn":{"ingestionType":"hls","ingestionInfo":{"streamName":"test-key","ingestionAddress":"https://a.upload.youtube.com/http_upload_hls?cid=test-key&file="}}}]}"#.utf8),
+                data: Data(#"{"items":[{"id":"active","snippet":{"title":"Previous"},"status":{"privacyStatus":"unlisted","lifeCycleStatus":"liveStarting"},"contentDetails":{"boundStreamId":"stream-1"}}]}"#.utf8),
                 statusCode: 200
             ),
             YouTubeAPIResponse(
-                data: Data(#"{"items":[{"id":"active","snippet":{"title":"Previous"},"status":{"privacyStatus":"unlisted","lifeCycleStatus":"liveStarting"},"contentDetails":{"boundStreamId":"stream-1"}}]}"#.utf8),
+                data: Data(#"{"items":[{"id":"stream-1","cdn":{"ingestionType":"hls","ingestionInfo":{"streamName":"test-key","ingestionAddress":"https://a.upload.youtube.com/http_upload_hls?cid=test-key&file="}}}]}"#.utf8),
                 statusCode: 200
             ),
         ])
         let activeService = YouTubeService(
             transport: activeTransport,
-            tokenStore: validMemoryTokenStore()
+            tokenStore: validMemoryTokenStore(), discoveryCache: YouTubeDiscoveryCache()
         )
 
         await #expect(throws: YouTubeError.broadcastNotReady("starting live stream")) {
@@ -647,12 +915,13 @@ struct YouTubeServiceTests {
     @Test @MainActor
     func streamingPreflightAppliesSavedPreferencesWithoutCreatingAnotherBroadcast() async throws {
         let transport = MockYouTubeAPITransport(responses: [
+            emptyYouTubePage(),
             YouTubeAPIResponse(
-                data: Data(#"{"items":[{"id":"stream-1","cdn":{"ingestionType":"hls","ingestionInfo":{"streamName":"test-key","ingestionAddress":"https://a.upload.youtube.com/http_upload_hls?cid=test-key&file="}}}]}"#.utf8),
+                data: Data(#"{"items":[{"id":"ready","snippet":{"title":"Old title","scheduledStartTime":"2026-08-22T10:00:00Z"},"status":{"privacyStatus":"unlisted","lifeCycleStatus":"ready"},"contentDetails":{"boundStreamId":"stream-1","enableDvr":true,"latencyPreference":"normal","monitorStream":{"enableMonitorStream":false,"broadcastStreamDelayMs":0},"enableEmbed":true,"recordFromStart":true,"enableAutoStart":true,"enableAutoStop":true}}]}"#.utf8),
                 statusCode: 200
             ),
             YouTubeAPIResponse(
-                data: Data(#"{"items":[{"id":"ready","snippet":{"title":"Old title","scheduledStartTime":"2026-08-22T10:00:00Z"},"status":{"privacyStatus":"unlisted","lifeCycleStatus":"ready"},"contentDetails":{"boundStreamId":"stream-1","enableDvr":true,"latencyPreference":"normal","monitorStream":{"enableMonitorStream":false,"broadcastStreamDelayMs":0},"enableEmbed":true,"recordFromStart":true,"enableAutoStart":true,"enableAutoStop":true}}]}"#.utf8),
+                data: Data(#"{"items":[{"id":"stream-1","cdn":{"ingestionType":"hls","ingestionInfo":{"streamName":"test-key","ingestionAddress":"https://a.upload.youtube.com/http_upload_hls?cid=test-key&file="}}}]}"#.utf8),
                 statusCode: 200
             ),
             YouTubeAPIResponse(
@@ -662,7 +931,7 @@ struct YouTubeServiceTests {
         ])
         let service = YouTubeService(
             transport: transport,
-            tokenStore: validMemoryTokenStore()
+            tokenStore: validMemoryTokenStore(), discoveryCache: YouTubeDiscoveryCache()
         )
         let preferences = YouTubeBroadcastPreferences(
             streamId: "stream-1",
@@ -689,8 +958,8 @@ struct YouTubeServiceTests {
         #expect(preparation.broadcast.privacyStatus == "private")
         #expect(preparation.broadcast.enableAutoStop)
         let requests = await transport.requests
-        #expect(requests.map(\.httpMethod) == ["GET", "GET", "PUT"])
-        #expect(requests[2].httpBody?.range(of: Data(#""enableAutoStop":true"#.utf8)) != nil)
+        #expect(requests.map(\.httpMethod) == ["GET", "GET", "GET", "PUT"])
+        #expect(requests[3].httpBody?.range(of: Data(#""enableAutoStop":true"#.utf8)) != nil)
         #expect(!requests.contains { $0.url?.path.hasSuffix("/liveBroadcasts/bind") == true })
     }
 
@@ -701,7 +970,7 @@ struct YouTubeServiceTests {
         ])
         let service = YouTubeService(
             transport: transport,
-            tokenStore: validMemoryTokenStore()
+            tokenStore: validMemoryTokenStore(), discoveryCache: YouTubeDiscoveryCache()
         )
         let image = Data([0xFF, 0xD8, 0xFF, 0xD9])
 
@@ -729,7 +998,7 @@ struct YouTubeServiceTests {
         ])
         let service = YouTubeService(
             transport: transport,
-            tokenStore: validMemoryTokenStore()
+            tokenStore: validMemoryTokenStore(), discoveryCache: YouTubeDiscoveryCache()
         )
 
         await #expect(throws: YouTubeError.invalidResponse) {
@@ -819,34 +1088,39 @@ struct YouTubeServiceTests {
     func settingsDiagnosticsIdentifyAuthorizedChannelAndSuccessfulDiscovery() async throws {
         let captured = CapturedYouTubeDiagnostics()
         let transport = MockYouTubeAPITransport(responses: settingsDiagnosticResponses())
-        let service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore(), diagnostics: captured.diagnostics)
+        let service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore(), discoveryCache: YouTubeDiscoveryCache(), diagnostics: captured.diagnostics)
         let settings = try await service.loadSettingsConfiguration(forStreamKey: "test-key")
         #expect(settings.broadcast.id == "ready")
         #expect(settings.playlists.isEmpty)
+        let infoEntries = captured.entries.filter { $0.1 == .info }
+        #expect(infoEntries.map(\.0) == ["YouTube Settings: configuration loaded; broadcast=Ready; 0 playlists"])
+        #expect(captured.entries.filter { $0.1 != .info }.allSatisfy { $0.1 == .debug })
         #expect(captured.text.contains("authorized channel: Brand channel [UC-test-channel]"))
         #expect(captured.text.contains("1 streams; 1 match the configured key"))
         #expect(captured.text.contains("1 broadcasts; 1 bound to the matching stream"))
         #expect(!captured.text.contains("test-key"))
         #expect(!captured.text.contains("valid-access"))
         let requests = await transport.requests
-        #expect(requests.map(\.httpMethod) == ["GET", "GET", "GET", "GET"])
+        #expect(requests.map(\.httpMethod) == ["GET", "GET", "GET", "GET", "GET"])
         #expect(requests.first?.timeoutInterval == 5)
         #expect(!service.isLoading)
     }
 
-    @Test(arguments: [1, 2, 3]) @MainActor
+    @Test(arguments: [1, 2, 3, 4]) @MainActor
     func settingsDiagnosticsNameEachFailingDiscoveryStage(_ stage: Int) async throws {
         let captured = CapturedYouTubeDiagnostics()
-        let operations: [YouTubeAPIOperation] = [.channels, .streams, .broadcasts, .playlists]
+        let operations: [YouTubeAPIOperation] = [.channels, .broadcasts, .broadcasts, .streams, .playlists]
         var responses = Array(settingsDiagnosticResponses().prefix(stage + 1))
         responses[stage] = .init(data: Data(#"{"error":{"message":"Internal error encountered.","errors":[{"reason":"backendError"}]}}"#.utf8), statusCode: 500)
         let transport = MockYouTubeAPITransport(responses: responses)
-        let service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore(), diagnostics: captured.diagnostics)
+        let service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore(), discoveryCache: YouTubeDiscoveryCache(), diagnostics: captured.diagnostics)
         await #expect(throws: YouTubeError.apiError(500, "Internal error encountered.")) {
             _ = try await service.loadSettingsConfiguration(forStreamKey: "test-key")
         }
         #expect(captured.text.contains("\(operations[stage].rawValue): HTTP 500"))
         #expect(captured.text.contains("reason=backendError"))
+        #expect(captured.entries.contains { $0.1 == .error })
+        #expect(!captured.entries.contains { $0.1 == .info })
         #expect(captured.text.contains("authorized channel: Brand channel"))
         #expect(await transport.requestCount == stage + 1)
         #expect(!service.isLoading)
@@ -858,12 +1132,12 @@ struct YouTubeServiceTests {
         var responses = settingsDiagnosticResponses()
         responses[0] = .init(data: Data(#"{"error":{"message":"Channel check failed"}}"#.utf8), statusCode: status)
         let transport = MockYouTubeAPITransport(responses: responses)
-        let service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore(), diagnostics: captured.diagnostics)
+        let service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore(), discoveryCache: YouTubeDiscoveryCache(), diagnostics: captured.diagnostics)
         let settings = try await service.loadSettingsConfiguration(forStreamKey: "test-key")
         #expect(settings.broadcast.id == "ready")
         #expect(captured.text.contains("authorized channel check unavailable (HTTP \(status)); continuing"))
         #expect(!captured.entries.contains { $0.1 == .error })
-        #expect(await transport.requestCount == 4)
+        #expect(await transport.requestCount == 5)
         #expect(service.errorMessage == nil)
     }
 
@@ -874,7 +1148,7 @@ struct YouTubeServiceTests {
             .init(data: Data(#"{"error":{"message":"Internal error encountered."}}"#.utf8), statusCode: 500),
         ])
         let store = MemoryYouTubeTokenStore(accessToken: nil, refreshToken: "refresh-canary", expiry: nil)
-        let service = YouTubeService(transport: transport, tokenStore: store, diagnostics: captured.diagnostics)
+        let service = YouTubeService(transport: transport, tokenStore: store, discoveryCache: YouTubeDiscoveryCache(), diagnostics: captured.diagnostics)
         await #expect(throws: YouTubeError.apiError(500, "Internal error encountered.")) {
             _ = try await service.loadSettingsConfiguration(forStreamKey: "test-key")
         }
@@ -888,7 +1162,7 @@ struct YouTubeServiceTests {
     @Test @MainActor
     func cancellingChannelDiagnosticDoesNotContinueToStreamDiscovery() async throws {
         let transport = SuspendingYouTubeAPITransport()
-        let service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore())
+        let service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore(), discoveryCache: YouTubeDiscoveryCache())
         let task = Task { try await service.loadSettingsConfiguration(forStreamKey: "test-key") }
         await transport.waitUntilStarted()
         task.cancel()
@@ -901,7 +1175,7 @@ struct YouTubeServiceTests {
         let transport = SuspendingYouTubeAPITransport()
         let service = YouTubeService(
             transport: transport,
-            tokenStore: validMemoryTokenStore()
+            tokenStore: validMemoryTokenStore(), discoveryCache: YouTubeDiscoveryCache()
         )
         let task = Task {
             try await service.listPlaylists()
@@ -933,12 +1207,64 @@ private struct FailingYouTubeAPITransport: YouTubeAPITransport {
     }
 }
 
+private func streamResourceResponse() -> YouTubeAPIResponse {
+    let object = try! JSONSerialization.jsonObject(with: matchingStreamPage().data) as! [String: Any]
+    let resource = (object["items"] as! [[String: Any]])[0]
+    return .init(data: try! JSONSerialization.data(withJSONObject: resource), statusCode: 200)
+}
+
+private func broadcastResourceResponse(status: String, bound: Bool) -> YouTubeAPIResponse {
+    let statusFields: [String: Any] = ["privacyStatus": "private", "lifeCycleStatus": status, "selfDeclaredMadeForKids": false]
+    var details: [String: Any] = ["enableEmbed": false]
+    if bound { details["boundStreamId"] = "stream-1" }
+    let object: [String: Any] = [
+        "id": "new-event", "snippet": ["title": "Saved title"],
+        "status": statusFields,
+        "contentDetails": details
+    ]
+    return .init(data: try! JSONSerialization.data(withJSONObject: object), statusCode: 200)
+}
+
+private func broadcastPageResponse(status: String, bound: Bool) -> YouTubeAPIResponse {
+    let resource = try! JSONSerialization.jsonObject(with: broadcastResourceResponse(status: status, bound: bound).data)
+    return .init(data: try! JSONSerialization.data(withJSONObject: ["items": [resource]]), statusCode: 200)
+}
+
+private func setupPreferences() -> YouTubeBroadcastPreferences {
+    YouTubeBroadcastPreferences(
+        streamId: "stream-1", title: "Saved title", privacyStatus: "private", enableDvr: true,
+        latencyPreference: "normal", enableMonitorStream: false, broadcastStreamDelayMs: 0,
+        enableEmbed: false, recordFromStart: true, enableAutoStart: true, enableAutoStop: true,
+        playlistId: nil, selfDeclaredMadeForKids: false
+    )
+}
+
+private func emptyYouTubePage() -> YouTubeAPIResponse {
+    .init(data: Data(#"{"items":[]}"#.utf8), statusCode: 200)
+}
+
+private func currentBroadcastPage(status: String = "ready", nextPageToken: String? = nil) -> YouTubeAPIResponse {
+    var page: [String: Any] = ["items": [[
+        "id": "ready", "snippet": ["title": "Next"],
+        "status": ["privacyStatus": "unlisted", "lifeCycleStatus": status],
+        "contentDetails": ["boundStreamId": "stream-1"],
+    ]]]
+    page["nextPageToken"] = nextPageToken
+    return .init(data: try! JSONSerialization.data(withJSONObject: page), statusCode: 200)
+}
+
+private func matchingStreamPage() -> YouTubeAPIResponse {
+    .init(data: Data(#"{"items":[{"id":"stream-1","cdn":{"ingestionType":"hls","ingestionInfo":{"streamName":"test-key","ingestionAddress":"https://a.upload.youtube.com/http_upload_hls?cid=test-key&file="}}}]}"#.utf8), statusCode: 200)
+}
+
+private func queryItems(in request: URLRequest) -> [URLQueryItem] {
+    request.url.flatMap { URLComponents(url: $0, resolvingAgainstBaseURL: false)?.queryItems } ?? []
+}
+
 private func settingsDiagnosticResponses() -> [YouTubeAPIResponse] {
     [
         .init(data: Data(#"{"items":[{"id":"UC-test-channel","snippet":{"title":"Brand channel"}}]}"#.utf8), statusCode: 200),
-        .init(data: Data(#"{"items":[{"id":"stream-1","cdn":{"ingestionType":"hls","ingestionInfo":{"streamName":"test-key","ingestionAddress":"https://a.upload.youtube.com/http_upload_hls?cid=test-key&file="}}}]}"#.utf8), statusCode: 200),
-        .init(data: Data(#"{"items":[{"id":"ready","snippet":{"title":"Next"},"status":{"privacyStatus":"unlisted","lifeCycleStatus":"ready"},"contentDetails":{"boundStreamId":"stream-1"}}]}"#.utf8), statusCode: 200),
-        .init(data: Data(#"{"items":[]}"#.utf8), statusCode: 200),
+        emptyYouTubePage(), currentBroadcastPage(), matchingStreamPage(), emptyYouTubePage(),
     ]
 }
 

@@ -158,7 +158,7 @@ actor YouTubeHLSStreamSink {
             enabled: Settings.recordHLSAcceptance
         )
 #endif
-        LOG("YouTube HLS output is prepared", level: .info)
+        LOG("YouTube HLS output is prepared", level: .debug)
     }
 
     func enqueue(_ fragment: Fragment) async {
@@ -278,7 +278,7 @@ actor YouTubeHLSStreamSink {
         await dropReportingTask?.value
         await HLSAcceptanceRecorder.shared.stopped()
 #endif
-        LOG("YouTube HLS output stopped", level: .info)
+        LOG("YouTube HLS output stopped", level: .debug)
     }
 
     func cancel() async {

@@ -182,6 +182,16 @@ final class TubeistUITests: XCTestCase {
     }
 
     @MainActor
+    func testYouTubeSignInIsAvailableWithoutAStreamKey() throws {
+        let app = launchForUITesting()
+        app.buttons["Settings"].tap()
+        let keyField = app.secureTextFields["YouTube HLS Stream Key"]
+        XCTAssertTrue(keyField.waitForExistence(timeout: 5))
+        XCTAssertEqual(keyField.value as? String, "YouTube HLS Stream Key")
+        XCTAssertTrue(app.buttons["Sign in with Google"].waitForExistence(timeout: 3))
+    }
+
+    @MainActor
     func testCancellingSettingsDiscardsStreamKeyDraft() throws {
         let app = XCUIApplication()
         app.launchArguments = ["-ui-testing"]
@@ -260,31 +270,7 @@ final class TubeistUITests: XCTestCase {
         keyField.typeText("abcd-efgh-1234\n")
 
         func scrollTo(_ element: XCUIElement) {
-            let form = app.collectionViews.firstMatch
-            XCTAssertTrue(form.exists)
-            let window = app.windows.firstMatch
-            for _ in 0..<40 {
-                let bounds = window.frame
-                let top = app.navigationBars.firstMatch.frame.maxY + 8
-                let bottom = app.keyboards.firstMatch.exists
-                    ? app.keyboards.firstMatch.frame.minY - 8 : bounds.maxY - 24
-                let target = element.exists ? element.frame : nil
-                if let target, target.minY >= top, target.maxY <= bottom, element.isHittable { return }
-
-                // Short, overlapping scrolls cannot jump past a control.
-                // Keep the entire target clear of the navigation bar/keyboard;
-                // isHittable alone can accept a partially covered button.
-                let middle = (top + bottom) / 2
-                let distance = min(60, (bottom - top) / 4)
-                let direction: CGFloat = target.map { $0.minY < top ? -1 : 1 } ?? 1
-                let origin = window.coordinate(withNormalizedOffset: .zero)
-                let start = origin.withOffset(CGVector(dx: bounds.width / 2,
-                                                       dy: middle + direction * distance - bounds.minY))
-                let end = origin.withOffset(CGVector(dx: bounds.width / 2,
-                                                     dy: middle - direction * distance - bounds.minY))
-                start.press(forDuration: 0.05, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 0.1)
-            }
-            XCTFail("Could not reach \(element)\n\(app.debugDescription)")
+            self.scrollTo(element, in: app)
         }
 
         let suffix = UUID().uuidString.prefix(8)
@@ -373,6 +359,48 @@ final class TubeistUITests: XCTestCase {
     }
 
     @MainActor
+    func testOverlayEditExplainsInvalidAndDuplicateURLs() throws {
+        let app = launchForUITesting()
+        app.buttons["Settings"].tap()
+        let suffix = UUID().uuidString.prefix(8)
+        let first = "http://127.0.0.1:9/edit-first-\(suffix)"
+        let second = "http://127.0.0.1:9/edit-second-\(suffix)"
+        let newURL = app.textFields["New Overlay URL"]
+        for url in [first, second] {
+            scrollTo(newURL, in: app)
+            newURL.tap()
+            newURL.typeText(url)
+            app.buttons["Add overlay"].tap()
+            newURL.typeText("\n")
+        }
+        let row = app.buttons["edit-overlay-\(second)"]
+        scrollTo(row, in: app, searchDirection: -1)
+        row.tap()
+        let field = app.textFields["Overlay URL"]
+        XCTAssertTrue(field.waitForExistence(timeout: 3))
+        func replaceURL(_ value: String) {
+            field.tap()
+            let existing = field.value as? String ?? ""
+            field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: existing.count))
+            field.typeText(value)
+        }
+        replaceURL("invalid-url")
+        app.navigationBars["Edit Overlay"].buttons["Save"].tap()
+        XCTAssertTrue(app.staticTexts["Enter a valid overlay URL starting with http:// or https://"].exists)
+        XCTAssertTrue(field.exists)
+        replaceURL(first)
+        app.navigationBars["Edit Overlay"].buttons["Save"].tap()
+        XCTAssertTrue(app.staticTexts["An overlay with this URL already exists. Enter a different URL."].exists)
+        XCTAssertTrue(field.exists)
+        let corrected = second + "-corrected"
+        replaceURL(corrected)
+        app.navigationBars["Edit Overlay"].buttons["Save"].tap()
+        XCTAssertTrue(field.waitForNonExistence(timeout: 3))
+        XCTAssertTrue(app.buttons["edit-overlay-\(corrected)"].exists)
+        app.buttons["Cancel"].tap()
+    }
+
+    @MainActor
     func testEssentialControlsRemainReachableAtLargestDynamicTypeSize() throws {
         let app = launchForUITesting(additionalArguments: [
             "-UIPreferredContentSizeCategoryName",
@@ -390,6 +418,36 @@ final class TubeistUITests: XCTestCase {
         XCTAssertTrue(app.buttons["Save"].exists)
         XCTAssertTrue(app.buttons["Cancel"].exists)
     }
+
+    @MainActor
+    private func scrollTo(_ element: XCUIElement, in app: XCUIApplication, searchDirection: CGFloat = 1) {
+        let form = app.collectionViews.firstMatch
+        XCTAssertTrue(form.exists)
+        let window = app.windows.firstMatch
+        for _ in 0..<40 {
+            let bounds = window.frame
+            let top = app.navigationBars.firstMatch.frame.maxY + 8
+            let bottom = app.keyboards.firstMatch.exists
+                ? app.keyboards.firstMatch.frame.minY - 8 : bounds.maxY - 24
+            let target = element.exists ? element.frame : nil
+            if let target, target.minY >= top, target.maxY <= bottom, element.isHittable { return }
+
+            // Short, overlapping scrolls cannot jump past a control.
+            // Keep the entire target clear of the navigation bar/keyboard;
+            // isHittable alone can accept a partially covered button.
+            let middle = (top + bottom) / 2
+            let distance = min(60, (bottom - top) / 4)
+            let direction: CGFloat = target.map { $0.minY < top ? -1 : 1 } ?? searchDirection
+            let origin = window.coordinate(withNormalizedOffset: .zero)
+            let start = origin.withOffset(CGVector(dx: bounds.width / 2,
+                                                   dy: middle + direction * distance - bounds.minY))
+            let end = origin.withOffset(CGVector(dx: bounds.width / 2,
+                                                 dy: middle - direction * distance - bounds.minY))
+            start.press(forDuration: 0.05, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 0.1)
+        }
+        XCTFail("Could not reach \(element)\n\(app.debugDescription)")
+    }
+
 
     @MainActor
     private func launchForUITesting(

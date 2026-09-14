@@ -279,6 +279,12 @@ private struct AppliedSettingsSnapshot {
     }
 }
 
+private struct YouTubeSettingsLoadContext: Equatable {
+    let streamKey: String
+    let isSignedIn: Bool
+    let streamingEnabled: Bool
+}
+
 struct SettingsView: View {
     var overlayManager: OverlaySettingsManager
     @Environment(AppState.self) var appState
@@ -301,6 +307,8 @@ struct SettingsView: View {
 #endif
     @State private var newOverlayURL: String = ""
     @State private var selectedPreset: Preset? = nil
+    @State private var didInitializeDraft = false
+    @State private var hasCustomDraft = false
     @State private var streamKeyManager = StreamKeyManager()
     @State private var selectedOption: RecordingOption = .streamOnly
     @State private var revealsStreamKey = false
@@ -314,21 +322,16 @@ struct SettingsView: View {
     @State private var customVideoBitrate: Int = DEFAULT_VIDEO_BITRATE
     @State private var maxFrameRate: Double = DEFAULT_FRAMERATE
     @State private var youtubeService = YouTubeService()
-    @State private var broadcastTitle: String = ""
-    @State private var broadcastVisibility: String = "public"
-    @State private var playlists: [YouTubePlaylist] = []
-    @State private var selectedPlaylistId: String? = Settings.youtubeSelectedPlaylistId
+    @State private var youtubeDraft = YouTubeSettingsDraft()
     @State private var selectedPhotoItem: PhotosPickerItem? = nil
-    @State private var thumbnailImage: UIImage? = nil
-    @State private var broadcastId: String? = nil
-    @State private var broadcastLifeCycleStatus: String? = nil
-    @State private var broadcastEnableDvr: Bool = true
-    @State private var broadcastLatencyPreference: String = "normal"
-    @State private var loadedBroadcast: YouTubeBroadcast? = nil
+    @State private var isSettingUpYouTubeStream = false
     @State private var youtubeConfigLoaded: Bool = false
+    @State private var lastYouTubeLoadContext: YouTubeSettingsLoadContext?
+    @State private var youtubeLoadGeneration = UUID()
     @State private var isYouTubeRefreshCoolingDown: Bool = false
     @State private var editingOverlay: OverlaySetting? = nil
     @State private var editedOverlayURL: String = ""
+    @State private var overlayEditError: String?
     // Settings presents the stack front to back, with the top layer first.
     @State private var overlayDraft: [OverlaySetting] = []
     @State private var showingOverlayOrder = false
@@ -347,7 +350,7 @@ struct SettingsView: View {
                     .foregroundColor(Color.red)
                 }
 
-                Section(header: Text("YouTube Streaming and Recording"), footer: Text("Stream directly to YouTube with an HLS stream key, save an original-quality recording on this phone, or do both.")) {
+                Section(header: Text("YouTube Streaming and Recording"), footer: Text("Sign in below to set up YouTube streaming, or enter an existing HLS stream key. You can also save an original-quality recording on this phone.")) {
                     Picker("Stream or Record", selection: $selectedOption) {
                         ForEach(RecordingOption.allCases) { option in
                             Text(option.description).tag(option)
@@ -404,26 +407,39 @@ struct SettingsView: View {
                     }
                 }
 
-                if stream && !streamKeyManager.currentKey.isEmpty {
-                    Section(header: Text("YouTube Stream Configuration"), footer: Text(youtubeService.isSignedIn ? "These are staged preferences for your next stream. Save keeps them in Tubeist; YouTube is updated and, if necessary, one upcoming event is created only when you tap Start stream." : "Sign in with your Google account to configure YouTube broadcast settings for the current stream key.")) {
+                if stream {
+                    if youtubeService.isSignedIn {
+                        Section(
+                            header: Text("Tubeist Stream Key"),
+                            footer: Text("Tubeist can create and manage a reusable HLS stream key for your signed-in channel. Choosing this replaces the key above; tap Save to use it. You can keep your existing key if it already works. Existing YouTube streams are kept.")
+                        ) {
+                            Button(streamKeyManager.currentKey.isEmpty ? "Create stream key" : "Use a Tubeist stream key") {
+                                Task { await setUpYouTubeStream() }
+                            }
+                            .buttonStyle(.bordered)
+                            .accessibilityIdentifier("Set up YouTube stream")
+                            .disabled(youtubeService.isLoading || isSettingUpYouTubeStream)
+                        }
+                    }
+
+                    Section(header: Text("YouTube Stream Configuration"), footer: Text(youtubeService.isSignedIn ? "Save keeps broadcast preferences in Tubeist; your broadcast is created or updated when you tap Start stream." : "Sign in with your Google account to set up a stream key and broadcast without YouTube Studio. Your channel must already be enabled for live streaming.")) {
                         if !youtubeService.isSignedIn {
                             Button("Sign in with Google") {
                                 Task {
                                     await youtubeService.signIn()
                                     if youtubeService.isSignedIn {
                                         appState.isYouTubeSignedIn = true
-                                        await loadYouTubeBroadcast()
                                     }
                                 }
                             }
                         } else {
-                            if youtubeService.isLoading {
+                            if youtubeService.isLoading || isSettingUpYouTubeStream {
                                 HStack {
                                     ProgressView()
                                     Text("Loading...")
                                         .foregroundColor(.secondary)
                                 }
-                            } else if broadcastId != nil {
+                            } else if youtubeDraft.broadcast != nil {
                                 HStack {
                                     Text("Status")
                                     Spacer()
@@ -462,26 +478,31 @@ struct SettingsView: View {
                                     .buttonStyle(.bordered)
                                 }
 
-                                TextField("Stream Title", text: $broadcastTitle)
+                                TextField("Stream Title", text: $youtubeDraft.title)
                                     .autocapitalization(.sentences)
 
-                                Picker("Visibility", selection: $broadcastVisibility) {
+                                Picker("Visibility", selection: $youtubeDraft.visibility) {
                                     Text("Public").tag("public")
                                     Text("Unlisted").tag("unlisted")
                                     Text("Private").tag("private")
                                 }
 
-                                Toggle("DVR (viewers can rewind)", isOn: $broadcastEnableDvr)
-                                Picker("Latency", selection: $broadcastLatencyPreference) {
+                                Toggle("Made for kids", isOn: $youtubeDraft.madeForKids)
+                                Toggle("DVR (viewers can rewind)", isOn: $youtubeDraft.enableDvr)
+                                Picker("Latency", selection: $youtubeDraft.latencyPreference) {
                                     Text("Normal").tag("normal")
                                     Text("Low").tag("low")
                                     Text("Ultra-low").tag("ultraLow")
                                 }
 
-                                let previewThumbnail = thumbnailImage
-                                PhotosPicker(selection: $selectedPhotoItem, matching: .images) {
+                                let previewThumbnail = youtubeDraft.thumbnail.image
+                                let isLoadingThumbnail = youtubeDraft.thumbnail.isLoading
+                                PhotosPicker(selection: thumbnailSelection, matching: .images) {
                                     HStack {
                                         Text("Thumbnail")
+                                        if isLoadingThumbnail {
+                                            ProgressView().accessibilityLabel("Loading thumbnail")
+                                        }
                                         if let previewThumbnail {
                                             Image(uiImage: previewThumbnail)
                                                 .resizable()
@@ -495,20 +516,23 @@ struct SettingsView: View {
                                         }
                                     }
                                 }
-                                .onChange(of: selectedPhotoItem) { _, newItem in
-                                    Task { @MainActor in
-                                        if let data = try? await newItem?.loadTransferable(type: Data.self),
-                                           let image = UIImage(data: data) {
-                                            thumbnailImage = image
-                                        }
+                                if let error = youtubeDraft.thumbnail.errorMessage {
+                                    Text(error).foregroundColor(.red)
+                                    Button("Retry thumbnail") {
+                                        loadSelectedThumbnail()
                                     }
                                 }
 
-                                Picker("Playlist", selection: $selectedPlaylistId) {
+                                Picker("Playlist", selection: $youtubeDraft.playlistId) {
                                     Text("None").tag(String?.none)
-                                    ForEach(playlists) { playlist in
+                                    ForEach(youtubeDraft.playlists) { playlist in
                                         Text(playlist.title).tag(Optional(playlist.id))
                                     }
+                                }
+                                if let errorMessage = youtubeService.errorMessage {
+                                    Text(errorMessage).foregroundColor(.red)
+                                    Text("Your unsaved changes are kept. Refresh to try again.")
+                                        .foregroundColor(.secondary)
                                 }
                             } else if let errorMessage = youtubeService.errorMessage {
                                 Text(errorMessage)
@@ -519,7 +543,7 @@ struct SettingsView: View {
                                     }
                                 }
                             } else if youtubeConfigLoaded {
-                                Text("No broadcast found for the current stream key. Make sure you have a scheduled or active broadcast on YouTube.")
+                                Text("Set up a Tubeist stream key above, or enter an existing HLS key.")
                                     .foregroundColor(.secondary)
                                     .font(.caption)
                                 Button("Retry") {
@@ -535,18 +559,6 @@ struct SettingsView: View {
                             .buttonStyle(.bordered)
                         }
                     }
-                    .task(id: streamKeyManager.currentKey) {
-                        let streamKey = streamKeyManager.currentKey
-                        resetLoadedYouTubeBroadcast()
-                        guard youtubeService.isSignedIn else { return }
-                        do {
-                            try await Task.sleep(for: .milliseconds(400))
-                        } catch {
-                            return
-                        }
-                        guard !Task.isCancelled else { return }
-                        await loadYouTubeBroadcast(forStreamKey: streamKey)
-                    }
                 }
 
 #if DEBUG
@@ -560,7 +572,7 @@ struct SettingsView: View {
 #endif
 
                 Section(header: Text("Camera"), footer: Text("Select if the camera will be moving around with altering scenery or remain stationary aimed at a single scene. If you do not want to get suggested presets and instead configure settings in detail, select 'Custom' here.")) {
-                    Picker("Camera Position", selection: $cameraPosition) {
+                    Picker("Camera Position", selection: cameraPositionBinding) {
                         Text("Stationary").tag("stationary")
                         Text("Moving").tag("moving")
                         Text("Custom").tag("custom")
@@ -594,7 +606,9 @@ struct SettingsView: View {
                     }
                     
                     Section(header: Text("PRESET"), footer: Text("Depending on your selections above, some presets may be determined to result in a poor streaming experience. These are colored red, and should not be used unless your network conditions change.")) {
-                        Picker(selection: $selectedPreset) {
+                        Picker(selection: Binding(get: { selectedPreset }, set: { preset in
+                            if let preset { selectPreset(preset) }
+                        })) {
                             ForEach(availablePresets) { preset in
                                 let unstreamable = (preset.videoBitrate + preset.audioChannels * preset.audioBitrate) > maximumBitrate
                                 let presetColor: Color = unstreamable ? .red : .primary
@@ -606,13 +620,6 @@ struct SettingsView: View {
                             // this is the way to trick an inline picker not to show an extra option with the label of the picker
                         }
                         .pickerStyle(.inline)
-                        .onChange(of: selectedPreset) { oldValue, newValue in
-                            if let selectedPreset = newValue {
-                                if let encoded = try? JSONEncoder().encode(selectedPreset) {
-                                    selectedPresetData = encoded
-                                }
-                            }
-                        }
                     }
                 }
                 else {
@@ -695,6 +702,7 @@ struct SettingsView: View {
                         Button {
                             editingOverlay = overlay
                             editedOverlayURL = overlay.url
+                            overlayEditError = nil
                         } label: {
                             HStack {
                                 Text(overlay.url)
@@ -705,6 +713,7 @@ struct SettingsView: View {
                                     .foregroundColor(.secondary)
                             }
                         }
+                        .accessibilityIdentifier("edit-overlay-\(overlay.id)")
                     }
                     .onDelete { offsets in
                         overlayDraft.remove(atOffsets: offsets)
@@ -715,6 +724,7 @@ struct SettingsView: View {
                             .keyboardType(.URL)
                             .autocapitalization(.none)
                             .disableAutocorrection(true)
+                            .onSubmit(addOverlay)
                         Button(action: addOverlay) {
                             Image(systemName: "plus.circle.fill")
                                 .frame(width: 44, height: 44)
@@ -796,11 +806,31 @@ struct SettingsView: View {
                 }
                 
             }
+            .disabled(isSaving)
+            // Form sections are recreated while scrolling. Keep discovery on
+            // the screen itself, and retain the draft for an unchanged context.
+            .task(id: youtubeLoadContext) {
+                let context = youtubeLoadContext
+                guard !isSettingUpYouTubeStream, context != lastYouTubeLoadContext else { return }
+                updateYouTubeDraftContext()
+                youtubeLoadGeneration = UUID()
+                guard context.streamingEnabled, context.isSignedIn, !context.streamKey.isEmpty else {
+                    lastYouTubeLoadContext = context
+                    return
+                }
+                do {
+                    try await Task.sleep(for: .milliseconds(400))
+                } catch {
+                    return
+                }
+                guard !Task.isCancelled else { return }
+                await loadYouTubeBroadcast(forStreamKey: context.streamKey)
+            }
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
             .navigationBarItems(leading: Button("Cancel") {
                 presentationMode.wrappedValue.dismiss()
-            }.disabled(isSaving), trailing: Button("Save") {
+            }.disabled(isSaving || isSettingUpYouTubeStream), trailing: Button("Save") {
                 Task {
                     isSaving = true
                     defer { isSaving = false }
@@ -808,6 +838,9 @@ struct SettingsView: View {
                     var localSettingsCommitted = false
                     do {
                         try validateDraft()
+                        // Save also includes an unsubmitted URL still in the
+                        // text field; Return and the plus button are optional.
+                        addOverlay()
                         previousSettings = try AppliedSettingsSnapshot.capture(
                             overlays: overlayManager.overlays
                         )
@@ -816,7 +849,7 @@ struct SettingsView: View {
                         }
                         try commitDraft()
                         localSettingsCommitted = true
-                        if loadedBroadcast != nil && youtubeService.isSignedIn {
+                        if youtubeDraft.broadcast != nil && youtubeService.isSignedIn {
                             try saveYouTubePreferences()
                         }
                         try await Streamer.shared.cycleSessions()
@@ -841,9 +874,12 @@ struct SettingsView: View {
                     }
                 }
             }
-            .disabled(isSaving)
+            .disabled(isSaving || isSettingUpYouTubeStream || youtubeDraft.thumbnail.isLoading)
             .buttonStyle(.borderedProminent))
+            .interactiveDismissDisabled(isSaving || isSettingUpYouTubeStream)
             .onAppear {
+                guard !didInitializeDraft else { return }
+                didInitializeDraft = true
                 overlayDraft = Array(overlayManager.overlays.reversed())
                 if let preset = try? JSONDecoder().decode(Preset.self, from: selectedPresetData) {
                     selectedPreset = preset
@@ -851,13 +887,15 @@ struct SettingsView: View {
                     selectedPreset = nil
                 }
                 if let preset = selectedPreset, preset.name == "Custom" {
-                    customResolution = Resolution(preset.width, preset.height)
-                    customFrameRate = preset.frameRate
-                    customKeyframeInterval = preset.keyframeInterval
-                    customAudioChannels = preset.audioChannels
-                    customAudioBitrate = preset.audioBitrate
-                    customVideoBitrate = preset.videoBitrate
+                    loadCustomPreset(preset)
                 }
+                if cameraPosition != "custom" {
+                    selectPreset(.forCameraPosition(cameraPosition, matching: selectedPreset ?? defaultPreset))
+                }
+            }
+            .onDisappear {
+                youtubeLoadGeneration = UUID()
+                youtubeDraft.thumbnail.cancelLoading()
             }
             .alert(
                 "Could Not Save Settings",
@@ -878,6 +916,11 @@ struct SettingsView: View {
                                 .keyboardType(.URL)
                                 .autocapitalization(.none)
                                 .disableAutocorrection(true)
+                                .onChange(of: editedOverlayURL) { _, _ in overlayEditError = nil }
+                                .onSubmit { saveOverlayEdit(for: overlay) }
+                            if let overlayEditError {
+                                Text(overlayEditError).foregroundColor(.red)
+                            }
                         }
                     }
                     .navigationTitle("Edit Overlay")
@@ -898,28 +941,81 @@ struct SettingsView: View {
         }
     }
 
-    private var streamKeyBinding: Binding<String> {
-        Binding(
-            get: { streamKeyManager.currentKey },
-            set: { streamKeyManager.updateKey($0) }
+    private var youtubeLoadContext: YouTubeSettingsLoadContext {
+        YouTubeSettingsLoadContext(
+            streamKey: streamKeyManager.currentKey,
+            isSignedIn: youtubeService.isSignedIn,
+            streamingEnabled: stream
         )
     }
 
+    private var streamKeyBinding: Binding<String> {
+        Binding(
+            get: { streamKeyManager.currentKey },
+            set: {
+                streamKeyManager.updateKey($0)
+                updateYouTubeDraftContext()
+            }
+        )
+    }
+
+    private var thumbnailSelection: Binding<PhotosPickerItem?> {
+        Binding(get: { selectedPhotoItem }, set: { item in
+            selectedPhotoItem = item
+            loadSelectedThumbnail()
+        })
+    }
+
+    private func loadSelectedThumbnail() {
+        guard let selectedPhotoItem else { return }
+        youtubeDraft.thumbnail.select {
+            try await selectedPhotoItem.loadTransferable(type: Data.self)
+        }
+    }
+
+    private var cameraPositionBinding: Binding<String> {
+        Binding(get: { cameraPosition }, set: { position in
+            guard position != cameraPosition else { return }
+            let current = cameraPosition == "custom" ? customPreset : selectedPreset ?? defaultPreset
+            if position == "custom" {
+                if !hasCustomDraft { loadCustomPreset(current) }
+            } else {
+                selectPreset(.forCameraPosition(position, matching: current))
+            }
+            cameraPosition = position
+        })
+    }
+
+    private func selectPreset(_ preset: Preset) {
+        selectedPreset = preset
+        if let encoded = try? JSONEncoder().encode(preset) { selectedPresetData = encoded }
+    }
+
+    private func loadCustomPreset(_ preset: Preset) {
+        hasCustomDraft = true
+        customResolution = Resolution(preset.width, preset.height)
+        customFrameRate = preset.frameRate
+        customKeyframeInterval = preset.keyframeInterval
+        customAudioChannels = preset.audioChannels
+        customAudioBitrate = preset.audioBitrate
+        customVideoBitrate = preset.videoBitrate
+    }
+
+    private var broadcastId: String? {
+        guard let id = youtubeDraft.broadcast?.id, !id.isEmpty else { return nil }
+        return id
+    }
+
+    private var broadcastLifeCycleStatus: String? { youtubeDraft.broadcast?.lifeCycleStatus }
+
     private func clearYouTubeAccountState() {
         guard youtubeService.signOut() else { return }
-        broadcastId = nil
-        broadcastTitle = ""
-        playlists = []
-        selectedPlaylistId = nil
-        thumbnailImage = nil
-        youtubeConfigLoaded = false
+        resetLoadedYouTubeBroadcast()
         appState.isYouTubeSignedIn = false
-        appState.youtubeStatus = nil
-        appState.youtubeBroadcastId = nil
     }
-    
-    func saveCustomPreset() {
-        let customPreset = Preset(
+
+    private var customPreset: Preset {
+        Preset(
             name: "Custom",
             width: customResolution.width,
             height: customResolution.height,
@@ -929,26 +1025,37 @@ struct SettingsView: View {
             audioBitrate: customAudioBitrate,
             videoBitrate: customVideoBitrate
         )
+    }
 
-        if let encoded = try? JSONEncoder().encode(customPreset) {
-            selectedPresetData = encoded
-        }
+    func saveCustomPreset() {
+        selectPreset(customPreset)
     }
     
     func addOverlay() {
         let trimmedURL = newOverlayURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard OverlayURLValidator.isAllowed(trimmedURL),
-              !overlayDraft.contains(where: { $0.url == trimmedURL }) else { return }
-        overlayDraft.insert(OverlaySetting(url: trimmedURL), at: 0)
+        guard OverlayURLValidator.isAllowed(trimmedURL) else { return }
+        if !overlayDraft.contains(where: { $0.url == trimmedURL }) {
+            overlayDraft.insert(OverlaySetting(url: trimmedURL), at: 0)
+        }
         newOverlayURL = ""
     }
 
     func saveOverlayEdit(for overlay: OverlaySetting) {
         let trimmedURL = editedOverlayURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard OverlayURLValidator.isAllowed(trimmedURL),
-              !overlayDraft.contains(where: { $0.id != overlay.id && $0.url == trimmedURL }),
-              let index = overlayDraft.firstIndex(where: { $0.id == overlay.id }) else { return }
+        guard OverlayURLValidator.isAllowed(trimmedURL) else {
+            overlayEditError = SettingsSaveError.invalidOverlayURL.localizedDescription
+            return
+        }
+        guard !overlayDraft.contains(where: { $0.id != overlay.id && $0.url == trimmedURL }) else {
+            overlayEditError = "An overlay with this URL already exists. Enter a different URL."
+            return
+        }
+        guard let index = overlayDraft.firstIndex(where: { $0.id == overlay.id }) else {
+            overlayEditError = "This overlay is no longer in the list. Close the editor and add it again."
+            return
+        }
         overlayDraft[index].url = trimmedURL
+        overlayEditError = nil
         editingOverlay = nil
         editedOverlayURL = ""
     }
@@ -970,18 +1077,38 @@ struct SettingsView: View {
     }
 
     func resetLoadedYouTubeBroadcast() {
-        broadcastId = nil
-        broadcastTitle = ""
-        broadcastVisibility = "public"
-        broadcastLifeCycleStatus = nil
-        broadcastEnableDvr = true
-        broadcastLatencyPreference = "normal"
-        loadedBroadcast = nil
-        playlists = []
+        lastYouTubeLoadContext = nil
+        youtubeLoadGeneration = UUID()
+        youtubeDraft.reset()
+        selectedPhotoItem = nil
         youtubeConfigLoaded = false
         youtubeService.errorMessage = nil
         appState.youtubeBroadcastId = nil
         appState.youtubeStatus = nil
+    }
+
+    private func updateYouTubeDraftContext() {
+        let key = youtubeService.isSignedIn ? streamKeyManager.currentKey : nil
+        if youtubeDraft.streamKey != key {
+            resetLoadedYouTubeBroadcast()
+            youtubeDraft.useStreamKey(key)
+        }
+    }
+
+    private func setUpYouTubeStream() async {
+        guard !isSettingUpYouTubeStream, !youtubeService.isLoading else { return }
+        isSettingUpYouTubeStream = true
+        defer { isSettingUpYouTubeStream = false }
+        do {
+            let stream = try await youtubeService.setUpStream()
+            // Stream keys remain drafts until Save writes them to Keychain.
+            streamKeyManager.updateKey(stream.streamName)
+            await loadYouTubeBroadcast(forStreamKey: stream.streamName)
+        } catch {
+            youtubeService.errorMessage = YouTubeDiagnostics.text(error.localizedDescription, secrets: [
+                streamKeyManager.currentKey, Settings.youtubeAccessToken ?? "", Settings.youtubeRefreshToken ?? ""
+            ])
+        }
     }
 
     func loadYouTubeBroadcast(forStreamKey requestedStreamKey: String? = nil) async {
@@ -990,44 +1117,36 @@ struct SettingsView: View {
             resetLoadedYouTubeBroadcast()
             return
         }
-        resetLoadedYouTubeBroadcast()
+        updateYouTubeDraftContext()
+        youtubeLoadGeneration = UUID()
+        youtubeService.errorMessage = nil
+        let generation = youtubeLoadGeneration
+        let context = youtubeLoadContext
         do {
             let configuration = try await youtubeService.loadSettingsConfiguration(forStreamKey: streamKey)
             let broadcast = configuration.broadcast
             let loadedPlaylists = configuration.playlists
-            guard streamKey == streamKeyManager.currentKey, !Task.isCancelled else {
+            guard generation == youtubeLoadGeneration, context == youtubeLoadContext,
+                  streamKey == streamKeyManager.currentKey, !Task.isCancelled else {
                 return
             }
-            broadcastId = broadcast.id
-            let savedPreferences = Settings.youtubeBroadcastPreferences
-            let matchingPreferences = savedPreferences?.streamId == broadcast.boundStreamId
-                ? savedPreferences
-                : nil
-            broadcastTitle = matchingPreferences?.title ?? broadcast.title
-            broadcastVisibility = matchingPreferences?.privacyStatus ?? broadcast.privacyStatus
-            broadcastLifeCycleStatus = broadcast.lifeCycleStatus
-            broadcastEnableDvr = matchingPreferences?.enableDvr ?? broadcast.enableDvr
-            broadcastLatencyPreference = matchingPreferences?.latencyPreference
-                ?? broadcast.latencyPreference
-            loadedBroadcast = broadcast
-            appState.youtubeBroadcastId = broadcast.id
-            appState.youtubeStatus = broadcast.lifeCycleStatus
-            playlists = loadedPlaylists
-            selectedPlaylistId = matchingPreferences?.playlistId
-            if matchingPreferences != nil,
-               let thumbnailData = try? Settings.loadYouTubeThumbnailData() {
-                thumbnailImage = UIImage(data: thumbnailData)
-            } else {
-                thumbnailImage = nil
-            }
-            if let selectedPlaylistId, !playlists.contains(where: { $0.id == selectedPlaylistId }) {
-                self.selectedPlaylistId = nil
-            }
+            let previousStreamId = youtubeDraft.broadcast?.boundStreamId
+            youtubeDraft.apply(
+                broadcast: broadcast,
+                playlists: loadedPlaylists,
+                savedPreferences: Settings.youtubeBroadcastPreferences,
+                savedThumbnail: try? Settings.loadYouTubeThumbnailData()
+            )
+            if previousStreamId != broadcast.boundStreamId { selectedPhotoItem = nil }
+            appState.youtubeBroadcastId = broadcastId
+            appState.youtubeStatus = broadcastId == nil ? nil : broadcast.lifeCycleStatus
             youtubeConfigLoaded = true
+            lastYouTubeLoadContext = context
             youtubeService.errorMessage = nil
-            LOG("Loaded YouTube broadcast: \(broadcast.title)", level: .info)
+            LOG("Loaded YouTube broadcast: \(broadcast.title)", level: .debug)
         } catch {
-            guard streamKey == streamKeyManager.currentKey, !Task.isCancelled else {
+            guard generation == youtubeLoadGeneration, context == youtubeLoadContext,
+                  streamKey == streamKeyManager.currentKey, !Task.isCancelled else {
                 return
             }
             let message = YouTubeDiagnostics.text(error.localizedDescription, secrets: [
@@ -1035,22 +1154,24 @@ struct SettingsView: View {
             ])
             youtubeService.errorMessage = message
             youtubeConfigLoaded = true
+            lastYouTubeLoadContext = context
             LOG("Failed to load YouTube configuration: \(message)", level: .error)
         }
     }
 
     func saveYouTubePreferences() throws {
-        guard let currentBroadcast = loadedBroadcast else { return }
+        guard youtubeDraft.streamKey == streamKeyManager.currentKey,
+              let currentBroadcast = youtubeDraft.broadcast else { return }
         guard let streamId = currentBroadcast.boundStreamId else {
             throw YouTubeError.invalidResponse
         }
         let previousPreferences = Settings.youtubeBroadcastPreferences
         Settings.youtubeBroadcastPreferences = YouTubeBroadcastPreferences(
             streamId: streamId,
-            title: broadcastTitle,
-            privacyStatus: broadcastVisibility,
-            enableDvr: broadcastEnableDvr,
-            latencyPreference: broadcastLatencyPreference,
+            title: youtubeDraft.title,
+            privacyStatus: youtubeDraft.visibility,
+            enableDvr: youtubeDraft.enableDvr,
+            latencyPreference: youtubeDraft.latencyPreference,
             enableMonitorStream: currentBroadcast.enableMonitorStream,
             broadcastStreamDelayMs: currentBroadcast.broadcastStreamDelayMs,
             enableEmbed: currentBroadcast.enableEmbed,
@@ -1058,11 +1179,12 @@ struct SettingsView: View {
             enableAutoStart: currentBroadcast.enableAutoStart,
             // YouTube owns completion after Tubeist closes HLS ingestion.
             enableAutoStop: true,
-            playlistId: selectedPlaylistId
+            playlistId: youtubeDraft.playlistId,
+            selfDeclaredMadeForKids: youtubeDraft.madeForKids
         )
 
-        if selectedPhotoItem != nil,
-           let thumbnailImage,
+        if youtubeDraft.thumbnail.hasNewSelection,
+           let thumbnailImage = youtubeDraft.thumbnail.image,
            let resized = thumbnailImage.scaledToFit(maxWidth: 1280, maxHeight: 720) {
             guard let imageData = resized.jpegDataWithinLimit(maxBytes: 2_000_000) else {
                 throw YouTubeError.thumbnailTooLarge
@@ -1071,11 +1193,16 @@ struct SettingsView: View {
         } else if previousPreferences?.streamId != streamId {
             try Settings.setYouTubeThumbnailData(nil)
         }
-        Settings.youtubeSelectedPlaylistId = selectedPlaylistId
-        LOG("Saved YouTube preferences for the next stream", level: .info)
+        Settings.youtubeSelectedPlaylistId = youtubeDraft.playlistId
+        LOG("Saved YouTube preferences for the next stream", level: .debug)
     }
 
     private func validateDraft() throws {
+        guard !youtubeDraft.thumbnail.isLoading else { throw SettingsSaveError.thumbnailLoading }
+        let pendingOverlayURL = newOverlayURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard pendingOverlayURL.isEmpty || OverlayURLValidator.isAllowed(pendingOverlayURL) else {
+            throw SettingsSaveError.invalidOverlayURL
+        }
         guard stream || record else {
             throw SettingsSaveError.noOutputSelected
         }
@@ -1104,7 +1231,6 @@ struct SettingsView: View {
         Settings.journalWarning = journalWarning
         Settings.journalInfo = journalInfo
         Settings.journalDebug = journalDebug
-        Settings.youtubeSelectedPlaylistId = selectedPlaylistId
         overlayManager.replaceOverlays(with: Array(overlayDraft.reversed()))
 #if DEBUG
         Settings.captureRemuxFixtures = captureRemuxFixtures
@@ -1117,11 +1243,15 @@ struct SettingsView: View {
 enum SettingsSaveError: LocalizedError, Equatable {
     case noOutputSelected
     case invalidBandwidth
+    case invalidOverlayURL
+    case thumbnailLoading
 
     var errorDescription: String? {
         switch self {
         case .noOutputSelected: "Select streaming, recording, or both"
         case .invalidBandwidth: "Measured upload bandwidth must be at least 1 Mbps"
+        case .invalidOverlayURL: "Enter a valid overlay URL starting with http:// or https://"
+        case .thumbnailLoading: "Wait for the thumbnail to finish loading before saving"
         }
     }
 }

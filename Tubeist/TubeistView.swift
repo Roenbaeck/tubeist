@@ -79,6 +79,10 @@ struct TubeistView: View {
     @State private var fadeTask: Task<Void, Never>?
     @State private var isYouTubeRefreshCoolingDown: Bool = false
 
+    private var canPrepareCamera: Bool {
+        scenePhase == .active && !appState.soonGoingToBackground && !showSettings
+    }
+
     private var isUITesting: Bool {
         CommandLine.arguments.contains("-ui-testing")
     }
@@ -1131,8 +1135,10 @@ struct TubeistView: View {
         }
         .edgesIgnoringSafeArea(.all)
         .persistentSystemOverlays(.hidden)
-        .task(id: appState.soonGoingToBackground || showSettings) {
-            guard !appState.soonGoingToBackground, !showSettings else { return }
+        .task(id: canPrepareCamera) {
+            // Unlock first passes through .inactive, where camera access may
+            // still be unavailable. Wait for .active before resuming capture.
+            guard canPrepareCamera else { return }
             await prepareCamera()
         }
         .task(id: appState.cameraMonitorId) {

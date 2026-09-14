@@ -46,9 +46,11 @@ the quality floor, the monitor warns that a lower-resolution preset is needed.
 See the [controller design and offline validation](Tools/VideoToolboxProbe/README.md)
 for tuning assumptions and limitations.
 
-Create a YouTube Live stream configured for **HLS ingestion**, then enter its stream key in Tubeist Settings. An RTMP or RTMPS key is not interchangeable with an HLS key.
+In Tubeist Settings, **Sign in with Google**, then choose **Create stream key**. Tubeist creates a reusable HLS stream and fills in the key. Set your title, visibility, audience, and other broadcast preferences, then Save. Your first broadcast is created and attached to the stream when you tap Start. New broadcast drafts default to private. Your YouTube channel must already be eligible and enabled for live streaming; Google account verification and channel activation cannot be performed through the streaming API.
 
-Manual-key streaming does not require Google sign-in. Signing in is optional and lets Tubeist discover the matching HLS ingestion resource, display broadcast state, and apply supported metadata and broadcast settings. For signed-in streaming, Start verifies that the bound broadcast is ready, enables YouTube's automatic stop, and automatically creates and binds a successor after the previous broadcast completes. Tubeist's Stop drains and acknowledges every accepted media segment, publishes and acknowledges the terminal HLS playlist, and then closes ingestion; YouTube owns the final event transition so its backend can finish processing the accepted tail. The monochrome YouTube indicator is shown only while signed in and remains red until YouTube reports that the broadcast is no longer live. Manual-key-only users must prepare and complete the broadcast in YouTube. Settings uses standard Cancel/Save semantics: Cancel discards the staged edits, while Save stores them locally. Saving never creates or modifies a YouTube event; the saved broadcast preferences are sent during the next explicit Start preflight.
+You can also paste an existing **HLS** stream key. An RTMP or RTMPS key is not interchangeable with an HLS key. **Use a Tubeist stream key** switches the draft to the reusable key Tubeist created for the signed-in account, creating one if necessary. That explicit action creates the key on YouTube immediately, but it only becomes the app's saved key when you press Save. Repeating the action reuses its remembered key.
+
+Manual-key streaming does not require Google sign-in. Signing in is optional and lets Tubeist discover the matching HLS ingestion resource, display broadcast state, and apply supported metadata and broadcast settings. For signed-in streaming, Start reuses a ready broadcast or creates and binds one using your saved preferences when no current broadcast exists. App-created events start automatically when ingestion begins, and YouTube's automatic stop is enabled. Discovery searches active and upcoming events, checks each page before requesting another, and remembers stream IDs within the Google authorization so later loads can validate them directly. Completed broadcast history is not enumerated. If only an unfamiliar pasted key is available, its stream resource is located once, stopping at the first matching page. Tubeist's Stop drains and acknowledges every accepted media segment, publishes and acknowledges the terminal HLS playlist, and then closes ingestion; YouTube owns the final event transition so its backend can finish processing the accepted tail. The monochrome YouTube indicator is shown only while signed in and remains red until YouTube reports that the broadcast is no longer live. Manual-key-only users must prepare and complete the broadcast in YouTube. Settings uses standard Cancel/Save semantics: Cancel discards the staged edits, while Save stores them locally. Saving never creates or modifies a YouTube event; the saved broadcast preferences are sent during the next explicit Start preflight.
 
 If Tubeist is accidentally sent to the background while live, returning within three seconds resumes the same capture session instead of ending the YouTube event. Remaining in the background beyond that grace period commits the stream to a normal, fully drained Stop.
 
@@ -101,17 +103,18 @@ See the [privacy policy](PRIVACY.md) for details about data handling.
 If Start is unavailable or a stream fails:
 
 1. Confirm Camera and Microphone access in iOS Settings.
-2. Confirm that the stream key belongs to a YouTube stream configured for HLS, not RTMP.
+2. Confirm that the channel is enabled for live streaming. Use **Create stream key** or **Use a Tubeist stream key** in Settings, or verify that a pasted key uses HLS, not RTMP.
 3. Select a preset supported by the current camera and lens.
 4. Check upload bandwidth, device temperature, and available storage.
 5. Read the persistent in-app error first, then open the journal for additional detail.
 
 After a successful stop, YouTube may need additional time to process the live archive before every quality level is available.
 
-For Google sign-in or YouTube configuration errors, enable **Info**, **Warning**,
+For Google sign-in or YouTube configuration errors, enable **Debug**, **Warning**,
 and **Error** under Settings' journal options and save. Reproduce the problem,
 then open **Journal** and capture the entries beginning with **YouTube**, including
-the authorized channel and the failing request. Debug logging is not required.
+the authorized channel and the failing request. Normal Info logging contains only
+one configuration-load summary; request and discovery details require Debug.
 These entries identify OAuth stages, API operations, HTTP status, Google's error
 reason, request timing, and discovery counts. Settings also performs a brief,
 best-effort lookup of the authorized channel's public name and ID so it can be

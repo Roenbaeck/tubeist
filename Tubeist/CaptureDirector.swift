@@ -633,51 +633,81 @@ private class DeviceActor {
 
 }
 
+/// Separates capture configuration from the OS-owned running state, and allows
+/// interruption/recovery to be tested without a physical camera.
+protocol CaptureSessionDriving: Sendable {
+    var isRunning: Bool { get async }
+    func configure() async throws
+    func startRunning() async
+    func stopRunning() async
+    func detach() async
+}
+
+@PipelineActor
+private final class CaptureSessionDriver: CaptureSessionDriving {
+    private let session: AVCaptureSession
+
+    init(session: AVCaptureSession) { self.session = session }
+    var isRunning: Bool { session.isRunning }
+    func configure() async throws { try await CaptureDirector.shared.attachAll() }
+    func startRunning() { session.startRunning() }
+    func stopRunning() { session.stopRunning() }
+    func detach() async { await CaptureDirector.shared.detachAll() }
+}
+
 actor SessionController {
     private let commands = StreamCommandQueue()
-    private var session: AVCaptureSession
-    
-    init(session: AVCaptureSession) {
-        self.session = session
+    private let driver: any CaptureSessionDriving
+    private var isConfigured = false
+
+    init(driver: any CaptureSessionDriving) {
+        self.driver = driver
     }
-    
+
     func startSessions() async throws {
         try await commands.run { [self] in try await start() }
     }
 
     private func start() async throws {
-        if !session.isRunning {
-            do {
-                try await CaptureDirector.shared.attachAll()
-                session.startRunning()
-                guard session.isRunning else {
-                    throw CaptureSetupError.sessionDidNotStart
-                }
-            } catch {
-                await CaptureDirector.shared.detachAll()
-                throw error
+        guard await !driver.isRunning else { return }
+        do {
+            // Locking the phone can stop capture without removing its inputs,
+            // outputs, or sample delegates. Resume that same configuration.
+            if !isConfigured {
+                try await driver.configure()
+                isConfigured = true
             }
+            await driver.startRunning()
+            guard await driver.isRunning else {
+                throw CaptureSetupError.sessionDidNotStart
+            }
+        } catch {
+            await driver.stopRunning()
+            await driver.detach()
+            isConfigured = false
+            throw error
         }
     }
-    
+
     func stopSessions() async {
         try? await commands.run { [self] in await stop() }
     }
 
     private func stop() async {
-        if session.isRunning {
-            session.stopRunning()
-            await CaptureDirector.shared.detachAll()
-        }
+        // Explicitly stop even during an OS interruption, cancelling automatic
+        // resumption before removing the configuration.
+        await driver.stopRunning()
+        // An interrupted/stopped session may still own all its inputs.
+        await driver.detach()
+        isConfigured = false
     }
-    
+
     func cycleSessions() async throws {
         try await commands.run { [self] in
             await stop()
             try await start()
         }
     }
-
 }
 
 extension CaptureDirector: AVCaptureSessionControlsDelegate {
@@ -692,7 +722,7 @@ final class CaptureDirector: NSObject, Sendable {
     @PipelineActor public static let shared = CaptureDirector()
     @PipelineActor private static let session = AVCaptureSession()
     @PipelineActor private let deviceActor = DeviceActor()
-    @PipelineActor private let sessionController = SessionController(session: CaptureDirector.session)
+    @PipelineActor private let sessionController = SessionController(driver: CaptureSessionDriver(session: CaptureDirector.session))
     private let eventMonitor = CaptureEventMonitor()
 
     func bind(totalZoom: Binding<Double>, currentZoom: Binding<Double>, exposureBias: Binding<Float>, style: Binding<String>, effect: Binding<String>) async {
