@@ -329,7 +329,15 @@ final class TubeistUITests: XCTestCase {
                 dx: handleFrame.midX - windowFrame.minX,
                 dy: destinationFrame.minY + destinationFrame.height * 0.9 - windowFrame.minY
             ))
-            start.press(forDuration: 1, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 1)
+            // Edit mode already exposes the drag handle; a long stationary
+            // hold can leave iOS 26's lifted cell presentation unsettled.
+            start.press(forDuration: 0.15, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 0.15)
+
+            // During a native reorder, cells and their lifted snapshots can
+            // temporarily report stale frames/labels. Reopen the list to check
+            // the resulting draft instead of inspecting that presentation.
+            app.buttons["Done"].tap()
+            openOrder()
             let reordered = XCTNSPredicateExpectation(
                 predicate: NSPredicate { _, _ in
                     guard row(source).exists, row(destination).exists else { return false }
@@ -337,7 +345,7 @@ final class TubeistUITests: XCTestCase {
                 }, object: nil
             )
             XCTAssertEqual(XCTWaiter.wait(for: [reordered], timeout: 5), .completed,
-                           "Dragging \(source) below \(destination) should change their order")
+                           "Dragging \(source) below \(destination) should update the draft order")
         }
 
         openOrder()
