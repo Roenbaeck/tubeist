@@ -37,12 +37,43 @@ jobs:
       - uses: actions/checkout@v5
       - name: Report Xcode version
         run: xcodebuild -version
+      - name: Prepare test simulator
+        id: simulator
+        timeout-minutes: 20
+        shell: bash
+        env:
+          IOS_SIMULATOR_VERSION: '26.2'
+        run: |
+          if ! xcodebuild -checkFirstLaunchStatus; then
+            sudo env DEVELOPER_DIR="$DEVELOPER_DIR" xcodebuild -runFirstLaunch
+          fi
+
+          runtime_id="com.apple.CoreSimulator.SimRuntime.iOS-${IOS_SIMULATOR_VERSION//./-}"
+          runtime_available() {
+            xcrun simctl list runtimes --json | python3 -c '
+          import json, sys
+          runtimes = json.load(sys.stdin)["runtimes"]
+          sys.exit(0 if any(r["identifier"] == sys.argv[1] and r.get("isAvailable", False) for r in runtimes) else 1)
+          ' "$runtime_id"
+          }
+          if ! runtime_available; then
+            xcodebuild -downloadPlatform iOS -buildVersion "$IOS_SIMULATOR_VERSION"
+          fi
+          xcrun simctl list runtimes
+          runtime_available
+
+          # Hosted images can omit the default devices. Create our own and use
+          # its identifier so device names and duplicate defaults cannot interfere.
+          simulator_id="$(xcrun simctl create Tubeist-CI com.apple.CoreSimulator.SimDeviceType.iPhone-16-Pro "$runtime_id")"
+          echo "udid=$simulator_id" >> "$GITHUB_OUTPUT"
+          xcrun simctl boot "$simulator_id"
+          xcrun simctl bootstatus "$simulator_id" -b
       - name: Unit and UI tests
         run: >-
           xcodebuild test
           -project Tubeist.xcodeproj
           -scheme Tubeist
-          -destination 'platform=iOS Simulator,OS=26.2,name=iPhone 16 Pro'
+          -destination 'platform=iOS Simulator,id=${{ steps.simulator.outputs.udid }}'
           -derivedDataPath '${{ runner.temp }}/TubeistDerivedData'
           -parallel-testing-enabled NO
       - name: Upload test results
@@ -80,6 +111,11 @@ jobs:
           -destination 'generic/platform=iOS'
           -derivedDataPath '${{ runner.temp }}/TubeistDerivedData'
           CODE_SIGNING_ALLOWED=NO
+      - name: Remove test simulator
+        if: always() && steps.simulator.outputs.udid != ''
+        env:
+          SIMULATOR_ID: ${{ steps.simulator.outputs.udid }}
+        run: xcrun simctl delete "$SIMULATOR_ID"
 
   offline-media-validation:
     runs-on: macos-15
