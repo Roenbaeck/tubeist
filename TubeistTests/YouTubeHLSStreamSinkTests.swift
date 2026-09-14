@@ -10,8 +10,11 @@ import Testing
 private let successfulSinkShutdownTimeout: TimeInterval = 10
 
 struct YouTubeHLSStreamSinkTests {
-    @Test func overflowDuringAnUploadMarksTheNextSegmentDiscontinuous() async throws {
-        let transport = RecoveringDirectSinkTransport()
+    @Test(arguments: [0, 3])
+    func overflowDuringAnUploadMarksTheNextSegmentDiscontinuous(startupDelaySeconds: Int) async throws {
+        // Exercise a slow request start as well as the normal path. CI can
+        // pause the upload worker longer than the old one-second polling budget.
+        let transport = RecoveringDirectSinkTransport(firstRequestDelay: .seconds(startupDelaySeconds))
         let endpoint = try YouTubeHLSEndpoint(URL(string: "https://upload.youtube.com/http_upload_hls?cid=not-a-real-key&file=")!)
         let sink = YouTubeHLSStreamSink()
         try await sink.prepare(endpoint: endpoint, sessionIdentifier: "overflow_session", userAgent: "Tubeist/Test", transport: transport)
@@ -528,11 +531,43 @@ private actor DirectSinkTransport: YouTubeHLSHTTPTransport {
     }
 }
 
+// Each mock has one observer waiting for its first request. Buffer the signal
+// in case send arrives first, and suspend the observer instead of polling the
+// transport actor. The deadline still fails a worker that never starts.
+private struct SinkRequestStarted: Sendable {
+    private let stream: AsyncStream<Void>
+    private let continuation: AsyncStream<Void>.Continuation
+
+    init() {
+        (stream, continuation) = AsyncStream.makeStream(bufferingPolicy: .bufferingNewest(1))
+    }
+
+    func signal() {
+        continuation.yield(())
+    }
+
+    func wait() async throws {
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            defer { group.cancelAll() }
+            group.addTask {
+                var iterator = stream.makeAsyncIterator()
+                _ = await iterator.next()
+                try Task.checkCancellation()
+            }
+            group.addTask {
+                try await Task.sleep(for: .seconds(30))
+                throw BlockingTransportError.requestNeverStarted
+            }
+            try await group.next()
+        }
+    }
+}
+
 private actor SlowDirectSinkTransport: YouTubeHLSHTTPTransport {
-    private var requested = false
+    private let requestStarted = SinkRequestStarted()
 
     func send(_ request: URLRequest, body: Data) async throws -> YouTubeHLSHTTPResponse {
-        requested = true
+        requestStarted.signal()
         try await Task.sleep(for: .milliseconds(100))
         return YouTubeHLSHTTPResponse(statusCode: 200)
     }
@@ -540,13 +575,7 @@ private actor SlowDirectSinkTransport: YouTubeHLSHTTPTransport {
     func invalidate() {}
 
     func waitUntilRequested() async throws {
-        for _ in 0..<1_000 {
-            if requested {
-                return
-            }
-            try await Task.sleep(for: .milliseconds(1))
-        }
-        throw BlockingTransportError.requestNeverStarted
+        try await requestStarted.wait()
     }
 }
 
@@ -556,13 +585,13 @@ private enum BlockingTransportError: Error {
 }
 
 private actor BlockingDirectSinkTransport: YouTubeHLSHTTPTransport {
-    private var requestCount = 0
+    private let requestStarted = SinkRequestStarted()
     private var continuations: [CheckedContinuation<YouTubeHLSHTTPResponse, Error>] = []
 
     func send(_ request: URLRequest, body: Data) async throws -> YouTubeHLSHTTPResponse {
-        requestCount += 1
         return try await withCheckedThrowingContinuation { continuation in
             continuations.append(continuation)
+            requestStarted.signal()
         }
     }
 
@@ -573,19 +602,19 @@ private actor BlockingDirectSinkTransport: YouTubeHLSHTTPTransport {
     }
 
     func waitUntilRequested() async throws {
-        for _ in 0..<1_000 {
-            if requestCount > 0 {
-                return
-            }
-            try await Task.sleep(for: .milliseconds(1))
-        }
-        throw BlockingTransportError.requestNeverStarted
+        try await requestStarted.wait()
     }
 }
 
 private actor RecoveringDirectSinkTransport: YouTubeHLSHTTPTransport {
     private var sent: [DirectSinkRequest] = []
     private var firstContinuation: CheckedContinuation<YouTubeHLSHTTPResponse, Error>?
+    private let requestStarted = SinkRequestStarted()
+    private let firstRequestDelay: Duration
+
+    init(firstRequestDelay: Duration = .zero) {
+        self.firstRequestDelay = firstRequestDelay
+    }
 
     func send(_ request: URLRequest, body: Data) async throws -> YouTubeHLSHTTPResponse {
         sent.append(DirectSinkRequest(
@@ -595,8 +624,10 @@ private actor RecoveringDirectSinkTransport: YouTubeHLSHTTPTransport {
         guard sent.count == 1 else {
             return YouTubeHLSHTTPResponse(statusCode: 200)
         }
+        try await Task.sleep(for: firstRequestDelay)
         return try await withCheckedThrowingContinuation { continuation in
             firstContinuation = continuation
+            requestStarted.signal()
         }
     }
 
@@ -607,13 +638,7 @@ private actor RecoveringDirectSinkTransport: YouTubeHLSHTTPTransport {
     }
 
     func waitUntilRequested() async throws {
-        for _ in 0..<1_000 {
-            if firstContinuation != nil {
-                return
-            }
-            try await Task.sleep(for: .milliseconds(1))
-        }
-        throw BlockingTransportError.requestNeverStarted
+        try await requestStarted.wait()
     }
 
     func releaseFirstRequest() {
