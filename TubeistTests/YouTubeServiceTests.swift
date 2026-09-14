@@ -437,6 +437,63 @@ struct YouTubeServiceTests {
             .queryItems?.contains(URLQueryItem(name: "pageToken", value: "page-2")) == true)
     }
 
+    @Test(arguments: [200, 500]) @MainActor
+    func streamLookupPreservesOpaqueTokensThroughFourPages(_ lastStatus: Int) async throws {
+        let pageTokens = ["page-2", "page/3%2B=", "page+4&part=bad#? é"]
+        var responses = try pageTokens.enumerated().map { index, pageToken in
+            YouTubeAPIResponse(data: try JSONSerialization.data(withJSONObject: [
+                "items": (0..<50).map { ["id": "unrelated-\(index)-\($0)"] },
+                "nextPageToken": pageToken,
+            ]), statusCode: 200)
+        }
+        responses.append(lastStatus == 200 ? settingsDiagnosticResponses()[1] : .init(
+            data: Data(#"{"error":{"message":"Internal error encountered.","status":"INTERNAL","errors":[{"domain":"global","reason":"backendError"}]}}"#.utf8),
+            statusCode: 500
+        ))
+        let captured = CapturedYouTubeDiagnostics()
+        let transport = MockYouTubeAPITransport(responses: responses)
+        let service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore(), diagnostics: captured.diagnostics)
+
+        if lastStatus == 200 {
+            let endpoint = try await service.findHLSIngestionEndpoint(forStreamKey: "test-key")
+            let expectedURL = try #require(URL(string: "https://a.upload.youtube.com/http_upload_hls?cid=test-key&file="))
+            #expect(endpoint == (try YouTubeHLSEndpoint(expectedURL)))
+        } else {
+            await #expect(throws: YouTubeError.apiError(500, "Internal error encountered.")) {
+                _ = try await service.findHLSIngestionEndpoint(forStreamKey: "test-key")
+            }
+            #expect(captured.text.contains("liveStreams.list: page 4 failed after 150 items"))
+            #expect(captured.text.contains("page token present=true; token contains plus=true; HTTP 500"))
+        }
+
+        let requests = await transport.requests
+        #expect(requests.count == 4)
+        for (index, request) in requests.enumerated() {
+            #expect(request.httpMethod == "GET")
+            #expect(request.httpBody == nil)
+            #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer valid-access")
+            let url = try #require(request.url)
+            let components = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
+            #expect(components.path == "/youtube/v3/liveStreams")
+            // Decode like a form-style server: a literal + means a space.
+            // URLComponents alone would hide this interoperability bug.
+            let query = try #require(components.percentEncodedQuery)
+            var decoded = URLComponents()
+            decoded.percentEncodedQuery = query.replacingOccurrences(of: "+", with: "%20")
+            let items = try #require(decoded.queryItems)
+            #expect(items.filter { $0.name == "part" }.map(\.value) == ["cdn,snippet"])
+            #expect(items.filter { $0.name == "mine" }.map(\.value) == ["true"])
+            #expect(items.filter { $0.name == "maxResults" }.map(\.value) == ["50"])
+            let expectedTokens: [String?] = index == 0 ? [] : [pageTokens[index - 1]]
+            #expect(items.filter { $0.name == "pageToken" }.map(\.value) == expectedTokens)
+            #expect(items.count == (index == 0 ? 3 : 4))
+        }
+        #expect(!service.isLoading)
+        for token in pageTokens { #expect(!captured.text.contains(token)) }
+        #expect(!captured.text.contains("valid-access"))
+        #expect(!captured.text.contains("test-key"))
+    }
+
     @Test @MainActor
     func broadcastMutationsUseExpectedMethodsAndTypedResponses() async throws {
         let store = validMemoryTokenStore()

@@ -1166,15 +1166,25 @@ final class YouTubeService {
                     URLQueryItem(name: "pageToken", value: pageToken),
                 ]
             }
+            // Page tokens are opaque. URLComponents leaves '+' literal, but
+            // form-style query decoders interpret it as a space.
+            components.percentEncodedQuery = components.percentEncodedQuery?
+                .replacingOccurrences(of: "+", with: "%2B")
             guard let pageURL = components.url else {
                 throw YouTubeError.invalidResponse
             }
 
-            let page: YouTubeListResponse<Item> = try await apiGet(
-                url: pageURL.absoluteString,
-                token: token,
-                operation: operation
-            )
+            let page: YouTubeListResponse<Item>
+            do {
+                page = try await apiGet(url: pageURL.absoluteString, token: token, operation: operation)
+            } catch {
+                let failure = YouTubeDiagnostics.failure(error)
+                if failure != "cancelled" {
+                    // Report token characteristics, never the token itself.
+                    diagnostics.log("YouTube \(operation.rawValue): page \(pageNumber + 1) failed after \(items.count) items; page token present=\(pageToken != nil); token contains plus=\(pageToken?.contains("+") == true); \(failure)", .error)
+                }
+                throw error
+            }
             pageNumber += 1
             diagnostics.log("YouTube \(operation.rawValue): page \(pageNumber), \(page.items.count) items; more pages=\(page.nextPageToken?.isEmpty == false)", .info)
             items.append(contentsOf: page.items)
