@@ -14,6 +14,20 @@ final class TubeistUITests: XCTestCase {
     }
 
     @MainActor
+    func testStartupJournalKeepsTheVersionAnnouncement() throws {
+        let app = launchForUITesting(additionalArguments: ["-JournalInfo", "YES"])
+        let monitor = app.buttons["Monitor selection"]
+        monitor.tap()
+        monitor.tap()
+        app.buttons["Journal"].tap()
+        let announcement = app.staticTexts.matching(
+            NSPredicate(format: "label BEGINSWITH %@", "Starting Tubeist version ")
+        ).firstMatch
+        XCTAssertTrue(announcement.waitForExistence(timeout: 5))
+        XCTAssertFalse(announcement.label.contains("unknown"))
+    }
+
+    @MainActor
     func testPrimaryControlsHaveAccessibleNames() throws {
         let app = XCUIApplication()
         app.launchArguments = ["-ui-testing"]

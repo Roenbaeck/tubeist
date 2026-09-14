@@ -41,13 +41,14 @@ struct LogEntry: Identifiable, Sendable {
 actor JournalActor {
     // Observable property for tracking error presence
     public var hasErrors = false
-    private var levels: Set<LogLevel> = []
+    private var levels: Set<LogLevel>
     private var messageOrder: [String] = []
     private var journal: [String: LogEntry] = [:]
     private let entryLimit: Int
 
-    init(entryLimit: Int = MAX_LOG_ENTRIES) {
+    init(entryLimit: Int = MAX_LOG_ENTRIES, enabledLevels: Set<LogLevel> = []) {
         self.entryLimit = max(1, entryLimit)
+        self.levels = enabledLevels
     }
 
     func log(message: String, level: LogLevel) {
@@ -73,6 +74,9 @@ actor JournalActor {
     func getJournal() -> [LogEntry] {
         Array(journal.values).sorted(by: { $0.timestamp < $1.timestamp })
     }
+    func snapshot() -> (entries: [LogEntry], hasErrors: Bool) {
+        (getJournal(), hasErrors)
+    }
     func clearJournal() {
         journal.removeAll()
         messageOrder.removeAll()
@@ -80,6 +84,9 @@ actor JournalActor {
     }
     func enable(level: LogLevel) {
         levels.insert(level)
+    }
+    func setLevels(_ levels: Set<LogLevel>) {
+        self.levels = levels
     }
     func disable(level: LogLevel) {
         levels.remove(level)
@@ -98,12 +105,14 @@ final class JournalPublisher {
 final class Journal: Sendable {
     static let shared = Journal()
     @MainActor public static let publisher = JournalPublisher()
-    private let journal = JournalActor()
+    private let journal: JournalActor
     private let logger: Logger
     private let publicationGate = JournalPublicationGate()
     private let submissionGate = JournalSubmissionGate(limit: 1_024)
     
     private init() {
+        // Read preferences synchronously before the first submission can drain.
+        journal = JournalActor(enabledLevels: Settings.journalLevels())
         logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "com.subside.Tubeist", category: "general")
     }
     
@@ -138,24 +147,21 @@ final class Journal: Sendable {
         }
     }
     
-    func enable(level: LogLevel) async {
-        await journal.enable(level: level)
-    }
-    func disable(level: LogLevel) async {
-        await journal.disable(level: level)
+    func setLevels(_ levels: Set<LogLevel>) async {
+        await journal.setLevels(levels)
     }
 
     private func schedulePublication() {
         guard publicationGate.claim() else { return }
         Task {
-            try? await Task.sleep(for: .milliseconds(100))
-            publicationGate.release()
-            let entries = await journal.getJournal()
-            let hasErrors = await journal.hasErrors
-            await MainActor.run {
-                Journal.publisher.journal = entries
-                Journal.publisher.hasErrors = hasErrors
-            }
+            repeat {
+                try? await Task.sleep(for: .milliseconds(100))
+                let snapshot = await journal.snapshot()
+                await MainActor.run {
+                    Journal.publisher.journal = snapshot.entries
+                    Journal.publisher.hasErrors = snapshot.hasErrors
+                }
+            } while publicationGate.finishPublication()
         }
     }
 
@@ -225,20 +231,33 @@ private final class JournalSubmissionGate: @unchecked Sendable {
     }
 }
 
-private final class JournalPublicationGate: @unchecked Sendable {
+final class JournalPublicationGate: @unchecked Sendable {
     private let lock = NSLock()
     private var isClaimed = false
+    private var needsAnotherPublication = false
 
     func claim() -> Bool {
         lock.withLock {
-            guard !isClaimed else { return false }
+            guard !isClaimed else {
+                needsAnotherPublication = true
+                return false
+            }
             isClaimed = true
             return true
         }
     }
 
-    func release() {
-        lock.withLock { isClaimed = false }
+    /// Keep one publisher alive if messages arrived while its snapshot was
+    /// being delivered. Snapshots cannot overtake each other or lose an update.
+    func finishPublication() -> Bool {
+        lock.withLock {
+            if needsAnotherPublication {
+                needsAnotherPublication = false
+                return true
+            }
+            isClaimed = false
+            return false
+        }
     }
 }
 

@@ -580,6 +580,14 @@ final class Streamer: Sendable {
         await streamingActor.getMonitor()
     }
     func setMonitor(_ monitor: Monitor) async {
+        // Preview setup must not reopen capture callbacks while Start or Stop
+        // is suspended in encoding, network preflight, or finalization.
+        try? await commandQueue.run { [self] in
+            await performMonitorChange(monitor)
+        }
+    }
+
+    private func performMonitorChange(_ monitor: Monitor) async {
         LOG("Setting monitor to \(monitor)", level: .debug)
         if monitor == .output, await !isStreaming() {
             LOG("Starting half the streaming pipeline", level: .debug)

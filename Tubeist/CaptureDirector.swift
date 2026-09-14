@@ -15,6 +15,8 @@ extension AVCaptureAudioChannel: @retroactive @unchecked Sendable {}
 #endif
 
 enum CaptureSetupError: LocalizedError, Equatable {
+    case cameraPermissionDenied
+    case microphonePermissionDenied
     case controlInProgress
     case noCamera
     case noMicrophone
@@ -32,6 +34,8 @@ enum CaptureSetupError: LocalizedError, Equatable {
 
     var errorDescription: String? {
         switch self {
+        case .cameraPermissionDenied: "Allow Camera access in iPhone Settings to use Tubeist"
+        case .microphonePermissionDenied: "Allow Microphone access in iPhone Settings to use Tubeist"
         case .controlInProgress: "Camera configuration is already in progress"
         case .noCamera: "No compatible camera is available"
         case .noMicrophone: "No compatible microphone is available"
@@ -88,8 +92,8 @@ private class DeviceActor {
     init() {
         cameras = Self.discoverCameras()
         microphones = Self.discoverMicrophones()
-        LOG("Cameras: \(cameras.keys)", level: .info)
-        LOG("Microphones: \(microphones.keys)", level: .info)
+        LOG("Cameras: \(cameras.keys.sorted())", level: .info)
+        LOG("Microphones: \(microphones.keys.sorted())", level: .info)
     }
 
     func getStabilizations() -> [String] {
@@ -132,10 +136,18 @@ private class DeviceActor {
     }
 
     private func refreshDevices() {
-        cameras = Self.discoverCameras()
-        microphones = Self.discoverMicrophones()
-        LOG("Cameras: \(cameras.keys)", level: .info)
-        LOG("Microphones: \(microphones.keys)", level: .info)
+        // Setup and the device pickers both refresh discovery. Only report an
+        // inventory change, comparing device IDs as well as display names.
+        let discoveredCameras = Self.discoverCameras()
+        let discoveredMicrophones = Self.discoverMicrophones()
+        if cameras != discoveredCameras {
+            cameras = discoveredCameras
+            LOG("Cameras: \(cameras.keys.sorted())", level: .info)
+        }
+        if microphones != discoveredMicrophones {
+            microphones = discoveredMicrophones
+            LOG("Microphones: \(microphones.keys.sorted())", level: .info)
+        }
     }
 
     private static func discoverCameras() -> [String: String] {
@@ -622,7 +634,7 @@ private class DeviceActor {
 }
 
 actor SessionController {
-    private var isControllingSession = false
+    private let commands = StreamCommandQueue()
     private var session: AVCaptureSession
     
     init(session: AVCaptureSession) {
@@ -630,11 +642,10 @@ actor SessionController {
     }
     
     func startSessions() async throws {
-        guard !isControllingSession else { throw CaptureSetupError.controlInProgress }
-        
-        isControllingSession = true
-        defer { isControllingSession = false }
-        
+        try await commands.run { [self] in try await start() }
+    }
+
+    private func start() async throws {
         if !session.isRunning {
             do {
                 try await CaptureDirector.shared.attachAll()
@@ -650,11 +661,10 @@ actor SessionController {
     }
     
     func stopSessions() async {
-        guard !isControllingSession else { return }
-        
-        isControllingSession = true
-        defer { isControllingSession = false }
-        
+        try? await commands.run { [self] in await stop() }
+    }
+
+    private func stop() async {
         if session.isRunning {
             session.stopRunning()
             await CaptureDirector.shared.detachAll()
@@ -662,26 +672,9 @@ actor SessionController {
     }
     
     func cycleSessions() async throws {
-        guard !isControllingSession else { throw CaptureSetupError.controlInProgress }
-        
-        isControllingSession = true
-        defer { isControllingSession = false }
-        
-        if session.isRunning {
-            session.stopRunning()
-            await CaptureDirector.shared.detachAll()
-        }
-        if !session.isRunning {
-            do {
-                try await CaptureDirector.shared.attachAll()
-                session.startRunning()
-                guard session.isRunning else {
-                    throw CaptureSetupError.sessionDidNotStart
-                }
-            } catch {
-                await CaptureDirector.shared.detachAll()
-                throw error
-            }
+        try await commands.run { [self] in
+            await stop()
+            try await start()
         }
     }
 
@@ -823,13 +816,18 @@ final class CaptureDirector: NSObject, Sendable {
         await setCameraStabilization(to: selectedStabilization)
     }
     func startSessions() async throws {
-        try await sessionController.startSessions()
+        try await CaptureAuthorization.ensureAccess()
+        try Task.checkCancellation()
         await eventMonitor.startMonitoring(session: CaptureDirector.session)
+        try await sessionController.startSessions()
     }
     func stopSessions() async {
         await sessionController.stopSessions()
     }
     func cycleSessions() async throws {
+        try await CaptureAuthorization.ensureAccess()
+        try Task.checkCancellation()
+        await eventMonitor.startMonitoring(session: CaptureDirector.session)
         try await sessionController.cycleSessions()
     }
     func startOutput() async throws {
@@ -936,8 +934,9 @@ private final class CaptureEventMonitor: @unchecked Sendable {
     private var observers: [NSObjectProtocol] = []
 
     func startMonitoring(session: AVCaptureSession) {
-        let shouldStart = lock.withLock { observers.isEmpty }
-        guard shouldStart else { return }
+        lock.lock()
+        defer { lock.unlock() }
+        guard observers.isEmpty else { return }
 
         let center = NotificationCenter.default
         var newObservers: [NSObjectProtocol] = []
@@ -1006,13 +1005,7 @@ private final class CaptureEventMonitor: @unchecked Sendable {
             LOG("A capture device was connected; the device list will refresh when opened", level: .info)
         })
 
-        lock.withLock {
-            if observers.isEmpty {
-                observers = newObservers
-            } else {
-                newObservers.forEach { center.removeObserver($0) }
-            }
-        }
+        observers = newObservers
     }
 
     deinit {

@@ -41,6 +41,7 @@ final class BackgroundExecutionLease {
     private var identifier: UIBackgroundTaskIdentifier = .invalid
     private var finalizationTask: Task<Void, Never>?
     private let manager: any BackgroundTaskManaging
+    private var generation = UUID()
 
     init(manager: any BackgroundTaskManaging = UIKitBackgroundTaskManager()) {
         self.manager = manager
@@ -50,14 +51,17 @@ final class BackgroundExecutionLease {
         identifier != .invalid || finalizationTask != nil
     }
 
+    @discardableResult
     func run(
         name: String,
         operation: @escaping @Sendable () async -> Void
-    ) {
-        guard !isActive else { return }
+    ) -> Task<Void, Never>? {
+        guard !isActive else { return nil }
+        let generation = UUID()
+        self.generation = generation
         identifier = manager.beginTask(named: name) { [weak self] in
             Task { @MainActor in
-                guard let self else { return }
+                guard let self, self.generation == generation else { return }
                 LOG("iOS background execution time expired while finalizing the stream", level: .error)
                 self.finalizationTask?.cancel()
                 self.end()
@@ -65,11 +69,14 @@ final class BackgroundExecutionLease {
         }
         finalizationTask = Task {
             await operation()
+            guard self.generation == generation else { return }
             end()
         }
+        return finalizationTask
     }
 
     func end() {
+        generation = UUID()
         let endingIdentifier = identifier
         identifier = .invalid
         finalizationTask = nil
@@ -151,9 +158,6 @@ struct TubeistApp: App {
         WindowGroup {
             TubeistView().environment(appState)
                 .onAppear {
-                    Task {
-                        await Streamer.shared.setAppState(appState)
-                    }
                     UIApplication.shared.isIdleTimerDisabled = true
                     // scenePhase triggers on app init - distinguish this from backgrounding the app
                     appState.isAppInitialization = false
@@ -232,13 +236,8 @@ struct TubeistApp: App {
                     } else {
                         LOG("App returned within the background stop grace period", level: .info)
                     }
-                    Task {
-                        await CameraMonitorView.createPreviewLayer()
-                        appState.refreshCameraView()
-                        if appState.activeMonitor == .output {
-                            appState.refreshOutputView()
-                        }
-                        await Streamer.shared.setMonitor(appState.activeMonitor)
+                    if appState.activeMonitor == .output {
+                        appState.refreshOutputView()
                     }
                 }
             default: break
@@ -247,7 +246,6 @@ struct TubeistApp: App {
     }
     
     init() {
-        Settings.configureJournal()
         do {
             let migration = try Settings.migrateLegacySettings()
             if migration.performed {

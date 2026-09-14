@@ -10,16 +10,22 @@ import SwiftUI
 @MainActor 
 struct CameraMonitorView: UIViewControllerRepresentable {
     public static private(set) var previewLayer: AVCaptureVideoPreviewLayer?
+    private static var previewGeneration = UUID()
 
-    static func createPreviewLayer() async {
-        if CameraMonitorView.previewLayer == nil {
-            let previewLayer = await AVCaptureVideoPreviewLayer(session: CaptureDirector.shared.getSession())
-            CameraMonitorView.previewLayer = previewLayer
-            LOG("Created camera video preview layer", level: .debug)
-        }
+    static func createPreviewLayer(
+        sessionProvider: @MainActor () async -> AVCaptureSession = { await CaptureDirector.shared.getSession() }
+    ) async {
+        let generation = previewGeneration
+        let session = await sessionProvider()
+        // Recheck after suspension: another caller may have created the layer,
+        // or backgrounding may have invalidated this request in the meantime.
+        guard !Task.isCancelled, generation == previewGeneration, previewLayer == nil else { return }
+        previewLayer = AVCaptureVideoPreviewLayer(session: session)
+        LOG("Created camera video preview layer", level: .debug)
     }
 
     static func deletePreviewLayer() {
+        previewGeneration = UUID()
         CameraMonitorView.previewLayer?.removeFromSuperlayer()
         CameraMonitorView.previewLayer = nil
     }
@@ -55,4 +61,3 @@ struct CameraMonitorView: UIViewControllerRepresentable {
         CATransaction.commit()
     }
 }
-

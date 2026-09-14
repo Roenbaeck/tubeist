@@ -183,6 +183,7 @@ enum RecordingOption: String, CaseIterable, Identifiable {
     }
 }
 
+@MainActor
 private struct AppliedSettingsSnapshot {
     let streamKey: String?
     let stream: Bool
@@ -252,7 +253,7 @@ private struct AppliedSettingsSnapshot {
 #endif
     }
 
-    func restore(overlays manager: OverlaySettingsManager) throws {
+    func restore(overlays manager: OverlaySettingsManager) async throws {
         try Settings.setStreamKey(streamKey)
         Settings.stream = stream
         Settings.record = record
@@ -274,7 +275,7 @@ private struct AppliedSettingsSnapshot {
         Settings.captureRemuxFixtures = captureRemuxFixtures
         Settings.recordHLSAcceptance = recordHLSAcceptance
 #endif
-        Settings.configureJournal()
+        await Settings.configureJournal()
     }
 }
 
@@ -819,7 +820,7 @@ struct SettingsView: View {
                             try saveYouTubePreferences()
                         }
                         try await Streamer.shared.cycleSessions()
-                        Settings.configureJournal()
+                        await Settings.configureJournal()
                         youtubeService.errorMessage = nil
                         saveErrorMessage = nil
                         presentationMode.wrappedValue.dismiss()
@@ -827,7 +828,7 @@ struct SettingsView: View {
                         var failureMessage = error.localizedDescription
                         if localSettingsCommitted, let previousSettings {
                             do {
-                                try previousSettings.restore(overlays: overlayManager)
+                                try await previousSettings.restore(overlays: overlayManager)
                                 try await Streamer.shared.cycleSessions()
                                 failureMessage += " Local app settings were restored."
                             } catch {
@@ -1136,18 +1137,21 @@ final class Settings: Sendable {
         return defaults.bool(forKey: key)
     }
 
-    static func configureJournal() {
-        let defs = UserDefaults.standard
+    static func journalLevels(in defs: UserDefaults = .standard) -> Set<LogLevel> {
         let journalError = defs.object(forKey: "JournalError") != nil ? defs.bool(forKey: "JournalError") : true
         let journalWarning = defs.object(forKey: "JournalWarning") != nil ? defs.bool(forKey: "JournalWarning") : true
         let journalInfo = defs.object(forKey: "JournalInfo") != nil ? defs.bool(forKey: "JournalInfo") : true
         let journalDebug = defs.object(forKey: "JournalDebug") != nil ? defs.bool(forKey: "JournalDebug") : false
-        Task {
-            await journalError ? Journal.shared.enable(level: .error) : Journal.shared.disable(level: .error)
-            await journalWarning ? Journal.shared.enable(level: .warning) : Journal.shared.disable(level: .warning)
-            await journalInfo ? Journal.shared.enable(level: .info) : Journal.shared.disable(level: .info)
-            await journalDebug ? Journal.shared.enable(level: .debug) : Journal.shared.disable(level: .debug)
-        }
+        var levels: Set<LogLevel> = []
+        if journalError { levels.insert(.error) }
+        if journalWarning { levels.insert(.warning) }
+        if journalInfo { levels.insert(.info) }
+        if journalDebug { levels.insert(.debug) }
+        return levels
+    }
+
+    static func configureJournal() async {
+        await Journal.shared.setLevels(journalLevels())
     }
 
     @discardableResult

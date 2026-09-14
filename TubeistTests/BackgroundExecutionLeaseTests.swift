@@ -59,7 +59,45 @@ private actor BackgroundLeaseProbe {
     }
 }
 
+@MainActor
+private final class BackgroundOperationLatch {
+    private var continuation: CheckedContinuation<Void, Never>?
+    var isWaiting: Bool { continuation != nil }
+
+    func wait() async {
+        // Deliberately finishes after cancellation, like an API that cannot
+        // cancel already-submitted work.
+        await withCheckedContinuation { continuation = $0 }
+    }
+
+    func release() {
+        continuation?.resume()
+        continuation = nil
+    }
+}
+
 struct BackgroundExecutionLeaseTests {
+    @Test @MainActor
+    func oldCompletionCannotEndANewerBackgroundLease() async throws {
+        let manager = FakeBackgroundTaskManager()
+        let lease = BackgroundExecutionLease(manager: manager)
+        let first = BackgroundOperationLatch()
+        let second = BackgroundOperationLatch()
+        let oldTask = try #require(lease.run(name: "old") { await first.wait() })
+        try await waitUntil { first.isWaiting }
+        lease.cancel()
+        let newTask = try #require(lease.run(name: "new") { await second.wait() })
+        try await waitUntil { second.isWaiting }
+        first.release()
+        await oldTask.value
+        #expect(lease.isActive)
+        #expect(manager.endedIdentifiers.count == 1)
+        second.release()
+        await newTask.value
+        #expect(!lease.isActive)
+        #expect(manager.endedIdentifiers.count == 2)
+    }
+
     @Test(arguments: BackgroundFinalizationStage.allCases)
     @MainActor
     func expirationCancelsEveryFinalizationStage(_ stage: BackgroundFinalizationStage) async throws {

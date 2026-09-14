@@ -67,6 +67,7 @@ struct TubeistView: View {
     
     @State private var interaction = Interaction()
     @State private var youtubePollingTask: Task<Void, Never>? = nil
+    @State private var youtubeStatusGeneration = UUID()
     @State private var youtubeService = YouTubeService()
     @State private var isCameraReady = false
     @State private var showSplashScreen = true
@@ -151,23 +152,71 @@ struct TubeistView: View {
         .opacity(showJournal ? 0 : 1)
     }
     
-    func updateCameraProperties() {
-        Task {
-            // Passing Binding<variable> to a singleton is fine
-            await CaptureDirector.shared.bind(
-                totalZoom: $totalZoom,
-                currentZoom: $currentZoom,
-                exposureBias: $exposureBias,
-                style: $style,
-                effect: $effect
-            )
-            selectedStabilization = Settings.cameraStabilization ?? "Off"
-            appState.isStabilizationOn = selectedStabilization != "Off"
-            minZoom = await CaptureDirector.shared.getMinZoomFactor()
-            maxZoom = await min(CaptureDirector.shared.getMaxZoomFactor(), ZOOM_LIMIT)
-            opticalZoom = await CaptureDirector.shared.getOpticalZoomFactor()
-            let safeZoom = max(minZoom, min(totalZoom, maxZoom))
-            await CaptureDirector.shared.setZoomFactor(safeZoom)
+    func updateCameraProperties() async {
+        await CaptureDirector.shared.bind(
+            totalZoom: $totalZoom,
+            currentZoom: $currentZoom,
+            exposureBias: $exposureBias,
+            style: $style,
+            effect: $effect
+        )
+        guard !Task.isCancelled else { return }
+        selectedStabilization = Settings.cameraStabilization ?? "Off"
+        appState.isStabilizationOn = selectedStabilization != "Off"
+        let minimum = await CaptureDirector.shared.getMinZoomFactor()
+        let maximum = await min(CaptureDirector.shared.getMaxZoomFactor(), ZOOM_LIMIT)
+        let optical = await CaptureDirector.shared.getOpticalZoomFactor()
+        guard !Task.isCancelled else { return }
+        minZoom = minimum
+        maxZoom = maximum
+        opticalZoom = optical
+        let safeZoom = max(minZoom, min(totalZoom, maxZoom))
+        await CaptureDirector.shared.setZoomFactor(safeZoom)
+    }
+
+    private func prepareCamera() async {
+        // This stable view owns capture startup. Replacing a preview controller
+        // must never stop or restart the capture session.
+        await Streamer.shared.setAppState(appState)
+        guard !Task.isCancelled else { return }
+        if isUITesting {
+            isCameraReady = true
+            showSplashScreen = false
+            splashOpacity = 0
+            return
+        }
+        do {
+            try await Streamer.shared.startSessions()
+            try Task.checkCancellation()
+            await CameraMonitorView.createPreviewLayer()
+            try Task.checkCancellation()
+            // attachAll resolves saved device IDs before starting the session.
+            // Reflect that choice in the UI instead of racing it with another
+            // task that writes camera and microphone selections.
+            cameras = await CaptureDirector.shared.getCameras()
+            microphones = await CaptureDirector.shared.getMicrophones()
+            try Task.checkCancellation()
+            selectedCamera = Settings.selectedCamera
+            selectedMicrophone = Settings.selectedMicrophone ?? ""
+            await updateCameraProperties()
+            try Task.checkCancellation()
+            guard !appState.soonGoingToBackground, !showSettings else { return }
+            isCameraReady = true
+            appState.refreshCameraView()
+            await Streamer.shared.setMonitor(appState.activeMonitor)
+            LOG("Viewing camera monitor", level: .debug)
+        } catch is CancellationError {
+            // The next foreground task will finish setup when capture is allowed.
+        } catch {
+            guard !Task.isCancelled else { return }
+            isCameraReady = false
+            // A denied permission or failed camera must not leave Settings
+            // hidden behind the startup screen.
+            showSplashScreen = false
+            splashOpacity = 0
+            fade(error.localizedDescription)
+            appState.activeAlert = error.localizedDescription
+            LOG("Could not start camera monitoring: \(error.localizedDescription)", level: .error)
         }
     }
     
@@ -214,8 +263,19 @@ struct TubeistView: View {
             return
         }
 
+        let service = youtubeService
+        let generation = UUID()
+        youtubeStatusGeneration = generation
+        let sessionState = appState.streamSessionState
+        let broadcastID = appState.youtubeBroadcastId
         do {
-            let broadcast = try await youtubeService.findBroadcastForStreamKey(streamKey)
+            let broadcast = try await service.findBroadcastForStreamKey(streamKey)
+            guard !Task.isCancelled,
+                  generation == youtubeStatusGeneration,
+                  service === youtubeService,
+                  Settings.streamKey == streamKey,
+                  appState.streamSessionState == sessionState,
+                  appState.youtubeBroadcastId == broadcastID else { return }
             appState.youtubeBroadcastId = broadcast.id
             appState.youtubeStatus = broadcast.lifeCycleStatus
         } catch {
@@ -232,6 +292,7 @@ struct TubeistView: View {
         }
 
         isYouTubeRefreshCoolingDown = true
+        youtubeStatusGeneration = UUID()
         defer {
             Task { @MainActor in
                 try? await Task.sleep(for: .seconds(2))
@@ -348,39 +409,8 @@ struct TubeistView: View {
                         .id(appState.cameraMonitorId)
                         .gesture(magnification)
                         .frame(width: width, height: height)
-                        .onAppear {
-                            if isUITesting {
-                                isCameraReady = true
-                                showSplashScreen = false
-                                splashOpacity = 0
-                                return
-                            }
-                            Task {
-                                await CameraMonitorView.createPreviewLayer()
-                                do {
-                                    try await Streamer.shared.startSessions()
-                                    appState.refreshCameraView()
-                                    updateCameraProperties()
-                                    isCameraReady = true
-                                    LOG("Viewing camera monitor", level: .debug)
-                                } catch {
-                                    isCameraReady = false
-                                    fade(error.localizedDescription)
-                                    appState.activeAlert = error.localizedDescription
-                                    LOG("Could not start camera monitoring: \(error.localizedDescription)", level: .error)
-                                }
-                            }
-                        }
-                        .onDisappear {
-                            Task {
-                                await Streamer.shared.stopSessions()
-                            }
-                        }
-                        .onChange(of: appState.cameraMonitorId) {
-                            updateCameraProperties()
-                        }
                         .onCameraCaptureEvent() { event in
-                            if event.phase == .ended {
+                            if event.phase == .ended, isCameraReady {
                                 Task {
                                     await Streamer.shared.toggleBatterySaving()
                                 }
@@ -723,6 +753,7 @@ struct TubeistView: View {
                             .accessibilityLabel("Settings")
                             .accessibilityHint("Opens streaming, recording, camera, and overlay settings")
                             .sheet(isPresented: $showSettings, onDismiss: {
+                                youtubeStatusGeneration = UUID()
                                 areSystemMetricsAtTop = Settings.areSystemMetricsAtTop
                                 // Save, Cancel, and swipe-to-dismiss all reload
                                 // the applied URLs; unsaved drafts stay unused.
@@ -1083,6 +1114,14 @@ struct TubeistView: View {
         }
         .edgesIgnoringSafeArea(.all)
         .persistentSystemOverlays(.hidden)
+        .task(id: appState.soonGoingToBackground || showSettings) {
+            guard !appState.soonGoingToBackground, !showSettings else { return }
+            await prepareCamera()
+        }
+        .task(id: appState.cameraMonitorId) {
+            guard isCameraReady, !isUITesting, !appState.soonGoingToBackground else { return }
+            await updateCameraProperties()
+        }
         .onDisappear {
             fadeTask?.cancel()
         }
@@ -1109,6 +1148,8 @@ struct TubeistView: View {
         }
         .onChange(of: appState.soonGoingToBackground) { _, isBackgrounded in
             if isBackgrounded {
+                isCameraReady = false
+                youtubeStatusGeneration = UUID()
                 youtubePollingTask?.cancel()
                 youtubePollingTask = nil
             } else if appState.isStreamActive {
@@ -1123,6 +1164,7 @@ struct TubeistView: View {
             }
         }
         .onChange(of: appState.streamSessionState) { _, state in
+            youtubeStatusGeneration = UUID()
             if state.isLive {
                 startYouTubePolling()
             }
@@ -1133,32 +1175,6 @@ struct TubeistView: View {
         .onAppear {
             guard !isUITesting else { return }
             selectedStabilization = Settings.cameraStabilization ?? "Off"
-            Task {
-                cameras = await CaptureDirector.shared.getCameras()
-                microphones = await CaptureDirector.shared.getMicrophones()
-                let savedCamera = Settings.selectedCamera
-                let validCamera = cameras.contains(savedCamera)
-                    ? savedCamera
-                    : (cameras.contains(DEFAULT_CAMERA) ? DEFAULT_CAMERA : (cameras.first ?? DEFAULT_CAMERA))
-                selectedCamera = validCamera
-                _ = await CaptureDirector.shared.selectCamera(named: validCamera)
-
-                let preferredMicrophone = await CaptureDirector.shared.getPreferredMicrophoneName()
-                let savedMicrophone = Settings.selectedMicrophone
-                let validMicrophone = if let savedMicrophone, microphones.contains(savedMicrophone) {
-                    savedMicrophone
-                }
-                else if let preferredMicrophone, microphones.contains(preferredMicrophone) {
-                    preferredMicrophone
-                }
-                else {
-                    microphones.first ?? ""
-                }
-                selectedMicrophone = validMicrophone
-                if !validMicrophone.isEmpty {
-                    _ = await CaptureDirector.shared.selectMicrophone(named: validMicrophone)
-                }
-            }
             bootstrapYouTubeStatus()
             appState.isYouTubeSignedIn = youtubeService.isSignedIn
             if appState.isStreamActive {
@@ -1167,6 +1183,7 @@ struct TubeistView: View {
         }
         .onDisappear {
             youtubePollingTask?.cancel()
+            youtubeStatusGeneration = UUID()
         }
         .alert(
             "Tubeist",

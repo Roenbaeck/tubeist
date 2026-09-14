@@ -6,6 +6,46 @@
 //
 
 import StoreKit
+import Observation
+
+/// Reconcile the launch snapshot without undoing newer transaction updates.
+@Observable @MainActor
+final class PurchaseEntitlements {
+    private(set) var productIDs: Set<String>
+    private var verificationID: UUID?
+    private var updates: [String: Bool] = [:]
+
+    init(productIDs: Set<String> = []) {
+        self.productIDs = productIDs
+    }
+
+    func beginVerification() -> UUID {
+        let id = UUID()
+        verificationID = id
+        updates = [:]
+        return id
+    }
+
+    func setPurchased(_ purchased: Bool, productID: String) {
+        if purchased { productIDs.insert(productID) }
+        else { productIDs.remove(productID) }
+        if verificationID != nil { updates[productID] = purchased }
+    }
+
+    @discardableResult
+    func finishVerification(_ verified: Set<String>, id: UUID) -> Bool {
+        guard verificationID == id else { return false }
+        var result = verified
+        for (productID, purchased) in updates {
+            if purchased { result.insert(productID) }
+            else { result.remove(productID) }
+        }
+        productIDs = result
+        verificationID = nil
+        updates = [:]
+        return true
+    }
+}
 
 actor Purchaser {
     static let shared = Purchaser()
@@ -20,20 +60,19 @@ actor Purchaser {
     private(set) var availableProducts: [Product] = []
     
     // Keep track of purchased product IDs
-    @MainActor
-    private var purchasedProductIDs: Set<String> {
-        get { Set(UserDefaults.standard.stringArray(forKey: "purchased_products") ?? []) }
-        set { UserDefaults.standard.set(Array(newValue), forKey: "purchased_products") }
-    }
+    @MainActor private static let entitlements = PurchaseEntitlements(
+        productIDs: Set(UserDefaults.standard.stringArray(forKey: "purchased_products") ?? [])
+    )
     
     @MainActor
     func isProductPurchased(_ productID: String) -> Bool {
-        YOU_HAVE_IT_ALL || purchasedProductIDs.contains(productID)
+        YOU_HAVE_IT_ALL || Self.entitlements.productIDs.contains(productID)
     }
     
     // Verify past purchases on app launch
     @MainActor
     func verifyPurchases() async {
+        let verificationID = Self.entitlements.beginVerification()
         var validProductIDs = Set<String>()
         
         // Get all valid transactions
@@ -45,7 +84,9 @@ actor Purchaser {
         }
         
         // Update the stored purchases to match exactly what's valid
-        purchasedProductIDs = validProductIDs
+        if Self.entitlements.finishVerification(validProductIDs, id: verificationID) {
+            persistEntitlements()
+        }
     }
     
     private func listenForTransactions() async {
@@ -67,12 +108,19 @@ actor Purchaser {
     @MainActor
     private func savePurchase(productID: String) {
         LOG("Entitled for \(productID)", level: .debug)
-        purchasedProductIDs.insert(productID)
+        Self.entitlements.setPurchased(true, productID: productID)
+        persistEntitlements()
     }
     
     @MainActor
     private func removePurchase(productID: String) {
-        purchasedProductIDs.remove(productID)
+        Self.entitlements.setPurchased(false, productID: productID)
+        persistEntitlements()
+    }
+
+    @MainActor
+    private func persistEntitlements() {
+        UserDefaults.standard.set(Array(Self.entitlements.productIDs), forKey: "purchased_products")
     }
     
     func fetchProducts() async -> [Product] {
