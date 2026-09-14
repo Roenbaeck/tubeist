@@ -14,6 +14,63 @@ final class TubeistUITests: XCTestCase {
     }
 
     @MainActor
+    func testHorizonLevelTogglePersistsAndFollowsPreviewVisibility() throws {
+        let app = launchForUITesting(additionalArguments: [
+            "-horizon-test-angle", "6", "-Overlays", "[]"
+        ])
+        let hand = app.buttons["Video stabilization"]
+        let toggle = app.switches["horizon-level-toggle"]
+        let switchControl = toggle.switches.firstMatch
+        let level = app.otherElements["horizon-level"]
+        hand.tap()
+        XCTAssertTrue(toggle.waitForExistence(timeout: 3))
+        XCTAssertGreaterThan(toggle.frame.minY, app.buttons["Stabilization Selection"].frame.maxY)
+        if toggle.value as? String == "1" { switchControl.tap() }
+        XCTAssertFalse(level.exists)
+        switchControl.tap()
+        XCTAssertEqual(toggle.value as? String, "1")
+        XCTAssertTrue(level.waitForExistence(timeout: 3))
+        XCTAssertEqual(level.value as? String, "6.0°")
+        hand.tap()
+
+        app.buttons["Monitor selection"].tap()
+        XCTAssertTrue(level.waitForExistence(timeout: 3))
+        app.buttons["Journal"].tap()
+        XCTAssertFalse(level.exists)
+        app.buttons["Journal"].tap()
+        XCTAssertTrue(level.waitForExistence(timeout: 3))
+
+        app.buttons["Battery saving"].tap()
+        app.buttons["Turn On"].tap()
+        XCTAssertTrue(level.waitForNonExistence(timeout: 5))
+        app.buttons["Battery saving"].tap()
+        app.buttons["Turn Off"].tap()
+        XCTAssertTrue(level.waitForExistence(timeout: 3))
+
+        app.buttons["Settings"].tap()
+        XCTAssertTrue(app.buttons["Cancel"].waitForExistence(timeout: 3))
+        XCTAssertFalse(level.exists)
+        app.buttons["Cancel"].tap()
+        XCTAssertTrue(level.waitForExistence(timeout: 5))
+
+        XCUIDevice.shared.press(.home)
+        app.activate()
+        XCTAssertTrue(level.waitForExistence(timeout: 5))
+
+        app.terminate()
+        app.launch()
+        XCTAssertTrue(level.waitForExistence(timeout: 5))
+        hand.tap()
+        XCTAssertEqual(toggle.value as? String, "1")
+        switchControl.tap()
+        XCTAssertFalse(level.exists)
+        app.terminate()
+        app.launch()
+        XCTAssertTrue(hand.waitForExistence(timeout: 5))
+        XCTAssertFalse(level.exists)
+    }
+
+    @MainActor
     func testStartupJournalKeepsTheVersionAnnouncement() throws {
         let app = launchForUITesting(additionalArguments: ["-JournalInfo", "YES"])
         let monitor = app.buttons["Monitor selection"]

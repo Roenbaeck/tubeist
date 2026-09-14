@@ -1353,6 +1353,10 @@ final class Settings: Sendable {
             UserDefaults.standard.set(newValue, forKey: "CameraStabilization")
         }
     }
+    static var showHorizonLevel: Bool {
+        get { UserDefaults.standard.bool(forKey: "ShowHorizonLevel") }
+        set { UserDefaults.standard.set(newValue, forKey: "ShowHorizonLevel") }
+    }
     static var hideOverlays: Bool {
         get {
             UserDefaults.standard.bool(forKey: "HideOverlays")

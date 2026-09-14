@@ -35,6 +35,8 @@ enum Monitor {
 
 struct TubeistView: View {
     @Environment(AppState.self) var appState
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var showHorizonLevel = Settings.showHorizonLevel
     @State private var areSystemMetricsAtTop = Settings.areSystemMetricsAtTop
     @State private var overlayManager = OverlaySettingsManager()
     @State private var showSettings = false
@@ -476,6 +478,12 @@ struct TubeistView: View {
                             isFocusLocked: appState.isFocusLocked
                         )
                     }
+
+                    if showHorizonLevel, isCameraReady, !showSplashScreen,
+                       !showSettings, !showJournal, !appState.isBatterySavingOn,
+                       !appState.soonGoingToBackground, scenePhase == .active {
+                        HorizonLevelView(width: min(320, width * 0.45))
+                    }
                     
                     if showJournal {
                         JournalView()
@@ -612,28 +620,37 @@ struct TubeistView: View {
                             )
                         }
                         if showStabilizationPicker {
-                            HStack(alignment: .center, spacing: 10) {
-                                Spacer()
+                            VStack(alignment: .trailing, spacing: 8) {
+                                HStack(alignment: .center, spacing: 10) {
+                                    Spacer()
                                 
-                                Text("Select Stabilization Mode")
-                                Picker("Stabilization Selection", selection: $selectedStabilization) {
-                                    ForEach(stabilizations, id: \.self) { stabilization in
-                                        Text(stabilization)
-                                            .tag(stabilization)
+                                    Text("Select Stabilization Mode")
+                                    Picker("Stabilization Selection", selection: $selectedStabilization) {
+                                        ForEach(stabilizations, id: \.self) { stabilization in
+                                            Text(stabilization)
+                                                .tag(stabilization)
+                                        }
+                                    }
+                                    .pickerStyle(MenuPickerStyle())
+                                    .background(
+                                        RoundedRectangle(cornerRadius: 10)
+                                            .fill(Color.black.opacity(0.6))
+                                    )
+                                    .onChange(of: selectedStabilization) { _, newStabilization in
+                                        Task {
+                                            await CaptureDirector.shared.setCameraStabilization(to: newStabilization)
+                                            appState.refreshCameraView()
+                                            appState.isStabilizationOn = newStabilization != "Off"
+                                        }
                                     }
                                 }
-                                .pickerStyle(MenuPickerStyle())
-                                .background(
-                                    RoundedRectangle(cornerRadius: 10)
-                                        .fill(Color.black.opacity(0.6))
-                                )
-                                .onChange(of: selectedStabilization) { _, newStabilization in
-                                    Task {
-                                        await CaptureDirector.shared.setCameraStabilization(to: newStabilization)
-                                        appState.refreshCameraView()
-                                        appState.isStabilizationOn = newStabilization != "Off"
+                                Toggle("Show horizon level", isOn: $showHorizonLevel)
+                                    .fixedSize()
+                                    .tint(.green)
+                                    .accessibilityIdentifier("horizon-level-toggle")
+                                    .onChange(of: showHorizonLevel) { _, enabled in
+                                        Settings.showHorizonLevel = enabled
                                     }
-                                }
                             }
                             .padding(5)
                             .background(
