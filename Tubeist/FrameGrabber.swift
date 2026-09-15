@@ -9,10 +9,6 @@ import AVFoundation
 import CoreImage
 import Metal
 
-struct SendableSampleBuffer: @unchecked Sendable {
-    let value: CMSampleBuffer
-}
-
 // this is not 1-1 with the Metal struct, since textures are set differently
 struct KernelArguments {
     var strength: Float = 0
@@ -30,10 +26,16 @@ struct KernelSettings {
 }
 
 private actor FrameTinkerer {
-    // GPU work and hardware encoding can overlap. Keep just the newest
-    // processed frame if the encoder is busy, rather than retaining an
-    // unbounded collection of camera buffers or stalling the GPU drain.
-    private let encodingMailbox = BoundedAsyncMailbox<SendableSampleBuffer>(policy: .latest) { sample in
+    // GPU work and hardware encoding overlap, sharing the same bounded
+    // arrival-age budget as the capture queue. No pixel copies or retiming.
+    private let encodingMailbox = BoundedAsyncMailbox<SendableSampleBuffer>(
+        policy: CaptureBuffering.videoPolicy, timing: { $0.mailboxTiming },
+        onDrop: { submission in
+            guard submission.shouldReport(every: 120) else { return }
+            LOG("Dropped video exceeding the pre-encoding buffer budget", level: .warning)
+            Task { await Streamer.shared.setStreamHealth(.degraded) }
+        }
+    ) { sample in
         do {
             try await ContentPackager.shared.appendVideoSampleBuffer(sample.value)
         } catch {
@@ -587,11 +589,7 @@ private actor FrameTinkerer {
                 }
             }
             if await Streamer.shared.isStreaming() {
-                let submission = encodingMailbox.submit(wrappedSampleBuffer)
-                if submission.dropped, submission.totalDropped % 120 == 1 {
-                    LOG("Dropped processed video while the encoder was busy", level: .warning)
-                    Task { await Streamer.shared.setStreamHealth(.degraded) }
-                }
+                encodingMailbox.submit(wrappedSampleBuffer)
             }
             if OutputMonitorView.frameGate.isEnabled() {
                 OutputMonitorView.enqueue(SendableSampleBuffer(value: sendableSampleBuffer))
@@ -609,7 +607,14 @@ final class FrameGrabber: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
     override init() {
         let frameTinkerer = FrameTinkerer()
         self.frameTinkerer = frameTinkerer
-        self.frameMailbox = BoundedAsyncMailbox(policy: .latest) { sampleBuffer in
+        self.frameMailbox = BoundedAsyncMailbox(
+            policy: CaptureBuffering.videoPolicy, timing: { $0.mailboxTiming },
+            onDrop: { submission in
+                guard submission.shouldReport(every: 120) else { return }
+                LOG("Dropped video exceeding the capture buffer budget", level: .warning)
+                Task { await Streamer.shared.setStreamHealth(.degraded) }
+            }
+        ) { sampleBuffer in
             await frameTinkerer.processFrame(sampleBuffer)
         }
         super.init()
@@ -667,8 +672,9 @@ final class FrameGrabber: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
         frameTinkerer.resetEncodingDropCount()
     }
     func logDroppedFrameCount() {
-        let dropped = frameMailbox.snapshot().totalDropped + frameTinkerer.encodingDropCount()
-        LOG("Stream frame processing: \(dropped) stale video frames dropped before encoding", level: .info)
+        let processingDrops = frameMailbox.snapshot().totalDropped
+        let encodingDrops = frameTinkerer.encodingDropCount()
+        LOG("Stream frame processing: \(processingDrops + encodingDrops) video frames dropped before encoding (processing queue: \(processingDrops), encoder queue: \(encodingDrops))", level: .info)
     }
     func drainSubmittedFrames() async {
         await frameMailbox.waitUntilIdle()
@@ -684,12 +690,6 @@ final class FrameGrabber: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
                        didOutput sampleBuffer: CMSampleBuffer,
                        from connection: AVCaptureConnection) {
         nonisolated(unsafe) let sendableSampleBuffer = sampleBuffer
-        let submission = frameMailbox.submit(SendableSampleBuffer(value: sendableSampleBuffer))
-        if submission.dropped, submission.totalDropped % 120 == 1 {
-            LOG("Dropped stale video work to keep capture latency bounded", level: .warning)
-            Task {
-                await Streamer.shared.setStreamHealth(.degraded)
-            }
-        }
+        frameMailbox.submit(SendableSampleBuffer(value: sendableSampleBuffer))
     }
 }

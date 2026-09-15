@@ -8,6 +8,41 @@ import Testing
 @testable import Tubeist
 
 struct MPEGTransportStreamMuxerTests {
+    @Test(arguments: [false, true])
+    func startsEveryHEVCAccessUnitWithExactlyOneDelimiter(existingDelimiter: Bool) throws {
+        let initialization = try ISOBMFFReader().parseInitializationSegment(FMP4Fixture.initialization())
+        let aud: [UInt8] = [0x46, 0x01, existingDelimiter ? 0x10 : 0x50]
+        let video: [ISOBMFFSample] = (0..<2).map { index in
+            let picture: [UInt8] = [index == 0 ? 0x26 : 0x02, 0x01]
+            let prefix = existingDelimiter ? lengthPrefixedNAL(aud) : Data()
+            let data = prefix + lengthPrefixedNAL(picture)
+            return sample(trackID: 1, kind: .video, decodeTime: UInt64(index * 3_000),
+                          presentationTime: Int64(index * 3_000), duration: 3_000,
+                          randomAccess: index == 0, data: data)
+        }
+        var muxer = MPEGTransportStreamMuxer()
+        let output = try muxer.mux(
+            ISOBMFFMediaSegment(sequenceNumber: 1, samples: video + [defaultAudioSample()]),
+            initialization: initialization
+        )
+        let starts = transportPackets(output.data).filter {
+            pid(of: $0) == MPEGTransportStreamMuxer.videoPID && hasPayloadUnitStart($0)
+        }
+        #expect(starts.count == 2)
+        for (index, packet) in starts.enumerated() {
+            let pesStart = payloadStart(of: packet)
+            let elementaryStart = pesStart + 9 + Int(packet[pesStart + 8])
+            #expect(Array(packet[elementaryStart..<(elementaryStart + 7)]) == [0, 0, 0, 1] + aud)
+            // Parameter sets follow the delimiter on keyframes; other frames
+            // immediately retain their original coded picture NAL.
+            #expect(Array(packet[(elementaryStart + 7)..<(elementaryStart + 13)])
+                    == [0, 0, 0, 1, index == 0 ? 0x40 : 0x02, 0x01])
+        }
+        #expect(occurrences(of: [0, 0, 0, 1] + aud, in: output.data) == 2)
+        #expect(occurrences(of: [0, 0, 0, 1, 0x26, 0x01], in: output.data) == 1)
+        #expect(occurrences(of: [0, 0, 0, 1, 0x02, 0x01], in: output.data) == 1)
+    }
+
     @Test func discontinuityPreservesElementaryPayloadAndProgramTables() throws {
         let reader = ISOBMFFReader()
         let initialization = try reader.parseInitializationSegment(FMP4Fixture.initialization())

@@ -170,6 +170,7 @@ struct YouTubeHLSUploaderTests {
         #expect(records[2].url.hasSuffix("file=tubeist_final_session.m3u8"))
         let finalPlaylist = try #require(String(data: records[2].body, encoding: .utf8))
         #expect(finalPlaylist.contains("tubeist_final_session_0.ts"))
+        #expect(finalPlaylist.contains("#EXTINF:1.750000,"))
         #expect(finalPlaylist.hasSuffix("#EXT-X-ENDLIST\n"))
     }
 
@@ -439,12 +440,19 @@ struct YouTubeHLSUploaderTests {
         }
         #expect(playlists.count == 50)
         let lastPlaylist = try #require(playlists.last)
-        #expect(lastPlaylist.contains("#EXT-X-MEDIA-SEQUENCE:47"))
-        #expect(lastPlaylist.contains("tubeist_long_session_47.ts"))
-        #expect(lastPlaylist.contains("tubeist_long_session_48.ts"))
-        #expect(lastPlaylist.contains("tubeist_long_session_49.ts"))
-        #expect(!lastPlaylist.contains("tubeist_long_session_46.ts"))
+        #expect(lastPlaylist.contains("#EXT-X-MEDIA-SEQUENCE:44\n"))
+        #expect(lastPlaylist.split(separator: "\n").filter { $0.hasSuffix(".ts") }.map(String.init)
+                == (44...49).map { "tubeist_long_session_\($0).ts" })
         #expect(await uploader.outstandingCount == 0)
+
+        try await uploader.finish()
+        let finalRequests = await transport.recordedRequests()
+        #expect(finalRequests.count == 101)
+        let finalPlaylist = String(decoding: try #require(finalRequests.last).body, as: UTF8.self)
+        #expect(finalPlaylist.contains("#EXT-X-MEDIA-SEQUENCE:45\n"))
+        #expect(finalPlaylist.split(separator: "\n").filter { $0.hasSuffix(".ts") }.map(String.init)
+                == (45...49).map { "tubeist_long_session_\($0).ts" })
+        #expect(finalPlaylist.hasSuffix("#EXT-X-ENDLIST\n"))
     }
 }
 

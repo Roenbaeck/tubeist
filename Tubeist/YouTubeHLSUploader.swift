@@ -322,9 +322,9 @@ actor YouTubeHLSUploader {
         await transport.invalidate()
     }
 
-    /// Publishes the terminal playlist only after every media segment has been
-    /// acknowledged. This makes the last accepted segment unambiguously final
-    /// before the persistent ingestion connection is closed.
+    /// Publishes the final playlist only after every media segment has been
+    /// acknowledged, then closes the persistent ingestion connection.
+    /// Retains the acknowledged history and marks that no more segments follow.
     func finish(deadline: ContinuousClock.Instant? = nil) async throws {
         // Stop also interrupts URLSession, rather than only timing the sleeps
         // between requests. Never outlive the caller's shutdown budget.

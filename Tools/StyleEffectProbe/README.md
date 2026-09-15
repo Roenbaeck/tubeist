@@ -12,7 +12,9 @@ The probe checks grain, VHS, and their combination at strengths -1, 0, 0.5, and 
 across animation frames 0–599, 4:2:0/4:2:2 chroma, 4K, and dimensions that leave
 partial threadgroups. Grain is compared directly to the original arithmetic.
 The maximum allowed difference is one 10-bit code step (64 underlying R16Unorm
-codes); the measured maximum on the M1 Pro was just one R16Unorm code.
+codes); after restoring the original grain arithmetic, the measured maximum on
+the M1 Pro was zero. These raw GPU comparisons do not assess appearance after
+video encoding.
 
 The original VHS kernel read and wrote displaced neighbours simultaneously and
 had multiple threads write each chroma pixel. Its output was therefore dependent
@@ -23,10 +25,9 @@ The unchanged original kernel is retained separately for *timing*.
 
 ## Retained changes
 
-Grain computes all three simplex corner weights with vector arithmetic instead
-of divergent branches, and removes coordinate division/multiplication that
-cancel out. Both octaves, gradients, temporal warp, and strength curve remain.
-There is no additional grain pass, buffer, or texture.
+Grain retains its original simplex corner calculations and coordinate arithmetic
+to preserve its appearance, including after encoding. There is no additional
+grain pass, buffer, or texture.
 
 VHS skips distortion/noise arithmetic outside its top 5% zone and performs
 chroma work once per chroma pixel. It reads an immutable chroma snapshot and a
@@ -46,9 +47,7 @@ M1 Pro, 3840×2160, 15 September 2026:
 
 | Filter | Original | Optimized | GPU time reduction |
 |---|---:|---:|---:|
-| Grain | 1.509 ms | 1.217 ms | 19.3% |
 | VHS | 1.950 ms | 1.962 ms | -0.6% (essentially unchanged) |
-| VHS + Grain | 3.092 ms | 2.796 ms | 9.6% |
 
 This is not an iPhone frame-rate or battery-life prediction. Camera processing,
 encoding, overlays, display, thermal conditions, and memory layout also matter.

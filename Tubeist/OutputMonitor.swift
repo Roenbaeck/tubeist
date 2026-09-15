@@ -99,8 +99,9 @@ final class OutputMonitorController: UIViewController {
         super.viewDidLoad()
         preparation = Task { [weak self] in
             do {
-                guard let device = MTLCreateSystemDefaultDevice() else { throw OutputPreviewError.unavailable }
-                let pipeline = try await MetalOutputPipeline.makeForPreview(device: device)
+                let pipeline = try await MetalOutputPipeline.makeForPreview { elapsed in
+                    LOG(String(format: "Output preview preparation took %.2f seconds (background queue)", elapsed), level: .warning)
+                }
                 guard !Task.isCancelled, let self else { return }
                 let metalView = MetalOutputView(outputPipeline: pipeline)
                 metalView.onFailure = { [weak self] error in self?.show(error) }

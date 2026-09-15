@@ -53,7 +53,7 @@ struct YouTubeHLSStreamSinkTests {
         #expect(requests.count == 3)
         #expect(requests[1].contentType == "video/mp2t")
         #expect(requests[1].body == ts.data)
-        #expect(String(decoding: requests[2].body, as: UTF8.self).contains("#EXT-X-ENDLIST"))
+        #expect(String(decoding: requests[2].body, as: UTF8.self).hasSuffix("#EXT-X-ENDLIST\n"))
         let metrics = await sink.metrics()
         #expect(metrics.failure == nil)
         #expect(metrics.videoBitrate == 4_000_000)
@@ -409,6 +409,11 @@ struct YouTubeHLSStreamSinkTests {
         }
         let finalPlaylist = String(decoding: requests[62].body, as: UTF8.self)
         #expect(finalPlaylist.hasSuffix("#EXT-X-ENDLIST\n"))
+        #expect(finalPlaylist.contains("#EXT-X-MEDIA-SEQUENCE:26\n"))
+        #expect(finalPlaylist.split(separator: "\n").filter { $0.hasSuffix(".ts") } == [
+            "tubeist_recovery_session_26.ts", "tubeist_recovery_session_27.ts", "tubeist_recovery_session_28.ts",
+            "tubeist_recovery_session_29.ts", "tubeist_recovery_session_30.ts",
+        ])
         let finishedMetrics = await sink.metrics()
         #expect(finishedMetrics.lastAcceptedMediaSequence == 30)
         #expect(finishedMetrics.droppedFragments == 0)

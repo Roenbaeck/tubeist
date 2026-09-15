@@ -47,8 +47,19 @@ recovery is a reported capture failure. Healthy samples retain their timestamps 
 original HLG pixel buffers; concealment only supplies missing content. Long recovery
 may omit an incomplete live GOP, while retaining its encoded samples in the recording.
 
-Video processing and encoding overlap through a bounded latest-frame queue. Short
-timestamp skips during ongoing delivery retain their real timing instead of adding
+Video processing and encoding overlap through bounded queues that preserve arrival order.
+Normal video queues retain about 100 ms of media, with a hard cap of six waiting
+frames per stage. Audio keeps a larger FIFO of 32 waiting blocks (about 0.7 seconds
+for 1,024-sample blocks), without the short video age cutoff. Video carries its
+original callback arrival time through both stages, so its age allowance does not
+restart at the encoder queue. Queues start draining immediately without waiting to
+fill. Serial capture callbacks and queue consumers preserve sample order; timestamp
+discontinuities are handled by the live pipeline. Expired video is discarded on
+both arrival and dequeue, while in-flight work is allowed to finish. Original
+pixel buffers and sample timestamps are preserved without an extra video copy.
+The simulator mailbox tests exercise these limits with a controlled clock.
+
+Short timestamp skips during ongoing delivery retain their real timing instead of adding
 encoding work to an already busy pipeline. Actual delivery pauses can be concealed,
 but each batch has a one-frame-time work budget so it cannot monopolize microphone
 processing. A single hardware encoder call may itself exceed that budget.

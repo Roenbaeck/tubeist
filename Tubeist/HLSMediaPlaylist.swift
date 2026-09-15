@@ -42,7 +42,9 @@ struct HLSMediaPlaylist: Sendable, Equatable {
     private(set) var nextSequence: Int = 0
     private let acknowledgedTailCount: Int
 
-    init(sessionIdentifier: String, acknowledgedTailCount: Int = 2) throws {
+    // Retain five acknowledged entries through shutdown so subsequent playlist
+    // uploads can re-advertise a longer history without retaining media bytes.
+    init(sessionIdentifier: String, acknowledgedTailCount: Int = 5) throws {
         guard Self.isSafeFilenameComponent(sessionIdentifier),
               !sessionIdentifier.isEmpty,
               acknowledgedTailCount >= 0 else {

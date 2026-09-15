@@ -6,6 +6,13 @@
 //
 import AVFoundation
 
+private final class AudioCaptureIntake: @unchecked Sendable {
+    private let lock = NSLock()
+    private var enabled = false
+    func setEnabled(_ enabled: Bool) { lock.withLock { self.enabled = enabled } }
+    func isEnabled() -> Bool { lock.withLock { enabled } }
+}
+
 private actor SoundGrabbingActor {
     private var grabbingSound: Bool = false
     func start() {
@@ -37,11 +44,19 @@ final class SoundGrabber: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate
     @PipelineActor public static let shared = SoundGrabber()
     private let soundGrabbing: SoundGrabbingActor
     private let soundMailbox: BoundedAsyncMailbox<SendableSampleBuffer>
+    private let intake = AudioCaptureIntake()
 
     override init() {
         let soundGrabbing = SoundGrabbingActor()
         self.soundGrabbing = soundGrabbing
-        self.soundMailbox = BoundedAsyncMailbox(policy: .fifo(limit: 32)) { sampleBuffer in
+        self.soundMailbox = BoundedAsyncMailbox(
+            policy: CaptureBuffering.audioPolicy, timing: { $0.mailboxTiming },
+            onDrop: { submission in
+                guard submission.shouldReport(every: 32) else { return }
+                LOG("Dropped audio exceeding the capture buffer budget", level: .error)
+                Task { await Streamer.shared.setStreamHealth(.unusable) }
+            }
+        ) { sampleBuffer in
             await soundGrabbing.process(sampleBuffer)
         }
         super.init()
@@ -51,6 +66,7 @@ final class SoundGrabber: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate
         if await !soundGrabbing.isActive() {
             await soundGrabbing.start()
             soundMailbox.resetDropCount()
+            intake.setEnabled(true)
             LOG("Started grabbing sound", level: .debug)
         }
         else {
@@ -58,6 +74,7 @@ final class SoundGrabber: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate
         }
     }
     func terminateGrabbing() async {
+        intake.setEnabled(false)
         if await soundGrabbing.isActive() {
             await soundGrabbing.stop()
             LOG("Stopped grabbing sound", level: .debug)
@@ -76,13 +93,10 @@ final class SoundGrabber: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate
     nonisolated func captureOutput(_ output: AVCaptureOutput,
                        didOutput sampleBuffer: CMSampleBuffer,
                        from connection: AVCaptureConnection) {
+        // Output preview also attaches the microphone delegate. It needs no
+        // queued recording audio and must not report audio-overflow failures.
+        guard intake.isEnabled() else { return }
         nonisolated(unsafe) let sendableSampleBuffer = sampleBuffer
-        let submission = soundMailbox.submit(SendableSampleBuffer(value: sendableSampleBuffer))
-        if submission.dropped, submission.totalDropped % 32 == 1 {
-            LOG("Dropped queued audio work to keep capture memory bounded", level: .error)
-            Task {
-                await Streamer.shared.setStreamHealth(.unusable)
-            }
-        }
+        soundMailbox.submit(SendableSampleBuffer(value: sendableSampleBuffer))
     }
 }

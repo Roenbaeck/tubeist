@@ -1004,7 +1004,9 @@ private final class CaptureEventMonitor: @unchecked Sendable {
             forName: AVCaptureSession.wasInterruptedNotification,
             object: session,
             queue: nil
-        ) { _ in
+        ) { notification in
+            let reason = (notification.userInfo?[AVCaptureSessionInterruptionReasonKey] as? NSNumber)?.intValue
+            LOG("Camera session interrupted: \(Self.interruptionDescription(reason))", level: .warning)
             Task {
                 await Streamer.shared.handleCaptureSessionInterruption()
             }
@@ -1041,6 +1043,22 @@ private final class CaptureEventMonitor: @unchecked Sendable {
         })
 
         observers = newObservers
+    }
+
+    private static func interruptionDescription(_ value: Int?) -> String {
+        guard let value else { return "reason unavailable" }
+        // Raw values also describe newer reasons when built with an older SDK.
+        let description: String
+        switch value {
+        case 1: description = "camera unavailable in background"
+        case 2: description = "microphone in use by another client"
+        case 3: description = "camera in use by another client"
+        case 4: description = "camera unavailable with multiple foreground apps"
+        case 5: description = "camera unavailable due to system pressure"
+        case 6: description = "sensitive-content mitigation active"
+        default: description = "unknown reason"
+        }
+        return "\(description) (\(value))"
     }
 
     deinit {

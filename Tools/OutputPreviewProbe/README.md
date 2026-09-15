@@ -8,6 +8,13 @@ It maps the existing Y and CbCr planes as read-only GPU textures and writes a
 separate half-float RGB drawable. It does not modify the camera buffer, overlay
 compositing, color attachments, encoder configuration, recording or stream.
 At most two preview frames can be in flight; busy previews drop frames.
+Device/pipeline preparation and rendering run on dedicated dispatch queues.
+The view uses a CAMetalLayer, with one replaceable pending frame; drawable
+acquisition and resizing never run on the UI thread. Closing the monitor clears
+pending work without waiting for a blocked display call or GPU completion.
+Camera preview connection changes also run off the UI thread, serialized with
+camera configuration. Slow preview operations and camera interruption reasons
+are logged to help diagnose device-only stalls.
 
 The shader reconstructs HLG RGB from full- or video-range ten-bit YCbCr,
 accounting for declared chroma siting. It uses the compositor's fixed BT.2100

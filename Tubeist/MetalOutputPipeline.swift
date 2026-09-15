@@ -85,7 +85,9 @@ final class MetalOutputFrame: @unchecked Sendable {
     }
 }
 
-final class MetalOutputPipeline {
+// Initialization hands the pipeline to a single preview render queue. Only that
+// queue uses the texture cache; GPU completion handlers retain immutable frames.
+final class MetalOutputPipeline: @unchecked Sendable {
     static let pixelFormat: MTLPixelFormat = .rgba16Float
     static let referenceHeadroom: CGFloat = 1000 / 203
     let device: MTLDevice
@@ -102,15 +104,30 @@ final class MetalOutputPipeline {
         try self.init(device: device, queue: queue, pipeline: pipeline)
     }
 
-    /// Shader compilation can take time on the first output-monitor switch.
-    /// Let Metal prepare it asynchronously instead of blocking the UI thread.
-    @MainActor
-    static func makeForPreview(device: MTLDevice) async throws -> MetalOutputPipeline {
-        guard let queue = device.makeCommandQueue(), let library = device.makeDefaultLibrary() else {
-            throw OutputPreviewError.unavailable
+    private static let preparationQueue = DispatchQueue(
+        label: "com.subside.Tubeist.preview-prepare", qos: .userInitiated
+    )
+
+    /// Device/library loading and texture-cache creation may also block, not
+    /// just shader compilation. Keep the entire preparation off the UI thread.
+    static func makeForPreview(reportSlowPreparation: @escaping @Sendable (TimeInterval) -> Void = { _ in }) async throws -> MetalOutputPipeline {
+        try Task.checkCancellation()
+        let result: MetalOutputPipeline = try await withCheckedThrowingContinuation { continuation in
+            preparationQueue.async {
+                let started = ProcessInfo.processInfo.systemUptime
+                let result = Result {
+                    guard let device = MTLCreateSystemDefaultDevice() else { throw OutputPreviewError.unavailable }
+                    return try MetalOutputPipeline(device: device)
+                }
+                let elapsed = ProcessInfo.processInfo.systemUptime - started
+                if elapsed > 1 {
+                    reportSlowPreparation(elapsed)
+                }
+                continuation.resume(with: result)
+            }
         }
-        let pipeline = try await device.makeRenderPipelineState(descriptor: descriptor(library: library))
-        return try MetalOutputPipeline(device: device, queue: queue, pipeline: pipeline)
+        try Task.checkCancellation()
+        return result
     }
 
     private static func descriptor(library: MTLLibrary) -> MTLRenderPipelineDescriptor {

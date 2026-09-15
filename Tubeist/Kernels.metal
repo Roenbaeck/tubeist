@@ -518,6 +518,7 @@ float snoise(float2 p, float time) {
     // Add time variation to input coordinates
     p += float2(sin(time * 0.1 + p.y), cos(time * 0.1 + p.x)) * 0.5;
     
+    float n0, n1, n2;
     const float F2 = 0.366025404f;
     const float G2 = 0.211324865f;
     
@@ -536,13 +537,31 @@ float snoise(float2 p, float time) {
     int gi1 = hash(hash(int(i.x) + i1.x + timeHash) + int(i.y) + i1.y);
     int gi2 = hash(hash(int(i.x) + 1 + timeHash) + int(i.y) + 1);
     
-    // Clamp the three corner weights together; zero-weight corners need no
-    // divergent branches. Keep both octaves and the original gradient table.
-    float3 weight = max(float3(0.5) - float3(dot(p0, p0), dot(p1, p1), dot(p2, p2)), 0.0);
-    weight *= weight;
-    weight *= weight;
-    float3 gradient = float3(dot(grad2[gi0 & 7], p0), dot(grad2[gi1 & 7], p1), dot(grad2[gi2 & 7], p2));
-    return 70.0 * dot(weight, gradient);
+    float t0 = 0.5 - p0.x * p0.x - p0.y * p0.y;
+    if(t0 < 0) {
+        n0 = 0.0;
+    } else {
+        t0 *= t0;
+        n0 = t0 * t0 * dot(grad2[gi0 & 7], p0);
+    }
+
+    float t1 = 0.5 - p1.x * p1.x - p1.y * p1.y;
+    if(t1 < 0) {
+        n1 = 0.0;
+    } else {
+        t1 *= t1;
+        n1 = t1 * t1 * dot(grad2[gi1 & 7], p1);
+    }
+
+    float t2 = 0.5 - p2.x * p2.x - p2.y * p2.y;
+    if(t2 < 0) {
+        n2 = 0.0;
+    } else {
+        t2 *= t2;
+        n2 = t2 * t2 * dot(grad2[gi2 & 7], p2);
+    }
+
+    return 70.0 * (n0 + n1 + n2);
 }
 
 kernel void grain(constant KernelArguments &args [[buffer(0)]],
@@ -555,6 +574,9 @@ kernel void grain(constant KernelArguments &args [[buffer(0)]],
     float4 color = yTexture.read(gid);
     float y = color.r;
     
+    float2 resolution = float2(yTexture.get_width(), yTexture.get_height());
+    float2 uv = float2(gid) / resolution;
+
     float noise = 0.0;
     float frequency = 2.0;
     float amplitude = 1.0;
@@ -565,7 +587,7 @@ kernel void grain(constant KernelArguments &args [[buffer(0)]],
     float timeValue = float(args.frame) * 0.05;
     
     for (int i = 0; i < 2; i++) { // using 2 octaves
-        float2 coord = float2(gid) * frequency * 0.05; // 0.05 makes finer grain than 0.03
+        float2 coord = uv * frequency * resolution * 0.05; // 0.05 makes finer grain than 0.03
         
         // Pass time to noise function
         float n = snoise(coord, timeValue + float(i) * 1.618); // Golden ratio for varied offsets

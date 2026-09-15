@@ -12,12 +12,31 @@ struct CameraMonitorView: UIViewControllerRepresentable {
     public static private(set) var previewLayer: AVCaptureVideoPreviewLayer?
     private static var previewGeneration = UUID()
     private static var previewEnabled = true
+    private static var connectionUpdate: Task<Void, Never>?
     var isPreviewEnabled = true
 
     static func setPreviewEnabled(_ enabled: Bool) {
+        let changed = previewEnabled != enabled
         previewEnabled = enabled
-        previewLayer?.connection?.isEnabled = enabled
         previewLayer?.isHidden = !enabled
+        if changed { updateConnection() }
+    }
+
+    private static func updateConnection() {
+        connectionUpdate?.cancel()
+        guard let connection = previewLayer?.connection else { return }
+        let enabled = previewEnabled
+        // A connection change can wait on the capture service. Serialize it
+        // with camera configuration, never with SwiftUI's main-thread update.
+        connectionUpdate = Task { @PipelineActor in
+            guard !Task.isCancelled else { return }
+            let started = ProcessInfo.processInfo.systemUptime
+            connection.isEnabled = enabled
+            let elapsed = ProcessInfo.processInfo.systemUptime - started
+            if elapsed > 1 {
+                LOG(String(format: "Camera preview connection change took %.2f seconds; enabled=%@", elapsed, String(enabled)), level: .warning)
+            }
+        }
     }
 
     static func createPreviewLayer(
@@ -30,10 +49,13 @@ struct CameraMonitorView: UIViewControllerRepresentable {
         guard !Task.isCancelled, generation == previewGeneration, previewLayer == nil else { return }
         previewLayer = AVCaptureVideoPreviewLayer(session: session)
         setPreviewEnabled(previewEnabled)
+        updateConnection()
         LOG("Created camera video preview layer", level: .debug)
     }
 
     static func deletePreviewLayer() {
+        connectionUpdate?.cancel()
+        connectionUpdate = nil
         previewGeneration = UUID()
         CameraMonitorView.previewLayer?.removeFromSuperlayer()
         CameraMonitorView.previewLayer = nil

@@ -5,7 +5,7 @@ These tools validate evidence from the physical-device and TestFlight matrix in
 
 ## Direct-HLS report
 
-In a Debug build, enable **Settings → Diagnostics → Record YouTube HLS acceptance
+In a Debug build, enable **Settings → YouTube HLS Development → Record YouTube HLS acceptance
 events** before starting one scenario. After Stop has fully completed, retrieve
 the app's shared `TubeistDirectHLSAcceptance/<session>/acceptance.jsonl` file with
 Finder, the Files app, or Xcode's device-container download.

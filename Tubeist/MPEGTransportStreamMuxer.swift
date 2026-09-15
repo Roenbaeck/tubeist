@@ -304,7 +304,15 @@ private extension MPEGTransportStreamMuxer {
             throw MPEGTransportStreamError.malformedSample("HEVC access unit has no NAL units")
         }
 
-        var output = Data()
+        // H.222.0 section 2.17.1 requires an AUD first in every HEVC access
+        // unit carried in TS. VideoToolbox's MP4 samples can omit it. Match
+        // FFmpeg's all-slice-types delimiter without changing picture data.
+        let delimiters = units.filter { $0.type == 35 }
+        guard delimiters.count <= 1 else {
+            throw MPEGTransportStreamError.malformedSample("multiple HEVC access unit delimiters")
+        }
+        var output = Data([0, 0, 0, 1])
+        output.append(delimiters.first?.data ?? Data([0x46, 0x01, 0x50]))
         if prependParameterSets {
             let inBandTypes = Set(units.map(\.type))
             let configuredSets: [(UInt8, [Data])] = [
@@ -319,7 +327,7 @@ private extension MPEGTransportStreamMuxer {
                 }
             }
         }
-        for unit in units {
+        for unit in units where unit.type != 35 {
             output.append(contentsOf: [0, 0, 0, 1])
             output.append(unit.data)
         }
