@@ -52,6 +52,29 @@ final class AssetWriterFinalizationFlag: @unchecked Sendable {
     }
 }
 
+/// Passthrough AAC is laid out by packet duration in AVAssetWriter. Track that
+/// actual file timeline, so rounding a gap to whole packets cannot accumulate
+/// across repeated recoveries. The maximum error is half an AAC packet.
+struct RecordingAudioTimeline {
+    private(set) var end: CMTime?
+
+    func needsSilence(before pts: CMTime, packetDuration: CMTime) throws -> Bool {
+        guard pts.isNumeric, packetDuration.isNumeric, packetDuration > .zero else {
+            throw MediaEncodingError.invalid("Invalid recording audio timing")
+        }
+        guard let end else { return false }
+        let gap = CMTimeSubtract(pts, end)
+        // The capture watchdog fails after 30 seconds. Bound work even if a
+        // malformed timestamp somehow reaches the recording beyond recovery.
+        guard gap.seconds <= 60 else { throw MediaEncodingError.invalid("Recording audio gap exceeds 60 seconds") }
+        return gap > CMTimeMultiplyByRatio(packetDuration, multiplier: 1, divisor: 2)
+    }
+
+    mutating func appended(pts: CMTime, duration: CMTime) {
+        end = CMTimeAdd(end ?? pts, duration)
+    }
+}
+
 @PipelineActor
 final class RecordingAssetWriter {
     private let writer: AVAssetWriter
@@ -59,6 +82,8 @@ final class RecordingAssetWriter {
     private var audioInput: AVAssetWriterInput?
     private var video: [CMSampleBuffer] = []
     private var audio: [CMSampleBuffer] = []
+    private var audioTimeline = RecordingAudioTimeline()
+    private var silencePacket: CMSampleBuffer?
     private var started = false
     private var lastFlushPTS = CMTime.zero
     private let finalizationFlag: AssetWriterFinalizationFlag
@@ -120,6 +145,7 @@ final class RecordingAssetWriter {
 
     private func drain() throws {
         guard started else { return }
+        var paddedPackets = 0
         while true {
             var progress = false
             if let input = videoInput, input.isReadyForMoreMediaData, let sample = video.first {
@@ -135,12 +161,42 @@ final class RecordingAssetWriter {
                 progress = true
             }
             if let input = audioInput, input.isReadyForMoreMediaData, let sample = audio.first {
-                guard input.append(sample) else { throw appendError() }
-                audio.removeFirst()
+                let pts = CMSampleBufferGetPresentationTimeStamp(sample)
+                let duration = CMSampleBufferGetDuration(sample)
+                if try audioTimeline.needsSilence(before: pts, packetDuration: duration), let end = audioTimeline.end {
+                    // Do not let a long recovery monopolize capture processing.
+                    // Padding is produced lazily, never queued as seconds of PCM.
+                    guard paddedPackets < 64 else { return }
+                    let padding = try makeSilence(at: end, matching: sample)
+                    guard input.append(padding) else { throw appendError() }
+                    audioTimeline.appended(pts: end, duration: CMSampleBufferGetDuration(padding))
+                    paddedPackets += 1
+                } else {
+                    guard input.append(sample) else { throw appendError() }
+                    audioTimeline.appended(pts: pts, duration: duration)
+                    audio.removeFirst()
+                }
                 progress = true
             }
             if !progress { return }
         }
+    }
+
+    private func makeSilence(at pts: CMTime, matching sample: CMSampleBuffer) throws -> CMSampleBuffer {
+        guard let format = CMSampleBufferGetFormatDescription(sample) else {
+            throw MediaEncodingError.invalid("Recording audio has no format")
+        }
+        if silencePacket == nil || !CMFormatDescriptionEqual(CMSampleBufferGetFormatDescription(silencePacket!), otherFormatDescription: format) {
+            silencePacket = try AACAudioEncoder.silencePacket(matching: format)
+        }
+        guard let silencePacket else { throw MediaEncodingError.invalid("Recording silence is unavailable") }
+        var timing = CMSampleTimingInfo(duration: CMSampleBufferGetDuration(silencePacket),
+            presentationTimeStamp: pts, decodeTimeStamp: .invalid)
+        var copy: CMSampleBuffer?
+        try checkMediaStatus(CMSampleBufferCreateCopyWithNewTiming(allocator: nil, sampleBuffer: silencePacket,
+            sampleTimingEntryCount: 1, sampleTimingArray: &timing, sampleBufferOut: &copy), "Timing recording silence")
+        guard let copy else { throw MediaEncodingError.invalid("Could not time recording silence") }
+        return copy
     }
 
     private func appendError() -> MediaEncodingError {

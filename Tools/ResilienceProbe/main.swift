@@ -20,9 +20,11 @@ import Foundation
         let recording = try RecordingAssetWriter(delegate: collector, finalizationFlag: AssetWriterFinalizationFlag())
         let pipeline = LiveEncodingPipeline(now: { clock.read() }, automaticWatchdog: false,
                                             publish: { await sink.enqueue($0) })
-        try pipeline.start(preset: Preset(), stream: true, recording: recording)
+        var preset = Preset()
+        if scenario == "mono-recovery" { preset.audioChannels = 1 }
+        try pipeline.start(preset: preset, stream: true, recording: recording)
         let rate = 48_000.0
-        let duration = scenario == "network-overflow" ? 70.4 : scenario == "stabilization-changes" ? 33.4 : 10.4
+        let duration = scenario == "network-overflow" ? 70.4 : scenario == "stabilization-changes" ? 33.4 : scenario == "long-recovery" ? 34.4 : 10.4
         let totalFrames = Int(duration * 30)
         var audioOffset = 0
         var recoveryObserved = false
@@ -43,6 +45,7 @@ import Foundation
             if scenario == "processing-pressure" {
                 return video && !Int((time * 30).rounded()).isMultiple(of: 3)
             }
+            if scenario == "long-recovery" { return (3..<30).contains(time) }
             if scenario == "short-gaps" { return time >= 2 && time < 2.2 }
             if scenario == "audio-pool-startup" { return video && time < 2.5 }
             if scenario == "audio-pool-recovery" { return video && (3..<8).contains(time) }
@@ -50,7 +53,7 @@ import Foundation
                 return video && ((3..<6).contains(time) || (12..<15).contains(time) || (21..<24).contains(time))
             }
             guard time >= 3 && time < 6 else { return false }
-            return scenario == "both-stall" || scenario == (video ? "video-stall" : "audio-stall")
+            return ["both-stall", "mono-recovery"].contains(scenario) || scenario == (video ? "video-stall" : "audio-stall")
         }
 
         for frame in 0..<totalFrames {
@@ -102,7 +105,7 @@ import Foundation
         try await sink.finish(timeout: 20)
         try collector.save(to: folder.appendingPathComponent("recording.mp4"))
         let metrics = await sink.metrics()
-        if ["both-stall", "audio-stall", "video-stall", "clock-reset", "stabilization-changes"].contains(scenario) {
+        if ["both-stall", "mono-recovery", "long-recovery", "audio-stall", "video-stall", "clock-reset", "stabilization-changes"].contains(scenario) {
             precondition(recoveryObserved, "Did not exercise coordinated capture recovery")
         }
         if scenario == "network-overflow" {

@@ -333,6 +333,37 @@ final class AACAudioEncoder {
         self.sampleRate = sampleRate
     }
 
+    /// Encode silence once for recording-only gap padding. Healthy AAC packets
+    /// remain untouched, and no extra converter runs during normal capture.
+    static func silencePacket(matching format: CMAudioFormatDescription) throws -> CMSampleBuffer {
+        guard let description = CMAudioFormatDescriptionGetStreamBasicDescription(format) else {
+            throw MediaEncodingError.invalid("Recording gap padding has no audio description")
+        }
+        let asbd = description.pointee
+        guard asbd.mFormatID == kAudioFormatMPEG4AAC,
+              asbd.mFramesPerPacket == 0 || asbd.mFramesPerPacket == 1024,
+              asbd.mSampleRate.isFinite, (8_000...96_000).contains(asbd.mSampleRate),
+              asbd.mChannelsPerFrame == 1 || asbd.mChannelsPerFrame == 2,
+              let pcmFormat = AVAudioFormat(standardFormatWithSampleRate: asbd.mSampleRate,
+                                           channels: asbd.mChannelsPerFrame),
+              let pcm = AVAudioPCMBuffer(pcmFormat: pcmFormat, frameCapacity: 4096) else {
+            throw MediaEncodingError.invalid("Recording gap padding requires mono or stereo AAC-LC (format \(asbd.mFormatID), frames \(asbd.mFramesPerPacket), rate \(asbd.mSampleRate), channels \(asbd.mChannelsPerFrame))")
+        }
+        pcm.frameLength = pcm.frameCapacity
+        for buffer in UnsafeMutableAudioBufferListPointer(pcm.mutableAudioBufferList) {
+            if let data = buffer.mData { memset(data, 0, Int(buffer.mDataByteSize)) }
+        }
+        let encoder = AACAudioEncoder(channels: Int(asbd.mChannelsPerFrame),
+            bitratePerChannel: min(64_000, Int(asbd.mSampleRate * 2)), sampleRate: asbd.mSampleRate)
+        try encoder.configure(pcmFormat)
+        try encoder.timeline?.append(presentationTime: .zero, frames: Int(pcm.frameLength))
+        let packets = try encoder.convert(pcm, finishing: false) + encoder.finish()
+        guard packets.count >= 3 else { throw MediaEncodingError.invalid("Could not encode recording silence") }
+        // Select an interior packet, away from encoder priming and final padding.
+        let payload = try EncodedSampleAdapter.sample(packets[packets.count / 2], kind: .audio).data
+        return try encoder.makePacket(payload, format: format, pts: .zero, frames: 1024)
+    }
+
     func encode(_ sample: CMSampleBuffer, basePTS: CMTime) throws -> [CMSampleBuffer] {
         acceptedInput = false
         guard let description = CMSampleBufferGetFormatDescription(sample) else {

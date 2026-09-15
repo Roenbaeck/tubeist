@@ -8,7 +8,8 @@ let AUDIO_SAMPLE_RATE = 44_100.0
 struct Preset: Sendable {
     let width = 320, height = 180
     let frameRate = 30.0, keyframeInterval = 2.0
-    let audioChannels = 2, audioBitrate = 64_000, videoBitrate = 1_000_000
+    var audioChannels = 2
+    let audioBitrate = 64_000, videoBitrate = 1_000_000
 }
 enum Settings { static let selectedPreset = Preset() }
 enum LogLevel { case debug, info, warning, error }

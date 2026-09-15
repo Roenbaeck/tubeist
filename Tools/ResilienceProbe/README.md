@@ -17,7 +17,9 @@ The scenarios cover:
 - Missing 200 ms of audio/video, duplicate samples and late samples.
 - Sustained frame coalescing under processing pressure, without manufacturing
   duplicate catch-up work or interrupting healthy audio.
-- Three-second loss of both tracks, or either track independently.
+- Three-second loss of both tracks, or either track independently, with mono
+  and stereo recording coverage.
+- A 27-second loss followed by recovery, exercising bounded recording padding.
 - A backward capture-clock reset while capture callbacks continue.
 - Repeated stabilization changes, including video arriving 1.2 seconds behind
   audio and then switching to a shorter delay on the same stream.
@@ -33,6 +35,9 @@ that healthy/briefly repaired capture loses no frames, and that silence replaces
 missing microphone samples without removing surrounding audio. Recovered segments
 must start with aligned audio even when stabilization delays video delivery. Network overflow
 must preserve the complete recording while resuming upload with a small backlog.
+Every uploaded AAC payload must also be present unchanged in the MP4, with its
+timestamp agreeing with the shared video/transport clock to within one AAC packet.
+This check rejects recordings that decode correctly but collapse recovery gaps.
 Artifacts are retained in the printed temporary directory.
 
 The app allows 200 ms for delayed capture delivery, conceals missing media for up
@@ -68,3 +73,30 @@ Simulator unit tests separately cover timestamp arithmetic and clock drift,
 playlist discontinuity history, immutable target duration, bounded segment ordering,
 retry exhaustion/recovery/cancellation, and transport-stream payload preservation.
 Actual YouTube playback and phone capture interruptions remain device acceptance checks.
+
+## Recording audio across recovery
+
+AVAssetWriter's compressed AAC passthrough path does not preserve empty audio
+intervals merely from the resumed packet timestamps. Recording fills these
+missing intervals with encoded silence, without decoding or re-encoding captured
+audio/video. A silent AAC-LC packet is generated and cached only when first
+needed for a format. Both mono and stereo use their own matching packet.
+
+The writer tracks elapsed packet duration from the first audio timestamp and
+pads toward the next real timestamp. This carries fractional-packet rounding
+across recoveries rather than accumulating a new error each time. Rounding is
+bounded by half a packet (about 11.6 ms at 44.1 kHz), plus container time-base
+quantization. A simulator test covers 1,000 fractional-packet recoveries.
+Padding is generated lazily with a limit of 64 packets per drain call, reuses
+compressed bytes, and respects writer backpressure. It cannot enqueue seconds
+of PCM or run an encoder continuously. The YouTube path receives the original
+encoded samples and retains its existing discontinuity handling.
+
+The verifier checks packet payloads and timing in every media scenario, and
+also decodes the middle of a long recording gap to ensure that it is silence.
+The original three-second-stall recording fails this check by about 1.29 seconds;
+the fixed recording is within 11.1 ms in the same fixture. Repeated stabilization
+changes measured a maximum error of 6.94 ms, and the 27-second interruption
+measured 2.72 ms. All fifteen scenarios pass, alongside twelve focused simulator
+tests and the iOS Release build. Physical-phone/YouTube acceptance
+remains separate from these real-framework offline checks.

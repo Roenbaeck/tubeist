@@ -21,7 +21,7 @@ xcrun swiftc -swift-version 6 -parse-as-library \
   "${repository_root}/Tubeist/AdaptiveBitrateController.swift" \
   "${repository_root}/Tools/VideoToolboxProbe/MediaFixtures.swift" \
   "${tool_directory}/Support.swift" "${tool_directory}/main.swift" -o "${artifact_root}/probe"
-scenarios=(watchdog healthy startup-audio-overlap short-gaps processing-pressure both-stall audio-stall video-stall clock-reset stabilization-changes audio-pool-startup audio-pool-recovery network-overflow)
+scenarios=(watchdog healthy startup-audio-overlap short-gaps processing-pressure both-stall mono-recovery long-recovery audio-stall video-stall clock-reset stabilization-changes audio-pool-startup audio-pool-recovery network-overflow)
 if (( $# > 0 )); then scenarios=("$@"); fi
 for scenario in "${scenarios[@]}"; do
   "${artifact_root}/probe" "${artifact_root}/${scenario}" "${scenario}"

@@ -186,6 +186,8 @@ kernel void rotoscope(constant KernelArguments &args [[buffer(0)]],
 kernel void vhs(constant KernelArguments &args [[buffer(0)]],
                 texture2d<float, access::read_write> yTexture [[texture(0)]],
                 texture2d<float, access::read_write> cbcrTexture [[texture(1)]],
+                texture2d<float, access::read> sourceY [[texture(2)]],
+                texture2d<float, access::read> sourceCbCr [[texture(3)]],
                 uint2 gid [[thread_position_in_grid]]) {
 
     // Get texture dimensions
@@ -226,8 +228,11 @@ kernel void vhs(constant KernelArguments &args [[buffer(0)]],
     }
 
     // Calculate horizontal distortion offset using sine wave WITH ERRATIC MODULATION
-    float baseSine = -abs(sin(float(gid.x) * distortionFrequency + args.frame * distortionSpeed));  // Base sine wave
-    float horizontalDistortion = (baseSine + randomOffset) * distortionAmplitude * verticalDistortionFactor;
+    float horizontalDistortion = 0.0;
+    if (verticalDistortionFactor > 0.0) {
+        float baseSine = -abs(sin(float(gid.x) * distortionFrequency + args.frame * distortionSpeed));
+        horizontalDistortion = (baseSine + randomOffset) * distortionAmplitude * verticalDistortionFactor;
+    }
 
     // --- Apply effects to Y texture ---
     float4 ySample;
@@ -236,17 +241,20 @@ kernel void vhs(constant KernelArguments &args [[buffer(0)]],
     // Apply horizontal distortion to gid.x for Y texture read
     distortedGidY.x = clamp(int(gid.x + horizontalDistortion), 0, yWidth - 1); // Clamp to texture bounds
     
-    ySample = yTexture.read(uint2(distortedGidY));
+    // Only the top edge samples neighbouring luma; other rows can safely
+    // read their own original pixel before writing it.
+    ySample = verticalDistortionFactor > 0.0 ? sourceY.read(uint2(distortedGidY)) : yTexture.read(gid);
     float y = ySample.r;
 
     // Apply banding to the Y value
     y *= bandingFactor;
 
     // --- Add Luma Noise in Distortion Zones ---
-    float edgeNoiseAmount = args.strength * verticalNoiseFactor; // Control noise amount, scaled by vertical factor and strength
-    float edgeNoise = (fract(sin(dot(float2(gid) + float2(args.frame * 1.2), float2(54.123, 91.876))) * 43758.5453) - 0.5) * edgeNoiseAmount;
-    
-    y += edgeNoise * verticalDistortionFactor;
+    if (verticalDistortionFactor > 0.0) {
+        float edgeNoiseAmount = args.strength * verticalNoiseFactor;
+        float edgeNoise = (fract(sin(dot(float2(gid) + float2(args.frame * 1.2), float2(54.123, 91.876))) * 43758.5453) - 0.5) * edgeNoiseAmount;
+        y += edgeNoise * verticalDistortionFactor;
+    }
 
     // --- Horizontal White Line Defects ---
     float whiteLineProbability = args.strength * 0.001;  // Probability of a white line per row, adjust scale as needed
@@ -269,6 +277,9 @@ kernel void vhs(constant KernelArguments &args [[buffer(0)]],
     // Write the modified Y value back to the Y texture
     yTexture.write(float4(y, ySample.gba), gid);
 
+    // One writer per subsampled chroma pixel (four luma pixels share it in 4:2:0).
+    if (gid.x % args.widthRatio != 0 || gid.y % args.heightRatio != 0) { return; }
+
     // --- Apply effects to CbCr texture ---
     int cbcrWidth = cbcrTexture.get_width();
     int cbcrHeight = cbcrTexture.get_height();
@@ -286,8 +297,8 @@ kernel void vhs(constant KernelArguments &args [[buffer(0)]],
     distortedGidCbCr.x = clamp(int(cbcrGid.x + horizontalDistortion / args.widthRatio), 0, cbcrWidth - 1); // Scale distortion to CbCr space & clamp
 
     // Apply offsets in CbCr texture space
-    uint2 cbGid_cbcr = distortedGidCbCr + uint2(offset.x / args.widthRatio, offset.y / args.heightRatio); // Use distorted GID here
-    uint2 crGid_cbcr = distortedGidCbCr - uint2(offset.x / args.widthRatio, offset.y / args.heightRatio); // Use distorted GID here
+    int2 cbGid_cbcr = int2(distortedGidCbCr) + int2(offset.x / args.widthRatio, offset.y / args.heightRatio); // Use distorted GID here
+    int2 crGid_cbcr = int2(distortedGidCbCr) - int2(offset.x / args.widthRatio, offset.y / args.heightRatio); // Use distorted GID here
 
     // Clamp CbCr GIDs to CbCr texture bounds
     cbGid_cbcr.x = clamp(int(cbGid_cbcr.x), 0, cbcrWidth - 1);
@@ -300,8 +311,8 @@ kernel void vhs(constant KernelArguments &args [[buffer(0)]],
     crGid_cbcr.y = crGid_cbcr.y % args.threadgroupHeight == 0 ? cbcrGid.y : crGid_cbcr.y;
 
     // Sample Cb and Cr from cbcrTexture using distorted CbCr-space coordinates
-    float4 cbcrSampleCb = cbcrTexture.read(uint2(cbGid_cbcr));
-    float4 cbcrSampleCr = cbcrTexture.read(uint2(crGid_cbcr));
+    float4 cbcrSampleCb = sourceCbCr.read(uint2(cbGid_cbcr));
+    float4 cbcrSampleCr = sourceCbCr.read(uint2(crGid_cbcr));
 
     // Write to cbcrTexture at the original CbCr-space gid (non-distorted base)
     cbcrTexture.write(float4(cbcrSampleCb.r, cbcrSampleCr.g, 0.0, 0.0), cbcrGid); // Use non-distorted base for write
@@ -507,7 +518,6 @@ float snoise(float2 p, float time) {
     // Add time variation to input coordinates
     p += float2(sin(time * 0.1 + p.y), cos(time * 0.1 + p.x)) * 0.5;
     
-    float n0, n1, n2;
     const float F2 = 0.366025404f;
     const float G2 = 0.211324865f;
     
@@ -526,31 +536,13 @@ float snoise(float2 p, float time) {
     int gi1 = hash(hash(int(i.x) + i1.x + timeHash) + int(i.y) + i1.y);
     int gi2 = hash(hash(int(i.x) + 1 + timeHash) + int(i.y) + 1);
     
-    float t0 = 0.5 - p0.x * p0.x - p0.y * p0.y;
-    if(t0 < 0) {
-        n0 = 0.0;
-    } else {
-        t0 *= t0;
-        n0 = t0 * t0 * dot(grad2[gi0 & 7], p0);
-    }
-    
-    float t1 = 0.5 - p1.x * p1.x - p1.y * p1.y;
-    if(t1 < 0) {
-        n1 = 0.0;
-    } else {
-        t1 *= t1;
-        n1 = t1 * t1 * dot(grad2[gi1 & 7], p1);
-    }
-    
-    float t2 = 0.5 - p2.x * p2.x - p2.y * p2.y;
-    if(t2 < 0) {
-        n2 = 0.0;
-    } else {
-        t2 *= t2;
-        n2 = t2 * t2 * dot(grad2[gi2 & 7], p2);
-    }
-    
-    return 70.0 * (n0 + n1 + n2);
+    // Clamp the three corner weights together; zero-weight corners need no
+    // divergent branches. Keep both octaves and the original gradient table.
+    float3 weight = max(float3(0.5) - float3(dot(p0, p0), dot(p1, p1), dot(p2, p2)), 0.0);
+    weight *= weight;
+    weight *= weight;
+    float3 gradient = float3(dot(grad2[gi0 & 7], p0), dot(grad2[gi1 & 7], p1), dot(grad2[gi2 & 7], p2));
+    return 70.0 * dot(weight, gradient);
 }
 
 kernel void grain(constant KernelArguments &args [[buffer(0)]],
@@ -563,9 +555,6 @@ kernel void grain(constant KernelArguments &args [[buffer(0)]],
     float4 color = yTexture.read(gid);
     float y = color.r;
     
-    float2 resolution = float2(yTexture.get_width(), yTexture.get_height());
-    float2 uv = float2(gid) / resolution;
-    
     float noise = 0.0;
     float frequency = 2.0;
     float amplitude = 1.0;
@@ -576,7 +565,7 @@ kernel void grain(constant KernelArguments &args [[buffer(0)]],
     float timeValue = float(args.frame) * 0.05;
     
     for (int i = 0; i < 2; i++) { // using 2 octaves
-        float2 coord = uv * frequency * resolution * 0.05; // 0.05 makes finer grain than 0.03
+        float2 coord = float2(gid) * frequency * 0.05; // 0.05 makes finer grain than 0.03
         
         // Pass time to noise function
         float n = snoise(coord, timeValue + float(i) * 1.618); // Golden ratio for varied offsets

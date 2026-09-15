@@ -64,6 +64,8 @@ private actor FrameTinkerer {
     private var kernels: [String: KernelSettings] = [:]
     private var lumaTexture: CVMetalTexture?
     private var chromaTexture: CVMetalTexture?
+    private var vhsSourceY: MTLTexture?
+    private var vhsSourceCbCr: MTLTexture?
     private var loggedDiagnostics: Set<String> = []
 
     // overlay imprinting
@@ -102,6 +104,8 @@ private actor FrameTinkerer {
         let selectedStyle = Settings.style
         guard let selectedStyle, selectedStyle != NO_STYLE else {
             style = nil
+            vhsSourceY = nil
+            vhsSourceCbCr = nil
             return
         }
         guard kernels[selectedStyle] != nil else {
@@ -113,6 +117,10 @@ private actor FrameTinkerer {
             return
         }
         style = selectedStyle
+        if selectedStyle != "VHS" {
+            vhsSourceY = nil
+            vhsSourceCbCr = nil
+        }
     }
     func getStyle() -> String? {
         style
@@ -452,6 +460,36 @@ private actor FrameTinkerer {
     private func logTextureFailure(_ message: String) {
         logOnce(key: "texture-failure", message: message)
     }
+
+    private func prepareVHS(commandBuffer: MTLCommandBuffer) -> Bool {
+        guard let metalDevice, let lumaTexture, let chromaTexture,
+              let y = CVMetalTextureGetTexture(lumaTexture),
+              let cbcr = CVMetalTextureGetTexture(chromaTexture) else { return false }
+        func snapshotTexture(for source: MTLTexture, height: Int, cached: MTLTexture?) -> MTLTexture? {
+            if let cached, cached.width == source.width, cached.height == height,
+               cached.pixelFormat == source.pixelFormat { return cached }
+            let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: source.pixelFormat,
+                width: source.width, height: height, mipmapped: false)
+            descriptor.storageMode = .private
+            descriptor.usage = .shaderRead
+            return metalDevice.makeTexture(descriptor: descriptor)
+        }
+        vhsSourceY = snapshotTexture(for: y, height: Int(ceil(Float(y.height) * 0.05)), cached: vhsSourceY)
+        vhsSourceCbCr = snapshotTexture(for: cbcr, height: cbcr.height, cached: vhsSourceCbCr)
+        guard let vhsSourceY, let vhsSourceCbCr, let blit = commandBuffer.makeBlitCommandEncoder() else {
+            logOnce(key: "vhs-snapshot", message: "Could not prepare VHS source textures")
+            return false
+        }
+        // VHS reads displaced neighbours. Read an immutable copy so GPU scheduling
+        // cannot make it sample pixels that another thread has already modified.
+        // This is a byte copy of the original Y/CbCr planes, with no color conversion.
+        blit.copy(from: y, sourceSlice: 0, sourceLevel: 0, sourceOrigin: MTLOrigin(x: 0, y: 0, z: 0),
+            sourceSize: MTLSize(width: y.width, height: vhsSourceY.height, depth: 1),
+            to: vhsSourceY, destinationSlice: 0, destinationLevel: 0, destinationOrigin: MTLOrigin(x: 0, y: 0, z: 0))
+        blit.copy(from: cbcr, to: vhsSourceCbCr)
+        blit.endEncoding()
+        return true
+    }
     
     func apply(kernel: String, strength: Float, encoder: MTLComputeCommandEncoder) {
         guard let kernelSettings = kernels[kernel] else {
@@ -472,12 +510,18 @@ private actor FrameTinkerer {
         let argsPointer = kernelSettings.args.contents().bindMemory(to: KernelArguments.self, capacity: 1)
         argsPointer.pointee.strength = strength
         argsPointer.pointee.frame = frameNumber
-                
+
+        if kernel == "VHS" {
+            guard let vhsSourceY, let vhsSourceCbCr else { return }
+            encoder.setTexture(vhsSourceY, index: 2)
+            encoder.setTexture(vhsSourceCbCr, index: 3)
+        }
         encoder.setComputePipelineState(kernelSettings.pipeline)
         encoder.setTexture(metalLumaTexture, index: 0)
         encoder.setTexture(metalChromaTexture, index: 1)
         encoder.setBuffer(kernelSettings.args, offset: 0, index: 0)
         encoder.dispatchThreads(threadsPerGrid, threadsPerThreadgroup: kernelSettings.threads)
+        encoder.memoryBarrier(scope: .textures)
     }
 
     func imprintOverlay(encoder: MTLComputeCommandEncoder) {
@@ -516,21 +560,26 @@ private actor FrameTinkerer {
                 frameNumber += 1
                 frameNumber %= 600 // restart counter every 600 frames
                 if createTextures(from: sendableSampleBuffer) {
-                    if let commandBuffer = commandQueue?.makeCommandBuffer(),
-                       let encoder = commandBuffer.makeComputeCommandEncoder() {
-                        if let style {
-                            apply(kernel: style, strength: styleStrength, encoder: encoder)
-                        }
-                        if let effect {
-                            apply(kernel: effect, strength: effectStrength, encoder: encoder)
-                        }
-                        if overlayTexture != nil {
-                            imprintOverlay(encoder: encoder)
-                        }
-                        encoder.endEncoding()
-                        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-                            commandBuffer.addCompletedHandler { _ in continuation.resume() }
-                            commandBuffer.commit()
+                    if let commandBuffer = commandQueue?.makeCommandBuffer() {
+                        var styleReady = true
+                        if style == "VHS" { styleReady = prepareVHS(commandBuffer: commandBuffer) }
+                        if let encoder = commandBuffer.makeComputeCommandEncoder() {
+                            if let style, styleReady {
+                                apply(kernel: style, strength: styleStrength, encoder: encoder)
+                            }
+                            if let effect {
+                                apply(kernel: effect, strength: effectStrength, encoder: encoder)
+                            }
+                            if overlayTexture != nil {
+                                imprintOverlay(encoder: encoder)
+                            }
+                            encoder.endEncoding()
+                            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                                commandBuffer.addCompletedHandler { _ in continuation.resume() }
+                                commandBuffer.commit()
+                            }
+                        } else {
+                            logOnce(key: "command-objects", message: "Could not create Metal command objects")
                         }
                     } else {
                         logOnce(key: "command-objects", message: "Could not create Metal command objects")
