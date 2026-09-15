@@ -122,6 +122,8 @@ struct TubeistView: View {
             fading = false
             fadeMessage = message
         }
+        // Keep important warnings visible without animating the saving screen.
+        guard !appState.isBatterySavingOn else { return }
         fadeTask = Task { @MainActor in
             do {
                 try await Task.sleep(for: .seconds(1))
@@ -261,6 +263,8 @@ struct TubeistView: View {
     }
 
     func refreshCurrentYouTubeBroadcastStatus(logContext: String) async {
+        // A canceled poll must not invalidate a newer refresh's generation.
+        guard !Task.isCancelled else { return }
         guard youtubeService.isSignedIn,
               let streamKey = Settings.streamKey,
               !streamKey.isEmpty else {
@@ -285,6 +289,7 @@ struct TubeistView: View {
             appState.youtubeBroadcastId = broadcast.id
             appState.youtubeStatus = broadcast.lifeCycleStatus
         } catch {
+            guard !Task.isCancelled, !YouTubeDiagnostics.isCancellation(error) else { return }
             LOG("YouTube \(logContext) status failed: \(error.localizedDescription)", level: .debug)
             // A transient status request must not make the YouTube indicator
             // disappear. Keep the last known state until a successful refresh
@@ -293,7 +298,7 @@ struct TubeistView: View {
     }
 
     func refreshYouTubeStatusFromIcon() async {
-        guard appState.isStreamActive, !isYouTubeRefreshCoolingDown else {
+        guard !Task.isCancelled, appState.isStreamActive, !isYouTubeRefreshCoolingDown else {
             return
         }
 
@@ -309,10 +314,12 @@ struct TubeistView: View {
         if let broadcastId = appState.youtubeBroadcastId {
             do {
                 if let status = try await youtubeService.fetchBroadcastStatus(broadcastId: broadcastId) {
+                    try Task.checkCancellation()
                     appState.youtubeStatus = status
                     return
                 }
             } catch {
+                guard !Task.isCancelled, !YouTubeDiagnostics.isCancellation(error) else { return }
                 LOG("YouTube manual status refresh failed: \(error.localizedDescription)", level: .debug)
             }
         }
@@ -322,6 +329,7 @@ struct TubeistView: View {
 
     func startYouTubePolling() {
         youtubePollingTask?.cancel()
+        youtubePollingTask = nil
         guard youtubeService.isSignedIn,
               let streamKey = Settings.streamKey,
               !streamKey.isEmpty else {
@@ -329,6 +337,7 @@ struct TubeistView: View {
         }
         youtubePollingTask = Task {
             await refreshCurrentYouTubeBroadcastStatus(logContext: "startup")
+            guard !Task.isCancelled else { return }
             if appState.youtubeBroadcastId == nil {
                 LOG("YouTube status: could not find broadcast for active stream", level: .warning)
                 return
@@ -354,6 +363,7 @@ struct TubeistView: View {
 
                 do {
                     if let status = try await youtubeService.fetchBroadcastStatus(broadcastId: broadcastId) {
+                        try Task.checkCancellation()
                         appState.youtubeStatus = status
                         if status != "live" && status != "testing" {
                             await refreshCurrentYouTubeBroadcastStatus(logContext: "poll reconcile")
@@ -362,6 +372,7 @@ struct TubeistView: View {
                         await refreshCurrentYouTubeBroadcastStatus(logContext: "poll refresh")
                     }
                 } catch {
+                    guard !Task.isCancelled, !YouTubeDiagnostics.isCancellation(error) else { return }
                     LOG("YouTube status poll failed: \(error.localizedDescription)", level: .debug)
                     await refreshCurrentYouTubeBroadcastStatus(logContext: "poll failure recovery")
                 }
@@ -391,13 +402,16 @@ struct TubeistView: View {
                 guard !Task.isCancelled else { break }
                 do {
                     if let status = try await youtubeService.fetchBroadcastStatus(broadcastId: broadcastId) {
+                        try Task.checkCancellation()
                         appState.youtubeStatus = status
                         if status == "complete" { break }
                     }
                 } catch {
+                    guard !Task.isCancelled, !YouTubeDiagnostics.isCancellation(error) else { return }
                     LOG("YouTube wind-down poll failed: \(error.localizedDescription)", level: .debug)
                 }
             }
+            guard !Task.isCancelled else { return }
             await refreshCurrentYouTubeBroadcastStatus(logContext: "wind-down")
         }
     }
@@ -411,17 +425,11 @@ struct TubeistView: View {
                 Spacer()
                 // 16:9 Content Area
                 ZStack {
-                    CameraMonitorView()
+                    CameraMonitorView(isPreviewEnabled: appState.activeMonitor == .camera
+                        && !appState.isBatterySavingOn && !appState.soonGoingToBackground)
                         .id(appState.cameraMonitorId)
                         .gesture(magnification)
                         .frame(width: width, height: height)
-                        .onCameraCaptureEvent() { event in
-                            if event.phase == .ended, isCameraReady {
-                                Task {
-                                    await Streamer.shared.toggleBatterySaving()
-                                }
-                            }
-                        }
                         .onTapGesture { location in
                             if enableFocusAndExposureTap {
                                 focusAndExposureTap(location)
@@ -460,7 +468,8 @@ struct TubeistView: View {
                         }
                     }
                     
-                    if appState.activeMonitor == .output {
+                    if appState.activeMonitor == .output, !appState.isBatterySavingOn,
+                       !appState.soonGoingToBackground {
                         OutputMonitorView()
                             .id(appState.outputMonitorId)
                             .gesture(magnification)
@@ -489,34 +498,30 @@ struct TubeistView: View {
                         HorizonLevelView(width: min(320, width * 0.45))
                     }
                     
-                    if showJournal {
+                    if showJournal, !appState.isBatterySavingOn {
                         JournalView()
                             .frame(width: width, height: height)
                             .fixedSize()
                     }
                     
-                    VStack {
-                        if areSystemMetricsAtTop {
-                            AudioMonitorView(width: width, height: AUDIO_METER_HEIGHT)
-                                .frame(width: width, height: AUDIO_METER_HEIGHT)
-                            systemMetrics
-                            fadingMessage
-                            Spacer()
-                        }
-                        else {
-                            Spacer()
-                        }
-                        if appState.isBatterySavingOn {
-                            Text("BATTERY SAVING MODE")
-                                .font(.system(size: 30))
-                                .foregroundColor(Color.yellow)
-                                .fontWeight(.black)
-                        }
-                        if !areSystemMetricsAtTop {
-                            fadingMessage
-                            systemMetrics
-                            AudioMonitorView(width: width, height: AUDIO_METER_HEIGHT)
-                                .frame(width: width, height: AUDIO_METER_HEIGHT)
+                    if !appState.isBatterySavingOn {
+                        VStack {
+                            if areSystemMetricsAtTop {
+                                AudioMonitorView(width: width, height: AUDIO_METER_HEIGHT)
+                                    .frame(width: width, height: AUDIO_METER_HEIGHT)
+                                systemMetrics
+                                fadingMessage
+                                Spacer()
+                            }
+                            else {
+                                Spacer()
+                            }
+                            if !areSystemMetricsAtTop {
+                                fadingMessage
+                                systemMetrics
+                                AudioMonitorView(width: width, height: AUDIO_METER_HEIGHT)
+                                    .frame(width: width, height: AUDIO_METER_HEIGHT)
+                            }
                         }
                     }
 
@@ -939,7 +944,7 @@ struct TubeistView: View {
                                     }
                                     Button("Cancel", role: .cancel) {} // Do nothing
                                 } message: {
-                                    Text(appState.isBatterySavingOn ? "Turning off battery saving will enable convenience features at the cost of higher battery consumption." : "Turning on battery saving will reduce everything not necessary for the streaming to a minimum.")
+                                    Text(appState.isBatterySavingOn ? "Restore the preview, controls, and previous screen brightness." : "Show essential status on a dim, black screen. Streaming, recording, and overlay updates continue at full quality.")
                                 }
                     
                     SmallButton(imageName: appState.isStreamSessionRunning ? "camera.fill" : "camera",
@@ -954,10 +959,14 @@ struct TubeistView: View {
                     
                     SmallButton(imageName: appState.isStabilizationOn ? "hand.raised.fill" : "hand.raised.slash",
                                 foregroundColor: showStabilizationPicker ? .yellow : .white) {
-                        Task {
-                            stabilizations = await CaptureDirector.shared.getStabilizations()
-                            showStabilizationPicker.toggle()
-                            if showStabilizationPicker && showCameraPicker {
+                        if showStabilizationPicker {
+                            // Closing a UI menu must not wait for capture or
+                            // encoder recovery to release the pipeline actor.
+                            showStabilizationPicker = false
+                        } else {
+                            Task {
+                                stabilizations = await CaptureDirector.shared.getStabilizations()
+                                showStabilizationPicker = true
                                 showCameraPicker = false
                             }
                         }
@@ -1133,6 +1142,26 @@ struct TubeistView: View {
                 .disabled(showSplashScreen)
             }
         }
+        // Keep the overlay web views mounted underneath this opaque screen:
+        // removing or hiding them can suspend pages needed by the broadcast.
+        .allowsHitTesting(!appState.isBatterySavingOn)
+        .accessibilityHidden(appState.isBatterySavingOn)
+        .overlay {
+            if appState.isBatterySavingOn {
+                BatterySavingView(
+                    onRestore: {
+                        Task { await Streamer.shared.toggleBatterySaving() }
+                    },
+                    onBandwidthWarning: { fade("Bandwidth too low for selected quality") },
+                    message: fadeMessage
+                )
+            }
+        }
+        .onCameraCaptureEvent { event in
+            if event.phase == .ended, isCameraReady, !showSettings {
+                Task { await Streamer.shared.toggleBatterySaving() }
+            }
+        }
         .edgesIgnoringSafeArea(.all)
         .persistentSystemOverlays(.hidden)
         .task(id: canPrepareCamera) {
@@ -1154,13 +1183,24 @@ struct TubeistView: View {
         }
         .onChange(of: appState.isBatterySavingOn) { oldValue, newValue in
             appState.isAudioLevelRunning = !appState.isBatterySavingOn
+            CameraMonitorView.setPreviewEnabled(!newValue && appState.activeMonitor == .camera
+                && !appState.soonGoingToBackground)
+            fadeTask?.cancel()
+            fadeMessage = nil
             if newValue {
+                OutputMonitorView.stop()
+                showJournal = false
+                showCameraPicker = false
+                showStabilizationPicker = false
+                showStylingPicker = false
+                showFocusAndExposureArea = false
                 appState.lastKnownBrightness = UIScreen.main.brightness
-                UIScreen.main.brightness = BATTERY_SAVING_BRIGHTNESS
+                UIScreen.main.brightness = min(appState.lastKnownBrightness, BATTERY_SAVING_BRIGHTNESS)
             }
             else {
                 UIScreen.main.brightness = appState.lastKnownBrightness
             }
+            Task { await Streamer.shared.setMonitor(appState.activeMonitor) }
             LOG("Battery saving is \(appState.isBatterySavingOn ? "on" : "off")", level: .debug)
         }
         .onChange(of: appState.justCameFromBackground) { oldValue, newValue in

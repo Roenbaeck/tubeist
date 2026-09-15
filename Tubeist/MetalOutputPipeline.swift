@@ -93,18 +93,38 @@ final class MetalOutputPipeline {
     private let pipeline: MTLRenderPipelineState
     private let textureCache: CVMetalTextureCache
 
-    init(device: MTLDevice, library: MTLLibrary? = nil) throws {
-        self.device = device
+    convenience init(device: MTLDevice, library: MTLLibrary? = nil) throws {
         guard let queue = device.makeCommandQueue(),
               let library = library ?? device.makeDefaultLibrary() else {
             throw OutputPreviewError.unavailable
         }
-        commandQueue = queue
+        let pipeline = try device.makeRenderPipelineState(descriptor: Self.descriptor(library: library))
+        try self.init(device: device, queue: queue, pipeline: pipeline)
+    }
+
+    /// Shader compilation can take time on the first output-monitor switch.
+    /// Let Metal prepare it asynchronously instead of blocking the UI thread.
+    @MainActor
+    static func makeForPreview(device: MTLDevice) async throws -> MetalOutputPipeline {
+        guard let queue = device.makeCommandQueue(), let library = device.makeDefaultLibrary() else {
+            throw OutputPreviewError.unavailable
+        }
+        let pipeline = try await device.makeRenderPipelineState(descriptor: descriptor(library: library))
+        return try MetalOutputPipeline(device: device, queue: queue, pipeline: pipeline)
+    }
+
+    private static func descriptor(library: MTLLibrary) -> MTLRenderPipelineDescriptor {
         let descriptor = MTLRenderPipelineDescriptor()
         descriptor.vertexFunction = library.makeFunction(name: "outputPreviewVertex")
         descriptor.fragmentFunction = library.makeFunction(name: "outputPreviewFragment")
         descriptor.colorAttachments[0].pixelFormat = Self.pixelFormat
-        pipeline = try device.makeRenderPipelineState(descriptor: descriptor)
+        return descriptor
+    }
+
+    private init(device: MTLDevice, queue: MTLCommandQueue, pipeline: MTLRenderPipelineState) throws {
+        self.device = device
+        commandQueue = queue
+        self.pipeline = pipeline
         var cache: CVMetalTextureCache?
         let status = CVMetalTextureCacheCreate(nil, nil, device, nil, &cache)
         guard status == kCVReturnSuccess, let cache else { throw OutputPreviewError.texture(status) }

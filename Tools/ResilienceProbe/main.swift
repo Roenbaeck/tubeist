@@ -11,6 +11,7 @@ import Foundation
         if scenario == "watchdog" { try await checkWatchdog(); return }
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let clock = ProbeClock()
+        let audioPool = scenario.hasPrefix("audio-pool") ? ProbeAudioCapturePool() : nil
         let transport = ProbeTransport(folder: folder, blocked: scenario == "network-overflow")
         let sink = YouTubeHLSStreamSink()
         try await sink.prepare(endpoint: .manualPrimary(streamKey: "offline-probe"),
@@ -21,16 +22,33 @@ import Foundation
                                             publish: { await sink.enqueue($0) })
         try pipeline.start(preset: Preset(), stream: true, recording: recording)
         let rate = 48_000.0
-        let duration = scenario == "network-overflow" ? 70.4 : 10.4
+        let duration = scenario == "network-overflow" ? 70.4 : scenario == "stabilization-changes" ? 33.4 : 10.4
         let totalFrames = Int(duration * 30)
         var audioOffset = 0
         var recoveryObserved = false
+        var deliveredVideoFrames = 0
 
-        func captureTime(_ time: Double) -> Double {
-            scenario == "clock-reset" && time >= 3 ? 10 + time - 3 : 100 + time
+        func captureTime(_ time: Double, video: Bool = false) -> Double {
+            if scenario == "startup-audio-overlap" { return 100 + time + (video ? 0.005 : 0) }
+            if scenario == "clock-reset", time >= 3 { return 10 + time - 3 }
+            // Stabilization changes delivery latency, not the common capture clock.
+            let videoDelay = scenario == "stabilization-changes" && video
+                ? (time >= 24 ? 0.6 : time >= 15 ? 1.2 : 0.0) : 0.0
+            return 100 + time - videoDelay
         }
         func missing(_ time: Double, video: Bool) -> Bool {
+            // Model a latest-frame mailbox under sustained processing pressure:
+            // real frames still arrive regularly, but intermediate PTS values
+            // have been coalesced. They must not trigger duplicate catch-up.
+            if scenario == "processing-pressure" {
+                return video && !Int((time * 30).rounded()).isMultiple(of: 3)
+            }
             if scenario == "short-gaps" { return time >= 2 && time < 2.2 }
+            if scenario == "audio-pool-startup" { return video && time < 2.5 }
+            if scenario == "audio-pool-recovery" { return video && (3..<8).contains(time) }
+            if scenario == "stabilization-changes" {
+                return video && ((3..<6).contains(time) || (12..<15).contains(time) || (21..<24).contains(time))
+            }
             guard time >= 3 && time < 6 else { return false }
             return scenario == "both-stall" || scenario == (video ? "video-stall" : "audio-stall")
         }
@@ -43,7 +61,9 @@ import Foundation
                 if !missing(audioTime, video: false) {
                     let sample = try ProbeMediaFixtures.makeAudio(offset: audioOffset, frames: 1024, rate: rate)
                     let timed = try retime(sample, to: captureTime(audioTime))
-                    try await pipeline.appendAudio(timed)
+                    if let audioPool {
+                        if let captured = try audioPool.capture(timed) { try await pipeline.appendAudio(captured) }
+                    } else { try await pipeline.appendAudio(timed) }
                     if scenario == "short-gaps", frame == 90 {
                         try await pipeline.appendAudio(timed) // exact duplicate
                         try await pipeline.appendAudio(retime(sample, to: captureTime(audioTime - 0.1)))
@@ -52,7 +72,8 @@ import Foundation
                 audioOffset += 1024
             }
             if !missing(time, video: true) {
-                let sample = try videoSample(frame: frame, pts: captureTime(time))
+                deliveredVideoFrames += 1
+                let sample = try videoSample(frame: frame, pts: captureTime(time, video: true))
                 try await pipeline.appendVideo(sample)
                 if scenario == "short-gaps", frame == 90 {
                     try await pipeline.appendVideo(sample)
@@ -61,14 +82,27 @@ import Foundation
             }
             if frame.isMultiple(of: 3) { try await pipeline.checkCapture() }
             if pipeline.captureState == .recovering { recoveryObserved = true }
+            if scenario == "stabilization-changes", [9 * 30, 18 * 30, 27 * 30].contains(frame) {
+                guard pipeline.captureState == .healthy else {
+                    throw MediaEncodingError.invalid("Capture did not recover after stabilization change at \(time)s")
+                }
+            }
             try await Task.sleep(for: .milliseconds(5))
         }
+        if let audioPool {
+            guard audioPool.exhaustionCount == 0, pipeline.captureState == .healthy else {
+                throw MediaEncodingError.invalid("Audio capture storage exhausted \(audioPool.exhaustionCount) times; state \(String(describing: pipeline.captureState))")
+            }
+        }
         try await pipeline.finish(deadline: ContinuousClock().now.advanced(by: .seconds(20)))
+        if let audioPool {
+            precondition(audioPool.retainedBuffers == 0, "Capture storage was retained after shutdown")
+        }
         await transport.release()
         try await sink.finish(timeout: 20)
         try collector.save(to: folder.appendingPathComponent("recording.mp4"))
         let metrics = await sink.metrics()
-        if ["both-stall", "audio-stall", "video-stall", "clock-reset"].contains(scenario) {
+        if ["both-stall", "audio-stall", "video-stall", "clock-reset", "stabilization-changes"].contains(scenario) {
             precondition(recoveryObserved, "Did not exercise coordinated capture recovery")
         }
         if scenario == "network-overflow" {
@@ -77,6 +111,7 @@ import Foundation
             precondition(uploaded < 10, "Recovery retained excessive live latency")
         }
         let metadata: [String: Any] = ["scenario": scenario, "inputVideoFrames": totalFrames,
+            "deliveredVideoFrames": deliveredVideoFrames,
             "droppedSegments": metrics.droppedFragments, "captureRecovery": recoveryObserved]
         try JSONSerialization.data(withJSONObject: metadata).write(to: folder.appendingPathComponent("result.json"))
         print("PASS: \(scenario), recording finalized, \(metrics.droppedFragments) discarded network segments")

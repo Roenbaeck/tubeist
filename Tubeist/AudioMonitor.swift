@@ -24,6 +24,10 @@ struct AudioMonitorView: UIViewRepresentable {
             uiView.stopUpdating()
         }
     }
+
+    static func dismantleUIView(_ uiView: AudioMeter, coordinator: ()) {
+        uiView.stopUpdating()
+    }
 }
 
 class AudioMeter: UIView {

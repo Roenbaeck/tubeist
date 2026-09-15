@@ -11,6 +11,14 @@ import SwiftUI
 struct CameraMonitorView: UIViewControllerRepresentable {
     public static private(set) var previewLayer: AVCaptureVideoPreviewLayer?
     private static var previewGeneration = UUID()
+    private static var previewEnabled = true
+    var isPreviewEnabled = true
+
+    static func setPreviewEnabled(_ enabled: Bool) {
+        previewEnabled = enabled
+        previewLayer?.connection?.isEnabled = enabled
+        previewLayer?.isHidden = !enabled
+    }
 
     static func createPreviewLayer(
         sessionProvider: @MainActor () async -> AVCaptureSession = { await CaptureDirector.shared.getSession() }
@@ -21,6 +29,7 @@ struct CameraMonitorView: UIViewControllerRepresentable {
         // or backgrounding may have invalidated this request in the meantime.
         guard !Task.isCancelled, generation == previewGeneration, previewLayer == nil else { return }
         previewLayer = AVCaptureVideoPreviewLayer(session: session)
+        setPreviewEnabled(previewEnabled)
         LOG("Created camera video preview layer", level: .debug)
     }
 
@@ -33,9 +42,10 @@ struct CameraMonitorView: UIViewControllerRepresentable {
     func makeUIViewController(context: Context) -> UIViewController {
         let viewController = UIViewController()
         viewController.loadViewIfNeeded()
+        Self.setPreviewEnabled(isPreviewEnabled)
 
         guard let previewLayer = CameraMonitorView.previewLayer else {
-            LOG("Waiting for preivew layer to become available", level: .debug) // This normally happens once
+            LOG("Waiting for preview layer to become available", level: .debug) // This normally happens once
             return viewController
         }
         
@@ -53,6 +63,7 @@ struct CameraMonitorView: UIViewControllerRepresentable {
     }
 
     func updateUIViewController(_ uiViewController: UIViewController, context: Context) {
+        Self.setPreviewEnabled(isPreviewEnabled)
         CATransaction.begin()
         CATransaction.setAnimationDuration(0)
         let height = uiViewController.view.bounds.height

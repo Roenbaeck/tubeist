@@ -9,9 +9,9 @@ final class MetalOutputView: MTKView, MTKViewDelegate {
     private var lastLoggedHeadroom: CGFloat?
     var onFailure: ((Error) -> Void)?
 
-    init(previewDevice device: MTLDevice) throws {
-        outputPipeline = try MetalOutputPipeline(device: device)
-        super.init(frame: .zero, device: device)
+    init(outputPipeline: MetalOutputPipeline) {
+        self.outputPipeline = outputPipeline
+        super.init(frame: .zero, device: outputPipeline.device)
         colorPixelFormat = MetalOutputPipeline.pixelFormat
         framebufferOnly = true
         isPaused = true

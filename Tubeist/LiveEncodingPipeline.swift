@@ -26,6 +26,7 @@ final class LiveEncodingPipeline {
     private var recoveryStartedAt: TimeInterval?
     private var candidateVideo: CMSampleBuffer?
     private var candidateAudio: CMSampleBuffer?
+    private var recoveryAudio: [CMSampleBuffer] = []
     private var candidateVideoAt = 0.0
     private var candidateAudioAt = 0.0
     private var candidateVideoCount = 0
@@ -47,7 +48,7 @@ final class LiveEncodingPipeline {
 
     init(now: @escaping @Sendable () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
          automaticWatchdog: Bool = true,
-         publish: @escaping @Sendable (Fragment) async -> Void = { await EncodedOutputRouter.shared.route($0) },
+         publish: @escaping @Sendable (Fragment) async -> Void = { EncodedOutputRouter.shared.route($0) },
          reportFailure: @escaping @Sendable (any Error) async -> Void = { await Streamer.shared.handleRuntimeFailure($0) }) {
         self.now = now
         self.automaticWatchdog = automaticWatchdog
@@ -127,7 +128,14 @@ final class LiveEncodingPipeline {
         }
         do {
             guard let missing = try repair?.missingFrames(before: pts) else { return }
-            if let lastPixels { for time in missing { try submitVideo(lastPixels, at: time) } }
+            // A busy encoder/renderer can skip capture timestamps even while
+            // fresh frames keep arriving. Re-encoding every skipped frame in
+            // that case creates more work and a growing catch-up loop. Keep
+            // the real timestamps; only conceal an actual delivery pause.
+            if let lastPixels, let arrival = liveness.videoAt,
+               now() - arrival >= CaptureLiveness.arrivalGrace {
+                try concealVideo(lastPixels, times: missing)
+            }
         } catch CaptureContinuityError.discontinuity {
             try await beginRecovery()
             try await receiveRecovery(sample, video: true)
@@ -149,12 +157,24 @@ final class LiveEncodingPipeline {
         try consumeVideo(videoEncoder.takeOutput())
     }
 
+    private func concealVideo(_ pixels: CVPixelBuffer, times: [CMTime]) throws {
+        guard let videoEncoder else { return }
+        let started = now()
+        // A concealment batch must not monopolize the capture actor and block
+        // microphone delivery. One encoder submission can itself block, so
+        // check the elapsed budget before issuing each additional duplicate.
+        for time in times {
+            guard now() - started < videoEncoder.frameDuration.seconds else { break }
+            try submitVideo(pixels, at: time)
+        }
+    }
+
     func appendAudio(_ sample: CMSampleBuffer) async throws {
         guard isActive, !failed else { return }
         guard CMSampleBufferGetPresentationTimeStamp(sample).isNumeric else { throw CaptureContinuityError.invalidTiming }
         if recovering { try await receiveRecovery(sample, video: false); return }
         guard let basePTS else {
-            startupAudio.append(sample)
+            startupAudio.append(try BufferedAudioSample.copy(sample))
             while let first = startupAudio.first,
                   startupAudio.count > 64 || CMTimeSubtract(CMSampleBufferGetPresentationTimeStamp(sample), CMSampleBufferGetPresentationTimeStamp(first)).seconds > 1 {
                 startupAudio.removeFirst()
@@ -183,11 +203,10 @@ final class LiveEncodingPipeline {
             guard missing.isFinite, missing < Double(count) else { return }
             let skip = Int(ceil(missing))
             if skip >= count { return }
-            var trimmed: CMSampleBuffer?
-            try checkMediaStatus(CMSampleBufferCopySampleBufferForRange(allocator: nil, sampleBuffer: sample,
-                sampleRange: CFRange(location: skip, length: count - skip), sampleBufferOut: &trimmed), "Trimming startup audio")
-            guard let trimmed else { throw MediaEncodingError.invalid("Could not align startup audio") }
-            input = trimmed
+            // Range-copy requires sample-size metadata and does not support
+            // planar PCM. Copy the actual channel data with an exact frame
+            // offset, which also works for our independently owned history.
+            input = try BufferedAudioSample.copy(sample, skippingFrames: skip)
         }
         try consumeAudio(audioEncoder.encode(input, basePTS: basePTS))
         if audioEncoder.acceptedInput {
@@ -234,7 +253,17 @@ final class LiveEncodingPipeline {
         guard isActive, !failed, !finalizing else { return }
         let time = now()
         if recovering {
-            if time - (recoveryStartedAt ?? time) >= 30 { throw CaptureContinuityError.stalled }
+            if time - (recoveryStartedAt ?? time) >= 30 {
+                let separation: String
+                if let video = candidateVideo, let audio = candidateAudio {
+                    separation = String(format: "%.3f", CMTimeSubtract(
+                        CMSampleBufferGetPresentationTimeStamp(audio),
+                        CMSampleBufferGetPresentationTimeStamp(video)
+                    ).seconds)
+                } else { separation = "unavailable" }
+                LOG("Capture recovery timed out: \(candidateVideoCount) video and \(candidateAudioCount) audio candidates; latest audio minus video timestamp: \(separation)s", level: .error)
+                throw CaptureContinuityError.stalled
+            }
             return
         }
         switch liveness.state(at: time) {
@@ -246,7 +275,7 @@ final class LiveEncodingPipeline {
                time - arrival >= CaptureLiveness.arrivalGrace, let repair {
                 let until = CMTimeAdd(pts, CMTime(seconds: time - arrival - CaptureLiveness.arrivalGrace, preferredTimescale: 90_000))
                 if let missing = try repair.missingFrames(before: until) {
-                    for point in missing { try submitVideo(lastPixels, at: point) }
+                    try concealVideo(lastPixels, times: missing)
                 }
             }
             if let end = lastRealAudioEndPTS, let arrival = liveness.audioAt,
@@ -288,6 +317,7 @@ final class LiveEncodingPipeline {
     private func clearCandidates() {
         candidateVideo = nil
         candidateAudio = nil
+        recoveryAudio.removeAll()
         candidateVideoCount = 0
         candidateAudioCount = 0
     }
@@ -300,26 +330,46 @@ final class LiveEncodingPipeline {
         if let previous, now() - previousAt < 0.5 {
             if pts <= CMSampleBufferGetPresentationTimeStamp(previous) { return }
         } else if video { candidateVideoCount = 0 }
-        else { candidateAudioCount = 0 }
+        else {
+            candidateAudioCount = 0
+            recoveryAudio.removeAll()
+        }
         if video {
             candidateVideo = sample
             candidateVideoAt = now()
             candidateVideoCount += 1
         } else {
-            candidateAudio = sample
+            let ownedSample = try BufferedAudioSample.copy(sample)
+            candidateAudio = ownedSample
             candidateAudioAt = now()
             candidateAudioCount += 1
+            recoveryAudio.append(ownedSample)
+            // Stabilization can deliver video well behind the microphone.
+            // Retain a bounded PCM history only while recovering, so a fresh
+            // video frame can be paired with audio from the same capture time.
+            while let first = recoveryAudio.first,
+                  recoveryAudio.count > 512 || CMTimeSubtract(pts, CMSampleBufferGetPresentationTimeStamp(first)).seconds > 5 {
+                recoveryAudio.removeFirst()
+            }
         }
         guard candidateVideoCount >= 2, candidateAudioCount >= 2,
               let videoSample = candidateVideo, let audioSample = candidateAudio, let preset,
               now() - min(candidateVideoAt, candidateAudioAt) < 0.5 else { return }
         let videoPTS = CMSampleBufferGetPresentationTimeStamp(videoSample)
         let audioPTS = CMSampleBufferGetPresentationTimeStamp(audioSample)
-        guard abs(CMTimeSubtract(videoPTS, audioPTS).seconds) < 0.25 else { return }
+        guard let matchingAudio = recoveryAudio.firstIndex(where: { sample in
+            let start = CMSampleBufferGetPresentationTimeStamp(sample)
+            let end = CMTimeAdd(start, CMSampleBufferGetDuration(sample))
+            return start <= videoPTS && end.isNumeric && end > videoPTS
+        }) else { return }
+        let alignedAudio = Array(recoveryAudio[matchingAudio...])
+        let audioLead = CMTimeSubtract(videoPTS, CMSampleBufferGetPresentationTimeStamp(alignedAudio[0])).seconds
+        let deliveryLag = String(format: "%.3f", CMTimeSubtract(audioPTS, videoPTS).seconds)
         // Both tracks move to the same new epoch. Keep enough decoding lead for
         // HEVC B frames and AAC priming, including after a backward clock reset.
-        let resumeTime = max(now() - (timelineStartedAt ?? liveness.startedAt), lastOutputEnd + 0.5)
-        basePTS = CMTimeSubtract(videoPTS, CMTime(seconds: resumeTime, preferredTimescale: 90_000))
+        let resumeTime = max(now() - (timelineStartedAt ?? liveness.startedAt), lastOutputEnd + 0.5 + audioLead)
+        let recoveryBasePTS = CMTimeSubtract(videoPTS, CMTime(seconds: resumeTime, preferredTimescale: 90_000))
+        basePTS = recoveryBasePTS
         videoEncoder = try HEVCVideoEncoder(width: preset.width, height: preset.height, frameRate: preset.frameRate,
             bitrate: preset.videoBitrate, keyframeInterval: preset.keyframeInterval)
         audioEncoder = AACAudioEncoder(channels: preset.audioChannels, bitratePerChannel: preset.audioBitrate,
@@ -333,9 +383,11 @@ final class LiveEncodingPipeline {
         liveness.receivedVideo(at: now())
         liveness.receivedAudio(at: now())
         clearCandidates()
+        // Drain the aligned audio before the first await. Otherwise a new live
+        // microphone callback could overtake it and discard it as late input.
+        for audio in alignedAudio { try encodeAudio(audio, basePTS: recoveryBasePTS) }
         try await appendVideo(videoSample)
-        try await appendAudio(audioSample)
-        LOG("Camera and microphone recovered on a shared timeline", level: .info)
+        LOG("Camera and microphone recovered on a shared timeline; video delivery lag \(deliveryLag)s", level: .info)
     }
 
     private func publishReadySegments(finishing: Bool = false) async throws {

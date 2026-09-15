@@ -12,9 +12,17 @@ makes capture faults deterministic; recording and encoding use the real framewor
 The scenarios cover:
 
 - Normal capture and local recording.
+- Audio beginning before the first video frame, requiring a partial PCM block
+  to be trimmed without relying on sample-size metadata.
 - Missing 200 ms of audio/video, duplicate samples and late samples.
+- Sustained frame coalescing under processing pressure, without manufacturing
+  duplicate catch-up work or interrupting healthy audio.
 - Three-second loss of both tracks, or either track independently.
 - A backward capture-clock reset while capture callbacks continue.
+- Repeated stabilization changes, including video arriving 1.2 seconds behind
+  audio and then switching to a shorter delay on the same stream.
+- Startup and recovery with only 16 capture-owned audio buffers available;
+  holding the originals must not starve the simulated microphone.
 - A network outage long enough to overflow the local segment queue.
 - An independent watchdog detecting total silence, remaining active across
   encoder recovery, reporting a terminal stall once, and stopping between sessions.
@@ -22,7 +30,8 @@ The scenarios cover:
 Every uploaded segment and MP4 recording is independently decoded with FFmpeg.
 The verifier checks HLG metadata, that uploaded video pixels match the recording,
 that healthy/briefly repaired capture loses no frames, and that silence replaces
-missing microphone samples without removing surrounding audio. Network overflow
+missing microphone samples without removing surrounding audio. Recovered segments
+must start with aligned audio even when stabilization delays video delivery. Network overflow
 must preserve the complete recording while resuming upload with a small backlog.
 Artifacts are retained in the printed temporary directory.
 
@@ -32,6 +41,21 @@ before restarting the encoders on one shared timeline. Thirty seconds without
 recovery is a reported capture failure. Healthy samples retain their timestamps and
 original HLG pixel buffers; concealment only supplies missing content. Long recovery
 may omit an incomplete live GOP, while retaining its encoded samples in the recording.
+
+Video processing and encoding overlap through a bounded latest-frame queue. Short
+timestamp skips during ongoing delivery retain their real timing instead of adding
+encoding work to an already busy pipeline. Actual delivery pauses can be concealed,
+but each batch has a one-frame-time work budget so it cannot monopolize microphone
+processing. A single hardware encoder call may itself exceed that budget.
+
+Recovery retains up to five seconds of audio (at most 512 buffers) to match fresh
+stabilized video with its original audio timestamps. It does not require the latest
+audio and video callbacks to describe the same instant, and does not shift audio
+independently of video. Startup and recovery history own independent PCM copies,
+releasing scarce capture-pool storage promptly; normal encoding does not use this
+extra copy. The pool fixture tracks release of the original byte storage, so a
+shallow sample-buffer copy cannot pass. Run a selected scenario with, for example,
+`zsh Tools/ResilienceProbe/validate.sh stabilization-changes`.
 
 The live upload path retries transient failures until stopped, including HTTP 408
 and 429. Permanent HTTP errors still fail visibly. Retry filenames and media bytes

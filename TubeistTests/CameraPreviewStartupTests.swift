@@ -28,6 +28,46 @@ private final class PreviewSessionProbe {
 
 @Suite(.serialized) @MainActor
 struct CameraPreviewStartupTests {
+    @Test func disablingPreviewKeepsTheCaptureSessionAndRestoresTheSameLayer() async {
+        CameraMonitorView.deletePreviewLayer()
+        CameraMonitorView.setPreviewEnabled(true)
+        defer {
+            CameraMonitorView.deletePreviewLayer()
+            CameraMonitorView.setPreviewEnabled(true)
+        }
+        let session = AVCaptureSession()
+        await CameraMonitorView.createPreviewLayer { session }
+        let layer = CameraMonitorView.previewLayer
+        CameraMonitorView.setPreviewEnabled(false)
+        #expect(layer?.isHidden == true)
+        #expect(layer?.session === session)
+        CameraMonitorView.setPreviewEnabled(true)
+        #expect(CameraMonitorView.previewLayer === layer)
+        #expect(layer?.isHidden == false)
+        #expect(layer?.session === session)
+    }
+
+    @Test func hidingPreviewWhileItsSessionLoadsKeepsTheNewLayerHidden() async {
+        CameraMonitorView.deletePreviewLayer()
+        CameraMonitorView.setPreviewEnabled(true)
+        defer {
+            CameraMonitorView.deletePreviewLayer()
+            CameraMonitorView.setPreviewEnabled(true)
+        }
+        let probe = PreviewSessionProbe()
+        let task = Task {
+            await CameraMonitorView.createPreviewLayer {
+                await probe.pause()
+                return AVCaptureSession()
+            }
+        }
+        await probe.waitUntilRequested()
+        CameraMonitorView.setPreviewEnabled(false)
+        probe.resume()
+        await task.value
+        #expect(CameraMonitorView.previewLayer?.isHidden == true)
+    }
+
     @Test func backgroundingInvalidatesAPendingPreviewCreation() async {
         CameraMonitorView.deletePreviewLayer()
         let probe = PreviewSessionProbe()

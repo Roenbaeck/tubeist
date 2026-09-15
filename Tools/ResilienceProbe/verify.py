@@ -49,6 +49,20 @@ def presentation_times(path):
     return [float(frame["best_effort_timestamp_time"]) for frame in json.loads(process.stdout)["frames"]]
 
 
+def check_recovered_audio_start(path):
+    process = subprocess.run([
+        "ffprobe", "-v", "error", "-show_packets", "-show_entries",
+        "packet=codec_type,pts_time", "-of", "json", str(path)
+    ], check=True, capture_output=True, text=True)
+    packets = json.loads(process.stdout)["packets"]
+    video_start = min(float(packet["pts_time"]) for packet in packets if packet["codec_type"] == "video")
+    audio_start = min(float(packet["pts_time"]) for packet in packets if packet["codec_type"] == "audio")
+    # Allow AAC priming and packet boundaries. Using the latest microphone
+    # block instead of its buffered match would leave a 0.6-1.2 second audio gap.
+    assert -0.15 < audio_start - video_start < 0.075, \
+        ("Recovered segment does not start with aligned audio", path, audio_start - video_start)
+
+
 recording = folder / "recording.mp4"
 recording_tick = float(Fraction(inspect(recording)["time_base"]))
 recorded = hashes(recording)
@@ -60,6 +74,8 @@ timestamp_offsets = []
 uploaded = []
 for segment in sorted(folder.glob("upload_*.ts")):
     inspect(segment)
+    if result["scenario"] == "stabilization-changes":
+        check_recovered_audio_start(segment)
     frames = hashes(segment)
     assert frames, segment
     uploaded.extend(frames)
@@ -74,10 +90,14 @@ assert uploaded, "No live segments survived the fault"
 # quantization, while rejecting a transport epoch reset or accumulated drift.
 assert max(timestamp_offsets) - min(timestamp_offsets) < recording_tick + 2 / 90_000, \
     "Recovery changed the transport timeline offset beyond container quantization"
-if result["scenario"] in ("healthy", "short-gaps", "network-overflow"):
+if result["scenario"] in ("healthy", "startup-audio-overlap", "short-gaps", "network-overflow"):
     assert len(recorded) == result["inputVideoFrames"], (len(recorded), result)
-if result["scenario"] in ("healthy", "short-gaps"):
+if result["scenario"] in ("healthy", "startup-audio-overlap", "short-gaps"):
     assert uploaded == recorded, "Healthy/repaired media was lost between encoding and upload"
+if result["scenario"] == "processing-pressure":
+    assert not result["captureRecovery"], "Processing pressure triggered capture recovery"
+    assert len(recorded) == result["deliveredVideoFrames"], "Skipped timestamps created duplicate catch-up work"
+    assert uploaded == recorded, "Real frames were lost between encoding and upload"
 if result["scenario"] == "short-gaps":
     pcm = subprocess.run(["ffmpeg", "-v", "error", "-i", str(recording), "-map", "0:a:0",
                           "-ac", "1", "-ar", "44100", "-f", "f32le", "-"],

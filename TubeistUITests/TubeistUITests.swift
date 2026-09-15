@@ -32,6 +32,7 @@ final class TubeistUITests: XCTestCase {
         XCTAssertTrue(level.waitForExistence(timeout: 3))
         XCTAssertEqual(level.value as? String, "6.0°")
         hand.tap()
+        XCTAssertTrue(toggle.waitForNonExistence(timeout: 2))
 
         app.buttons["Monitor selection"].tap()
         XCTAssertTrue(level.waitForExistence(timeout: 3))
@@ -43,8 +44,7 @@ final class TubeistUITests: XCTestCase {
         app.buttons["Battery saving"].tap()
         app.buttons["Turn On"].tap()
         XCTAssertTrue(level.waitForNonExistence(timeout: 5))
-        app.buttons["Battery saving"].tap()
-        app.buttons["Turn Off"].tap()
+        app.buttons["restore-battery-saving-view"].tap()
         XCTAssertTrue(level.waitForExistence(timeout: 3))
 
         app.buttons["Settings"].tap()
@@ -68,6 +68,45 @@ final class TubeistUITests: XCTestCase {
         app.launch()
         XCTAssertTrue(hand.waitForExistence(timeout: 5))
         XCTAssertFalse(level.exists)
+    }
+
+    @MainActor
+    func testBatterySavingHidesPreviewsAndRestoresTheSelectedMonitor() throws {
+        let originalOrientation = XCUIDevice.shared.orientation
+        XCUIDevice.shared.orientation = .landscapeRight
+        defer { XCUIDevice.shared.orientation = originalOrientation }
+        let app = launchForUITesting(additionalArguments: ["-Overlays", "[]"])
+        let monitor = app.buttons["Monitor selection"]
+        let restore = app.buttons["restore-battery-saving-view"]
+        let metalPreview = app.otherElements["metal-output-preview"]
+
+        for output in [false, true] {
+            if output { monitor.tap() }
+            app.buttons["Battery saving"].tap()
+            app.buttons["Turn On"].tap()
+            XCTAssertTrue(restore.waitForExistence(timeout: 5))
+            XCTAssertTrue(restore.isHittable)
+            XCTAssertTrue(app.staticTexts["battery-saving-activity"].exists)
+            XCTAssertTrue(app.windows.firstMatch.frame.contains(restore.frame))
+            XCTAssertTrue(app.windows.firstMatch.frame.contains(app.staticTexts["battery-saving-activity"].frame))
+            XCTAssertFalse(metalPreview.exists)
+            XCTAssertFalse(monitor.isHittable)
+            XCTAssertFalse(app.buttons["Settings"].isHittable)
+            XCTAssertFalse(app.buttons["Start stream"].isHittable)
+            if output {
+                let screenshot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+                screenshot.name = "Battery saving status screen"
+                screenshot.lifetime = .keepAlways
+                add(screenshot)
+            }
+            restore.tap()
+            XCTAssertTrue(monitor.waitForExistence(timeout: 5))
+            XCTAssertEqual(monitor.value as? String, output ? "Output" : "Input")
+            if output {
+                XCTAssertTrue(metalPreview.waitForExistence(timeout: 3)
+                    || app.staticTexts["Output preview is unavailable.\nTap Monitor to return to input."].exists)
+            }
+        }
     }
 
     @MainActor
@@ -188,7 +227,11 @@ final class TubeistUITests: XCTestCase {
         let keyField = app.secureTextFields["YouTube HLS Stream Key"]
         XCTAssertTrue(keyField.waitForExistence(timeout: 5))
         XCTAssertEqual(keyField.value as? String, "YouTube HLS Stream Key")
-        XCTAssertTrue(app.buttons["Sign in with Google"].waitForExistence(timeout: 3))
+        let signIn = app.buttons["Sign in with Google"]
+        // A fresh simulator shows the permission notice above the form; the
+        // sign-in section can therefore start below the visible viewport.
+        scrollTo(signIn, in: app)
+        XCTAssertTrue(signIn.isHittable)
     }
 
     @MainActor

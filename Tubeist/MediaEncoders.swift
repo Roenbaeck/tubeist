@@ -17,6 +17,55 @@ func checkMediaStatus(_ status: OSStatus, _ operation: String) throws {
     if status != noErr { throw MediaEncodingError.operation(operation, status) }
 }
 
+/// Long-lived audio history must own its bytes. Retaining capture-owned PCM
+/// can exhaust the microphone's buffer pool even when our array is bounded.
+enum BufferedAudioSample {
+    static func copy(_ source: CMSampleBuffer, skippingFrames: Int = 0) throws -> CMSampleBuffer {
+        guard let description = CMSampleBufferGetFormatDescription(source),
+              let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(description),
+              asbd.pointee.mFormatID == kAudioFormatLinearPCM else {
+            throw MediaEncodingError.invalid("Buffered microphone audio must be PCM")
+        }
+        let sourceCount = CMSampleBufferGetNumSamples(source)
+        guard skippingFrames >= 0, skippingFrames < sourceCount else {
+            throw CaptureContinuityError.invalidTiming
+        }
+        let count = sourceCount - skippingFrames
+        let format = AVAudioFormat(cmAudioFormatDescription: description)
+        guard count > 0, Double(count) <= format.sampleRate,
+              let pcm = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(count)) else {
+            throw CaptureContinuityError.invalidTiming
+        }
+        pcm.frameLength = AVAudioFrameCount(count)
+        try checkMediaStatus(CMSampleBufferCopyPCMDataIntoAudioBufferList(source, at: Int32(skippingFrames),
+            frameCount: Int32(count), into: pcm.mutableAudioBufferList), "Copying buffered microphone PCM")
+        var timing = CMSampleTimingInfo()
+        try checkMediaStatus(CMSampleBufferGetSampleTimingInfo(source, at: 0, timingInfoOut: &timing),
+                             "Reading buffered microphone timing")
+        if skippingFrames > 0 {
+            guard timing.duration.isNumeric, timing.duration > .zero else {
+                throw CaptureContinuityError.invalidTiming
+            }
+            let offset = CMTimeMultiply(timing.duration, multiplier: Int32(skippingFrames))
+            timing.presentationTimeStamp = CMTimeAdd(timing.presentationTimeStamp, offset)
+            if timing.decodeTimeStamp.isNumeric {
+                timing.decodeTimeStamp = CMTimeAdd(timing.decodeTimeStamp, offset)
+            }
+        }
+        var copy: CMSampleBuffer?
+        try checkMediaStatus(CMSampleBufferCreate(allocator: nil, dataBuffer: nil, dataReady: false,
+            makeDataReadyCallback: nil, refcon: nil, formatDescription: description, sampleCount: count,
+            sampleTimingEntryCount: 1, sampleTimingArray: &timing,
+            sampleSizeEntryCount: 0, sampleSizeArray: nil, sampleBufferOut: &copy), "Creating buffered microphone sample")
+        guard let copy else { throw MediaEncodingError.invalid("Could not create buffered microphone sample") }
+        try checkMediaStatus(CMSampleBufferSetDataBufferFromAudioBufferList(copy,
+            blockBufferAllocator: nil, blockBufferMemoryAllocator: nil, flags: 0,
+            bufferList: pcm.audioBufferList), "Storing independent microphone bytes")
+        try checkMediaStatus(CMSampleBufferSetDataReady(copy), "Marking buffered microphone sample ready")
+        return copy
+    }
+}
+
 /// The callback only stores compressed buffers under a lock. The pipeline
 /// drains them in callback order; one unstructured Task per frame could reorder
 /// packets and race encoder shutdown.
@@ -43,11 +92,47 @@ private final class VideoEncoderOutput: @unchecked Sendable {
     }
 }
 
+/// Assign decode-order timestamps with the encoder's bounded frame window.
+/// Subtracting N * nominalFrameDuration from source DTS is only safe for a
+/// constant cadence. Using actual input PTS also handles coalesced frames.
+struct VideoDecodeTimeline {
+    let frameDuration: CMTime
+    let maximumFrameDelay: Int
+    private var firstPTS: CMTime?
+    private var inputPTS: [CMTime] = []
+    private var emitted = 0
+
+    mutating func submitted(_ pts: CMTime) {
+        if firstPTS == nil { firstPTS = pts }
+        inputPTS.append(pts)
+    }
+
+    mutating func next(presentationTime: CMTime) throws -> CMTime {
+        guard let firstPTS, !inputPTS.isEmpty else {
+            throw MediaEncodingError.invalid("HEVC output has no submitted timing")
+        }
+        let dts: CMTime
+        if emitted < maximumFrameDelay {
+            dts = CMTimeSubtract(firstPTS, CMTimeMultiply(frameDuration,
+                multiplier: Int32(maximumFrameDelay - emitted)))
+        } else {
+            dts = inputPTS[0]
+        }
+        guard dts <= presentationTime else {
+            throw MediaEncodingError.invalid("HEVC reordering exceeded its configured frame bound")
+        }
+        if emitted >= maximumFrameDelay { inputPTS.removeFirst() }
+        emitted += 1
+        return dts
+    }
+}
+
 /// Owned and called serially by PipelineActor (also usable by offline probes).
 final class HEVCVideoEncoder {
     private var session: VTCompressionSession?
     private let output = VideoEncoderOutput()
-    private let maximumFrameDelay = 8
+    private static let maximumFrameDelay = 8
+    private var decodeTimeline: VideoDecodeTimeline
     private var submittedFrames = 0
     private var emittedFrames = 0
     private var lastSubmittedPTS: CMTime?
@@ -61,7 +146,9 @@ final class HEVCVideoEncoder {
             throw MediaEncodingError.invalid("Invalid HEVC encoder configuration")
         }
         self.bitrate = bitrate
-        frameDuration = CMTime(seconds: 1 / frameRate, preferredTimescale: 90_000)
+        let duration = CMTime(seconds: 1 / frameRate, preferredTimescale: 90_000)
+        frameDuration = duration
+        decodeTimeline = VideoDecodeTimeline(frameDuration: duration, maximumFrameDelay: Self.maximumFrameDelay)
         var created: VTCompressionSession?
         try checkMediaStatus(VTCompressionSessionCreate(
             allocator: nil, width: Int32(width), height: Int32(height), codecType: kCMVideoCodecType_HEVC,
@@ -90,7 +177,7 @@ final class HEVCVideoEncoder {
                 kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration: min(2, keyframeInterval),
                 kVTCompressionPropertyKey_AllowFrameReordering: true,
                 kVTCompressionPropertyKey_AllowOpenGOP: false,
-                kVTCompressionPropertyKey_MaxFrameDelayCount: maximumFrameDelay,
+                kVTCompressionPropertyKey_MaxFrameDelayCount: Self.maximumFrameDelay,
                 kVTCompressionPropertyKey_ColorPrimaries: kCVImageBufferColorPrimaries_ITU_R_2020,
                 kVTCompressionPropertyKey_TransferFunction: kCVImageBufferTransferFunction_ITU_R_2100_HLG,
                 kVTCompressionPropertyKey_YCbCrMatrix: kCVImageBufferYCbCrMatrix_ITU_R_2020,
@@ -124,6 +211,7 @@ final class HEVCVideoEncoder {
             session, imageBuffer: pixels, presentationTimeStamp: presentationTime, duration: frameDuration,
             frameProperties: properties, sourceFrameRefcon: nil, infoFlagsOut: nil
         ), "Submitting HEVC frame")
+        decodeTimeline.submitted(presentationTime)
         submittedFrames += 1
         lastSubmittedPTS = presentationTime
     }
@@ -147,17 +235,11 @@ final class HEVCVideoEncoder {
     }
 
     private func normalizeDecodeTime(_ sample: CMSampleBuffer) throws -> CMSampleBuffer {
-        // VideoToolbox can emit signed composition offsets (PTS < DTS).
-        // Transport streams require enough decoding lead, and Apple's HLS MP4
-        // profile otherwise shifts video presentation to remove those offsets.
-        // The configured compression-window bound provides a fixed safe lead
-        // for the whole session, including after bitrate/GOP changes. Only DTS
-        // changes: the captured presentation timeline and payload stay intact.
+        // Preserve presentation timestamps and compressed bytes. The encoder's
+        // reordering limit is a frame count, not a fixed time interval: use the
+        // actual input timestamp from that many frames earlier as decoding lead.
         let pts = CMSampleBufferGetPresentationTimeStamp(sample)
-        let sourceDTS = CMSampleBufferGetDecodeTimeStamp(sample)
-        let dts = CMTimeSubtract(sourceDTS.isNumeric ? sourceDTS : pts,
-                                 CMTimeMultiply(frameDuration, multiplier: Int32(maximumFrameDelay)))
-        guard dts <= pts else { throw MediaEncodingError.invalid("HEVC reordering exceeded its configured bound") }
+        let dts = try decodeTimeline.next(presentationTime: pts)
         var timing = CMSampleTimingInfo(duration: frameDuration, presentationTimeStamp: pts, decodeTimeStamp: dts)
         var result: CMSampleBuffer?
         try checkMediaStatus(CMSampleBufferCreateCopyWithNewTiming(allocator: nil, sampleBuffer: sample,

@@ -8,6 +8,23 @@ import Testing
 @testable import Tubeist
 
 struct YouTubeServiceTests {
+    @Test func cancellationClassificationDoesNotSuppressRealFailures() {
+        #expect(YouTubeDiagnostics.isCancellation(CancellationError()))
+        #expect(YouTubeDiagnostics.isCancellation(URLError(.cancelled)))
+        #expect(YouTubeDiagnostics.isCancellation(NSError(
+            domain: NSURLErrorDomain, code: NSURLErrorCancelled
+        )))
+        #expect(YouTubeDiagnostics.failure(CancellationError()) == "cancelled")
+        #expect(YouTubeDiagnostics.failure(URLError(.cancelled)) == "cancelled")
+
+        #expect(!YouTubeDiagnostics.isCancellation(URLError(.timedOut)))
+        #expect(!YouTubeDiagnostics.isCancellation(YouTubeError.apiError(500, "Internal error")))
+        #expect(!YouTubeDiagnostics.isCancellation(NSError(
+            domain: "unrelated", code: NSURLErrorCancelled
+        )))
+        #expect(YouTubeDiagnostics.failure(YouTubeError.apiError(500, "Internal error")) == "HTTP 500")
+    }
+
     @Test func formEncodingEscapesReservedAndUnicodeBytes() {
         let encoded = FormURLEncoder.encode([
             "space key": "a+b&c=d/? é",

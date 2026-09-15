@@ -153,14 +153,31 @@ struct TubeistApp: App {
     @State private var appState = AppState()
     @State private var backgroundExecutionLease = BackgroundExecutionLease()
     @Environment(\.scenePhase) private var scenePhase
+    private let startupAlert: String?
     
     var body: some Scene {
         WindowGroup {
             TubeistView().environment(appState)
                 .onAppear {
                     UIApplication.shared.isIdleTimerDisabled = true
+                    // State is installed here. Accessing it in App.init can
+                    // create temporary instances instead of the shared model.
+                    guard appState.isAppInitialization else { return }
+                    if let startupAlert { appState.activeAlert = startupAlert }
                     // scenePhase triggers on app init - distinguish this from backgrounding the app
                     appState.isAppInitialization = false
+                    guard !CommandLine.arguments.contains("-ui-testing") else { return }
+                    Task { [appState] in
+                        let products = await Purchaser.shared.fetchProducts()
+                        for product in products {
+                            LOG("Available product \(product.id)", level: .debug)
+                            appState.availableProducts[product.id] = product
+                        }
+                    }
+                    Task {
+                        LOG("Checking for previously made purchases", level: .debug)
+                        await Purchaser.shared.verifyPurchases()
+                    }
                 }
                 .onDisappear {
                     UIApplication.shared.isIdleTimerDisabled = false
@@ -230,7 +247,6 @@ struct TubeistApp: App {
                     appState.soonGoingToBackground = false
                     appState.isBackgroundStopCommitted = false
                     appState.isBatterySavingOn = false
-                    OutputMonitorView.isBatterySavingOn = false
                     if stopWasCommitted {
                         LOG("App returned after background stream finalization began", level: .debug)
                     } else {
@@ -246,13 +262,16 @@ struct TubeistApp: App {
     }
     
     init() {
+        // Keep migration before view creation, but carry its result as plain
+        // initialization data until SwiftUI installs appState.
+        var startupAlert: String?
         do {
             let migration = try Settings.migrateLegacySettings()
             if migration.performed {
                 LOG("Migrated legacy streaming settings to the YouTube-only schema", level: .info)
             }
             if migration.requiresYouTubeSetup {
-                appState.activeAlert = "YouTube streaming needs setup. Open Settings and enter a YouTube HLS stream key, or choose local recording."
+                startupAlert = "YouTube streaming needs setup. Open Settings and enter a YouTube HLS stream key, or choose local recording."
             }
         } catch {
             LOG("Could not migrate legacy streaming credentials; legacy values were preserved", level: .error)
@@ -262,23 +281,11 @@ struct TubeistApp: App {
             try? Settings.clearYouTubeAuthorization()
             Settings.stream = true
             Settings.record = false
-            appState.activeAlert = nil
+            startupAlert = nil
         }
-        appState.isAppInitialization = true
+        self.startupAlert = startupAlert
         LOG("Starting Tubeist version \(VERSION_BUILD)", level: .info)
         UIApplication.shared.isIdleTimerDisabled = true
-        guard !CommandLine.arguments.contains("-ui-testing") else { return }
-        Task { [appState] in
-            let products = await Purchaser.shared.fetchProducts()
-            for product in products {
-                LOG("Available product \(product.id)", level: .debug)
-                appState.availableProducts[product.id] = product
-            }
-        }
-        Task {
-            LOG("Checking for previously made purchases", level: .debug)
-            await Purchaser.shared.verifyPurchases()
-        }
     }
 }
 

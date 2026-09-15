@@ -9,6 +9,43 @@ import WebKit
 struct OverlayRecoveryTests {
     private let retryPolicy = OverlayRetryPolicy(initialDelay: 0.05, maximumDelay: 0.1, requestTimeout: 10)
 
+    @Test func coveredOverlayKeepsCapturingPageUpdatesWithoutReloading() async throws {
+        let server = try OverlayHTTPTestServer(replies: [.html("Score")])
+        try await server.start()
+        defer { server.stop() }
+        let overlay = Overlay(url: server.url, bundler: OverlayBundler(), retryPolicy: retryPolicy)
+        let webView = overlay.createWebView(width: 320, height: 180)
+        let window = display(webView)
+        defer { window.isHidden = true }
+        defer { overlay.prepareForRemoval() }
+        try await waitUntil { overlay.getOverlayImage() != nil }
+        let initialImage = try #require(overlay.getOverlayImage())
+        let initialPixels = try #require(initialImage.pngData())
+
+        // Battery Saving Mode covers the live web view with an opaque sibling.
+        let cover = UIView(frame: webView.frame)
+        cover.backgroundColor = .black
+        webView.superview?.addSubview(cover)
+        _ = try await webView.evaluateJavaScript("document.body.innerHTML = '<div style=\"position:fixed;inset:0;background:red\"></div>'")
+        try await waitUntil {
+            guard let image = overlay.getOverlayImage(), image !== initialImage else { return false }
+            return image.pngData() != initialPixels
+        }
+        let updatedImage = try #require(overlay.getOverlayImage()?.cgImage)
+        var pixel = [UInt8](repeating: 0, count: 4)
+        try pixel.withUnsafeMutableBytes { bytes in
+            let context = try #require(CGContext(data: bytes.baseAddress, width: 1, height: 1,
+                bitsPerComponent: 8, bytesPerRow: 4, space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+            context.draw(updatedImage, in: CGRect(x: 0, y: 0, width: 1, height: 1))
+        }
+        // The snapshot must contain the updated page, not the black cover or
+        // an empty image produced because the web view is no longer visible.
+        #expect(pixel[0] > 200 && pixel[1] < 50 && pixel[2] < 50 && pixel[3] > 200)
+        #expect(overlay.getWebView() === webView)
+        #expect(server.requests.count == 1)
+    }
+
     @Test func failedStartupRecoversThroughNetworkAndServerErrors() async throws {
         let server = try OverlayHTTPTestServer(replies: [.disconnect, .status(503), .html("Recovered")])
         try await server.start()
@@ -197,6 +234,8 @@ struct OverlayRecoveryTests {
 
     private func display(_ webView: WKWebView) -> UIWindow {
         let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 320, height: 180))
+        window.windowScene = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first
+        window.windowLevel = .normal + 1
         let controller = UIViewController()
         window.rootViewController = controller
         controller.view.addSubview(webView)

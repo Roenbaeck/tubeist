@@ -230,7 +230,6 @@ actor StreamingActor {
         let appState = self.appState
         await MainActor.run {
             appState?.isBatterySavingOn.toggle()
-            OutputMonitorView.isBatterySavingOn = appState?.isBatterySavingOn ?? false
         }
     }
 
@@ -244,6 +243,10 @@ actor StreamingActor {
     func getMonitor() async -> Monitor {
         let appState = self.appState
         return await appState?.activeMonitor ?? DEFAULT_MONITOR
+    }
+
+    func isBatterySavingOn() async -> Bool {
+        await appState?.isBatterySavingOn ?? false
     }
 
     private func transition(to newState: StreamSessionState) async {
@@ -276,7 +279,7 @@ actor StreamCommandQueue {
 }
 
 final class Streamer: Sendable {
-    @PipelineActor public static let shared = Streamer()
+    public static let shared = Streamer()
     private let streamingActor = StreamingActor()
     private let commandQueue = StreamCommandQueue()
     private static let streamIDFormatter: DateFormatter = {
@@ -412,6 +415,7 @@ final class Streamer: Sendable {
             soundStarted = true
             await FrameGrabber.shared.commenceGrabbing()
             videoStarted = true
+            await FrameGrabber.shared.resetDroppedFrameCount()
             try await CaptureDirector.shared.startOutput()
             outputStarted = true
             try await streamingActor.markLive()
@@ -496,6 +500,9 @@ final class Streamer: Sendable {
         async let framesDrained = FrameGrabber.shared.drainSubmittedFrames(deadline: deadline)
         async let audioDrained = SoundGrabber.shared.drainSubmittedAudio(deadline: deadline)
         let captureDrainResults = await (framesDrained, audioDrained)
+        // Capture is detached, so this includes the stream's final frames and
+        // excludes any output preview that resumes after Stop.
+        await FrameGrabber.shared.logDroppedFrameCount()
         switch captureDrainResults {
         case (true, true):
             break
@@ -510,7 +517,9 @@ final class Streamer: Sendable {
             ? .completed
             : .failed(captureFailures.joined(separator: "; "))
         await streamingActor.closeMediaIntake()
-        if monitor == .camera || !resumePreviewAfterStop {
+        let savingBattery = await streamingActor.isBatterySavingOn()
+        let resumeOutputPreview = monitor == .output && resumePreviewAfterStop && !savingBattery
+        if !resumeOutputPreview {
             await FrameGrabber.shared.terminateGrabbing()
         }
         await SoundGrabber.shared.terminateGrabbing()
@@ -552,7 +561,7 @@ final class Streamer: Sendable {
             throw shutdownError
         }
         await streamingActor.completeStop()
-        if monitor == .output, resumePreviewAfterStop {
+        if resumeOutputPreview {
             do {
                 try await CaptureDirector.shared.startOutput()
             } catch {
@@ -589,7 +598,8 @@ final class Streamer: Sendable {
 
     private func performMonitorChange(_ monitor: Monitor) async {
         LOG("Setting monitor to \(monitor)", level: .debug)
-        if monitor == .output, await !isStreaming() {
+        let savingBattery = await streamingActor.isBatterySavingOn()
+        if monitor == .output, !savingBattery, await !isStreaming() {
             LOG("Starting half the streaming pipeline", level: .debug)
             await FrameGrabber.shared.commenceGrabbing()
             do {
@@ -599,7 +609,7 @@ final class Streamer: Sendable {
                 LOG("Could not start output monitoring: \(error.localizedDescription)", level: .error)
             }
         }
-        else if monitor == .camera, await !isStreaming() {
+        else if monitor == .camera || savingBattery, await !isStreaming() {
             LOG("Stopping half the streaming pipeline", level: .debug)
             await CaptureDirector.shared.stopOutput()
             await FrameGrabber.shared.terminateGrabbing()

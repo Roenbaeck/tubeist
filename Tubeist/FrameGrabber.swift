@@ -30,6 +30,24 @@ struct KernelSettings {
 }
 
 private actor FrameTinkerer {
+    // GPU work and hardware encoding can overlap. Keep just the newest
+    // processed frame if the encoder is busy, rather than retaining an
+    // unbounded collection of camera buffers or stalling the GPU drain.
+    private let encodingMailbox = BoundedAsyncMailbox<SendableSampleBuffer>(policy: .latest) { sample in
+        do {
+            try await ContentPackager.shared.appendVideoSampleBuffer(sample.value)
+        } catch {
+            Task { await Streamer.shared.handleRuntimeFailure(error) }
+        }
+    }
+
+    nonisolated func resetEncodingDropCount() { encodingMailbox.resetDropCount() }
+    nonisolated func encodingDropCount() -> Int { encodingMailbox.snapshot().totalDropped }
+    nonisolated func drainEncoding() async { await encodingMailbox.waitUntilIdle() }
+    nonisolated func drainEncoding(deadline: ContinuousClock.Instant) async -> Bool {
+        await encodingMailbox.waitUntilIdle(deadline: deadline)
+    }
+
     // frame grabbing settings
     private var grabbingFrames: Bool = false
     private var style: String?
@@ -520,19 +538,14 @@ private actor FrameTinkerer {
                 }
             }
             if await Streamer.shared.isStreaming() {
-                do {
-                    try await ContentPackager.shared.appendVideoSampleBuffer(sendableSampleBuffer)
-                } catch {
-                    Task {
-                        await Streamer.shared.handleRuntimeFailure(error)
-                    }
+                let submission = encodingMailbox.submit(wrappedSampleBuffer)
+                if submission.dropped, submission.totalDropped % 120 == 1 {
+                    LOG("Dropped processed video while the encoder was busy", level: .warning)
+                    Task { await Streamer.shared.setStreamHealth(.degraded) }
                 }
             }
-            if await Streamer.shared.getMonitor() == .output {
-                nonisolated(unsafe) let previewSampleBuffer = sendableSampleBuffer
-                await MainActor.run {
-                    OutputMonitorView.enqueue(previewSampleBuffer)
-                }
+            if OutputMonitorView.frameGate.isEnabled() {
+                OutputMonitorView.enqueue(SendableSampleBuffer(value: sendableSampleBuffer))
             }
         }
     }
@@ -564,6 +577,7 @@ final class FrameGrabber: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
             await frameTinkerer.refreshEffect()
             await frameTinkerer.start()
             frameMailbox.resetDropCount()
+            frameTinkerer.resetEncodingDropCount()
             LOG("Started grabbing frames", level: .debug)
         }
         else {
@@ -597,12 +611,24 @@ final class FrameGrabber: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
     func getCurrentPresentationTimestamp() async -> CMTime? {
         await frameTinkerer.getCurrentPresentationTimestamp()
     }
+    func resetDroppedFrameCount() {
+        // Output preview may already be running. Reset only diagnostics,
+        // leaving its queued and in-flight frames untouched.
+        frameMailbox.resetDropCount()
+        frameTinkerer.resetEncodingDropCount()
+    }
+    func logDroppedFrameCount() {
+        let dropped = frameMailbox.snapshot().totalDropped + frameTinkerer.encodingDropCount()
+        LOG("Stream frame processing: \(dropped) stale video frames dropped before encoding", level: .info)
+    }
     func drainSubmittedFrames() async {
         await frameMailbox.waitUntilIdle()
+        await frameTinkerer.drainEncoding()
     }
 
     func drainSubmittedFrames(deadline: ContinuousClock.Instant) async -> Bool {
-        await frameMailbox.waitUntilIdle(deadline: deadline)
+        guard await frameMailbox.waitUntilIdle(deadline: deadline) else { return false }
+        return await frameTinkerer.drainEncoding(deadline: deadline)
     }
 
     nonisolated func captureOutput(_ output: AVCaptureOutput,

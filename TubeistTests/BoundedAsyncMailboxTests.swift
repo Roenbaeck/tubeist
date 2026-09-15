@@ -83,6 +83,39 @@ struct BoundedAsyncMailboxTests {
         #expect(mailbox.snapshot().totalDropped == 1)
     }
 
+    @Test func resettingStreamDropCountPreservesPreviewWorkAndCountsOnlyNewDrops() async {
+        let probe = MailboxProbe()
+        let mailbox = BoundedAsyncMailbox<Int>(policy: .latest) { value in
+            await probe.process(value)
+        }
+
+        mailbox.submit(1)
+        await probe.waitForFirstStart()
+        mailbox.submit(2)
+        mailbox.submit(3)
+        #expect(mailbox.snapshot().totalDropped == 1)
+
+        // Streaming starts while the output preview is still processing.
+        mailbox.resetDropCount()
+        #expect(mailbox.snapshot().totalDropped == 0)
+        #expect(mailbox.snapshot().isProcessing)
+        #expect(mailbox.snapshot().queued == 1)
+        #expect(mailbox.submit(4).totalDropped == 1)
+        #expect(mailbox.submit(5).totalDropped == 2)
+
+        await probe.releaseFirst()
+        await mailbox.waitUntilIdle()
+        #expect(await probe.processedValues() == [1, 5])
+        #expect(mailbox.snapshot().totalDropped == 2)
+
+        // A following stream must also report zero when no work was dropped.
+        mailbox.resetDropCount()
+        mailbox.submit(6)
+        await mailbox.waitUntilIdle()
+        #expect(await probe.processedValues() == [1, 5, 6])
+        #expect(mailbox.snapshot().totalDropped == 0)
+    }
+
     @Test func deadlineReturnsWithoutDiscardingInFlightWork() async {
         let probe = MailboxProbe()
         let mailbox = BoundedAsyncMailbox<Int>(policy: .latest) { value in

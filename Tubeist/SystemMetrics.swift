@@ -59,7 +59,7 @@ struct SystemMetricsView: View {
     var onBandwidthWarning: () -> Void = {}
     private let processInfo = ProcessInfo()
     @State private var cpuUsage: Float = 0
-    @State private var batteryLevel: Float = 0
+    @State private var batteryLevel: Float = -1
     @State private var thermalLevel: String = "Low"
     @State private var networkMbps: Int = 0
     @State private var networkUtilization: Int = 0
@@ -68,6 +68,10 @@ struct SystemMetricsView: View {
     @State private var belowQualityFloor = false
     @State private var updateSystemMetricsTask: Task<Void, Never>?
     private let cpuSampler = SystemCPUSampler()
+
+    private var batteryPercentage: String? {
+        batteryLevel >= 0 ? String(format: "%.0f", batteryLevel) : nil
+    }
             
     var body: some View {
         ViewThatFits(in: .horizontal) {
@@ -80,10 +84,11 @@ struct SystemMetricsView: View {
         }
         .font(.caption)
         .fixedSize(horizontal: false, vertical: true)
-        .foregroundColor(BRIGHTER_THAN_WHITE)
+        .foregroundColor(appState.isBatterySavingOn ? .white.opacity(0.7) : BRIGHTER_THAN_WHITE)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(
-            "CPU \(String(format: "%.1f", cpuUsage)) percent, battery \(String(format: "%.0f", batteryLevel)) percent, temperature \(thermalLevel), network \(networkMbps) megabits per second at \(networkUtilization) percent utilization, \(fragmentBufferCount) fragments buffered"
+            (appState.isBatterySavingOn ? "" : "CPU \(String(format: "%.1f", cpuUsage)) percent, ")
+            + "battery \(batteryPercentage.map { "\($0) percent" } ?? "unavailable"), temperature \(thermalLevel), network \(networkMbps) megabits per second at \(networkUtilization) percent utilization, \(fragmentBufferCount) fragments buffered"
         )
         .onAppear {
             updateSystemMetricsTask = Task(priority: .utility) {
@@ -100,18 +105,22 @@ struct SystemMetricsView: View {
 
     @ViewBuilder
     private var metricLabels: some View {
-        Text("CPU: \(String(format: "%.1f", cpuUsage))%")
-        Text("Battery: \(String(format: "%.0f", batteryLevel))%")
+        if !appState.isBatterySavingOn {
+            Text("CPU: \(String(format: "%.1f", cpuUsage))%")
+        }
+        Text("Battery: \(batteryPercentage.map { "\($0)%" } ?? "—")")
         Text("Temp: \(thermalLevel)")
         Text("\(networkMbps) Mbps | \(networkUtilization)% utilization | \(fragmentBufferCount) buffered")
         if let videoBitrate {
             Text("Target: \(Double(videoBitrate) / 1_000_000, specifier: "%.1f") Mbps")
-                .foregroundStyle(videoBitrate < Settings.selectedPreset.videoBitrate ? ULTRAYELLOW : BRIGHTER_THAN_WHITE)
+                .foregroundStyle(videoBitrate < Settings.selectedPreset.videoBitrate
+                    ? (appState.isBatterySavingOn ? .yellow : ULTRAYELLOW)
+                    : (appState.isBatterySavingOn ? .white.opacity(0.7) : BRIGHTER_THAN_WHITE))
         }
     }
     
     private func updateSystemMetrics() async {
-        let cpuUsage = getCPUUsage()
+        let cpuUsage = appState.isBatterySavingOn ? self.cpuUsage : getCPUUsage()
         let batteryLevel = getBatteryLevel()
         let thermalLevel = getThermalLevel()
         let outputMetrics = await EncodedOutputRouter.shared.metrics()

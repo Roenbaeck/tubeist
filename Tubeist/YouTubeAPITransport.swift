@@ -103,9 +103,14 @@ struct YouTubeDiagnostics: Sendable {
         return values
     }
 
-    static func failure(_ error: Error) -> String {
+    static func isCancellation(_ error: Error) -> Bool {
         let nsError = error as NSError
-        if error is CancellationError || (nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled) {
+        return error is CancellationError
+            || (nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled)
+    }
+
+    static func failure(_ error: Error) -> String {
+        if isCancellation(error) {
             return "cancelled"
         }
         // localizedDescription/userInfo can contain failing URLs and response bodies.
@@ -120,6 +125,7 @@ struct YouTubeDiagnostics: Sendable {
             default: return "YouTube operation failed"
             }
         }
+        let nsError = error as NSError
         let domain = nsError.domain == NSURLErrorDomain ? "NSURLErrorDomain" : "transport/storage error"
         return "\(domain) code=\(nsError.code)"
     }

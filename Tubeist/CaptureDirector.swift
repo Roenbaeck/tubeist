@@ -202,6 +202,11 @@ private class DeviceActor {
         if format.isVideoStabilizationModeSupported(.previewOptimized) {
             supportedModes["Preview Optimized"] = .previewOptimized
         }
+        if #available(iOS 26.0, *) {
+            if format.isVideoStabilizationModeSupported(.lowLatency) {
+                supportedModes["Low Latency"] = .lowLatency
+            }
+        }
         if format.isVideoStabilizationModeSupported(.auto) {
             supportedModes["Auto"] = .auto
         }

@@ -36,6 +36,61 @@ actor ProbeFailures {
     func record(_ error: any Error) { count += 1 }
 }
 
+/// Models scarce capture-owned storage. A slot returns only when every sample
+/// and block-buffer reference to its original bytes has been released.
+final class ProbeAudioCapturePool: @unchecked Sendable {
+    private let lock = NSLock()
+    private var inUse = 0
+    private var exhausted = 0
+    var exhaustionCount: Int { lock.withLock { exhausted } }
+    var retainedBuffers: Int { lock.withLock { inUse } }
+
+    func capture(_ input: CMSampleBuffer) throws -> CMSampleBuffer? {
+        guard let source = CMSampleBufferGetDataBuffer(input),
+              let format = CMSampleBufferGetFormatDescription(input) else {
+            throw MediaEncodingError.invalid("Capture pool needs PCM input")
+        }
+        let acquired = lock.withLock {
+            guard inUse < 16 else { exhausted += 1; return false }
+            inUse += 1
+            return true
+        }
+        guard acquired else { return nil }
+        let length = CMBlockBufferGetDataLength(source)
+        let memory = UnsafeMutableRawPointer.allocate(byteCount: length, alignment: 16)
+        var custom = CMBlockBufferCustomBlockSource(
+            version: kCMBlockBufferCustomBlockSourceVersion,
+            AllocateBlock: nil,
+            FreeBlock: { reference, memory, _ in
+                memory.deallocate()
+                let pool = Unmanaged<ProbeAudioCapturePool>.fromOpaque(reference!).takeRetainedValue()
+                pool.lock.withLock { pool.inUse -= 1 }
+            },
+            refCon: Unmanaged.passRetained(self).toOpaque()
+        )
+        var block: CMBlockBuffer?
+        let status = CMBlockBufferCreateWithMemoryBlock(allocator: nil, memoryBlock: memory,
+            blockLength: length, blockAllocator: nil, customBlockSource: &custom,
+            offsetToData: 0, dataLength: length, flags: 0, blockBufferOut: &block)
+        if status != noErr {
+            memory.deallocate()
+            Unmanaged<ProbeAudioCapturePool>.fromOpaque(custom.refCon!).release()
+            lock.withLock { inUse -= 1 }
+            try checkMediaStatus(status, "Creating limited capture storage")
+        }
+        try checkMediaStatus(CMBlockBufferCopyDataBytes(source, atOffset: 0, dataLength: length,
+            destination: memory), "Filling capture storage")
+        var timing = CMSampleTimingInfo()
+        try checkMediaStatus(CMSampleBufferGetSampleTimingInfo(input, at: 0, timingInfoOut: &timing), "Reading capture timing")
+        var sample: CMSampleBuffer?
+        try checkMediaStatus(CMSampleBufferCreateReady(allocator: nil, dataBuffer: block,
+            formatDescription: format, sampleCount: CMSampleBufferGetNumSamples(input),
+            sampleTimingEntryCount: 1, sampleTimingArray: &timing,
+            sampleSizeEntryCount: 0, sampleSizeArray: nil, sampleBufferOut: &sample), "Creating limited capture sample")
+        return sample
+    }
+}
+
 actor ProbeTransport: YouTubeHLSHTTPTransport {
     private let folder: URL
     private var blocked: Bool
