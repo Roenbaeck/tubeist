@@ -102,6 +102,11 @@ struct VideoDecodeTimeline {
     private var inputPTS: [CMTime] = []
     private var emitted = 0
 
+    init(frameDuration: CMTime, maximumFrameDelay: Int) {
+        self.frameDuration = frameDuration
+        self.maximumFrameDelay = maximumFrameDelay
+    }
+
     mutating func submitted(_ pts: CMTime) {
         if firstPTS == nil { firstPTS = pts }
         inputPTS.append(pts)
