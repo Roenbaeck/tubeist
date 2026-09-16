@@ -10,27 +10,6 @@
 import WebKit
 
 extension UIImage {
-    // Images are ordered back to front, just like the INPUT monitor's ZStack.
-    static func composite(images: [UIImage]) -> UIImage? {
-        guard let firstImage = images.first else { return nil }
-        let size = firstImage.size
-        
-        let format = UIGraphicsImageRendererFormat()
-        format.opaque = false // Preserve transparency if needed
-        format.preferredRange = .extended // Wide color range
-        
-        let renderer = UIGraphicsImageRenderer(size: size, format: format)
-
-        let composedImage = renderer.image { context in
-            for image in images {
-                image.draw(in: CGRect(origin: .zero, size: size))
-            }
-        }
-        return composedImage
-    }
-}
-
-extension UIImage {
     func roughBoundingBox(scaledWidth: Int) -> CGRect? {
         guard scaledWidth > 0, let cgImage = self.cgImage else { return nil }
 
@@ -125,20 +104,25 @@ final class Overlay: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     private var webView: WKWebView?
     private var mimeType: String?
     private var overlayImage: UIImage?
-    private var lastCaptureTime: Date = Date.distantPast
-    private var captureTimer: Timer?
-    private let minimumCaptureInterval: TimeInterval = 1.0 // at least 1 second between snapshots
+    private var captureSchedule = OverlayCaptureSchedule()
+    private var captureTask: Task<Void, Never>?
+    private var captureGeneration = 0
+    private var didLogSnapshot = false
+    private var forceSnapshot = false
+    private let refreshRate: () -> OverlayRefreshRate
     private let retryPolicy: OverlayRetryPolicy
     private var retryDelay: TimeInterval
     private var retryTask: Task<Void, Never>?
     private var currentNavigation: WKNavigation?
     private var isPageReady = false
     
-    init(url: URL, bundler: OverlayBundler, retryPolicy: OverlayRetryPolicy = OverlayRetryPolicy()) {
+    init(url: URL, bundler: OverlayBundler, retryPolicy: OverlayRetryPolicy = OverlayRetryPolicy(),
+         refreshRate: @escaping () -> OverlayRefreshRate = { Settings.overlayRefreshRate }) {
         self.url = url
         self.bundler = bundler
         self.retryPolicy = retryPolicy
         self.retryDelay = retryPolicy.initialDelay
+        self.refreshRate = refreshRate
         super.init()
     }
     
@@ -148,8 +132,7 @@ final class Overlay: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         currentNavigation = nil
         isPageReady = false
         overlayImage = nil
-        self.captureTimer?.invalidate()
-        self.captureTimer = nil
+        invalidateCapture()
 
         self.webView?.navigationDelegate = nil
         self.webView?.configuration.userContentController.removeScriptMessageHandler(forName: "domChanged")
@@ -213,8 +196,7 @@ final class Overlay: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         retryTask?.cancel()
         retryTask = nil
         retryDelay = retryPolicy.initialDelay
-        captureTimer?.invalidate()
-        captureTimer = nil
+        invalidateCapture()
         isPageReady = false
         currentNavigation = nil
         webView.stopLoading()
@@ -224,8 +206,7 @@ final class Overlay: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     private func scheduleRetry(reason: String) {
         guard let webView, retryTask == nil else { return }
         isPageReady = false
-        captureTimer?.invalidate()
-        captureTimer = nil
+        invalidateCapture()
         let delay = retryDelay
         retryDelay = min(retryPolicy.maximumDelay, retryDelay * 2)
         LOG("Overlay at \(url.host ?? "unknown host") could not load: \(reason). Retrying in \(delay)s", level: .warning)
@@ -260,8 +241,7 @@ final class Overlay: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         currentNavigation = navigation
         mimeType = nil
         isPageReady = false
-        captureTimer?.invalidate()
-        captureTimer = nil
+        invalidateCapture()
     }
 
     func webView(
@@ -318,7 +298,9 @@ final class Overlay: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         retryTask = nil
         retryDelay = retryPolicy.initialDelay
         isPageReady = true
-        LOG("Web view finished loading", level: .debug)
+        captureSchedule.rate = refreshRate()
+        didLogSnapshot = false
+        LOG("Web view finished loading; maximum overlay refresh rate: \(captureSchedule.rate.rawValue)/s", level: .debug)
         captureWebViewImageOrSchedule()
         
         guard let mimeType, mimeType.hasSuffix("html") else {
@@ -326,79 +308,104 @@ final class Overlay: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
             return
         }
         
-        let script = """
-            (function() {
-                // Ensure transparent background even if set to a specific color
-                document.body.style.backgroundColor = 'transparent';
-        
-                // Create a MutationObserver to watch for DOM changes
-                const observer = new MutationObserver(mutationsList => {
-                    // Trigger a Swift callback when a change is detected
-                    window.webkit.messageHandlers.domChanged.postMessage('DOM changed');
-                });
-
-                // Start observing the entire document
-                observer.observe(document, { subtree: true, childList: true, characterData: true });
-                // When this is supported, we should be able to mix audio from several WKWebViews
-                // navigator.audioSession.type = 'ambient';
-            })();
-        """
-
-        webView.evaluateJavaScript(script) { result, error in
+        webView.evaluateJavaScript(OverlayPageChanges.install) { result, error in
             if let error = error {
                 LOG("Error injecting JavaScript: \(error)", level: .error)
             }
         }
     }
     
-    // Both throttling and debouncing the capture so we ensure that at least the minimum capture interval passes
-    // between snapshots, and that the last call is always executed even in a situation where several are coming
-    // in quick succession
+    private func invalidateCapture() {
+        captureGeneration += 1
+        captureSchedule.reset()
+        forceSnapshot = false
+        captureTask?.cancel()
+        // Do not clear the task until its outstanding snapshot/composition
+        // finishes: cancellation cannot cancel a WebKit snapshot callback.
+    }
+
     func captureWebViewImageOrSchedule() {
         guard isPageReady else { return }
-        let currentTime = Date()
-        if currentTime.timeIntervalSince(lastCaptureTime) >= minimumCaptureInterval {
-            captureWebViewImage()
-        } else {
-            captureTimer?.invalidate()
-            captureTimer = Timer.scheduledTimer(withTimeInterval: minimumCaptureInterval, repeats: false) { [weak self] _ in
-                Task { @MainActor in
-                    self?.captureWebViewImage()
-                }
+        forceSnapshot = true
+        captureSchedule.request()
+        startCaptureWorkerIfNeeded()
+    }
+
+    private func startCaptureWorkerIfNeeded() {
+        guard isPageReady, captureSchedule.isPending, captureTask == nil else { return }
+        captureTask = Task { [weak self] in
+            await self?.processCaptureRequests()
+        }
+    }
+
+    private func processCaptureRequests() async {
+        defer {
+            captureTask = nil
+            // A new navigation may finish while the previous snapshot is
+            // returning. Its pending update belongs to a fresh worker.
+            startCaptureWorkerIfNeeded()
+        }
+        while isPageReady, !Task.isCancelled {
+            guard let delay = captureSchedule.delay(at: CACurrentMediaTime()) else { return }
+            if delay > 0 {
+                do { try await Task.sleep(for: .seconds(delay)) }
+                catch { return }
+            }
+            guard isPageReady, !Task.isCancelled else { return }
+            guard captureSchedule.begin(at: CACurrentMediaTime()) else { continue }
+            await captureWebViewImage()
+            captureSchedule.complete()
+
+            // High-rate modes also capture CSS/canvas animations, which do
+            // not necessarily mutate the DOM. Static image URLs stay idle.
+            if isPageReady, captureSchedule.rate != .once, mimeType?.hasSuffix("html") == true {
+                captureSchedule.request()
             }
         }
     }
-    
-    private func captureWebViewImage() {
+
+    private func captureWebViewImage() async {
         guard isPageReady, let webView else { return }
-        let navigation = currentNavigation
-        lastCaptureTime = Date()
-        Task {
-            guard let width = await CaptureDirector.shared.getResolution()?.width else {
-                LOG("Cannot get width from the camera input", level: .error)
-                return
+        let generation = captureGeneration
+        let forced = forceSnapshot
+        forceSnapshot = false
+        if captureSchedule.rate != .once, mimeType?.hasSuffix("html") == true {
+            // A cheap page query avoids the much more expensive bitmap capture
+            // when a text/CSS overlay is idle. Unknown/embedded media continues
+            // refreshing so its animations are not silently frozen.
+            let changed = try? await webView.evaluateJavaScript(OverlayPageChanges.consume) as? Bool
+            guard isPageReady, self.webView === webView, generation == captureGeneration,
+                  !Task.isCancelled else { return }
+            if !forced, changed == false { return }
+        }
+        guard let width = await CaptureDirector.shared.getResolution()?.width else {
+            LOG("Cannot get width from the camera input", level: .error)
+            return
+        }
+        guard isPageReady, self.webView === webView, generation == captureGeneration,
+              !Task.isCancelled else { return }
+        let config = WKSnapshotConfiguration()
+        config.snapshotWidth = NSNumber(value: width / Int(UIScreen.main.scale))
+        do {
+            let image = try await webView.takeSnapshot(configuration: config)
+            guard isPageReady, self.webView === webView, generation == captureGeneration,
+                  !Task.isCancelled else { return }
+            overlayImage = image
+            if !didLogSnapshot {
+                didLogSnapshot = true
+                let colorSpace = (image.cgImage?.colorSpace?.name as String?)?.replacingOccurrences(of: "kCGColorSpace", with: "")
+                LOG("Captured overlay \(image.size), scale \(image.scale), and color space: \(colorSpace ?? "unknown")", level: .debug)
             }
-            guard isPageReady, self.webView === webView, currentNavigation === navigation else { return }
-            
-            let config = WKSnapshotConfiguration()
-            config.snapshotWidth = NSNumber(value: width / Int(UIScreen.main.scale))
-            
-            webView.takeSnapshot(with: config) { (image, error) in
-                guard self.isPageReady, self.webView === webView, self.currentNavigation === navigation else { return }
-                guard let uiImage = image else {
-                    LOG("Error capturing snapshot: \(String(describing: error))", level: .error)
-                    return
-                }
-                self.overlayImage = uiImage
-                let colorSpace = (uiImage.cgImage?.colorSpace?.name as String?)?.replacingOccurrences(of: "kCGColorSpace", with: "")
-                LOG("Captured overlay \(uiImage.size), scale \(uiImage.scale), and color space: \(colorSpace ?? "unknown")", level: .debug)
-                Task {
-                    // Combine all images every time any image is changed
-                    await self.bundler.combineOverlayImages()
-                }
-            }
+            // Backpressure includes composition and the GPU upload, not just
+            // WebKit. At most one snapshot and one pending change per overlay.
+            await bundler.combineOverlayImages()
+        } catch {
+            guard isPageReady, generation == captureGeneration, !Task.isCancelled else { return }
+            forceSnapshot = true
+            LOG("Error capturing snapshot: \(error)", level: .error)
         }
     }
+
 }
 
 actor OverlayBundleActor {
@@ -429,29 +436,34 @@ struct CombinedOverlay {
     let coverage: Double
 }
 
-final class OverlayBundler: Sendable {
+actor OverlayBundler {
     public static let shared = OverlayBundler()
     private let overlayBundle = OverlayBundleActor()
+    private var isCombining = false
+    private var needsCombination = false
+    private var lastCombinationTime: TimeInterval?
+    private var previousImages: [UIImage] = []
+    private var cachedBounds: [ObjectIdentifier: (image: UIImage, box: CGRect?)] = [:]
     
     func addOverlay(url: URL, overlay: Overlay) async {
         await overlayBundle.addOverlay(url: url, overlay: overlay)
     }
 
-    func removeOverlay(url: URL) {
+    nonisolated func removeOverlay(url: URL) {
         Task {
             await overlayBundle.removeOverlay(url: url)
             await combineOverlayImages() // Update the combined image after removing
         }
     }
     
-    func removeAllOverlays() {
+    nonisolated func removeAllOverlays() {
         Task {
             await overlayBundle.removeAllOverlays()
             await FrameGrabber.shared.setCombinedOverlay(nil)
         }
     }
     
-    func refreshCombinedImage() {
+    nonisolated func refreshCombinedImage() {
         Task {
             let overlays = await overlayBundle.getOverlays(in: savedOverlayOrder)
             for overlay in overlays {
@@ -467,13 +479,34 @@ final class OverlayBundler: Sendable {
         }
     }
 
-    private var savedOverlayOrder: [URL] {
+    private nonisolated var savedOverlayOrder: [URL] {
         OverlaySettingsManager.loadOverlaysFromStorage().compactMap { URL(string: $0.url) }
     }
 
     func combineOverlayImages() async {
+        needsCombination = true
+        guard !isCombining else { return }
+        isCombining = true
+        if let lastCombinationTime {
+            let delay = lastCombinationTime + Settings.overlayRefreshRate.interval - CACurrentMediaTime()
+            if delay > 0 { try? await Task.sleep(for: .seconds(delay)) }
+        }
+        // Changes during the wait are included in this composition. Several
+        // overlays must not multiply the configured maximum GPU update rate.
+        needsCombination = false
+        lastCombinationTime = CACurrentMediaTime()
+        await combineLatestOverlayImages()
+        isCombining = false
+        if needsCombination {
+            // Let the requesting overlay capture its next frame even if other
+            // overlays keep changing throughout every composition.
+            Task { await combineOverlayImages() }
+        }
+    }
+
+    private func combineLatestOverlayImages() async {
         if Settings.hideOverlays {
-            LOG("Overlays are hidden so no images will be combined", level: .debug)
+            previousImages = []
             await FrameGrabber.shared.setCombinedOverlay(nil)
             return
         }
@@ -487,19 +520,23 @@ final class OverlayBundler: Sendable {
         // A Settings save may have changed the stack while snapshots were read.
         guard order == savedOverlayOrder else { return }
         if images.isEmpty {
+            previousImages = []
+            cachedBounds = [:]
             LOG("There are no images to combine", level: .debug)
             await FrameGrabber.shared.setCombinedOverlay(nil)
             return
         }
-        var boundingBoxes: [CGRect] = []
-        for uiImage in images {
-            if let boundingBox = uiImage.roughBoundingBox(scaledWidth: BOUNDING_BOX_SEARCH_WIDTH) {
-                boundingBoxes.append(boundingBox)
-            }
+        guard images.count != previousImages.count || !zip(images, previousImages).allSatisfy({ $0 === $1 }) else { return }
+        var currentBounds: [ObjectIdentifier: (image: UIImage, box: CGRect?)] = [:]
+        for image in images {
+            let id = ObjectIdentifier(image)
+            currentBounds[id] = cachedBounds[id] ?? (
+                image, image.roughBoundingBox(scaledWidth: BOUNDING_BOX_SEARCH_WIDTH)
+            )
         }
-        // Preserve the renderer's source color space so Core Image can convert it to HLG.
-        guard let imageComposition = UIImage.composite(images: images),
-              let flippedCIImage = CIImage(image: imageComposition)
+        cachedBounds = currentBounds
+        let boundingBoxes = images.compactMap { cachedBounds[ObjectIdentifier($0)]?.box }
+        guard let flippedCIImage = OverlayImageComposer.compose(images)
         else {
             LOG("Images could not be combined", level: .error)
             return
@@ -514,12 +551,9 @@ final class OverlayBundler: Sendable {
             coverage = boundingBoxes.map { $0.size.width * $0.size.height }.reduce(0, +) / (ciImage.extent.width * ciImage.extent.height)
         }
         let combinedOverlay = CombinedOverlay(image: ciImage, boundingBoxes: boundingBoxes, coverage: coverage)
-        let colorSpace = (ciImage.colorSpace?.name as String?)?.replacingOccurrences(of: "kCGColorSpace", with: "")
-        LOG("Combined \(images.count) images to single overlay with color space: \(colorSpace ?? "unknown")", level: .debug)
-        let coveragePercentage = Int(100 * (combinedOverlay.coverage))
-        LOG("Bounding boxes: \(String(describing: combinedOverlay.boundingBoxes)) covering \(coveragePercentage)%", level: .debug)
-        guard order == savedOverlayOrder else { return }
+        guard order == savedOverlayOrder, !Settings.hideOverlays else { return }
         await FrameGrabber.shared.setCombinedOverlay(combinedOverlay)
+        previousImages = images
     }
 }
 

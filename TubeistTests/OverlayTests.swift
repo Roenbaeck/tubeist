@@ -65,15 +65,14 @@ struct OverlayTests {
             UIColor.blue.setFill()
             context.fill(CGRect(x: 4, y: 0, width: 4, height: 8))
         }
-        let combined = try #require(UIImage.composite(images: [red, blueRightHalf]))
-        let reversed = try #require(UIImage.composite(images: [blueRightHalf, red]))
+        let combined = try #require(OverlayImageComposer.compose([red, blueRightHalf]))
+        let reversed = try #require(OverlayImageComposer.compose([blueRightHalf, red]))
 
-        func rgb(_ image: UIImage, x: Int) throws -> [UInt8] {
-            let ciImage = try #require(CIImage(image: image))
+        func rgb(_ ciImage: CIImage, x: Int) throws -> [UInt8] {
             var pixel = [UInt8](repeating: 0, count: 4)
             pixel.withUnsafeMutableBytes {
                 CIContext().render(ciImage, toBitmap: $0.baseAddress!, rowBytes: 4,
-                                   bounds: CGRect(x: CGFloat(x) * image.scale, y: 4 * image.scale,
+                                   bounds: CGRect(x: CGFloat(x), y: 4,
                                                   width: 1, height: 1),
                                    format: .RGBA8, colorSpace: CGColorSpace(name: CGColorSpace.extendedSRGB))
             }

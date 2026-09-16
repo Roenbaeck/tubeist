@@ -9,6 +9,79 @@ import WebKit
 struct OverlayRecoveryTests {
     private let retryPolicy = OverlayRetryPolicy(initialDelay: 0.05, maximumDelay: 0.1, requestTimeout: 10)
 
+    @Test func highRateRefreshesWithoutDOMChangesAndReloadAppliesNewRate() async throws {
+        let server = try OverlayHTTPTestServer(replies: [.html("Animated"), .html("Reloaded")])
+        try await server.start()
+        defer { server.stop() }
+        var rate = OverlayRefreshRate.thirty
+        let overlay = Overlay(url: server.url, bundler: OverlayBundler(), retryPolicy: retryPolicy,
+                              refreshRate: { rate })
+        let webView = overlay.createWebView(width: 320, height: 180)
+        let window = display(webView)
+        defer { window.isHidden = true }
+        defer { overlay.prepareForRemoval() }
+        try await waitUntil { overlay.getOverlayImage() != nil }
+        let initialImage = try #require(overlay.getOverlayImage())
+        // CSS animation changes pixels without mutating the DOM each frame.
+        _ = try await webView.evaluateJavaScript("document.querySelector('div').animate([{opacity: 0.2}, {opacity: 1}], {duration: 200, iterations: Infinity}); true")
+        try await waitUntil { overlay.getOverlayImage() !== initialImage }
+        let animatedImage = try #require(overlay.getOverlayImage())
+        try await waitUntil { overlay.getOverlayImage() !== animatedImage }
+        #expect(server.requests.count == 1) // Snapshots never reload the URL.
+
+        rate = .once
+        overlay.reload()
+        try await waitUntil { try await webView.evaluateJavaScript("document.title") as? String == "Reloaded" }
+        // Allow a trailing change from the transparent-background injection.
+        try await Task.sleep(for: .seconds(2))
+        let reloadedImage = try #require(overlay.getOverlayImage())
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(overlay.getOverlayImage() === reloadedImage)
+        overlay.prepareForRemoval()
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(overlay.getOverlayImage() == nil)
+        #expect(server.requests.count == 2)
+    }
+
+    @Test func highRateIdlePageSkipsSnapshotsButAttributeChangesStillAppear() async throws {
+        let server = try OverlayHTTPTestServer(replies: [.html("Idle")])
+        try await server.start()
+        defer { server.stop() }
+        let overlay = Overlay(url: server.url, bundler: OverlayBundler(), retryPolicy: retryPolicy,
+                              refreshRate: { .thirty })
+        let webView = overlay.createWebView(width: 320, height: 180)
+        let window = display(webView)
+        defer { window.isHidden = true }
+        defer { overlay.prepareForRemoval() }
+        try await waitUntil { overlay.getOverlayImage() != nil }
+        // Drain the initial page capture and the observer's initial dirty bit.
+        try await Task.sleep(for: .seconds(1))
+        let idle = try #require(overlay.getOverlayImage())
+        try await Task.sleep(for: .milliseconds(400))
+        #expect(overlay.getOverlayImage() === idle)
+        _ = try await webView.evaluateJavaScript("document.querySelector('div').style.background = 'blue'")
+        try await waitUntil { overlay.getOverlayImage() !== idle }
+
+        // CSS rule edits bypass MutationObserver, but must still be captured.
+        _ = try await webView.evaluateJavaScript("document.querySelector('div').removeAttribute('style'); const style = document.createElement('style'); style.textContent = 'div { width: 100px; height: 100px; background: red; }'; document.head.appendChild(style); true")
+        try await Task.sleep(for: .milliseconds(500))
+        let beforeRuleChange = try #require(overlay.getOverlayImage())
+        _ = try await webView.evaluateJavaScript("document.styleSheets[0].cssRules[0].style.backgroundColor = 'green'")
+        try await waitUntil { overlay.getOverlayImage() !== beforeRuleChange }
+
+        let beforeAnimation = try #require(overlay.getOverlayImage())
+        _ = try await webView.evaluateJavaScript("window.testAnimation = document.querySelector('div').animate([{opacity: 0.2}, {opacity: 1}], {duration: 60000, fill: 'forwards'}); true")
+        try await waitUntil { overlay.getOverlayImage() !== beforeAnimation }
+        try await waitUntil { try await webView.evaluateJavaScript("window.__tubeistOverlayChanges.wasAnimating") as? Bool == true }
+        let beforeFinish = try #require(overlay.getOverlayImage())
+        _ = try await webView.evaluateJavaScript("window.testAnimation.finish(); true")
+        try await waitUntil { overlay.getOverlayImage() !== beforeFinish }
+        try await Task.sleep(for: .milliseconds(500))
+        let finished = try #require(overlay.getOverlayImage())
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(overlay.getOverlayImage() === finished)
+    }
+
     @Test func coveredOverlayKeepsCapturingPageUpdatesWithoutReloading() async throws {
         let server = try OverlayHTTPTestServer(replies: [.html("Score")])
         try await server.start()

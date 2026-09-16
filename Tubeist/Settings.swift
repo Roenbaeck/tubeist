@@ -202,6 +202,7 @@ private struct AppliedSettingsSnapshot {
     let youtubeBroadcastPreferences: YouTubeBroadcastPreferences?
     let youtubeThumbnailData: Data?
     let overlays: [OverlaySetting]
+    let overlayRefreshRate: OverlayRefreshRate
 #if DEBUG
     let captureRemuxFixtures: Bool
     let recordHLSAcceptance: Bool
@@ -227,6 +228,7 @@ private struct AppliedSettingsSnapshot {
             youtubeBroadcastPreferences: Settings.youtubeBroadcastPreferences,
             youtubeThumbnailData: try Settings.loadYouTubeThumbnailData(),
             overlays: overlays,
+            overlayRefreshRate: Settings.overlayRefreshRate,
             captureRemuxFixtures: Settings.captureRemuxFixtures,
             recordHLSAcceptance: Settings.recordHLSAcceptance
         )
@@ -248,7 +250,8 @@ private struct AppliedSettingsSnapshot {
             selectedPlaylistID: Settings.youtubeSelectedPlaylistId,
             youtubeBroadcastPreferences: Settings.youtubeBroadcastPreferences,
             youtubeThumbnailData: try Settings.loadYouTubeThumbnailData(),
-            overlays: overlays
+            overlays: overlays,
+            overlayRefreshRate: Settings.overlayRefreshRate
         )
 #endif
     }
@@ -271,6 +274,7 @@ private struct AppliedSettingsSnapshot {
         Settings.youtubeBroadcastPreferences = youtubeBroadcastPreferences
         try Settings.setYouTubeThumbnailData(youtubeThumbnailData)
         manager.replaceOverlays(with: overlays)
+        Settings.overlayRefreshRate = overlayRefreshRate
 #if DEBUG
         Settings.captureRemuxFixtures = captureRemuxFixtures
         Settings.recordHLSAcceptance = recordHLSAcceptance
@@ -335,6 +339,7 @@ struct SettingsView: View {
     // Settings presents the stack front to back, with the top layer first.
     @State private var overlayDraft: [OverlaySetting] = []
     @State private var showingOverlayOrder = false
+    @State private var overlayRefreshRate = Settings.overlayRefreshRate
     @State private var isSaving = false
     @State private var saveErrorMessage: String?
         
@@ -737,9 +742,22 @@ struct SettingsView: View {
                 } header: {
                     Text("Overlays")
                 } footer: {
-                    Text("The top overlay in this list appears in front in both INPUT and OUTPUT. New overlays are added on top. Tap Reorder overlays to change the stack, then Save to apply it. Overlays are updated on content changes and at most once per second. Audio is captured from the last playing overlay if audio from multiple overlays overlap.")
+                    Text("The top overlay in this list appears in front in both INPUT and OUTPUT. New overlays are added on top. Tap Reorder overlays to change the stack, then Save to apply it. Audio is captured from the last playing overlay if audio from multiple overlays overlap.")
                 }
-                
+
+                Section {
+                    Picker("Maximum refresh rate", selection: $overlayRefreshRate) {
+                        ForEach(OverlayRefreshRate.allCases) { rate in
+                            Text(rate.label).tag(rate)
+                        }
+                    }
+                    .accessibilityIdentifier("overlay-refresh-rate")
+                } header: {
+                    Text("Overlay Refresh")
+                } footer: {
+                    Text("Applies to output, streaming, and recording. 1 update/second captures page changes and saves battery. 3, 10, and 30 updates/second also capture animations but use more power. Updates slow down if the phone cannot keep up. The input view renders the web page live.")
+                }
+
                 Section(header: Text("Monitoring")) {
                     Picker("System health bar position", selection: $areSystemMetricsAtTop) {
                         Text("Bottom").tag(false)
@@ -1232,6 +1250,7 @@ struct SettingsView: View {
         Settings.journalInfo = journalInfo
         Settings.journalDebug = journalDebug
         overlayManager.replaceOverlays(with: Array(overlayDraft.reversed()))
+        Settings.overlayRefreshRate = overlayRefreshRate
 #if DEBUG
         Settings.captureRemuxFixtures = captureRemuxFixtures
         Settings.recordHLSAcceptance = recordHLSAcceptance
@@ -1502,6 +1521,10 @@ final class Settings: Sendable {
         set {
             UserDefaults.standard.set(newValue, forKey: "SystemMetricsAtTop")
         }
+    }
+    static var overlayRefreshRate: OverlayRefreshRate {
+        get { OverlayRefreshRate.stored(UserDefaults.standard.integer(forKey: "OverlayRefreshRate")) }
+        set { UserDefaults.standard.set(newValue.rawValue, forKey: "OverlayRefreshRate") }
     }
     static var overlaysData: Data? {
         get {

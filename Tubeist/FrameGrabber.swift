@@ -74,6 +74,7 @@ private actor FrameTinkerer {
     private var overlayTexture: MTLTexture?
     private var imprintPipeline: MTLComputePipelineState?
     private var boundingBoxData: [(MTLBuffer, MTLSize, MTLSize)] = []
+    private var overlayRegions: [CGRect] = []
     private var imprintArguments = ImprintArguments()
     private var pixelFormat: OSType?
     
@@ -281,6 +282,8 @@ private actor FrameTinkerer {
     func setCombinedOverlay(_ combinedOverlay: CombinedOverlay?) {
         guard let combinedOverlay else {
             self.overlayTexture = nil
+            boundingBoxData = []
+            overlayRegions = []
             return
         }
         guard let metalDevice else {
@@ -298,7 +301,6 @@ private actor FrameTinkerer {
             return
         }
 
-        boundingBoxData = [] // reset data and precalculate these again
         let w = imprintPipeline.threadExecutionWidth
         let h = imprintPipeline.maxTotalThreadsPerThreadgroup / w
         let threadsPerThreadgroup = MTLSizeMake(w, h, 1)
@@ -308,23 +310,26 @@ private actor FrameTinkerer {
             boundingBoxes: combinedOverlay.boundingBoxes,
             coverage: combinedOverlay.coverage
         )
-        for box in regions {
-            var imprintArguments = self.imprintArguments
-            imprintArguments.offsetX = UInt32(box.origin.x)
-            imprintArguments.offsetY = UInt32(box.origin.y)
-            let imprintArgumentBuffer = metalDevice.makeBuffer(
-                bytes: &imprintArguments,
-                length: MemoryLayout<ImprintArguments>.size,
-                options: [.cpuCacheModeWriteCombined]
-            )
-            let threadsPerGrid = MTLSize(
-                width: Int(box.size.width), height: Int(box.size.height), depth: 1
-            )
-            if let imprintArgumentBuffer {
-                boundingBoxData.append((imprintArgumentBuffer, threadsPerGrid, threadsPerThreadgroup))
+        if regions != overlayRegions {
+            boundingBoxData = []
+            for box in regions {
+                var imprintArguments = self.imprintArguments
+                imprintArguments.offsetX = UInt32(box.origin.x)
+                imprintArguments.offsetY = UInt32(box.origin.y)
+                let imprintArgumentBuffer = metalDevice.makeBuffer(
+                    bytes: &imprintArguments,
+                    length: MemoryLayout<ImprintArguments>.size,
+                    options: [.cpuCacheModeWriteCombined]
+                )
+                let threadsPerGrid = MTLSize(
+                    width: Int(box.size.width), height: Int(box.size.height), depth: 1
+                )
+                if let imprintArgumentBuffer {
+                    boundingBoxData.append((imprintArgumentBuffer, threadsPerGrid, threadsPerThreadgroup))
+                }
             }
+            overlayRegions = boundingBoxData.count == regions.count ? regions : []
         }
-        LOG("Created Metal buffers for \(regions.count) overlay regions", level: .debug)
 
         let image = combinedOverlay.image
         
@@ -339,7 +344,13 @@ private actor FrameTinkerer {
         textureDescriptor.height = height
         textureDescriptor.usage = [.shaderRead, .shaderWrite, .renderTarget] // Adjust usage as needed
 
-        guard let texture = metalDevice.makeTexture(descriptor: textureDescriptor) else {
+        // All overlay uploads and camera imprints use this same command queue.
+        // Its ordering lets us reuse the texture after earlier frame reads,
+        // instead of allocating a full 4K texture for every snapshot.
+        let reusable = overlayTexture.flatMap { existing in
+            existing.width == width && existing.height == height ? existing : nil
+        }
+        guard let texture = reusable ?? metalDevice.makeTexture(descriptor: textureDescriptor) else {
             LOG("Could not create Metal texture from the combined overlay", level: .error)
             return
         }
