@@ -2,6 +2,53 @@ import Testing
 @testable import Tubeist
 
 struct AdaptiveBitrateControllerTests {
+    @Test func shrinkingRecoveryBudgetDoesNotRenewTheBitrateAllowance() {
+        var relaxed = AdaptiveBitrateController(maximumBitrate: 15_000_000,
+            minimumBitrate: 1_000_000, audioBitrate: 128_000)
+        var urgent = relaxed
+        for now in [0.0, 2.0, 4.0] {
+            for seconds in [20.0, 2.0] {
+                var controller = seconds == 20 ? relaxed : urgent
+                controller.delivered(bytes: 3_750_000, elapsed: 1)
+                controller.update(queuedBytes: 10_000_000, queuedMediaSeconds: 8,
+                    inFlightBytes: 0, inFlightSeconds: 0, now: now,
+                    pacedRecoverySeconds: seconds)
+                if seconds == 20 { relaxed = controller } else { urgent = controller }
+            }
+        }
+        #expect(relaxed.targetBitrate == 15_000_000)
+        #expect(urgent.targetBitrate < relaxed.targetBitrate)
+    }
+
+    @Test func deliberatePacingDoesNotDemandAnUnnecessarilyFastBitrateRecovery() {
+        var paced = AdaptiveBitrateController(maximumBitrate: 15_000_000,
+            minimumBitrate: 1_000_000, audioBitrate: 128_000)
+        var unpaced = paced
+        for now in [0.0, 2.0, 4.0, 6.0] {
+            for isPaced in [false, true] {
+                var controller = isPaced ? paced : unpaced
+                controller.delivered(bytes: 3_750_000, elapsed: 1) // 30 Mbps.
+                controller.update(queuedBytes: 15_000_000, queuedMediaSeconds: 8,
+                    inFlightBytes: 0, inFlightSeconds: 0, now: now,
+                    pacedRecoverySeconds: isPaced ? 20 : nil)
+                if isPaced { paced = controller } else { unpaced = controller }
+            }
+        }
+        #expect(paced.targetBitrate == 15_000_000)
+        #expect(unpaced.targetBitrate < paced.targetBitrate)
+    }
+
+    @Test func pacingAllowanceStillRespondsToRealNetworkCongestion() {
+        var controller = controller()
+        for now in [0.0, 2.0, 4.0, 6.0] {
+            controller.delivered(bytes: 1_000_000, elapsed: 3)
+            controller.update(queuedBytes: 8_000_000, queuedMediaSeconds: 12,
+                inFlightBytes: 1_000_000, inFlightSeconds: 5, now: now,
+                pacedRecoverySeconds: 20)
+        }
+        #expect(controller.targetBitrate < 6_000_000)
+    }
+
     private func controller() -> AdaptiveBitrateController {
         AdaptiveBitrateController(maximumBitrate: 6_000_000, minimumBitrate: 1_000_000, audioBitrate: 128_000)
     }

@@ -85,6 +85,12 @@ struct EncodedSegmentAssembler {
             guard !precedingAudio.isEmpty else {
                 throw MPEGTransportStreamError.malformedSample("no audio for completed video segment")
             }
+            // An AAC packet can straddle this keyframe while still belonging
+            // to the preceding segment. Wait for audio starting at/after the
+            // boundary before splitting, so the next GOP is not left alone.
+            // At Stop, keep a short video-only remainder in this same muxed
+            // final segment instead of throwing away both parts of the tail.
+            guard precedingAudio.count < audio.count else { break }
             result.append(EncodedMediaSegment(
                 samples: Array(video[..<boundary]) + precedingAudio, hevc: hevc, aac: aac,
                 presentationDuration: boundaryTime - seconds(first)

@@ -13,6 +13,7 @@ import subprocess
 import sys
 
 from inspect_transport import CaptureValidationError, TransportInspector, require, signed_delta
+from check_hevc_timing import DecodeSchedule, read_ordering_limits
 from validate_report import load_report, validate_report, ReportValidationError
 
 
@@ -198,6 +199,7 @@ def validate_capture(directory, decode=True, pcr_margin_ms=700):
     accepted_events = [e for e in report_events if e['kind'] == 'segmentAccepted']
     require(len(accepted_events) == len(accepted), 'acceptance report and captured upload counts disagree')
     inspector = TransportInspector(pcr_margin_ticks=pcr_margin_ms*90); rows = []
+    schedule = DecodeSchedule()
     for seq,r in accepted.items():
         try:
             entry = entries[seq]
@@ -205,6 +207,8 @@ def validate_capture(directory, decode=True, pcr_margin_ms=700):
             units = inspector.inspect(r['path'].read_bytes(), entry['discontinuity'])
             packets, durations = probe_segment(r['path'],decode)
             video = units['video']; audio = units['audio']
+            ordering = read_ordering_limits(r['path'])
+            pending_pictures = schedule.inspect(video, ordering, entry['discontinuity'])
             require(len(packets) == len(video), 'PES picture count differs from decoder packet count')
             require(all(abs(signed_delta(round(float(p['pts_time'])*90000),round(v['pts']*90000))) <= 2
                         for p,v in zip(packets,video)),
@@ -214,6 +218,7 @@ def validate_capture(directory, decode=True, pcr_margin_ms=700):
                          'keyframes':sum(v['keyframe'] for v in video),'firstPictureNALType':video[0]['nalType'],
                          'videoStart':video[0]['pts'],'mediaEnd':end,'playlistDuration':entry['duration'],
                          'firstVideoDTS':video[0]['dts'],'lastVideoDTS':video[-1]['dts'],
+                         'hevcOrdering':ordering, 'maximumPicturesAwaitingDisplay':pending_pictures,
                          'audioStart':audio[0]['pts'],'audioEnd':audio[-1]['pts']+audio[-1]['duration'],
                          'maximumVideoFrameInterval':max((b-a for a,b in zip(
                              sorted(v['pts'] for v in video), sorted(v['pts'] for v in video)[1:])),default=0),
@@ -245,7 +250,7 @@ def main():
                         help='expected PCR-to-DTS margin; use 0 only for historical captures (default: 700)')
     args = parser.parse_args()
     try:
-        require(shutil.which('ffprobe') and (args.skip_decode or shutil.which('ffmpeg')), 'ffprobe and ffmpeg must be installed')
+        require(shutil.which('ffprobe') and shutil.which('ffmpeg'), 'ffprobe and ffmpeg must be installed')
         result = validate_capture(args.directory,not args.skip_decode,args.pcr_margin_ms)
     except (CaptureValidationError,ReportValidationError) as error:
         print(f'Upload capture validation failed: {error}',file=sys.stderr); return 1

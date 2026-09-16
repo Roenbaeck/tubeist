@@ -42,6 +42,24 @@ The accepted-duration total proves what the uploader acknowledged before Stop;
 it must still be compared with capture time, the local recording, and the
 YouTube archive. Keep those media files and private URLs out of Git.
 
+Current `segmentAccepted` events report the sink's remaining local queue in
+`queuedDuration`. Their optional `detail` records the scheduled media delivery
+`rate` (or `unpaced`), `pacingReason`, actual `pacingWait` seconds, requested `videoTarget` bits/second at upload
+start, and the segment's muxed `mediaMbps`. Older reports used the uploader's
+already-acknowledged playlist queue, which generally reported zero even when
+segments were waiting in the sink. Do not compare that older value as if it were
+the full local backlog.
+
+Delivery pacing uses `1 + backlogSeconds / remainingRecoverySeconds`. A recovery
+episode gets one twenty-second deadline; it is never postponed while that
+backlog persists. The rate can exceed 2x if progress is insufficient. Pacing stops
+when the recovery deadline expires, when the queue has less than two maximum-size
+segments of duration/count headroom, or when waiting would threaten the Stop
+budget. Upload time counts toward spacing; startup is immediate. Queue overflow
+still trims to six seconds with a discontinuity, and ENDLIST still waits ten
+seconds after the final media acknowledgement. These are local policies, not
+documented YouTube buffer/rate guarantees. See [the model and limits](DELIVERY_PACING.md).
+
 ## Exact upload capture and segment validation
 
 The same Debug-only switch also records `uploads.jsonl` and a `bodies/` directory.
@@ -78,6 +96,9 @@ The validator rejects incomplete captures and verifies:
   complete PES packets, and per-track PTS/DTS progression;
 - one leading AUD per HEVC access unit, a random-access first picture, in-band
   VPS/SPS/PPS, no RASL pictures, and AAC ADTS framing;
+- SPS ordering limits independently read by FFmpeg, and a lower-bound check
+  that decoded pictures awaiting display do not exceed the declared picture
+  buffer capacity (displayed reference pictures are not counted by this check);
 - agreement between parsed video boundaries and EXTINF (2 ms tolerance), audio
   continuity (2 ms), and the final A/V end;
 - decoding **each segment separately** using FFmpeg, with no reported decoding
@@ -92,7 +113,7 @@ YouTube ultimately includes in its replay.
 
 `--skip-decode` runs the quicker structural/timing checks and explicitly reports
 `independentlyDecoded: false`. Use the default full decode for the next countdown
-test. Parsing/probing still requires ffprobe. Do not mistake reconstructed
+test. Parsing/probing still requires ffprobe and FFmpeg for SPS inspection. Do not mistake reconstructed
 recording segments for exact captured upload bodies.
 
 PCR must precede each video DTS by the 700 ms receiver buffering margin. This
@@ -120,6 +141,27 @@ confirmation. The upload journal records the last media response and the ENDLIST
 request separately, so their elapsed-time difference verifies the grace period.
 This experiment does not establish that YouTube preserves the whole ending;
 compare the captured media, local recording, and processed replay again.
+
+The current decode-timing correction uses the codec's declared picture-reordering
+depth instead of the encoder's eight-frame processing window. The latest original
+countdown capture failed the new buffer-capacity check: eight pictures awaited
+display despite five declared picture buffers and a reorder depth of two.
+Older captures can consequently fail this stronger validation even when every
+segment decodes in FFmpeg. The hardware encoder probe compares the corrected
+timestamps with FFmpeg's `+igndts` reconstruction. This corrects a demonstrated
+timing inconsistency, but a new physical-phone/YouTube test is still needed to
+establish whether it resolves the replay gaps. EVENT history, PCR margin, and
+the final-acknowledgement grace period remain unchanged for that comparison.
+
+The subsequent phone capture confirmed the corrected decode depth but exposed
+a separate Stop-boundary failure. The assembler now waits for an audio packet
+starting at or beyond a split before publishing the preceding segment. An AAC
+packet that merely overlaps the split still belongs to the preceding segment.
+On Stop, a short video-only remainder stays in the same final muxed segment.
+This avoids losing a completed pending GOP when finalization encounters an
+unmatched tail. Stream packaging errors now preserve a valid local recording
+and expose their detailed error message. This fixes a reproduced local failure;
+it does not establish the cause of YouTube's remaining replay omissions.
 
 Requirements: [YouTube HLS ingestion](https://developers.google.com/youtube/v3/live/guides/hls-ingestion),
 [RFC 8216](https://www.rfc-editor.org/rfc/rfc8216.html).

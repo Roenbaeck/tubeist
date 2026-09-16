@@ -30,6 +30,9 @@ struct EncodedSegmentAssemblerTests {
         try assembler.append(sample(.audio, pts: -40, duration: 500))
         #expect(try assembler.takeReadySegments().isEmpty)
         for pts: Int64 in [460, 960, 1460, 1960] { try assembler.append(sample(.audio, pts: pts)) }
+        // The packet at 1960 overlaps the boundary but remains in segment 0.
+        #expect(try assembler.takeReadySegments().isEmpty)
+        try assembler.append(sample(.audio, pts: 2460))
         let segments = try assembler.takeReadySegments()
         #expect(segments.count == 1)
         #expect(segments[0].samples.filter { $0.kind == .video } == Array(video.prefix(4)))
@@ -38,11 +41,39 @@ struct EncodedSegmentAssemblerTests {
         let ts = try muxer.mux(segments[0])
         #expect(ts.duration == 2)
         #expect(ts.data.count % 188 == 0)
-        try assembler.append(sample(.audio, pts: 2460))
         let tail = try assembler.takeReadySegments(finishing: true)
         #expect(tail.count == 1)
         #expect(tail[0].samples.filter { $0.kind == .video }.count == 1)
         #expect(try muxer.mux(tail[0]).startsWithRandomAccess)
+    }
+
+    @Test(arguments: [false, true])
+    func stoppingJustAfterAKeyframeKeepsTheEntireMuxedTail(drainBeforeStop: Bool) throws {
+        var assembler = EncodedSegmentAssembler()
+        assembler.hevc = hevc
+        assembler.aac = aac
+        var video: [EncodedMediaSample] = []
+        for pts: Int64 in [0, 500, 1000, 1500, 2000] {
+            let item = sample(.video, pts: pts, duration: pts == 2000 ? 17 : 500,
+                              sync: pts == 0 || pts == 2000)
+            video.append(item)
+            try assembler.append(item)
+        }
+        let audio = [0, 500, 1000, 1500].map { sample(.audio, pts: Int64($0)) }
+        for item in audio { try assembler.append(item) }
+        if drainBeforeStop { #expect(try assembler.takeReadySegments().isEmpty) }
+        let segments = try assembler.takeReadySegments(finishing: true)
+        #expect(segments.count == 1)
+        #expect(segments[0].samples == video + audio)
+        #expect(segments[0].presentationDuration == 2.017)
+        var muxer = MPEGTransportStreamMuxer()
+        #expect(try muxer.mux(segments[0]).duration == 2.017)
+        #expect(try assembler.takeReadySegments(finishing: true).isEmpty)
+    }
+
+    @Test func errorsRetainTheirDiagnosticDetailInTheUILog() {
+        let error = MPEGTransportStreamError.malformedSample("unmatched encoded audio/video tail")
+        #expect(error.localizedDescription == "Malformed TS sample: unmatched encoded audio/video tail")
     }
 
     @Test func missingAudioAndUnmatchedTailFailExplicitly() throws {

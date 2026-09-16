@@ -7,6 +7,7 @@ import tempfile
 import unittest
 
 from inspect_transport import TransportInspector, CaptureValidationError
+from check_hevc_timing import DecodeSchedule
 from validate_upload_capture import audit_requests, parse_playlist, read_capture
 
 
@@ -53,6 +54,23 @@ def playlist(entries, first=0, ended=False, event=False):
 
 
 class TransportTests(unittest.TestCase):
+    def test_decode_schedule_catches_eight_frame_lead_but_accepts_codec_depth(self):
+        limits = {'pictureBuffers': 5, 'reorderFrames': 2}
+        order = [0, 4, 2, 1, 3, 8, 6, 5, 7, 12, 10, 9, 11]
+        def samples(delay):
+            return [{'pts': 1 + pts / 60, 'dts': 1 + (index-delay) / 60}
+                    for index, pts in enumerate(order)]
+        schedule = DecodeSchedule()
+        self.assertEqual(schedule.inspect(samples(2), limits), 2)
+        with self.assertRaisesRegex(CaptureValidationError, 'picture-buffer capacity'):
+            DecodeSchedule().inspect(samples(8), limits)
+        # Neither segment boundaries nor an unchanged SPS silently reset history.
+        schedule = DecodeSchedule()
+        schedule.inspect(samples(8)[:5], limits)
+        with self.assertRaisesRegex(CaptureValidationError, 'picture-buffer capacity'):
+            schedule.inspect(samples(8)[5:], limits)
+        self.assertEqual(schedule.inspect(samples(2), limits, discontinuity=True), 2)
+
     def test_decoder_margin_is_checked_including_timestamp_wrap(self):
         for pts in (90000, 45000, (1 << 33)-45000):
             TransportInspector().inspect(sample_transport(pts=pts))

@@ -439,6 +439,7 @@ final class LiveEncodingPipeline {
             clearCandidates()
             isActive = false
         }
+        var packagingFailure: (any Error)?
         do {
             guard basePTS != nil else { throw ContentPackagingError.videoNeverStarted }
             if let videoEncoder { try consumeVideo(videoEncoder.finish()) }
@@ -446,11 +447,20 @@ final class LiveEncodingPipeline {
             guard ContinuousClock().now < deadline else {
                 throw MediaEncodingError.invalid("Media encoding exceeded its shutdown deadline")
             }
-            if !recovering { try await publishReadySegments(finishing: true) }
+            if !recovering {
+                do { try await publishReadySegments(finishing: true) }
+                catch {
+                    packagingFailure = error
+                    LOG("Final stream segment could not be packaged: \(error.localizedDescription)", level: .error)
+                }
+            }
+            // The recording already has the compressed samples. A transport
+            // packaging failure must not cancel its otherwise valid ending.
             try await recording?.finish(deadline: deadline)
         } catch {
             recording?.cancel()
             throw error
         }
+        if let packagingFailure { throw packagingFailure }
     }
 }

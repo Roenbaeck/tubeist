@@ -135,9 +135,9 @@ for digest, pts in uploaded_audio:
 assert uploaded_audio, "No uploaded AAC packets were checked"
 print(f"AUDIO TIMING PASS: {len(uploaded_audio)} unchanged AAC packets; "
       f"maximum timing error {max(audio_timing_errors) * 1000:.3f} ms")
-if result["scenario"] in ("healthy", "startup-audio-overlap", "short-gaps", "network-overflow"):
+if result["scenario"] in ("healthy", "startup-audio-overlap", "short-gaps", "stop-boundary", "network-overflow"):
     assert len(recorded) == result["inputVideoFrames"], (len(recorded), result)
-if result["scenario"] in ("healthy", "startup-audio-overlap", "short-gaps"):
+if result["scenario"] in ("healthy", "startup-audio-overlap", "short-gaps", "stop-boundary"):
     assert uploaded == recorded, "Healthy/repaired media was lost between encoding and upload"
 if result["scenario"] == "processing-pressure":
     assert not result["captureRecovery"], "Processing pressure triggered capture recovery"

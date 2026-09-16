@@ -46,7 +46,7 @@ extension MPEGTransportStreamMuxer {
     }
 }
 
-enum MPEGTransportStreamError: Error, Equatable, CustomStringConvertible {
+enum MPEGTransportStreamError: LocalizedError, Equatable, CustomStringConvertible {
     case missingConfiguration(String)
     case malformedSample(String)
     case timestamp(String)
@@ -58,6 +58,8 @@ enum MPEGTransportStreamError: Error, Equatable, CustomStringConvertible {
         case .timestamp(let detail): "Invalid TS timestamp: \(detail)"
         }
     }
+
+    var errorDescription: String? { description }
 }
 
 struct MPEGTransportStreamSegment: Sendable, Equatable {

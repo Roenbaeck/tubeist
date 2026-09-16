@@ -30,6 +30,10 @@ The scenarios cover:
   encoder recovery, reporting a terminal stall once, and stopping between sessions.
 
 Every uploaded segment and MP4 recording is independently decoded with FFmpeg.
+The `stop-boundary` case freezes microphone input just before a GOP boundary
+while video drains through the next keyframe. It verifies that finalization
+keeps the complete ending in a muxed segment and preserves every recorded and
+uploaded frame, rather than leaving an invalid video-only remainder.
 The verifier checks HLG metadata, that uploaded video pixels match the recording,
 that healthy/briefly repaired capture loses no frames, and that silence replaces
 missing microphone samples without removing surrounding audio. Recovered segments

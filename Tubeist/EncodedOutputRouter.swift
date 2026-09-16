@@ -53,8 +53,8 @@ actor YouTubeHLSStreamSink {
 
     // This is the local encoded-segment queue, not YouTube's limit of five
     // outstanding playlist entries. With two-second writer fragments, thirty
-    // entries absorb at least sixty seconds of a temporary network stall while
-    // keeping worst-case high-bitrate 4K memory use bounded near 120 MB.
+    // entries can hold sixty seconds of a temporary network stall. The count
+    // and duration bounds apply independently, including to variable durations.
     static let maximumQueuedFragments = 30
     static let maximumQueuedDuration: TimeInterval = 60
     static let recoveryQueuedDuration: TimeInterval = 6
@@ -83,6 +83,14 @@ actor YouTubeHLSStreamSink {
     private var uploadStartedAt: TimeInterval?
     private var processingTask: Task<Void, Never>?
     private var needsLiveCatchup = false
+    private var deliveryPacer = HLSDeliveryPacer()
+    private var pacingNow: @Sendable () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
+    private var pacingSleeper: YouTubeHLSUploader.Sleeper = { try await Task.sleep(for: $0) }
+    private var pacingDelay: Task<Void, Error>?
+    private var pacingFinishBy: TimeInterval?
+    private var pendingPacingWait = 0.0
+    private var currentPacingWait = 0.0
+    private var currentDeliveryDecision = HLSDeliveryPacer.Decision(rate: 1, delay: 0, reason: .steady)
 #if DEBUG
     private var acceptanceSessionIdentifier = ""
     private var dropReportingTask: Task<Void, Never>?
@@ -95,12 +103,23 @@ actor YouTubeHLSStreamSink {
         transport: (any YouTubeHLSHTTPTransport)? = nil,
         bitrateController: AdaptiveBitrateController? = nil,
         retryPolicy: YouTubeHLSRetryPolicy = .default,
-        sleeper: @escaping YouTubeHLSUploader.Sleeper = { try await Task.sleep(for: $0) }
+        sleeper: @escaping YouTubeHLSUploader.Sleeper = { try await Task.sleep(for: $0) },
+        pacingNow: @escaping @Sendable () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
+        pacingSleeper: @escaping YouTubeHLSUploader.Sleeper = { try await Task.sleep(for: $0) }
     ) async throws {
         sessionGeneration &+= 1
         let generation = sessionGeneration
         let previousUploader = uploader
         processingTask?.cancel()
+        pacingDelay?.cancel()
+        pacingDelay = nil
+        deliveryPacer = HLSDeliveryPacer()
+        self.pacingNow = pacingNow
+        self.pacingSleeper = pacingSleeper
+        pacingFinishBy = nil
+        pendingPacingWait = 0
+        currentPacingWait = 0
+        currentDeliveryDecision = .init(rate: 1, delay: 0, reason: .steady)
         processingTask = nil
         uploader = nil
         isPrepared = false
@@ -165,6 +184,9 @@ actor YouTubeHLSStreamSink {
             trimQueue(to: max(0, Self.recoveryQueuedDuration - fragment.duration))
         }
         queue.append(fragment)
+        // Reconsider the rate if the backlog grew during a pacing wait. Keep
+        // the fragment in the queue until the wait ends so overflow can trim it.
+        pacingDelay?.cancel()
         updateBitrateController()
         if !isProcessing {
             isProcessing = true
@@ -214,6 +236,15 @@ actor YouTubeHLSStreamSink {
     func finish(deadline: ContinuousClock.Instant) async throws -> Bool {
         let generation = sessionGeneration
         let clock = ContinuousClock()
+        let remaining = clock.now.duration(to: deadline).components
+        let remainingSeconds = Double(remaining.seconds) + Double(remaining.attoseconds) / 1e18
+        // Pacing may use only the budget before the final ACK grace period.
+        // The uploader still enforces the actual monotonic shutdown deadline.
+        let grace = YouTubeHLSUploader.finalSegmentGracePeriod.components
+        let graceSeconds = Double(grace.seconds) + Double(grace.attoseconds) / 1e18
+        let finishBy = pacingNow() + max(0, remainingSeconds - graceSeconds)
+        pacingFinishBy = min(pacingFinishBy ?? finishBy, finishBy)
+        pacingDelay?.cancel()
         while generation == sessionGeneration,
               (isProcessing || !queue.isEmpty),
               clock.now < deadline {
@@ -228,7 +259,7 @@ actor YouTubeHLSStreamSink {
         }
         if !finalizationSamples.isEmpty {
             isProcessing = true
-            Task(priority: .utility) {
+            processingTask = Task(priority: .utility) {
                 await self.drainFinalization(sessionGeneration: generation)
             }
             while generation == sessionGeneration,
@@ -281,6 +312,8 @@ actor YouTubeHLSStreamSink {
     func cancel() async {
         sessionGeneration &+= 1
         processingTask?.cancel()
+        pacingDelay?.cancel()
+        pacingDelay = nil
         processingTask = nil
         let cancelledUploader = uploader
         uploader = nil
@@ -337,13 +370,14 @@ actor YouTubeHLSStreamSink {
 
     private func updateBitrateController() {
         let previous = bitrateController?.state
-        let now = ProcessInfo.processInfo.systemUptime
+        let now = pacingNow()
         bitrateController?.update(
             queuedBytes: queue.reduce(currentBytes) { $0 + $1.segment.count },
             queuedMediaSeconds: queue.reduce(currentDuration) { $0 + $1.duration },
             inFlightBytes: currentBytes,
             inFlightSeconds: uploadStartedAt.map { max(0, now - $0) } ?? 0,
-            now: now
+            now: now,
+            pacedRecoverySeconds: deliveryPacer.recoveryTimeRemaining(at: now)
         )
         if bitrateController?.state == .capacityBelowQualityFloor, previous != .capacityBelowQualityFloor {
             LOG("Available bandwidth is below the quality floor for this preset; choose a lower resolution for the next stream", level: .warning)
@@ -352,6 +386,7 @@ actor YouTubeHLSStreamSink {
 
     private func drainQueue(sessionGeneration generation: UInt64) async {
         while generation == sessionGeneration,
+              !Task.isCancelled,
               isPrepared,
               failure == nil,
               !queue.isEmpty {
@@ -359,12 +394,37 @@ actor YouTubeHLSStreamSink {
                 trimQueue(to: Self.recoveryQueuedDuration)
                 needsLiveCatchup = false
             }
-            guard !queue.isEmpty else { break }
+            guard let next = queue.first else { break }
+            // MP4 initialization/finalization callbacks are parsed/coalesced,
+            // not independent uploads. Pace the resulting final TS separately.
+            let uploadsMedia = next.container == .mpegTransportStream || next.type == .separable
+            let decision = deliveryPacer.decision(
+                queuedMediaSeconds: queue.reduce(0) { $0 + $1.duration },
+                nextDuration: next.duration, now: pacingNow(),
+                queuedFragments: queue.count, maximumQueuedDuration: Self.maximumQueuedDuration,
+                maximumQueuedFragments: Self.maximumQueuedFragments, finishBy: pacingFinishBy
+            )
+            if uploadsMedia, decision.delay > 0.001 {
+                let startedWaitingAt = pacingNow()
+                let delay = Task { [pacingSleeper] in
+                    try await pacingSleeper(.seconds(decision.delay))
+                }
+                pacingDelay = delay
+                // Enqueue, cancellation and replacement wake the worker. The
+                // next iteration rechecks both generation and queue contents.
+                _ = await delay.result
+                guard generation == sessionGeneration else { return }
+                pacingDelay = nil
+                pendingPacingWait += max(0, pacingNow() - startedWaitingAt)
+                continue
+            }
+            currentPacingWait = pendingPacingWait
+            pendingPacingWait = 0
+            currentDeliveryDecision = decision
             let fragment = queue.removeFirst()
             currentFragmentType = fragment.type
             currentDuration = fragment.duration
             currentBytes = fragment.segment.count
-            uploadStartedAt = ProcessInfo.processInfo.systemUptime
             do {
                 try await process(fragment, sessionGeneration: generation)
                 guard generation == sessionGeneration else { return }
@@ -372,6 +432,7 @@ actor YouTubeHLSStreamSink {
                 guard generation == sessionGeneration else { return }
                 await handleProcessingFailure(error, sessionGeneration: generation)
             }
+            guard generation == sessionGeneration else { return }
             currentDuration = 0
             currentBytes = 0
             uploadStartedAt = nil
@@ -380,6 +441,7 @@ actor YouTubeHLSStreamSink {
         }
         if generation == sessionGeneration {
             isProcessing = false
+            deliveryPacer.becameIdle()
         }
     }
 
@@ -442,6 +504,7 @@ actor YouTubeHLSStreamSink {
         let hasAudio = samples.contains { $0.kind == .audio }
         if hasVideo, hasAudio {
             do {
+                try await waitForFinalDeliveryTurn(sessionGeneration: generation)
                 try await upload(
                     ISOBMFFMediaSegment(
                         sequenceNumber: sequenceNumber,
@@ -468,10 +531,34 @@ actor YouTubeHLSStreamSink {
                 level: .warning
             )
         }
+        guard generation == sessionGeneration else { return }
         currentDuration = 0
         isUploadingFinalization = false
         if generation == sessionGeneration {
             isProcessing = false
+        }
+    }
+
+    private func waitForFinalDeliveryTurn(sessionGeneration generation: UInt64) async throws {
+        currentPacingWait = 0
+        while true {
+            guard generation == sessionGeneration, isPrepared else {
+                throw YouTubeHLSPackagingError.notPrepared
+            }
+            try Task.checkCancellation()
+            let decision = deliveryPacer.decision(
+                queuedMediaSeconds: currentDuration, nextDuration: currentDuration, now: pacingNow(),
+                finishBy: pacingFinishBy
+            )
+            currentDeliveryDecision = decision
+            guard decision.delay > 0.001 else { return }
+            let startedWaitingAt = pacingNow()
+            let delay = Task { [pacingSleeper] in try await pacingSleeper(.seconds(decision.delay)) }
+            pacingDelay = delay
+            _ = await delay.result
+            guard generation == sessionGeneration else { throw YouTubeHLSPackagingError.notPrepared }
+            pacingDelay = nil
+            currentPacingWait += max(0, pacingNow() - startedWaitingAt)
         }
     }
 
@@ -509,6 +596,22 @@ actor YouTubeHLSStreamSink {
         // request is in flight belongs to the next segment and must survive ACK.
         pendingDiscontinuity = false
         let uploadData = signalDiscontinuity ? try MPEGTransportStreamMuxer.markingDiscontinuity(data) : data
+        // These clocks start only when real upload work starts, after all
+        // deliberate waiting. Bitrate measurements must not include pacing.
+        let startedAt = pacingNow()
+        uploadStartedAt = startedAt
+        deliveryPacer.beganUpload(duration: duration, now: startedAt)
+#if DEBUG
+        let rateDescription = currentDeliveryDecision.rate.map {
+            String(format: "%.3f", locale: Locale(identifier: "en_US_POSIX"), $0)
+        } ?? "unpaced"
+        let deliveryDetail = "rate=\(rateDescription);pacingReason=\(currentDeliveryDecision.reason.rawValue);" +
+            String(format: "pacingWait=%.3f;videoTarget=%ld;mediaMbps=%.3f",
+                                    locale: Locale(identifier: "en_US_POSIX"),
+                                    currentPacingWait,
+                                    bitrateController?.targetBitrate ?? 0,
+                                    Double(data.count) * 8 / max(duration, 0.001) / 1_000_000)
+#endif
         let receipt = try await uploader.upload(
             segment: uploadData,
             duration: duration,
@@ -518,14 +621,18 @@ actor YouTubeHLSStreamSink {
         bitrateController?.delivered(bytes: data.count, elapsed: receipt.elapsedSeconds)
         lastAcceptedMediaSequence = receipt.sequence
         let diagnostics = await uploader.diagnostics
-        let queuedDuration = await uploader.queuedDuration
+        guard generation == sessionGeneration else { return }
+        // The uploader has just acknowledged its single outstanding segment;
+        // the remaining backlog lives here, not in its playlist bookkeeping.
+        let queuedDuration = queue.reduce(0) { $0 + $1.duration }
 #if DEBUG
         await HLSAcceptanceRecorder.shared.segmentAccepted(
             sequence: receipt.sequence,
             duration: duration,
             queuedDuration: queuedDuration,
             retryCount: diagnostics.retryCount,
-            httpStatus: diagnostics.lastHTTPStatus
+            httpStatus: diagnostics.lastHTTPStatus,
+            detail: deliveryDetail
         )
 #endif
         let queuedDurationDescription = String(format: "%.2f", queuedDuration)

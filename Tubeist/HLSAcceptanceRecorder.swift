@@ -71,7 +71,8 @@ actor HLSAcceptanceRecorder {
         duration: Double,
         queuedDuration: Double,
         retryCount: Int,
-        httpStatus: Int?
+        httpStatus: Int?,
+        detail: String? = nil
     ) {
         append(
             kind: "segmentAccepted",
@@ -79,7 +80,8 @@ actor HLSAcceptanceRecorder {
             duration: duration,
             queuedDuration: queuedDuration,
             retryCount: retryCount,
-            httpStatus: httpStatus
+            httpStatus: httpStatus,
+            detail: detail
         )
     }
 

@@ -213,6 +213,9 @@ struct TubeistView: View {
             appState.refreshCameraView()
             await Streamer.shared.setMonitor(appState.activeMonitor)
             LOG("Viewing camera monitor", level: .debug)
+#if DEBUG
+            await HLSLiveDiagnostic.shared.startIfRequested()
+#endif
         } catch is CancellationError {
             // The next foreground task will finish setup when capture is allowed.
         } catch {
@@ -263,6 +266,9 @@ struct TubeistView: View {
     }
 
     func refreshCurrentYouTubeBroadcastStatus(logContext: String) async {
+#if DEBUG
+        guard !HLSLiveDiagnostic.isRequested else { return }
+#endif
         // A canceled poll must not invalidate a newer refresh's generation.
         guard !Task.isCancelled else { return }
         guard youtubeService.isSignedIn,
@@ -328,6 +334,9 @@ struct TubeistView: View {
     }
 
     func startYouTubePolling() {
+#if DEBUG
+        guard !HLSLiveDiagnostic.isRequested else { return }
+#endif
         youtubePollingTask?.cancel()
         youtubePollingTask = nil
         guard youtubeService.isSignedIn,

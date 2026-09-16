@@ -4,6 +4,9 @@ import subprocess
 import sys
 import array
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / 'Acceptance'))
+from check_hevc_timing import DecodeSchedule, read_ordering_limits
+
 folder = pathlib.Path(sys.argv[1])
 expected = json.loads((folder / "expected.json").read_text())
 for name in ("stream.ts", "recording.mp4"):
@@ -52,3 +55,30 @@ assert hashes("stream.ts") == hashes("recording.mp4"), "Streaming and recording 
 for path in sorted(folder.glob("segment_*.ts")):
     subprocess.run(["ffmpeg", "-v", "error", "-xerror", "-i", str(path), "-f", "null", "-"], check=True)
 print("PASS: independent TS segments, identical decoded frames in TS/MP4, Main10 HLG/BT.2020, AAC, and aligned duration")
+
+# Independent timestamp reference: the relay ignores input DTS and lets FFmpeg
+# reconstruct decode timing from PTS. Do the same without any re-encoding.
+reference = folder / 'ffmpeg-igndts.ts'
+subprocess.run(['ffmpeg', '-v', 'error', '-y', '-copyts', '-fflags', '+igndts',
+                '-i', str(folder/'recording.mp4'), '-map', '0:v:0', '-c', 'copy',
+                '-fps_mode', 'passthrough', '-f', 'mpegts', str(reference)], check=True)
+
+def video_packets(path):
+    return json.loads(subprocess.check_output([
+        'ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_packets',
+        '-show_entries', 'packet=pts_time,dts_time', '-of', 'json', str(path)
+    ]))['packets']
+
+actual = video_packets(folder/'stream.ts')
+oracle = video_packets(reference)
+assert len(actual) == len(oracle) == expected['videoFrames']
+offset = float(actual[0]['pts_time']) - float(oracle[0]['pts_time'])
+for key in ('pts_time', 'dts_time'):
+    # The recording writer uses a coarser timescale than 90 kHz transport ticks.
+    error = max(abs(float(a[key]) - float(b[key]) - offset) for a, b in zip(actual, oracle))
+    assert error <= .001, (key, 'FFmpeg timing mismatch', error)
+limits = read_ordering_limits(folder/'stream.ts')
+video = [{'pts': float(p['pts_time']), 'dts': float(p['dts_time'])} for p in actual]
+peak = DecodeSchedule().inspect(video, limits)
+print(f'PASS: DTS/PTS match FFmpeg within 1 ms; {peak} pictures awaiting display, '
+      f'SPS reorder depth {limits["reorderFrames"]}, capacity {limits["pictureBuffers"]}')

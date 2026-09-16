@@ -24,7 +24,8 @@ import Foundation
         if scenario == "mono-recovery" { preset.audioChannels = 1 }
         try pipeline.start(preset: preset, stream: true, recording: recording)
         let rate = 48_000.0
-        let duration = scenario == "network-overflow" ? 70.4 : scenario == "stabilization-changes" ? 33.4 : scenario == "long-recovery" ? 34.4 : 10.4
+        let duration = scenario == "stop-boundary" ? 6 + 1.0 / 30
+            : scenario == "network-overflow" ? 70.4 : scenario == "stabilization-changes" ? 33.4 : scenario == "long-recovery" ? 34.4 : 10.4
         let totalFrames = Int(duration * 30)
         var audioOffset = 0
         var recoveryObserved = false
@@ -39,6 +40,9 @@ import Foundation
             return 100 + time - videoDelay
         }
         func missing(_ time: Double, video: Bool) -> Bool {
+            // Stop freezes the microphone before the last stabilized camera
+            // frames drain, occasionally leaving a new keyframe without audio.
+            if scenario == "stop-boundary" { return !video && time >= 5.85 }
             // Model a latest-frame mailbox under sustained processing pressure:
             // real frames still arrive regularly, but intermediate PTS values
             // have been coalesced. They must not trigger duplicate catch-up.
@@ -97,6 +101,7 @@ import Foundation
                 throw MediaEncodingError.invalid("Audio capture storage exhausted \(audioPool.exhaustionCount) times; state \(String(describing: pipeline.captureState))")
             }
         }
+        if scenario == "stop-boundary" { pipeline.beginFinalization() }
         try await pipeline.finish(deadline: ContinuousClock().now.advanced(by: .seconds(20)))
         if let audioPool {
             precondition(audioPool.retainedBuffers == 0, "Capture storage was retained after shutdown")

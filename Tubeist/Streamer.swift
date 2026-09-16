@@ -658,6 +658,21 @@ final class Streamer: Sendable {
             return
         }
 
+#if DEBUG
+        if HLSLiveDiagnostic.isRequested {
+            let endpoint = try await HLSLiveDiagnostic.shared.takeEndpoint()
+            // This explicit diagnostic broadcast is managed in Studio. Do not
+            // prepare or complete a different broadcast using saved credentials.
+            await streamingActor.setYouTubeBroadcast(id: nil, status: nil)
+            let model = await MainActor.run { UIDevice.current.model.replacingOccurrences(of: " ", with: "_") }
+            try await EncodedOutputRouter.shared.prepareYouTube(
+                endpoint: endpoint, sessionIdentifier: streamID,
+                userAgent: "Apple / \(model) / Tubeist-\(Bundle.main.appVersion ?? "unknown")"
+            )
+            return
+        }
+#endif
+
         guard let streamKey = Settings.streamKey, !streamKey.isEmpty else {
             throw StreamStartError.missingStreamKey
         }

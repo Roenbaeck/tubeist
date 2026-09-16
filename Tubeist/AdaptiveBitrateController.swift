@@ -55,7 +55,8 @@ struct AdaptiveBitrateController: Sendable {
     /// correcting an excessive initial preset before its first ACK arrives.
     mutating func update(
         queuedBytes: Int, queuedMediaSeconds: Double,
-        inFlightBytes: Int, inFlightSeconds: Double, now: Double
+        inFlightBytes: Int, inFlightSeconds: Double, now: Double,
+        pacedRecoverySeconds: Double? = nil
     ) {
         guard now.isFinite, now - lastEvaluation >= policy.segmentSeconds else { return }
         lastEvaluation = now
@@ -76,7 +77,13 @@ struct AdaptiveBitrateController: Sendable {
         let congested = lag >= 1 || inFlightSeconds > policy.segmentSeconds * 2
         let usableBuffer = max(policy.segmentSeconds * 2,
                                policy.assumedRemoteBufferSeconds - policy.safetyReserveSeconds)
-        let catchUpSeconds = max(policy.segmentSeconds * 2, usableBuffer - lag)
+        var catchUpSeconds = max(policy.segmentSeconds * 2, usableBuffer - lag)
+        if let pacedRecoverySeconds, pacedRecoverySeconds.isFinite, pacedRecoverySeconds > 0 {
+            // Share the pacer's remaining recovery horizon. A fresh recovery
+            // is gentle; a missed target becomes urgent instead of perpetually
+            // renewing a twenty-second allowance or imposing a four-second floor.
+            catchUpSeconds = pacedRecoverySeconds
+        }
         // Q' = R - C. To clear Q in T: R = C - Q/T. Reserve bandwidth for
         // audio, TS overhead, and encoder overshoot (AverageBitRate is soft).
         func sustainableVideoBitrate(at capacity: Double) -> Double {

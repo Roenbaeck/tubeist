@@ -12,6 +12,8 @@ It verifies all submitted frames return, each TS segment decodes on its own,
 TS and MP4 decode to identical video pixels, HDR metadata survives, and
 packet timestamps preserve A/V synchronization, including AAC priming. An
 audible marker checks decoded sound timing independently of packet metadata.
+The probe also compares DTS/PTS against a passthrough FFmpeg `+igndts` remux
+and checks that pictures awaiting display cannot exceed the SPS buffer capacity.
 
 ## Streaming architecture
 
@@ -29,8 +31,14 @@ follows adaptive streaming bitrate. Recording-only sessions keep the selected
 bitrate. Debug fMP4 fixture capture now requires recording to be enabled.
 
 HEVC stays Main10, HLG, BT.2020 with closed GOPs and frame reordering. An
-eight-frame encoder window bounds retained frames and provides a fixed DTS
-lead for transport/MP4 compatibility. PTS and encoded payload are unchanged;
+eight-frame encoder window bounds work retained during compression. Decode
+timing instead uses the highest temporal layer's `sps_max_num_reorder_pics`,
+read from the emitted HEVC configuration, as its lead along the actual input
+presentation timeline. This separates encoder lookahead from decoder buffering
+and follows the relay's PTS-based FFmpeg reconstruction. A reordering-depth
+change requires a fresh encoder/timeline, as capture recovery already provides.
+The recording video track uses a 90 kHz timescale to avoid rounding this timing
+and the shared A/V epoch to AVAssetWriter's default 600 Hz. PTS and encoded payload are unchanged;
 video is never presented late merely to remove negative composition offsets.
 AAC priming is represented on the same timeline, in the converter's input
 sample units. Recent microphone timestamp anchors keep the encoded audio

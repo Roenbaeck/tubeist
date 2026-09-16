@@ -28,7 +28,8 @@ struct HLSAcceptanceRecorderTests {
             duration: 2,
             queuedDuration: 0.25,
             retryCount: 1,
-            httpStatus: 202
+            httpStatus: 202,
+            detail: "rate=1.500;pacingWait=0.500;videoTarget=15000000;mediaMbps=15.400"
         )
         await recorder.stopped()
 
@@ -44,6 +45,8 @@ struct HLSAcceptanceRecorderTests {
         #expect(events.first?["detail"] as? String == "schema=4")
         #expect(events[2]["kind"] as? String == "segmentAccepted")
         #expect(events[2]["httpStatus"] as? Int == 202)
+        #expect(events[2]["queuedDuration"] as? Double == 0.25)
+        #expect(events[2]["detail"] as? String == "rate=1.500;pacingWait=0.500;videoTarget=15000000;mediaMbps=15.400")
         #expect(events[3]["kind"] as? String == "stopped")
         #expect(events.last?["kind"] as? String == "summary")
         #expect(events.last?["detail"] as? String == "outcome=stopped;events=4")

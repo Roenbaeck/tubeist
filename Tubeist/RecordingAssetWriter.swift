@@ -139,6 +139,9 @@ final class RecordingAssetWriter {
 
     private func makeInput(_ type: AVMediaType, format: CMFormatDescription) -> AVAssetWriterInput {
         let input = AVAssetWriterInput(mediaType: type, outputSettings: nil, sourceFormatHint: format)
+        // movieTimeScale does not set the video track's default (600 Hz).
+        // Keep the corrected decode lead and shared A/V epoch at transport precision.
+        if type == .video { input.mediaTimeScale = 90_000 }
         input.expectsMediaDataInRealTime = true
         return input
     }

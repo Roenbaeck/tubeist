@@ -10,6 +10,7 @@ xcrun swiftc -swift-version 6 -parse-as-library \
   "${repository_root}/Tubeist/EncodedMedia.swift" \
   "${repository_root}/Tubeist/MPEGTransportStreamMuxer.swift" \
   "${repository_root}/Tubeist/MediaEncoders.swift" \
+  "${repository_root}/Tubeist/HEVCReordering.swift" \
   "${repository_root}/Tubeist/CaptureContinuity.swift" \
   "${repository_root}/Tubeist/RecordingAssetWriter.swift" \
   "${tool_directory}/MediaFixtures.swift" \

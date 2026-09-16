@@ -157,6 +157,25 @@ struct TubeistApp: App {
     
     var body: some Scene {
         WindowGroup {
+#if DEBUG
+            if HLSUploadReplay.isRequested {
+                HLSUploadReplayView()
+            } else {
+                applicationView
+            }
+#else
+            applicationView
+#endif
+        }
+        .onChange(of: scenePhase) { oldValue, newValue in
+#if DEBUG
+            guard !HLSUploadReplay.isRequested else { return }
+#endif
+            handleScenePhase(oldValue, newValue)
+        }
+    }
+
+    private var applicationView: some View {
             TubeistView().environment(appState)
                 .onAppear {
                     UIApplication.shared.isIdleTimerDisabled = true
@@ -182,8 +201,9 @@ struct TubeistApp: App {
                 .onDisappear {
                     UIApplication.shared.isIdleTimerDisabled = false
                 }
-        }
-        .onChange(of: scenePhase) { oldValue, newValue in
+    }
+
+    private func handleScenePhase(_ oldValue: ScenePhase, _ newValue: ScenePhase) {
             switch (oldValue, newValue) {
             case (.inactive, .background), (.active, .background):
                 if !appState.soonGoingToBackground, !appState.isAppInitialization {
@@ -258,10 +278,16 @@ struct TubeistApp: App {
                 }
             default: break
             }
-        }
     }
     
     init() {
+#if DEBUG
+        if HLSUploadReplay.isRequested {
+            startupAlert = nil
+            UIApplication.shared.isIdleTimerDisabled = true
+            return
+        }
+#endif
         // Keep migration before view creation, but carry its result as plain
         // initialization data until SwiftUI installs appState.
         var startupAlert: String?

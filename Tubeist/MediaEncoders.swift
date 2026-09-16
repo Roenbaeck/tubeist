@@ -92,42 +92,58 @@ private final class VideoEncoderOutput: @unchecked Sendable {
     }
 }
 
-/// Assign decode-order timestamps with the encoder's bounded frame window.
-/// Subtracting N * nominalFrameDuration from source DTS is only safe for a
-/// constant cadence. Using actual input PTS also handles coalesced frames.
+/// Assign decode-order timestamps using the SPS picture-reordering depth.
+/// Like FFmpeg's PTS-based DTS reconstruction, use the presentation timeline
+/// delayed by the reorder depth, not by the encoder's processing window.
+/// Actual submitted PTS preserve timing when capture cadence is irregular.
 struct VideoDecodeTimeline {
     let frameDuration: CMTime
-    let maximumFrameDelay: Int
+    private(set) var reorderFrames: Int?
     private var firstPTS: CMTime?
     private var inputPTS: [CMTime] = []
     private var emitted = 0
+    private var pendingOutputs = 0
+    private var lastDTS: CMTime?
 
-    init(frameDuration: CMTime, maximumFrameDelay: Int) {
+    init(frameDuration: CMTime) {
         self.frameDuration = frameDuration
-        self.maximumFrameDelay = maximumFrameDelay
+    }
+
+    mutating func configure(reorderFrames: Int) throws {
+        guard (0...15).contains(reorderFrames),
+              self.reorderFrames == nil || self.reorderFrames == reorderFrames else {
+            // A new encoder starts a fresh timeline during capture recovery.
+            // Do not change the lead halfway through an existing decode timeline.
+            throw MediaEncodingError.invalid("HEVC picture reordering changed; encoder restart required")
+        }
+        self.reorderFrames = reorderFrames
     }
 
     mutating func submitted(_ pts: CMTime) {
         if firstPTS == nil { firstPTS = pts }
         inputPTS.append(pts)
+        pendingOutputs += 1
     }
 
     mutating func next(presentationTime: CMTime) throws -> CMTime {
-        guard let firstPTS, !inputPTS.isEmpty else {
-            throw MediaEncodingError.invalid("HEVC output has no submitted timing")
+        guard let firstPTS, let reorderFrames, !inputPTS.isEmpty, pendingOutputs > 0 else {
+            throw MediaEncodingError.invalid("HEVC output has no submitted timing or reordering configuration")
         }
         let dts: CMTime
-        if emitted < maximumFrameDelay {
+        if emitted < reorderFrames {
             dts = CMTimeSubtract(firstPTS, CMTimeMultiply(frameDuration,
-                multiplier: Int32(maximumFrameDelay - emitted)))
+                multiplier: Int32(reorderFrames - emitted)))
         } else {
             dts = inputPTS[0]
         }
-        guard dts <= presentationTime else {
-            throw MediaEncodingError.invalid("HEVC reordering exceeded its configured frame bound")
+        guard dts.isNumeric, presentationTime.isNumeric, dts <= presentationTime,
+              lastDTS.map({ dts > $0 }) ?? true else {
+            throw MediaEncodingError.invalid("HEVC decoding timestamps exceed the declared picture-reordering bound")
         }
-        if emitted >= maximumFrameDelay { inputPTS.removeFirst() }
+        if emitted >= reorderFrames { inputPTS.removeFirst() }
         emitted += 1
+        pendingOutputs -= 1
+        lastDTS = dts
         return dts
     }
 }
@@ -138,6 +154,7 @@ final class HEVCVideoEncoder {
     private let output = VideoEncoderOutput()
     private static let maximumFrameDelay = 8
     private var decodeTimeline: VideoDecodeTimeline
+    private var timingFormat: CMFormatDescription?
     private var submittedFrames = 0
     private var emittedFrames = 0
     private var lastSubmittedPTS: CMTime?
@@ -153,7 +170,7 @@ final class HEVCVideoEncoder {
         self.bitrate = bitrate
         let duration = CMTime(seconds: 1 / frameRate, preferredTimescale: 90_000)
         frameDuration = duration
-        decodeTimeline = VideoDecodeTimeline(frameDuration: duration, maximumFrameDelay: Self.maximumFrameDelay)
+        decodeTimeline = VideoDecodeTimeline(frameDuration: duration)
         var created: VTCompressionSession?
         try checkMediaStatus(VTCompressionSessionCreate(
             allocator: nil, width: Int32(width), height: Int32(height), codecType: kCMVideoCodecType_HEVC,
@@ -240,9 +257,18 @@ final class HEVCVideoEncoder {
     }
 
     private func normalizeDecodeTime(_ sample: CMSampleBuffer) throws -> CMSampleBuffer {
-        // Preserve presentation timestamps and compressed bytes. The encoder's
-        // reordering limit is a frame count, not a fixed time interval: use the
-        // actual input timestamp from that many frames earlier as decoding lead.
+        // Parse once per format change. MaxFrameDelayCount controls how long the
+        // encoder can work, not how many decoded pictures the receiver can hold.
+        guard let format = CMSampleBufferGetFormatDescription(sample) else {
+            throw MediaEncodingError.invalid("HEVC output has no format description")
+        }
+        if timingFormat.map({ CFEqual($0, format) }) != true {
+            let configuration = try EncodedSampleAdapter.hevcConfiguration(format)
+            let limits = try HEVCReordering(sequenceParameterSets: configuration.sequenceParameterSets)
+            try decodeTimeline.configure(reorderFrames: limits.reorderFrames)
+            timingFormat = format
+        }
+        // Preserve presentation timestamps and compressed bytes.
         let pts = CMSampleBufferGetPresentationTimeStamp(sample)
         let dts = try decodeTimeline.next(presentationTime: pts)
         var timing = CMSampleTimingInfo(duration: frameDuration, presentationTimeStamp: pts, decodeTimeStamp: dts)
