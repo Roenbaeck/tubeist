@@ -21,6 +21,12 @@ struct OverlayCaptureSchedule {
     private(set) var isCapturing = false
     private var lastStart: TimeInterval?
 
+    // Keep this accessible on older Swift compilers too; private stored state
+    // makes their synthesized memberwise initializer private.
+    init(rate: OverlayRefreshRate = .once) {
+        self.rate = rate
+    }
+
     mutating func request() { isPending = true }
 
     func delay(at now: TimeInterval) -> TimeInterval? {
