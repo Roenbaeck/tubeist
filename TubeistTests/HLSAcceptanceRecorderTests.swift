@@ -9,7 +9,7 @@ import Testing
 
 #if DEBUG
 struct HLSAcceptanceRecorderTests {
-    @Test func writesCompleteSchemaThreeReportWithMonotonicElapsedTimes() async throws {
+    @Test func writesCompleteSchemaFourReportWithMonotonicElapsedTimes() async throws {
         let sessionIdentifier = "test_\(UUID().uuidString)"
         let documents = try #require(FileManager.default.urls(
             for: .documentDirectory,
@@ -41,7 +41,7 @@ struct HLSAcceptanceRecorderTests {
 
         #expect(events.count == 5)
         #expect(events.first?["kind"] as? String == "prepared")
-        #expect(events.first?["detail"] as? String == "schema=3")
+        #expect(events.first?["detail"] as? String == "schema=4")
         #expect(events[2]["kind"] as? String == "segmentAccepted")
         #expect(events[2]["httpStatus"] as? Int == 202)
         #expect(events[3]["kind"] as? String == "stopped")

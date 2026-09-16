@@ -37,22 +37,19 @@ struct HLSMediaPlaylist: Sendable, Equatable {
     // HLS requires this value to remain constant for the entire playlist.
     // Five seconds also covers a delayed keyframe without changing the header.
     let targetDuration: Int = 5
-    private(set) var discontinuitySequence = 0
+    let discontinuitySequence = 0
     private(set) var entries: [HLSPlaylistEntry] = []
     private(set) var nextSequence: Int = 0
-    private let acknowledgedTailCount: Int
 
-    // Retain five acknowledged entries through shutdown so subsequent playlist
-    // uploads can re-advertise a longer history without retaining media bytes.
-    init(sessionIdentifier: String, acknowledgedTailCount: Int = 5) throws {
+    // EVENT playlists retain every entry through ENDLIST. Only the small playlist
+    // metadata is retained here; acknowledged media bytes can still be released.
+    init(sessionIdentifier: String) throws {
         guard Self.isSafeFilenameComponent(sessionIdentifier),
-              !sessionIdentifier.isEmpty,
-              acknowledgedTailCount >= 0 else {
+              !sessionIdentifier.isEmpty else {
             throw HLSPlaylistError.invalidSessionIdentifier
         }
         self.sessionIdentifier = sessionIdentifier
         self.playlistFilename = "tubeist_\(sessionIdentifier).m3u8"
-        self.acknowledgedTailCount = acknowledgedTailCount
     }
 
     var mediaSequence: Int {
@@ -91,13 +88,13 @@ struct HLSMediaPlaylist: Sendable, Equatable {
             throw HLSPlaylistError.unknownSequence(sequence)
         }
         entries[index].acknowledged = true
-        trimAcknowledgedPrefix()
     }
 
     func render(endList: Bool = false) -> String {
         var lines = [
             "#EXTM3U",
             "#EXT-X-VERSION:3",
+            "#EXT-X-PLAYLIST-TYPE:EVENT",
             "#EXT-X-TARGETDURATION:\(targetDuration)",
             "#EXT-X-MEDIA-SEQUENCE:\(mediaSequence)",
             "#EXT-X-DISCONTINUITY-SEQUENCE:\(discontinuitySequence)",
@@ -124,20 +121,6 @@ struct HLSMediaPlaylist: Sendable, Equatable {
         formatter.dateFormat = "yyyyMMdd_HHmmss"
         let suffix = uuid.uuidString.replacingOccurrences(of: "-", with: "").lowercased().prefix(12)
         return "\(formatter.string(from: date))_\(suffix)"
-    }
-
-    private mutating func trimAcknowledgedPrefix() {
-        let firstOutstanding = entries.firstIndex { !$0.acknowledged }
-        let firstIndexToKeep: Int
-        if let firstOutstanding {
-            firstIndexToKeep = max(0, firstOutstanding - acknowledgedTailCount)
-        } else {
-            firstIndexToKeep = max(0, entries.count - acknowledgedTailCount)
-        }
-        if firstIndexToKeep > 0 {
-            discontinuitySequence += entries.prefix(firstIndexToKeep).filter(\.discontinuity).count
-            entries.removeFirst(firstIndexToKeep)
-        }
     }
 
     private static func isSafeFilenameComponent(_ string: String) -> Bool {

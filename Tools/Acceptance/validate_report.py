@@ -134,13 +134,13 @@ def validate_report(
             errors.append("the prepared event does not declare a schema")
         else:
             schema = int(schema_match.group(1))
-            if schema not in (2, 3):
+            if schema not in (2, 3, 4):
                 errors.append("the report schema is not supported")
             elif schema < minimum_schema:
                 errors.append(f"the report schema is older than required schema {minimum_schema}")
 
     elapsed_values: list[float] = []
-    if schema == 3:
+    if schema in (3, 4):
         for index, event in enumerate(events, start=1):
             elapsed = event.get("elapsed")
             if not _is_finite_number(elapsed) or float(elapsed) < 0:
@@ -152,7 +152,10 @@ def validate_report(
         ):
             errors.append("monotonic elapsed times are out of order")
 
-    if kinds.count("initializationParsed") != 1:
+    if schema == 4:
+        if kinds.count("initializationParsed") > 1:
+            errors.append("the report contains repeated initializationParsed events")
+    elif kinds.count("initializationParsed") != 1:
         errors.append("the report must contain exactly one initializationParsed event")
 
     terminal_positions = [index for index, kind in enumerate(kinds) if kind in TERMINAL_KINDS]
@@ -257,7 +260,7 @@ def validate_report(
 
     total_duration = sum(float(event["duration"]) for event in accepted)
     elapsed_duration = None
-    if schema == 3 and terminal_positions:
+    if schema in (3, 4) and terminal_positions:
         terminal_elapsed = events[terminal_positions[0]].get("elapsed")
         if _is_finite_number(terminal_elapsed):
             elapsed_duration = round(float(terminal_elapsed), 6)
@@ -307,7 +310,7 @@ def main() -> int:
     parser.add_argument(
         "--minimum-schema",
         type=int,
-        choices=(2, 3),
+        choices=(2, 3, 4),
         default=3,
         help="require monotonic schema 3 by default; use 2 only for legacy evidence",
     )

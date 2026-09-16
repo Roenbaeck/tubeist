@@ -24,9 +24,15 @@ Tools/YouTubeHLSMock/validate_uploader_socket.sh
 The script requires Xcode command-line tools, Python 3, and OpenSSL. Validation
 artifacts are written to a unique temporary directory printed by the script.
 
-The playlist retains five acknowledged entries, including in the final playlist,
-as an experiment for missing footage in YouTube replays. The end marker has been
-restored after omitting it did not resolve the reported loss. Uploader and sink
-unit tests verify the rolling history and the five retained entries at shutdown.
+The uploader now sends an EVENT playlist and retains every entry, including in
+the final ENDLIST playlist, as an experiment for missing footage in YouTube
+replays. Only playlist metadata is retained; acknowledged media can still be
+released. Uploader and sink unit tests verify append-only history through
+shutdown and the unchanged limit of five outstanding segments.
+ENDLIST now waits until ten seconds after the last successful media upload.
+Unit tests use an injected monotonic clock to check the acknowledgement-based
+deadline and cancellation; this socket runner skips sleeping while checking the
+same request order. After ENDLIST succeeds, the app requests completion of the
+broadcast selected at Start, retaining YouTube auto-stop as a fallback.
 This socket check verifies delivery to the mock; compare a finished YouTube replay
 with the local recording and acceptance report to assess missing footage.

@@ -42,7 +42,7 @@ class AcceptanceReportTests(unittest.TestCase):
                 "kind": kind,
                 **values,
             }
-            if schema == 3:
+            if schema >= 3:
                 event["elapsed"] = float(len(events))
             events.append(event)
             timestamp += timedelta(seconds=1)
@@ -123,6 +123,12 @@ class AcceptanceReportTests(unittest.TestCase):
         report[3]["elapsed"] = 0.5
         with self.assertRaisesRegex(ReportValidationError, "out of order"):
             validate_report(report)
+
+    def test_direct_video_toolbox_report_needs_no_mp4_initialization(self) -> None:
+        report = self.make_report(schema=4)
+        report.pop(1)
+        report[-1]["detail"] = f"outcome=stopped;events={len(report)-1}"
+        self.assertEqual(validate_report(report)["schema"], 4)
 
     def test_legacy_schema_requires_explicit_opt_in(self) -> None:
         report = self.make_report(schema=2)

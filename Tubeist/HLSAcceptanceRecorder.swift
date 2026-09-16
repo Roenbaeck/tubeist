@@ -31,14 +31,15 @@ actor HLSAcceptanceRecorder {
     private var sessionStartedAt: ContinuousClock.Instant?
     private var activeSessionIdentifier: String?
 
-    func begin(sessionIdentifier: String, enabled: Bool) {
+    @discardableResult
+    func begin(sessionIdentifier: String, enabled: Bool) -> URL? {
         closeFile()
         activeSessionIdentifier = sessionIdentifier
         guard enabled,
               let documents = FileManager.default.urls(
                 for: .documentDirectory,
                 in: .userDomainMask
-              ).first else { return }
+              ).first else { return nil }
 
         let directory = documents
             .appendingPathComponent("TubeistDirectHLSAcceptance", isDirectory: true)
@@ -53,10 +54,13 @@ actor HLSAcceptanceRecorder {
             eventCount = 0
             bufferedLines.removeAll(keepingCapacity: true)
             sessionStartedAt = clock.now
-            append(kind: "prepared", detail: "schema=3")
+            // Direct VideoToolbox output has no MP4 initialization to parse.
+            append(kind: "prepared", detail: "schema=4")
+            return directory
         } catch {
             closeFile()
             LOG("Could not create the YouTube HLS acceptance report", level: .warning)
+            return nil
         }
     }
 

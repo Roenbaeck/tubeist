@@ -18,6 +18,47 @@ private actor CommandOrderRecorder {
 
 struct StreamerTests {
     @Test @MainActor
+    func completionUpdatesOnlyTheStoppingSessionAndClearsItsTarget() async throws {
+        let appState = AppState()
+        let actor = StreamingActor()
+        await actor.setAppState(appState)
+        try await actor.beginPreparing()
+        let target = YouTubeBroadcastCompletionTarget(id: "session-broadcast", authorizationScope: "scope")
+        await actor.setYouTubeBroadcast(id: target.id, status: "live", completionTarget: target)
+        try await actor.markLive()
+        await actor.confirmYouTubeCompletion(target)
+        #expect(appState.youtubeStatus == "live")
+        #expect(await actor.beginStopping())
+        await actor.confirmYouTubeCompletion(.init(id: "another-broadcast", authorizationScope: "scope"))
+        #expect(appState.youtubeStatus == "live")
+        await actor.confirmYouTubeCompletion(target)
+        #expect(appState.youtubeStatus == "complete")
+        await actor.completeStop()
+        #expect(await actor.activeYouTubeCompletionTarget() == nil)
+        try await actor.beginPreparing()
+        appState.youtubeBroadcastId = "next-broadcast"
+        appState.youtubeStatus = "ready"
+        await actor.confirmYouTubeCompletion(target)
+        #expect(appState.youtubeStatus == "ready")
+    }
+
+    @Test @MainActor
+    func changingTheDisplayedBroadcastDoesNotRetargetShutdown() async throws {
+        let appState = AppState()
+        let actor = StreamingActor()
+        await actor.setAppState(appState)
+        try await actor.beginPreparing()
+        let target = YouTubeBroadcastCompletionTarget(id: "session-broadcast", authorizationScope: "scope")
+        await actor.setYouTubeBroadcast(id: target.id, status: "live", completionTarget: target)
+        #expect(await actor.beginStopping())
+        appState.youtubeBroadcastId = "different-selection"
+        appState.youtubeStatus = "ready"
+        #expect(await actor.activeYouTubeCompletionTarget() == target)
+        await actor.confirmYouTubeCompletion(target)
+        #expect(appState.youtubeStatus == "ready")
+    }
+
+    @Test @MainActor
     func idlePreviewInterruptionDoesNotPresentAFatalAlert() async {
         let appState = AppState()
         let streamer = Streamer()

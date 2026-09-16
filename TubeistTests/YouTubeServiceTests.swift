@@ -8,6 +8,82 @@ import Testing
 @testable import Tubeist
 
 struct YouTubeServiceTests {
+    @Test @MainActor
+    func completesOnlyTheBroadcastCapturedAtStart() async throws {
+        let transport = MockYouTubeAPITransport(responses: [
+            .init(data: Data(#"{"id":"session-broadcast","status":{"lifeCycleStatus":"complete"}}"#.utf8), statusCode: 200)
+        ])
+        let service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore(), discoveryCache: YouTubeDiscoveryCache())
+        let target = YouTubeBroadcastCompletionTarget(
+            id: "session-broadcast", authorizationScope: YouTubeDiscoveryCache.scope(refreshToken: "refresh-token")
+        )
+        try await service.completeBroadcastAfterUpload(target, deadline: .now.advanced(by: .seconds(1)))
+        let requests = await transport.requests
+        #expect(requests.count == 1)
+        #expect(requests[0].httpMethod == "POST")
+        #expect(queryItems(in: requests[0]).contains(URLQueryItem(name: "id", value: target.id)))
+        #expect(queryItems(in: requests[0]).contains(URLQueryItem(name: "broadcastStatus", value: "complete")))
+    }
+
+    @Test(arguments: ["complete", "live"]) @MainActor
+    func completionConfirmsStatusWhenAutoStopRacesTheTransition(status: String) async throws {
+        let transport = MockYouTubeAPITransport(responses: [
+            .init(data: Data(#"{"error":{"message":"redundant transition"}}"#.utf8), statusCode: 403),
+            .init(data: Data("{\"items\":[{\"id\":\"session-broadcast\",\"status\":{\"lifeCycleStatus\":\"\(status)\"}}]}".utf8), statusCode: 200)
+        ])
+        let service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore(), discoveryCache: YouTubeDiscoveryCache())
+        let target = YouTubeBroadcastCompletionTarget(
+            id: "session-broadcast", authorizationScope: YouTubeDiscoveryCache.scope(refreshToken: "refresh-token")
+        )
+        if status == "complete" {
+            try await service.completeBroadcastAfterUpload(target, deadline: .now.advanced(by: .seconds(1)))
+        } else {
+            await #expect(throws: YouTubeError.apiError(403, "redundant transition")) {
+                try await service.completeBroadcastAfterUpload(target, deadline: .now.advanced(by: .seconds(1)))
+            }
+        }
+        #expect(await transport.requests.map(\.httpMethod) == ["POST", "GET"])
+    }
+
+    @Test @MainActor
+    func completionRejectsAnAccountChangeWithoutSendingARequest() async throws {
+        let transport = MockYouTubeAPITransport(responses: [])
+        let service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore(), discoveryCache: YouTubeDiscoveryCache())
+        let target = YouTubeBroadcastCompletionTarget(
+            id: "old-broadcast", authorizationScope: YouTubeDiscoveryCache.scope(refreshToken: "different-account")
+        )
+        await #expect(throws: YouTubeError.notSignedIn) {
+            try await service.completeBroadcastAfterUpload(target, deadline: .now.advanced(by: .seconds(1)))
+        }
+        #expect(await transport.requests.isEmpty)
+    }
+
+    @Test(arguments: [false, true], [false, true]) @MainActor
+    func completionCanCancelBothAPIAndTokenRefresh(refreshRequired: Bool, cancelCaller: Bool) async throws {
+        let transport = SuspendingYouTubeAPITransport()
+        let store = validMemoryTokenStore()
+        if refreshRequired { store.expiry = .distantPast }
+        let service = YouTubeService(transport: transport, tokenStore: store, discoveryCache: YouTubeDiscoveryCache())
+        let target = YouTubeBroadcastCompletionTarget(
+            id: "session-broadcast", authorizationScope: YouTubeDiscoveryCache.scope(refreshToken: "refresh-token")
+        )
+        let start = ContinuousClock.now
+        let completion = Task {
+            try await service.completeBroadcastAfterUpload(
+                target, deadline: start.advanced(by: cancelCaller ? .seconds(30) : .seconds(1))
+            )
+        }
+        if cancelCaller {
+            await transport.waitUntilStarted()
+            completion.cancel()
+        }
+        await #expect(throws: CancellationError.self) {
+            try await completion.value
+        }
+        #expect(start.duration(to: .now) < .seconds(5))
+        #expect(await transport.observedCancellation)
+    }
+
     @Test func cancellationClassificationDoesNotSuppressRealFailures() {
         #expect(YouTubeDiagnostics.isCancellation(CancellationError()))
         #expect(YouTubeDiagnostics.isCancellation(URLError(.cancelled)))
@@ -406,11 +482,11 @@ struct YouTubeServiceTests {
                 statusCode: 200
             ),
             YouTubeAPIResponse(
-                data: Data(#"{"items":[{"status":{"lifeCycleStatus":"ready"}}]}"#.utf8),
+                data: Data(#"{"items":[{"id":"one","status":{"lifeCycleStatus":"ready"}},{"id":"two","status":{"lifeCycleStatus":"testing"}}]}"#.utf8),
                 statusCode: 200
             ),
             YouTubeAPIResponse(
-                data: Data(#"{"items":[{"status":{"lifeCycleStatus":"testing"}}]}"#.utf8),
+                data: Data(#"{"items":[{"id":"two","status":{"lifeCycleStatus":"testing"}},{"id":"one","status":{"lifeCycleStatus":"ready"}}]}"#.utf8),
                 statusCode: 200
             ),
         ])

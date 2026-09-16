@@ -564,10 +564,10 @@ struct SettingsView: View {
 #if DEBUG
                 Section(
                     header: Text("YouTube HLS Development"),
-                    footer: Text("Diagnostics are opt-in and remain off in normal use. Fixture capture saves one bounded sample set; acceptance recording appends bounded event lines for a single session.")
+                    footer: Text("Diagnostic recording saves upload events and the exact video segments and playlists in Tubeist’s Files folder, up to 512 MB per stream. Use it for short test streams and delete the files afterward. Stream keys are not saved. Fixture capture separately saves one remux sample set.")
                 ) {
                     Toggle("Capture fMP4 remux fixtures", isOn: $captureRemuxFixtures)
-                    Toggle("Record YouTube HLS acceptance events", isOn: $recordHLSAcceptance)
+                    Toggle("Record YouTube HLS diagnostics", isOn: $recordHLSAcceptance)
                 }
 #endif
 

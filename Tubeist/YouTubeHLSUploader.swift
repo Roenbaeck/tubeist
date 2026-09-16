@@ -199,12 +199,14 @@ struct YouTubeHLSUploaderDiagnostics: Sendable, Equatable {
 
 actor YouTubeHLSUploader {
     typealias Sleeper = @Sendable (Duration) async throws -> Void
+    static let finalSegmentGracePeriod: Duration = .seconds(10)
 
     private let endpoint: YouTubeHLSEndpoint
     private let userAgent: String
     private let transport: any YouTubeHLSHTTPTransport
     private let retryPolicy: YouTubeHLSRetryPolicy
     private let sleeper: Sleeper
+    private let now: @Sendable () -> ContinuousClock.Instant
     private let keepRetrying: Bool
     private var playlist: HLSMediaPlaylist
     private var stopped = false
@@ -215,6 +217,8 @@ actor YouTubeHLSUploader {
     private var lastRetryCount = 0
     private var lastHTTPStatus: Int?
     private var isReconnecting = false
+    private var lastMediaAcknowledgedAt: ContinuousClock.Instant?
+    private var finalPlaylistDelay: Task<Void, Error>?
 
     init(
         endpoint: YouTubeHLSEndpoint,
@@ -223,6 +227,7 @@ actor YouTubeHLSUploader {
         transport: any YouTubeHLSHTTPTransport = URLSessionYouTubeHLSHTTPTransport(),
         retryPolicy: YouTubeHLSRetryPolicy = .default,
         keepRetrying: Bool = false,
+        now: @escaping @Sendable () -> ContinuousClock.Instant = { .now },
         sleeper: @escaping Sleeper = { try await Task.sleep(for: $0) }
     ) throws {
         guard retryPolicy.maximumAttempts > 0,
@@ -237,6 +242,7 @@ actor YouTubeHLSUploader {
         self.transport = transport
         self.retryPolicy = retryPolicy
         self.sleeper = sleeper
+        self.now = now
         self.keepRetrying = keepRetrying
         self.playlist = try HLSMediaPlaylist(sessionIdentifier: sessionIdentifier)
     }
@@ -290,6 +296,7 @@ actor YouTubeHLSUploader {
                 body: segment,
                 priorRetryCount: playlistRetries
             )
+            lastMediaAcknowledgedAt = now()
             lastRetryCount = playlistRetries + segmentRetries
             try playlist.acknowledge(sequence: entry.sequence)
             isReconnecting = false
@@ -319,13 +326,16 @@ actor YouTubeHLSUploader {
 
     func stop() async {
         stopped = true
+        finalPlaylistDelay?.cancel()
         await transport.invalidate()
     }
 
-    /// Publishes the final playlist only after every media segment has been
-    /// acknowledged, then closes the persistent ingestion connection.
+    /// Publishes ENDLIST ten seconds after the final media acknowledgement,
+    /// then closes the persistent ingestion connection.
     /// Retains the acknowledged history and marks that no more segments follow.
-    func finish(deadline: ContinuousClock.Instant? = nil) async throws {
+    /// Returns true only when a nonempty final playlist was acknowledged.
+    @discardableResult
+    func finish(deadline: ContinuousClock.Instant? = nil) async throws -> Bool {
         // Stop also interrupts URLSession, rather than only timing the sleeps
         // between requests. Never outlive the caller's shutdown budget.
         let timeout = deadline.map { deadline in
@@ -346,6 +356,22 @@ actor YouTubeHLSUploader {
                 throw YouTubeHLSUploadError.invalidResponse
             }
             if playlist.nextSequence > 0 {
+                guard let lastMediaAcknowledgedAt else {
+                    throw YouTubeHLSUploadError.invalidResponse
+                }
+                let remaining = now().duration(to: lastMediaAcknowledgedAt.advanced(
+                    by: Self.finalSegmentGracePeriod
+                ))
+                if remaining > .zero {
+                    let delay = Task { [sleeper] in try await sleeper(remaining) }
+                    finalPlaylistDelay = delay
+                    defer { finalPlaylistDelay = nil }
+                    try await withTaskCancellationHandler {
+                        try await delay.value
+                    } onCancel: {
+                        delay.cancel()
+                    }
+                }
                 _ = try await send(
                     filename: playlist.playlistFilename,
                     contentType: "application/vnd.apple.mpegurl",
@@ -355,6 +381,7 @@ actor YouTubeHLSUploader {
             }
             stopped = true
             await transport.invalidate()
+            return playlist.nextSequence > 0
         } catch {
             stopped = true
             await transport.invalidate()

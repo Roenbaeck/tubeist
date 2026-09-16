@@ -119,6 +119,7 @@ actor StreamingActor {
     private var mediaIntakeActive = false
     private var isHandlingRuntimeFailure = false
     private var outputPlan: StreamOutputPlan?
+    private var youTubeCompletionTarget: YouTubeBroadcastCompletionTarget?
 
     func setAppState(_ appState: AppState) {
         self.appState = appState
@@ -136,6 +137,7 @@ actor StreamingActor {
         case .idle, .failed:
             mediaIntakeActive = false
             outputPlan = nil
+            youTubeCompletionTarget = nil
             await transition(to: .preparing)
         case .preparing, .live, .stopping:
             throw StreamSessionError.sessionBusy(state)
@@ -154,7 +156,10 @@ actor StreamingActor {
         self.outputPlan = outputPlan
     }
 
-    func setYouTubeBroadcast(id: String?, status: String?) async {
+    func setYouTubeBroadcast(
+        id: String?, status: String?, completionTarget: YouTubeBroadcastCompletionTarget? = nil
+    ) async {
+        youTubeCompletionTarget = completionTarget
         let appState = self.appState
         await MainActor.run {
             appState?.isYouTubeSignedIn = id != nil
@@ -165,6 +170,19 @@ actor StreamingActor {
 
     func activeOutputPlan() -> StreamOutputPlan? {
         outputPlan
+    }
+
+    func activeYouTubeCompletionTarget() -> YouTubeBroadcastCompletionTarget? {
+        youTubeCompletionTarget
+    }
+
+    func confirmYouTubeCompletion(_ target: YouTubeBroadcastCompletionTarget) async {
+        guard state == .stopping, youTubeCompletionTarget == target else { return }
+        let appState = self.appState
+        await MainActor.run {
+            guard appState?.youtubeBroadcastId == target.id else { return }
+            appState?.youtubeStatus = "complete"
+        }
     }
 
     func beginStopping() async -> Bool {
@@ -185,6 +203,7 @@ actor StreamingActor {
         mediaIntakeActive = false
         isHandlingRuntimeFailure = false
         outputPlan = nil
+        youTubeCompletionTarget = nil
         await transition(to: .idle)
     }
 
@@ -192,6 +211,7 @@ actor StreamingActor {
         mediaIntakeActive = false
         isHandlingRuntimeFailure = false
         outputPlan = nil
+        youTubeCompletionTarget = nil
         await transition(to: .failed(error.localizedDescription))
     }
 
@@ -542,11 +562,27 @@ final class Streamer: Sendable {
         var youTubeStatus: ShutdownComponentStatus = outputPlan?.streamsToYouTube == true
             ? .completed
             : .notRequested
+        var endListAcknowledged = false
         do {
-            try await EncodedOutputRouter.shared.finish(deadline: deadline)
+            endListAcknowledged = try await EncodedOutputRouter.shared.finish(deadline: deadline)
         } catch {
             youTubeStatus = .failed(error.localizedDescription)
             LOG("Encoded output shutdown failed: \(error.localizedDescription)", level: .error)
+        }
+        if endListAcknowledged,
+           let target = await streamingActor.activeYouTubeCompletionTarget() {
+            do {
+                let service = await YouTubeService()
+                try await service.completeBroadcastAfterUpload(
+                    target, deadline: min(deadline, clock.now.advanced(by: .seconds(8)))
+                )
+                await streamingActor.confirmYouTubeCompletion(target)
+                LOG("YouTube broadcast completion confirmed", level: .debug)
+            } catch {
+                // Uploads and local recording are already finalized. Leave the
+                // remote status truthful and let auto-stop/polling finish it.
+                LOG("YouTube completion was not confirmed; waiting for automatic stop (\(YouTubeDiagnostics.failure(error)))", level: .warning)
+            }
         }
         let result = StreamStopResult(
             outcome: .stopped,
@@ -641,7 +677,8 @@ final class Streamer: Sendable {
             endpoint = preparation.endpoint
             await streamingActor.setYouTubeBroadcast(
                 id: preparation.broadcast.id,
-                status: preparation.broadcast.lifeCycleStatus
+                status: preparation.broadcast.lifeCycleStatus,
+                completionTarget: preparation.completionTarget
             )
         } else {
             endpoint = try YouTubeHLSEndpoint.manualPrimary(streamKey: streamKey)

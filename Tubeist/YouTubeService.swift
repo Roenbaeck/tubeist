@@ -103,6 +103,13 @@ struct YouTubeStream: Sendable, Equatable {
 struct YouTubeStreamingPreparation: Sendable, Equatable {
     let endpoint: YouTubeHLSEndpoint
     let broadcast: YouTubeBroadcast
+    let completionTarget: YouTubeBroadcastCompletionTarget
+}
+
+/// Captured at Start; completion must never follow a later Settings selection.
+struct YouTubeBroadcastCompletionTarget: Sendable, Equatable {
+    let id: String
+    let authorizationScope: String
 }
 
 /// Tubeist's saved template for the next broadcast on a particular reusable
@@ -907,9 +914,8 @@ final class YouTubeService {
             preparedBroadcast.enableMonitorStream = false
             preparedBroadcast.broadcastStreamDelayMs = 0
         }
-        // YouTube owns the final broadcast transition after Tubeist has drained
-        // and closed HLS ingestion. Its backend has the only authoritative view
-        // of when the final accepted media is safe to archive.
+        // Keep auto-stop as a fallback if explicit completion after HLS shutdown
+        // cannot reach YouTube, or authorization becomes unavailable.
         preparedBroadcast.enableAutoStop = true
         if preparedBroadcast != broadcast {
             try await updateBroadcast(
@@ -937,9 +943,11 @@ final class YouTubeService {
                 try await addToPlaylist(playlistId: playlistId, videoId: broadcast.id)
             }
         }
+        try checkAuthorization(scope)
         return YouTubeStreamingPreparation(
             endpoint: endpoint,
-            broadcast: broadcast
+            broadcast: broadcast,
+            completionTarget: YouTubeBroadcastCompletionTarget(id: broadcast.id, authorizationScope: scope)
         )
     }
 
@@ -1200,10 +1208,48 @@ final class YouTubeService {
             token: token,
             operation: .broadcastStatus
         )
-        return response.items.first?.status?.lifeCycleStatus
+        return response.items.first(where: { $0.id == broadcastId })?.status?.lifeCycleStatus
     }
 
     // MARK: - YouTube API: Transition (Stop)
+
+    /// Best-effort completion after ENDLIST has been acknowledged. The caller
+    /// keeps auto-stop/status polling if this bounded request cannot confirm it.
+    func completeBroadcastAfterUpload(
+        _ target: YouTubeBroadcastCompletionTarget,
+        deadline: ContinuousClock.Instant
+    ) async throws {
+        guard ContinuousClock.now < deadline else { throw URLError(.timedOut) }
+        let completion = Task { @MainActor in
+            try self.checkAuthorization(target.authorizationScope)
+            let token = try await self.getValidAccessToken()
+            try self.checkAuthorization(target.authorizationScope)
+            do {
+                try await self.transitionBroadcastToComplete(id: target.id, token: token)
+            } catch {
+                // Auto-stop can win the race, or the response can be lost after
+                // a successful transition. Only a confirmed status counts.
+                try self.checkAuthorization(target.authorizationScope)
+                guard try await self.fetchBroadcastStatus(broadcastId: target.id) == "complete" else {
+                    throw error
+                }
+            }
+            try self.checkAuthorization(target.authorizationScope)
+        }
+        let timeout = Task { @MainActor in
+            do { try await Task.sleep(until: deadline, clock: .continuous) }
+            catch { return }
+            completion.cancel()
+            self.tokenRefreshTask?.cancel()
+        }
+        defer { timeout.cancel() }
+        try await withTaskCancellationHandler {
+            try await completion.value
+        } onCancel: {
+            completion.cancel()
+            Task { @MainActor in self.tokenRefreshTask?.cancel() }
+        }
+    }
 
     func stopBroadcast(id: String) async throws {
         beginLoading()

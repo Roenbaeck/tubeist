@@ -131,33 +131,26 @@ actor YouTubeHLSStreamSink {
         guard generation == sessionGeneration else {
             throw YouTubeHLSPackagingError.notPrepared
         }
-        if let transport {
-            uploader = try YouTubeHLSUploader(
-                endpoint: endpoint,
-                sessionIdentifier: sessionIdentifier,
-                userAgent: userAgent,
-                transport: transport,
-                retryPolicy: retryPolicy,
-                keepRetrying: true,
-                sleeper: sleeper
-            )
-        } else {
-            uploader = try YouTubeHLSUploader(
-                endpoint: endpoint,
-                sessionIdentifier: sessionIdentifier,
-                userAgent: userAgent,
-                retryPolicy: retryPolicy,
-                keepRetrying: true,
-                sleeper: sleeper
-            )
-        }
-        isPrepared = true
+        var uploadTransport: any YouTubeHLSHTTPTransport = transport ?? URLSessionYouTubeHLSHTTPTransport()
 #if DEBUG
-        await HLSAcceptanceRecorder.shared.begin(
+        if let directory = await HLSAcceptanceRecorder.shared.begin(
             sessionIdentifier: sessionIdentifier,
             enabled: Settings.recordHLSAcceptance
-        )
+        ) {
+            let capture = HLSRequestCapture(directory: directory)
+            await capture.start()
+            uploadTransport = HLSCapturingHTTPTransport(underlying: uploadTransport, capture: capture)
+        }
 #endif
+        guard generation == sessionGeneration else {
+            await uploadTransport.invalidate()
+            throw YouTubeHLSPackagingError.notPrepared
+        }
+        uploader = try YouTubeHLSUploader(
+            endpoint: endpoint, sessionIdentifier: sessionIdentifier, userAgent: userAgent,
+            transport: uploadTransport, retryPolicy: retryPolicy, keepRetrying: true, sleeper: sleeper
+        )
+        isPrepared = true
         LOG("YouTube HLS output is prepared", level: .debug)
     }
 
@@ -211,12 +204,14 @@ actor YouTubeHLSStreamSink {
         }
     }
 
-    func finish(timeout: TimeInterval = 120) async throws {
+    @discardableResult
+    func finish(timeout: TimeInterval = 120) async throws -> Bool {
         let clock = ContinuousClock()
-        try await finish(deadline: clock.now.advanced(by: .seconds(timeout)))
+        return try await finish(deadline: clock.now.advanced(by: .seconds(timeout)))
     }
 
-    func finish(deadline: ContinuousClock.Instant) async throws {
+    @discardableResult
+    func finish(deadline: ContinuousClock.Instant) async throws -> Bool {
         let generation = sessionGeneration
         let clock = ContinuousClock()
         while generation == sessionGeneration,
@@ -253,10 +248,11 @@ actor YouTubeHLSStreamSink {
         uploader = nil
         isPrepared = false
         let finishingFailure = failure
+        var endListAcknowledged = false
         if let finishingUploader {
             if finishingFailure == nil {
                 do {
-                    try await finishingUploader.finish(deadline: deadline)
+                    endListAcknowledged = try await finishingUploader.finish(deadline: deadline)
                 } catch {
                     failure = String(describing: error)
                     LOG("YouTube final playlist publication failed: \(error)", level: .error)
@@ -279,6 +275,7 @@ actor YouTubeHLSStreamSink {
         await HLSAcceptanceRecorder.shared.stopped()
 #endif
         LOG("YouTube HLS output stopped", level: .debug)
+        return endListAcknowledged
     }
 
     func cancel() async {
@@ -640,13 +637,15 @@ actor EncodedOutputRouter {
         }
     }
 
-    func finish(timeout: TimeInterval = 120) async throws {
+    @discardableResult
+    func finish(timeout: TimeInterval = 120) async throws -> Bool {
         let clock = ContinuousClock()
         let deadline = clock.now.advanced(by: .seconds(timeout))
-        try await finish(deadline: deadline)
+        return try await finish(deadline: deadline)
     }
 
-    func finish(deadline: ContinuousClock.Instant) async throws {
+    @discardableResult
+    func finish(deadline: ContinuousClock.Instant) async throws -> Bool {
         let generation = routingGeneration
         let clock = ContinuousClock()
         while generation == routingGeneration,
@@ -661,15 +660,17 @@ actor EncodedOutputRouter {
             await cancel()
             throw YouTubeHLSPackagingError.shutdownTimedOut
         }
+        let endListAcknowledged: Bool
         switch mode {
         case .none:
-            break
+            endListAcknowledged = false
         case .direct:
-            try await YouTubeHLSStreamSink.shared.finish(deadline: deadline)
+            endListAcknowledged = try await YouTubeHLSStreamSink.shared.finish(deadline: deadline)
         }
         if generation == routingGeneration {
             mode = .none
         }
+        return endListAcknowledged
     }
 
     func cancel() async {

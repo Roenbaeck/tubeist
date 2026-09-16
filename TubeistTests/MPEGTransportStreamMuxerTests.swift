@@ -119,6 +119,7 @@ struct MPEGTransportStreamMuxerTests {
 
         #expect(videoPacket[3] & 0x30 == 0x30)
         #expect(videoPacket[5] & 0x50 == 0x50) // random_access_indicator and PCR_flag
+        #expect(decodePCR(videoPacket) == 27_100)
         #expect(segment.startsWithRandomAccess)
         #expect(segment.firstPresentationTimestamp == 90_000)
         #expect(segment.lastPresentationTimestamp == 93_070)
@@ -160,6 +161,7 @@ struct MPEGTransportStreamMuxerTests {
         let secondVideoPES = payloadStart(of: secondVideo)
         #expect(decodeTimestamp(secondVideo, at: secondVideoPES + 9) == 93_070)
         #expect(decodeTimestamp(secondVideo, at: secondVideoPES + 14) == 93_100)
+        #expect(decodePCR(secondVideo) == 30_100)
         #expect(secondVideo[5] & 0x40 == 0x40)
         #expect(second.startsWithRandomAccess)
     }
@@ -281,7 +283,37 @@ struct MPEGTransportStreamMuxerTests {
         })
         let pes = payloadStart(of: videoPacket)
         #expect(decodeTimestamp(videoPacket, at: pes + 9) == 45_000)
-        #expect(decodePCR(videoPacket) == 45_000)
+        // DTS has wrapped, but its earlier PCR has not yet wrapped.
+        #expect(decodePCR(videoPacket) == (UInt64(1) << 33) - 18_000)
+    }
+
+    @Test func decoderMarginPreservesReorderedMediaTimingAndResetsWithTheSession() throws {
+        let initialization = try ISOBMFFReader().parseInitializationSegment(FMP4Fixture.initialization())
+        let hevc = try #require(initialization.videoTrack?.hevc)
+        let aac = try #require(initialization.audioTrack?.aac)
+        let video = [Int64(0), 6_000, 3_000].enumerated().map { index, pts in
+            EncodedMediaSample(trackID: 1, kind: .video, timescale: 90_000,
+                decodeTime: -12_000 + Int64(index) * 3_000, presentationTime: pts,
+                duration: 3_000, isRandomAccess: index == 0,
+                data: lengthPrefixedNAL([index == 0 ? 0x26 : 0x02, 0x01]))
+        }
+        let audio = EncodedMediaSample(trackID: 2, kind: .audio, timescale: 48_000,
+            decodeTime: 0, presentationTime: 0, duration: 1_024,
+            isRandomAccess: true, data: Data([0xaa, 0xbb, 0xcc]))
+        let source = EncodedMediaSegment(samples: video + [audio], hevc: hevc, aac: aac,
+                                         presentationDuration: 0.1)
+        var muxer = MPEGTransportStreamMuxer()
+        let output = try muxer.mux(source)
+        let packets = transportPackets(output.data)
+        let pictures = packets.filter { pid(of: $0) == MPEGTransportStreamMuxer.videoPID && hasPayloadUnitStart($0) }
+        #expect(pictures.map { decodeTimestamp($0, at: payloadStart(of: $0) + 9) } == [102_000, 108_000, 105_000])
+        #expect(pictures.map { decodeTimestamp($0, at: payloadStart(of: $0) + 14) } == [90_000, 93_000, 96_000])
+        #expect(pictures.compactMap(decodePCR) == [27_000, 30_000, 33_000])
+        let audioPacket = try #require(packets.first { pid(of: $0) == MPEGTransportStreamMuxer.audioPID })
+        #expect(decodeTimestamp(audioPacket, at: payloadStart(of: audioPacket) + 9) == 102_000)
+        #expect(output.duration == 0.1)
+        muxer.reset()
+        #expect(try muxer.mux(source) == output)
     }
 
     @Test func convertsEveryConfiguredHEVCNALLengthSizeToAnnexB() throws {

@@ -10,6 +10,16 @@ import Testing
 private let successfulSinkShutdownTimeout: TimeInterval = 10
 
 struct YouTubeHLSStreamSinkTests {
+    @Test func emptySessionDoesNotAuthorizeBroadcastCompletion() async throws {
+        let transport = DirectSinkTransport()
+        let sink = YouTubeHLSStreamSink()
+        try await sink.prepare(endpoint: .manualPrimary(streamKey: "test"),
+                               sessionIdentifier: "empty_session", userAgent: "Tubeist/Test",
+                               transport: transport, sleeper: { _ in })
+        #expect(try await sink.finish(timeout: successfulSinkShutdownTimeout) == false)
+        #expect(await transport.requests().isEmpty)
+    }
+
     @Test(arguments: [0, 3])
     func overflowDuringAnUploadMarksTheNextSegmentDiscontinuous(startupDelaySeconds: Int) async throws {
         // Exercise a slow request start as well as the normal path. CI can
@@ -17,7 +27,7 @@ struct YouTubeHLSStreamSinkTests {
         let transport = RecoveringDirectSinkTransport(firstRequestDelay: .seconds(startupDelaySeconds))
         let endpoint = try YouTubeHLSEndpoint(URL(string: "https://upload.youtube.com/http_upload_hls?cid=not-a-real-key&file=")!)
         let sink = YouTubeHLSStreamSink()
-        try await sink.prepare(endpoint: endpoint, sessionIdentifier: "overflow_session", userAgent: "Tubeist/Test", transport: transport)
+        try await sink.prepare(endpoint: endpoint, sessionIdentifier: "overflow_session", userAgent: "Tubeist/Test", transport: transport, sleeper: { _ in })
         await sink.enqueue(Fragment(sequence: 0, segment: directSentinel(0), duration: 2, container: .mpegTransportStream))
         try await transport.waitUntilRequested()
         for sequence in 1...31 {
@@ -27,7 +37,7 @@ struct YouTubeHLSStreamSinkTests {
                                         container: .mpegTransportStream))
         }
         await transport.releaseFirstRequest()
-        try await sink.finish(timeout: successfulSinkShutdownTimeout)
+        #expect(try await sink.finish(timeout: successfulSinkShutdownTimeout))
         let requests = await transport.requests()
         #expect(!String(decoding: requests[0].body, as: UTF8.self).contains("#EXT-X-DISCONTINUITY\n"))
         #expect(String(decoding: requests[2].body, as: UTF8.self).contains("#EXT-X-DISCONTINUITY\n"))
@@ -46,7 +56,7 @@ struct YouTubeHLSStreamSinkTests {
         let sink = YouTubeHLSStreamSink()
         try await sink.prepare(endpoint: endpoint, sessionIdentifier: "vt_direct_session", userAgent: "Tubeist/Test",
                                transport: transport, bitrateController: AdaptiveBitrateController(
-                                maximumBitrate: 4_000_000, minimumBitrate: 1_000_000, audioBitrate: 128_000))
+                                maximumBitrate: 4_000_000, minimumBitrate: 1_000_000, audioBitrate: 128_000), sleeper: { _ in })
         await sink.enqueue(Fragment(sequence: 0, segment: ts.data, duration: ts.duration, container: .mpegTransportStream))
         try await sink.finish(timeout: successfulSinkShutdownTimeout)
         let requests = await transport.requests()
@@ -69,7 +79,7 @@ struct YouTubeHLSStreamSinkTests {
             endpoint: endpoint,
             sessionIdentifier: "integration_session",
             userAgent: "Tubeist/Test",
-            transport: transport
+            transport: transport, sleeper: { _ in }
         )
         await sink.enqueue(Fragment(
             sequence: 0,
@@ -110,7 +120,7 @@ struct YouTubeHLSStreamSinkTests {
             endpoint: endpoint,
             sessionIdentifier: "old_session",
             userAgent: "Tubeist/Test",
-            transport: slowTransport
+            transport: slowTransport, sleeper: { _ in }
         )
         await sink.enqueue(Fragment(
             sequence: 0,
@@ -130,7 +140,7 @@ struct YouTubeHLSStreamSinkTests {
             endpoint: endpoint,
             sessionIdentifier: "new_session",
             userAgent: "Tubeist/Test",
-            transport: newTransport
+            transport: newTransport, sleeper: { _ in }
         )
         await sink.enqueue(Fragment(
             sequence: 0,
@@ -177,7 +187,7 @@ struct YouTubeHLSStreamSinkTests {
             endpoint: endpoint,
             sessionIdentifier: "final_duration_session",
             userAgent: "Tubeist/Test",
-            transport: transport
+            transport: transport, sleeper: { _ in }
         )
         await sink.enqueue(Fragment(
             sequence: 0,
@@ -217,7 +227,7 @@ struct YouTubeHLSStreamSinkTests {
             endpoint: endpoint,
             sessionIdentifier: "split_final_session",
             userAgent: "Tubeist/Test",
-            transport: transport
+            transport: transport, sleeper: { _ in }
         )
         await sink.enqueue(Fragment(
             sequence: 0,
@@ -266,7 +276,7 @@ struct YouTubeHLSStreamSinkTests {
             endpoint: endpoint,
             sessionIdentifier: "incomplete_final_session",
             userAgent: "Tubeist/Test",
-            transport: transport
+            transport: transport, sleeper: { _ in }
         )
         await sink.enqueue(Fragment(
             sequence: 0,
@@ -312,7 +322,7 @@ struct YouTubeHLSStreamSinkTests {
             endpoint: endpoint,
             sessionIdentifier: "malformed_shutdown_session",
             userAgent: "Tubeist/Test",
-            transport: transport
+            transport: transport, sleeper: { _ in }
         )
         await sink.enqueue(Fragment(
             sequence: 0,
@@ -360,7 +370,7 @@ struct YouTubeHLSStreamSinkTests {
             endpoint: endpoint,
             sessionIdentifier: "recovery_session",
             userAgent: "Tubeist/Test",
-            transport: transport
+            transport: transport, sleeper: { _ in }
         )
         await sink.enqueue(Fragment(
             sequence: 0,
@@ -409,11 +419,10 @@ struct YouTubeHLSStreamSinkTests {
         }
         let finalPlaylist = String(decoding: requests[62].body, as: UTF8.self)
         #expect(finalPlaylist.hasSuffix("#EXT-X-ENDLIST\n"))
-        #expect(finalPlaylist.contains("#EXT-X-MEDIA-SEQUENCE:26\n"))
-        #expect(finalPlaylist.split(separator: "\n").filter { $0.hasSuffix(".ts") } == [
-            "tubeist_recovery_session_26.ts", "tubeist_recovery_session_27.ts", "tubeist_recovery_session_28.ts",
-            "tubeist_recovery_session_29.ts", "tubeist_recovery_session_30.ts",
-        ])
+        #expect(finalPlaylist.contains("#EXT-X-PLAYLIST-TYPE:EVENT\n"))
+        #expect(finalPlaylist.contains("#EXT-X-MEDIA-SEQUENCE:0\n"))
+        #expect(finalPlaylist.split(separator: "\n").filter { $0.hasSuffix(".ts") }.map(String.init)
+            == (0..<31).map { "tubeist_recovery_session_\($0).ts" })
         let finishedMetrics = await sink.metrics()
         #expect(finishedMetrics.lastAcceptedMediaSequence == 30)
         #expect(finishedMetrics.droppedFragments == 0)
@@ -440,7 +449,7 @@ struct YouTubeHLSStreamSinkTests {
             endpoint: endpoint,
             sessionIdentifier: "bounded_session",
             userAgent: "Tubeist/Test",
-            transport: transport
+            transport: transport, sleeper: { _ in }
         )
         await sink.enqueue(Fragment(
             sequence: 0,

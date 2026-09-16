@@ -15,7 +15,7 @@ import Foundation
         let transport = ProbeTransport(folder: folder, blocked: scenario == "network-overflow")
         let sink = YouTubeHLSStreamSink()
         try await sink.prepare(endpoint: .manualPrimary(streamKey: "offline-probe"),
-                               sessionIdentifier: "probe", userAgent: "Tubeist/Probe", transport: transport)
+                               sessionIdentifier: "probe", userAgent: "Tubeist/Probe", transport: transport, sleeper: { _ in })
         let collector = RecordingCollector()
         let recording = try RecordingAssetWriter(delegate: collector, finalizationFlag: AssetWriterFinalizationFlag())
         let pipeline = LiveEncodingPipeline(now: { clock.read() }, automaticWatchdog: false,

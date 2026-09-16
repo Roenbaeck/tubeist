@@ -77,6 +77,11 @@ struct MPEGTransportStreamMuxer {
 
     private static let clockRate: Int64 = 90_000
     private static let initialTimestamp: Int64 = 90_000
+    // PCR describes arrival time, while DTS is the decode deadline. Leave
+    // 700 ms for receiver buffering, as in FFmpeg's default MPEG-TS muxing.
+    // Subtract before 33-bit wrapping; the one-second initial epoch keeps the
+    // first PCR positive. Media PTS/DTS and actual upload timing are unchanged.
+    private static let decoderBufferMargin: Int64 = 63_000
     private static let timestampMask: UInt64 = (1 << 33) - 1
     private static let tableRepeatInterval: Int64 = 9_000
 
@@ -203,6 +208,9 @@ struct MPEGTransportStreamMuxer {
 
             switch sample.source.kind {
             case .video:
+                guard sample.decodeTime >= Self.decoderBufferMargin else {
+                    throw MPEGTransportStreamError.timestamp("video DTS precedes decoder buffering margin")
+                }
                 let elementaryStream = try annexB(
                     sample.source.data,
                     configuration: hevc,
@@ -219,7 +227,7 @@ struct MPEGTransportStreamMuxer {
                     pes,
                     pid: Self.videoPID,
                     randomAccess: sample.source.isRandomAccess,
-                    pcr: UInt64(sample.decodeTime),
+                    pcr: UInt64(sample.decodeTime - Self.decoderBufferMargin),
                     into: &output
                 )
 

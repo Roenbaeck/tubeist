@@ -383,6 +383,10 @@ struct TubeistView: View {
     func stopYouTubePolling() {
         youtubePollingTask?.cancel()
         youtubePollingTask = nil
+        // Stop owns the final transition. Do not let an older status response
+        // replace its confirmed completion or add another polling delay.
+        guard appState.streamSessionState != .stopping,
+              appState.youtubeStatus != "complete" else { return }
         // Keychain-protected OAuth credentials may become unavailable after the
         // device locks. The explicit Stop path owns completion; status polling
         // resumes when Tubeist becomes active again.
@@ -403,6 +407,8 @@ struct TubeistView: View {
                 do {
                     if let status = try await youtubeService.fetchBroadcastStatus(broadcastId: broadcastId) {
                         try Task.checkCancellation()
+                        guard appState.youtubeBroadcastId == broadcastId,
+                              appState.youtubeStatus != "complete" else { return }
                         appState.youtubeStatus = status
                         if status == "complete" { break }
                     }
@@ -828,6 +834,9 @@ struct TubeistView: View {
                             if appState.isYouTubeSignedIn,
                                let ytStatus = appState.youtubeStatus {
                                 var ytColor: Color {
+                                    if appState.streamSessionState == .stopping, ytStatus != "complete" {
+                                        return .orange
+                                    }
                                     switch ytStatus {
                                     case "live", "liveStarting": return .red
                                     case "testing", "testStarting": return .orange
@@ -1228,6 +1237,9 @@ struct TubeistView: View {
         }
         .onChange(of: appState.streamSessionState) { _, state in
             youtubeStatusGeneration = UUID()
+            if state == .stopping, Settings.stream {
+                fade("Finishing YouTube stream…")
+            }
             if state.isLive {
                 startYouTubePolling()
             }

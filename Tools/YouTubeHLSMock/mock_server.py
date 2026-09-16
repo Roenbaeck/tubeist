@@ -131,6 +131,7 @@ def expected_playlist(second: bool, end_list: bool = False) -> bytes:
     lines = [
         "#EXTM3U",
         "#EXT-X-VERSION:3",
+        "#EXT-X-PLAYLIST-TYPE:EVENT",
         "#EXT-X-TARGETDURATION:5",
         "#EXT-X-MEDIA-SEQUENCE:0",
         "#EXT-X-DISCONTINUITY-SEQUENCE:0",

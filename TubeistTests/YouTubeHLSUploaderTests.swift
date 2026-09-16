@@ -9,6 +9,73 @@ import Testing
 
 struct YouTubeHLSUploaderTests {
 
+    @Test(arguments: [0, 7, 12])
+    func finalPlaylistWaitsFromTheLastMediaAcknowledgement(secondsAlreadyElapsed: Int) async throws {
+        let clock = HLSGraceTestClock()
+        let transport = HLSGraceTestTransport(clock: clock)
+        let uploader = try YouTubeHLSUploader(
+            endpoint: .manualPrimary(streamKey: "test"), sessionIdentifier: "grace",
+            userAgent: "Tubeist/Test", transport: transport,
+            now: { clock.now() }, sleeper: { clock.advance($0) }
+        )
+        _ = try await uploader.upload(segment: Data([1]), duration: 2)
+        clock.advance(.seconds(20))
+        _ = try await uploader.upload(segment: Data([2]), duration: 2)
+        let finalAcknowledgement = clock.now()
+        clock.advance(.seconds(secondsAlreadyElapsed))
+        #expect(try await uploader.finish())
+        let endListSentAt = try #require(await transport.endListSentAt)
+        #expect(finalAcknowledgement.duration(to: endListSentAt)
+            == .seconds(max(10, secondsAlreadyElapsed)))
+        #expect(await transport.mediaUploads == 2)
+    }
+
+    @Test(arguments: [false, true])
+    func gracePeriodCanBeInterruptedWithoutSendingEndList(cancelTask: Bool) async throws {
+        let transport = MockYouTubeHLSTransport(statuses: [200, 200])
+        let started = GraceWaitSignal()
+        let uploader = try YouTubeHLSUploader(
+            endpoint: .manualPrimary(streamKey: "test"), sessionIdentifier: "cancel_grace",
+            userAgent: "Tubeist/Test", transport: transport,
+            sleeper: { delay in
+                await started.signal()
+                try await Task.sleep(for: delay)
+            }
+        )
+        _ = try await uploader.upload(segment: Data([1]), duration: 2)
+        let finishing = Task { try await uploader.finish() }
+        await started.wait()
+        if cancelTask { finishing.cancel() } else { await uploader.stop() }
+        await #expect(throws: YouTubeHLSUploadError.stopped) { try await finishing.value }
+        #expect(await transport.recordedRequests().count == 2)
+    }
+
+    @Test func deadlineInterruptsGraceWithoutPublishingAnEarlyEndList() async throws {
+        let transport = MockYouTubeHLSTransport(statuses: [200, 200])
+        let uploader = try YouTubeHLSUploader(
+            endpoint: .manualPrimary(streamKey: "test"), sessionIdentifier: "deadline_grace",
+            userAgent: "Tubeist/Test", transport: transport
+        )
+        _ = try await uploader.upload(segment: Data([1]), duration: 2)
+        let start = ContinuousClock.now
+        await #expect(throws: YouTubeHLSUploadError.stopped) {
+            try await uploader.finish(deadline: start.advanced(by: .milliseconds(30)))
+        }
+        #expect(start.duration(to: .now) < .seconds(2))
+        #expect(await transport.recordedRequests().count == 2)
+    }
+
+    @Test func emptySessionDoesNotWaitOrSendEndList() async throws {
+        let transport = MockYouTubeHLSTransport(statuses: [])
+        let uploader = try YouTubeHLSUploader(
+            endpoint: .manualPrimary(streamKey: "test"), sessionIdentifier: "empty_grace",
+            userAgent: "Tubeist/Test", transport: transport,
+            sleeper: { _ in Issue.record("Empty session must not wait") }
+        )
+        #expect(try await uploader.finish() == false)
+        #expect(await transport.recordedRequests().isEmpty)
+    }
+
     @Test func reconnectsBeyondTheRetryBudgetWithIdenticalAdvertisedBytes() async throws {
         let transport = MockYouTubeHLSTransport(statuses: [200] + Array(repeating: 503, count: 12) + [200])
         let uploader = try YouTubeHLSUploader(
@@ -51,20 +118,22 @@ struct YouTubeHLSUploaderTests {
     }
 
     @Test func finalPlaylistObeysShutdownDeadlineDuringAnOutage() async throws {
+        let clock = HLSGraceTestClock()
         let transport = MockYouTubeHLSTransport(statuses: [200, 200] + Array(repeating: 503, count: 100))
         let uploader = try YouTubeHLSUploader(
             endpoint: .manualPrimary(streamKey: "test"), sessionIdentifier: "final_deadline",
             userAgent: "Tubeist/Test", transport: transport,
             retryPolicy: .init(maximumAttempts: 1, initialDelay: 0.01, maximumDelay: 0.01, jitterFraction: 0),
-            keepRetrying: true)
+            keepRetrying: true, now: { clock.now() })
         _ = try await uploader.upload(segment: Data([0x47]), duration: 2)
-        let clock = ContinuousClock()
-        let start = clock.now
+        clock.advance(.seconds(10))
+        let start = ContinuousClock.now
         do {
             try await uploader.finish(deadline: start.advanced(by: .milliseconds(30)))
             Issue.record("Expected the final playlist to stop at its deadline")
         } catch let error as YouTubeHLSUploadError { #expect(error == .stopped) }
-        #expect(start.duration(to: clock.now) < .seconds(1))
+        #expect(start.duration(to: .now) < .seconds(1))
+        #expect(await transport.recordedRequests().count >= 3)
     }
 
     @Test func defaultRetryBudgetOutlivesAOneMinuteConnectivityGap() {
@@ -412,7 +481,7 @@ struct YouTubeHLSUploaderTests {
         }
     }
 
-    @Test func keepsALongSequentialStreamWindowBounded() async throws {
+    @Test func retainsCompleteEventHistoryThroughShutdown() async throws {
         let transport = MockYouTubeHLSTransport(statuses: [])
         let endpoint = try YouTubeHLSEndpoint(URL(
             string: "https://upload.youtube.com/http_upload_hls?cid=redacted&file="
@@ -439,20 +508,62 @@ struct YouTubeHLSUploaderTests {
             index.isMultiple(of: 2) ? String(data: request.body, encoding: .utf8) : nil
         }
         #expect(playlists.count == 50)
+        for (sequence, playlist) in playlists.enumerated() {
+            #expect(playlist.contains("#EXT-X-PLAYLIST-TYPE:EVENT\n"))
+            #expect(playlist.contains("#EXT-X-MEDIA-SEQUENCE:0\n"))
+            #expect(playlist.split(separator: "\n").filter { $0.hasSuffix(".ts") }.map(String.init)
+                == (0...sequence).map { "tubeist_long_session_\($0).ts" })
+            if sequence > 0 {
+                #expect(playlist.hasPrefix(playlists[sequence - 1]))
+            }
+        }
         let lastPlaylist = try #require(playlists.last)
-        #expect(lastPlaylist.contains("#EXT-X-MEDIA-SEQUENCE:44\n"))
-        #expect(lastPlaylist.split(separator: "\n").filter { $0.hasSuffix(".ts") }.map(String.init)
-                == (44...49).map { "tubeist_long_session_\($0).ts" })
         #expect(await uploader.outstandingCount == 0)
+        #expect(await uploader.queuedDuration == 0)
 
         try await uploader.finish()
         let finalRequests = await transport.recordedRequests()
         #expect(finalRequests.count == 101)
         let finalPlaylist = String(decoding: try #require(finalRequests.last).body, as: UTF8.self)
-        #expect(finalPlaylist.contains("#EXT-X-MEDIA-SEQUENCE:45\n"))
-        #expect(finalPlaylist.split(separator: "\n").filter { $0.hasSuffix(".ts") }.map(String.init)
-                == (45...49).map { "tubeist_long_session_\($0).ts" })
-        #expect(finalPlaylist.hasSuffix("#EXT-X-ENDLIST\n"))
+        #expect(finalPlaylist == lastPlaylist + "#EXT-X-ENDLIST\n")
+    }
+}
+
+private final class HLSGraceTestClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var instant = ContinuousClock.now
+
+    func now() -> ContinuousClock.Instant { lock.withLock { instant } }
+    func advance(_ duration: Duration) { lock.withLock { instant = instant.advanced(by: duration) } }
+}
+
+private actor HLSGraceTestTransport: YouTubeHLSHTTPTransport {
+    let clock: HLSGraceTestClock
+    private(set) var endListSentAt: ContinuousClock.Instant?
+    private(set) var mediaUploads = 0
+
+    init(clock: HLSGraceTestClock) { self.clock = clock }
+
+    func send(_ request: URLRequest, body: Data) async throws -> YouTubeHLSHTTPResponse {
+        if request.value(forHTTPHeaderField: "Content-Type") == "video/mp2t" {
+            mediaUploads += 1
+            // Upload/acknowledgement time must not consume any of the grace.
+            clock.advance(.seconds(15))
+        } else if String(decoding: body, as: UTF8.self).contains("#EXT-X-ENDLIST") {
+            endListSentAt = clock.now()
+        }
+        return YouTubeHLSHTTPResponse(statusCode: 200)
+    }
+    func invalidate() {}
+}
+
+private actor GraceWaitSignal {
+    private var started = false
+    private var waiter: CheckedContinuation<Void, Never>?
+    func signal() { started = true; waiter?.resume(); waiter = nil }
+    func wait() async {
+        if started { return }
+        await withCheckedContinuation { waiter = $0 }
     }
 }
 
