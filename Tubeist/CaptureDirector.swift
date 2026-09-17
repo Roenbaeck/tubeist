@@ -61,23 +61,21 @@ private class DeviceActor {
     private var videoInput: AVCaptureDeviceInput?
     private var videoOutput: AVCaptureVideoDataOutput?
     private var frameRate = DEFAULT_FRAMERATE
-    private var minZoomFactor: CGFloat = 1.0
-    private var maxZoomFactor: CGFloat = 1.0
-    private var opticalZoomFactor: CGFloat = 1.0
+    private var zoomObservations: [NSKeyValueObservation] = []
+    private var zoomReferenceScale: Double?
+    private var zoomRevision: UInt64 = 0
     private var resolution = Resolution(DEFAULT_CAPTURE_WIDTH, DEFAULT_CAPTURE_HEIGHT)
     // audio device
     private var audioDevice: AVCaptureDevice?
     private var audioInput: AVCaptureDeviceInput?
     private var audioOutput: AVCaptureAudioDataOutput?
     // UI bindings
-    private var totalZoom: Binding<Double>?
-    private var currentZoom: Binding<Double>?
+    private var zoom: Binding<CameraZoomState>?
     private var exposureBias: Binding<Float>?
     private var style: Binding<String>?
     private var effect: Binding<String>?
     // capabilties
     private var cameras: [String: String]
-    private var microphones: [String: String]
     private var stabilizations: [String: AVCaptureVideoStabilizationMode] = [:]
     // states
     private var isOutputting: Bool = false
@@ -91,9 +89,7 @@ private class DeviceActor {
 
     init() {
         cameras = Self.discoverCameras()
-        microphones = Self.discoverMicrophones()
         LOG("Cameras: \(cameras.keys.sorted())", level: .info)
-        LOG("Microphones: \(microphones.keys.sorted())", level: .info)
     }
 
     func getStabilizations() -> [String] {
@@ -139,14 +135,9 @@ private class DeviceActor {
         // Setup and the device pickers both refresh discovery. Only report an
         // inventory change, comparing device IDs as well as display names.
         let discoveredCameras = Self.discoverCameras()
-        let discoveredMicrophones = Self.discoverMicrophones()
         if cameras != discoveredCameras {
             cameras = discoveredCameras
             LOG("Cameras: \(cameras.keys.sorted())", level: .info)
-        }
-        if microphones != discoveredMicrophones {
-            microphones = discoveredMicrophones
-            LOG("Microphones: \(microphones.keys.sorted())", level: .info)
         }
     }
 
@@ -154,15 +145,6 @@ private class DeviceActor {
         let discovery = AVCaptureDevice.DiscoverySession(
             deviceTypes: [.builtInWideAngleCamera, .builtInTelephotoCamera, .builtInTripleCamera, .external],
             mediaType: .video,
-            position: .unspecified
-        )
-        return devicesByDisplayName(discovery.devices)
-    }
-
-    private static func discoverMicrophones() -> [String: String] {
-        let discovery = AVCaptureDevice.DiscoverySession(
-            deviceTypes: [.microphone, .external],
-            mediaType: .audio,
             position: .unspecified
         )
         return devicesByDisplayName(discovery.devices)
@@ -266,10 +248,13 @@ private class DeviceActor {
                 try AVAudioSession.sharedInstance().setCategory(
                     .playAndRecord,
                     mode: .videoRecording,
-                    options: [.mixWithOthers, .overrideMutedMicrophoneInterruption]
+                    // HFP uses the same option bit as the older allowBluetooth
+                    // name and works on all iOS versions supported by Tubeist.
+                    options: [.mixWithOthers, .overrideMutedMicrophoneInterruption, .allowBluetoothHFP]
                 )
                 try AVAudioSession.sharedInstance().setPreferredSampleRate(AUDIO_SAMPLE_RATE)
                 try AVAudioSession.sharedInstance().setActive(true)
+                AudioInputRouter.shared.activate()
             } catch {
                 throw CaptureSetupError.audioSession(error.localizedDescription)
             }
@@ -280,9 +265,8 @@ private class DeviceActor {
             self.audioDevice = microphoneDevice
             self.audioInput = audioInput
             self.audioOutput = audioOutput
-            minZoomFactor = videoDevice.minAvailableVideoZoomFactor
-            maxZoomFactor = videoDevice.maxAvailableVideoZoomFactor
-            opticalZoomFactor = videoDevice.activeFormat.secondaryNativeResolutionZoomFactors.first ?? 1.0
+            zoomReferenceScale = Self.referenceZoomScale(for: videoDevice)
+            observeZoom(on: videoDevice)
             resolution = Resolution(
                 Int(videoDevice.activeFormat.formatDescription.dimensions.width),
                 Int(videoDevice.activeFormat.formatDescription.dimensions.height)
@@ -296,12 +280,12 @@ private class DeviceActor {
         }
     }
     
-    func bind(totalZoom: Binding<Double>, currentZoom: Binding<Double>, exposureBias: Binding<Float>, style: Binding<String>, effect: Binding<String>) {
-        self.totalZoom = totalZoom
-        self.currentZoom = currentZoom
+    func bind(zoom: Binding<CameraZoomState>, exposureBias: Binding<Float>, style: Binding<String>, effect: Binding<String>) async {
+        self.zoom = zoom
         self.exposureBias = exposureBias
         self.style = style
         self.effect = effect
+        await publishZoomState()
     }
     
     func addCameraControls(session: AVCaptureSession) async {
@@ -310,14 +294,10 @@ private class DeviceActor {
             session.controls.forEach({ session.removeControl($0) })
             
             guard let videoDevice else { return }
-            let zoomSlider = AVCaptureSystemZoomSlider(device: videoDevice) { zoomFactor in
-                let displayZoom = videoDevice.displayVideoZoomFactorMultiplier * zoomFactor
-                Task {
-                    await self.setZoomFactor(displayZoom)
-                    await self.totalZoom?.wrappedValue = displayZoom
-                    await self.currentZoom?.wrappedValue = 0
-                }
-            }
+            // This system control sets videoZoomFactor itself. KVO below keeps
+            // the label in sync; writing a display-scaled factor back here would
+            // apply the multiplier a second time and change the user's framing.
+            let zoomSlider = AVCaptureSystemZoomSlider(device: videoDevice)
             if session.canAddControl(zoomSlider) {
                 LOG("Adding system zoom slider camera control", level: .debug)
                 session.addControl(zoomSlider)
@@ -417,26 +397,101 @@ private class DeviceActor {
         return true
     }
 
-    func setZoomFactor(_ zoomFactor: CGFloat) {
-        guard let device = videoDevice else { return }
+    func setZoomFactor(_ zoomFactor: Double, deviceID: String) {
+        guard let device = videoDevice, device.uniqueID == deviceID,
+              zoomFactor.isFinite else { return }
         do {
             try device.lockForConfiguration()
-            device.videoZoomFactor = max(1.0, min(zoomFactor, device.activeFormat.videoMaxZoomFactor))
-            device.unlockForConfiguration()
+            defer { device.unlockForConfiguration() }
+            device.videoZoomFactor = zoomState(for: device).clamped(zoomFactor)
         } catch {
             LOG("Failed to set zoom factor: \(error)", level: .error)
         }
     }
-    func getMinZoomFactor() -> CGFloat {
-        minZoomFactor
+
+    private static func referenceZoomScale(for device: AVCaptureDevice) -> Double? {
+        let candidates = device.isVirtualDevice ? [device] : AVCaptureDevice.DiscoverySession(
+            deviceTypes: [.builtInTripleCamera, .builtInDualWideCamera, .builtInDualCamera],
+            mediaType: .video, position: device.position
+        ).devices.sorted { $0.constituentDevices.count > $1.constituentDevices.count }
+        for reference in candidates {
+            let lenses = reference.constituentDevices
+            let factors = [1.0] + reference.virtualDeviceSwitchOverVideoZoomFactors.map(\.doubleValue)
+            guard let wideIndex = lenses.firstIndex(where: { $0.deviceType == .builtInWideAngleCamera }) else { continue }
+            let selectedIndex: Int
+            if device.isVirtualDevice {
+                selectedIndex = 0
+            } else if let index = lenses.firstIndex(where: { $0.uniqueID == device.uniqueID }) {
+                selectedIndex = index
+            } else {
+                continue
+            }
+            return CameraZoomState.lensScale(nativeFactors: factors, wideIndex: wideIndex, selectedIndex: selectedIndex)
+        }
+        return nil
     }
-    func getMaxZoomFactor() -> CGFloat {
-        maxZoomFactor
+
+    private func zoomState(for device: AVCaptureDevice) -> CameraZoomState {
+        let multiplier = CameraZoomState.displayScale(
+            reported: device.displayVideoZoomFactorMultiplier, lensScale: zoomReferenceScale
+        )
+        let minimum = device.minAvailableVideoZoomFactor
+        let maximum = max(minimum, min(device.maxAvailableVideoZoomFactor,
+                                      device.activeFormat.videoMaxZoomFactor, ZOOM_LIMIT / multiplier))
+        var lensBase = 1.0
+        var format = device.activeFormat
+        if device.isVirtualDevice, let active = device.activePrimaryConstituent,
+           let index = device.constituentDevices.firstIndex(where: { $0.uniqueID == active.uniqueID }) {
+            let factors = [1.0] + device.virtualDeviceSwitchOverVideoZoomFactors.map(\.doubleValue)
+            if factors.indices.contains(index) {
+                lensBase = factors[index]
+                format = active.activeFormat
+            }
+        }
+        return CameraZoomState(
+            revision: zoomRevision, deviceID: device.uniqueID, factor: device.videoZoomFactor,
+            minimum: minimum, maximum: maximum, displayMultiplier: multiplier,
+            activeLensBaseFactor: lensBase, upscaleThreshold: format.videoZoomFactorUpscaleThreshold,
+            secondaryNativeFactors: format.secondaryNativeResolutionZoomFactors.map(Double.init)
+        )
     }
-    func getOpticalZoomFactor() -> CGFloat {
-        opticalZoomFactor
+
+    private func observeZoom(on device: AVCaptureDevice) {
+        stopObservingZoom()
+        let deviceID = device.uniqueID
+        let update: @Sendable () -> Void = { [weak self] in
+            Task { await self?.publishZoomState(deviceID: deviceID) }
+        }
+        // Observe only configuration changes, never poll on video frames.
+        zoomObservations = [
+            device.observe(\.videoZoomFactor) { _, _ in update() },
+            device.observe(\.displayVideoZoomFactorMultiplier) { _, _ in update() },
+            device.observe(\.minAvailableVideoZoomFactor) { _, _ in update() },
+            device.observe(\.maxAvailableVideoZoomFactor) { _, _ in update() },
+            device.observe(\.activeFormat) { _, _ in update() }
+        ]
+        if device.isVirtualDevice {
+            zoomObservations.append(device.observe(\.activePrimaryConstituent) { _, _ in update() })
+            for lens in device.constituentDevices {
+                zoomObservations.append(lens.observe(\.activeFormat) { _, _ in update() })
+            }
+        }
+        update()
     }
-    
+
+    func stopObservingZoom() { zoomObservations.removeAll() }
+
+    private func publishZoomState(deviceID: String? = nil) async {
+        guard let device = videoDevice, deviceID == nil || deviceID == device.uniqueID,
+              let zoom else { return }
+        zoomRevision &+= 1
+        let state = zoomState(for: device)
+        await MainActor.run {
+            // Older callbacks must not overwrite the label after a camera switch.
+            if state.revision > zoom.wrappedValue.revision { zoom.wrappedValue = state }
+        }
+    }
+
     func setFocus(at point: CGPoint) {
         guard let device = videoDevice else { return }
         
@@ -606,28 +661,6 @@ private class DeviceActor {
         }
     }
     
-    func getMicrophones() -> [String] {
-        return Array(microphones.keys)
-    }
-    func getMicrophoneID(_ microphone: String) -> String? {
-        microphones[microphone]
-    }
-    func getMicrophoneName(_ microphoneID: String) -> String? {
-        microphones.first { $0.value == microphoneID }?.key
-    }
-    func getPreferredMicrophoneID() -> String? {
-        AVCaptureDevice.default(for: .audio)?.uniqueID
-    }
-    func getPreferredMicrophoneName() -> String? {
-        AVCaptureDevice.default(for: .audio)?.localizedName
-    }
-    func getFirstMicrophoneName() -> String? {
-        microphones.keys.first
-    }
-    func getFirstMicrophoneID() -> String? {
-        microphones.values.first
-    }
-
     func getAudioChannels() -> [AVCaptureAudioChannel] {
         guard let audioOutput = audioOutput,
               let channels = audioOutput.connections.first?.audioChannels else {
@@ -655,8 +688,14 @@ private final class CaptureSessionDriver: CaptureSessionDriving {
     init(session: AVCaptureSession) { self.session = session }
     var isRunning: Bool { session.isRunning }
     func configure() async throws { try await CaptureDirector.shared.attachAll() }
-    func startRunning() { session.startRunning() }
-    func stopRunning() { session.stopRunning() }
+    func startRunning() {
+        session.startRunning()
+        AudioInputRouter.shared.activate()
+    }
+    func stopRunning() {
+        AudioInputRouter.shared.suspend()
+        session.stopRunning()
+    }
     func detach() async { await CaptureDirector.shared.detachAll() }
 }
 
@@ -730,8 +769,8 @@ final class CaptureDirector: NSObject, Sendable {
     @PipelineActor private let sessionController = SessionController(driver: CaptureSessionDriver(session: CaptureDirector.session))
     private let eventMonitor = CaptureEventMonitor()
 
-    func bind(totalZoom: Binding<Double>, currentZoom: Binding<Double>, exposureBias: Binding<Float>, style: Binding<String>, effect: Binding<String>) async {
-        await deviceActor.bind(totalZoom: totalZoom, currentZoom: currentZoom, exposureBias: exposureBias, style: style, effect: effect)
+    func bind(zoom: Binding<CameraZoomState>, exposureBias: Binding<Float>, style: Binding<String>, effect: Binding<String>) async {
+        await deviceActor.bind(zoom: zoom, exposureBias: exposureBias, style: style, effect: effect)
     }
     func getStabilizations() async -> [String] {
         return await deviceActor.getStabilizations()
@@ -739,22 +778,10 @@ final class CaptureDirector: NSObject, Sendable {
     func getCameras() async -> [String] {
         return await deviceActor.getCameras()
     }
-    func getMicrophones() async -> [String] {
-        return await deviceActor.getMicrophones()
-    }
-    func getPreferredMicrophoneName() async -> String? {
-        return await deviceActor.getPreferredMicrophoneName()
-    }
     func selectCamera(named camera: String) async -> Bool {
         guard let cameraID = await deviceActor.getCameraID(camera) else { return false }
         Settings.selectedCamera = camera
         Settings.selectedCameraID = cameraID
-        return true
-    }
-    func selectMicrophone(named microphone: String) async -> Bool {
-        guard let microphoneID = await deviceActor.getMicrophoneID(microphone) else { return false }
-        Settings.selectedMicrophone = microphone
-        Settings.selectedMicrophoneID = microphoneID
         return true
     }
     func getSession() async -> AVCaptureSession {
@@ -764,6 +791,7 @@ final class CaptureDirector: NSObject, Sendable {
         await CaptureDirector.session.synchronizationClock?.time
     }
     func detachAll() async {
+        await deviceActor.stopObservingZoom()
         await CaptureDirector.session.beginConfiguration()
         for output in await CaptureDirector.session.outputs {
             await CaptureDirector.session.removeOutput(output)
@@ -805,41 +833,12 @@ final class CaptureDirector: NSObject, Sendable {
         }
         Settings.selectedCameraID = cameraID
         
-        let selectedMicrophone = Settings.selectedMicrophone
-        var resolvedMicrophone = selectedMicrophone
-        var microphoneID = Settings.selectedMicrophoneID.flatMap { savedID in
-            AVCaptureDevice(uniqueID: savedID) == nil ? nil : savedID
-        }
-        if let microphoneID {
-            resolvedMicrophone = await deviceActor.getMicrophoneName(microphoneID)
-        }
-        if microphoneID == nil, let selectedMicrophone {
-            microphoneID = await deviceActor.getMicrophoneID(selectedMicrophone)
-        }
-        if microphoneID == nil, let selectedMicrophone {
-            LOG("Cannot find designated microphone \(selectedMicrophone), using preferred microphone", level: .warning)
-        }
-        if microphoneID == nil {
-            microphoneID = await deviceActor.getPreferredMicrophoneID()
-            resolvedMicrophone = await deviceActor.getPreferredMicrophoneName()
-        }
-        if microphoneID == nil {
-            LOG("Cannot find preferred microphone, using first available microphone", level: .warning)
-            microphoneID = await deviceActor.getFirstMicrophoneID()
-            resolvedMicrophone = await deviceActor.getFirstMicrophoneName()
-        }
-        if resolvedMicrophone == nil, let microphoneID {
-            resolvedMicrophone = await deviceActor.getMicrophoneName(microphoneID)
-        }
-        let microphoneDevice = microphoneID.flatMap { AVCaptureDevice(uniqueID: $0) }
-        guard let microphoneDevice else {
+        // The iOS capture device follows AVAudioSession's selected input route.
+        // Its ID is not the UID of the built-in/USB microphone in our picker.
+        guard let microphoneDevice = AVCaptureDevice.default(for: .audio) else {
             throw CaptureSetupError.noMicrophone
         }
-        if Settings.selectedMicrophone != resolvedMicrophone {
-            Settings.selectedMicrophone = resolvedMicrophone
-        }
-        Settings.selectedMicrophoneID = microphoneID
-        
+
         try await deviceActor.setup(
             cameraDevice: cameraDevice,
             microphoneDevice: microphoneDevice,
@@ -911,17 +910,8 @@ final class CaptureDirector: NSObject, Sendable {
             LOG("Video stabilization set to \(stabilization)", level: .debug)
         }
     }
-    func setZoomFactor(_ zoomFactor: CGFloat) async {
-        await deviceActor.setZoomFactor(zoomFactor)
-    }
-    func getMinZoomFactor() async -> CGFloat {
-        await deviceActor.getMinZoomFactor()
-    }
-    func getMaxZoomFactor() async -> CGFloat {
-        await deviceActor.getMaxZoomFactor()
-    }
-    func getOpticalZoomFactor() async -> CGFloat {
-        await deviceActor.getOpticalZoomFactor()
+    func setZoomFactor(_ zoomFactor: Double, deviceID: String) async {
+        await deviceActor.setZoomFactor(zoomFactor, deviceID: deviceID)
     }
     func setFocus(at point: CGPoint) async {
         await deviceActor.setFocus(at: point)
@@ -1026,8 +1016,7 @@ private final class CaptureEventMonitor: @unchecked Sendable {
             guard let device = notification.object as? AVCaptureDevice else { return }
             let disconnectedID = device.uniqueID
             Task {
-                if Settings.selectedCameraID == disconnectedID ||
-                    Settings.selectedMicrophoneID == disconnectedID {
+                if Settings.selectedCameraID == disconnectedID {
                     await Streamer.shared.handleRuntimeFailure(
                         CaptureSetupError.configuration("The selected capture device was disconnected")
                     )
@@ -1041,6 +1030,18 @@ private final class CaptureEventMonitor: @unchecked Sendable {
         ) { _ in
             LOG("A capture device was connected; the device list will refresh when opened", level: .info)
         })
+
+        // Route changes cover USB/headset plug/unplug on all supported iOS
+        // versions. iOS 26 also reports changes to inactive available inputs.
+        var audioNotifications = [AVAudioSession.routeChangeNotification]
+        if #available(iOS 26.0, *) {
+            audioNotifications.append(AVAudioSession.availableInputsChangeNotification)
+        }
+        for name in audioNotifications {
+            newObservers.append(center.addObserver(forName: name, object: nil, queue: nil) { _ in
+                Task { @PipelineActor in AudioInputRouter.shared.refresh() }
+            })
+        }
 
         observers = newObservers
     }

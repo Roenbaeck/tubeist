@@ -68,12 +68,14 @@ def parse_playlist(data):
             'playlistType':playlist_type, 'entries':entries, 'endList':ended}
 
 
-def read_capture(directory):
+def read_capture(directory, ending_policy='automatic'):
     journal = directory / 'uploads.jsonl'
     require(journal.stat().st_size <= 16 * 1024 * 1024, 'upload journal exceeds its size limit')
     events = [json.loads(l) for l in journal.read_text().splitlines() if l.strip()]
     require(2 <= len(events) <= 20010, 'invalid upload event count')
     require(events[0].get('kind') == 'captureStarted' and events[0].get('schema') == 1, 'missing capture schema')
+    require(ending_policy in ('automatic', 'manualDiagnostic'), 'unknown expected ending policy')
+    require(events[0].get('endingPolicy', 'automatic') == ending_policy, 'capture ending policy differs from expected policy')
     require(events[-1].get('kind') == 'captureFinished' and events[-1].get('complete') is True,
             'request capture is incomplete or did not finish')
     requests = []; pending = None; last_elapsed = -1
@@ -117,7 +119,8 @@ def read_capture(directory):
     return requests
 
 
-def audit_requests(requests):
+def audit_requests(requests, ending_policy='automatic'):
+    require(ending_policy in ('automatic', 'manualDiagnostic'), 'unknown expected ending policy')
     entries = {}; accepted = {}; media_hashes = set(); last_playlist = None
     previous_failed = None; playlist_name = None; minimum_sequence = 0; disc_sequence = 0
     for r in requests:
@@ -128,6 +131,9 @@ def audit_requests(requests):
             require(playlist_name in (None,r['filename']), 'playlist filename changed')
             playlist_name = r['filename']
             playlist = parse_playlist(r['path'].read_bytes())
+            if ending_policy == 'manualDiagnostic':
+                require(not playlist['endList'], 'manual ending test unexpectedly sent ENDLIST')
+                require(playlist['playlistType'] == 'EVENT', 'manual ending test requires an EVENT playlist')
             if last_playlist is not None:
                 require(playlist['playlistType'] == last_playlist['playlistType'], 'playlist type changed')
                 if playlist['playlistType'] == 'EVENT':
@@ -160,7 +166,8 @@ def audit_requests(requests):
                 require(r['sha256'] not in media_hashes, 'identical TS body uploaded under another sequence')
                 media_hashes.add(r['sha256']); accepted[seq] = r
     require(previous_failed is None, 'last HTTP operation did not succeed')
-    require(last_playlist and last_playlist['endList'], 'missing acknowledged final ENDLIST playlist')
+    require(last_playlist and (last_playlist['endList'] or ending_policy == 'manualDiagnostic'),
+            'missing acknowledged final ENDLIST playlist')
     require(set(entries) == set(accepted) and accepted, 'playlist references missing media')
     first_retained = 0 if last_playlist['playlistType'] == 'EVENT' else max(0,len(accepted)-5)
     require([e['sequence'] for e in last_playlist['entries']] == list(range(first_retained,len(accepted))),
@@ -191,9 +198,9 @@ def probe_segment(path, decode):
     return packets, durations
 
 
-def validate_capture(directory, decode=True, pcr_margin_ms=700):
-    requests = read_capture(directory)
-    entries, accepted = audit_requests(requests)
+def validate_capture(directory, decode=True, pcr_margin_ms=700, ending_policy='automatic'):
+    requests = read_capture(directory, ending_policy)
+    entries, accepted = audit_requests(requests, ending_policy)
     report_events = load_report(directory/'acceptance.jsonl')
     report = validate_report(report_events, allow_drops=True)
     accepted_events = [e for e in report_events if e['kind'] == 'segmentAccepted']
@@ -237,6 +244,7 @@ def validate_capture(directory, decode=True, pcr_margin_ms=700):
             tolerance = .03 if following else .002
             require(abs(expected-row['playlistDuration']) <= tolerance, f'segment {i}: EXTINF does not match media end')
     return {'status':'pass','independentlyDecoded':decode,'segmentCount':len(rows),'requestAttempts':len(requests),
+            'endingPolicy':ending_policy,
             'pcrMarginSeconds':pcr_margin_ms/1000,
             'acceptedDurationSeconds':report['acceptedDurationSeconds'], 'segments':rows,
             'scope':'Tubeist HEVC/AAC structural, timing, playlist and optional isolated-decoder checks; not a complete H.265 conformance certification.'}
@@ -246,12 +254,14 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('directory',type=Path,help='one complete TubeistDirectHLSAcceptance session folder')
     parser.add_argument('--skip-decode',action='store_true',help='inspect structure/timing only; not a decoding pass')
+    parser.add_argument('--ending-policy',choices=('automatic','manualDiagnostic'),default='automatic',
+                        help='manualDiagnostic requires a marked capture with full EVENT history and no ENDLIST')
     parser.add_argument('--pcr-margin-ms',type=int,choices=(0,700),default=700,
                         help='expected PCR-to-DTS margin; use 0 only for historical captures (default: 700)')
     args = parser.parse_args()
     try:
         require(shutil.which('ffprobe') and shutil.which('ffmpeg'), 'ffprobe and ffmpeg must be installed')
-        result = validate_capture(args.directory,not args.skip_decode,args.pcr_margin_ms)
+        result = validate_capture(args.directory,not args.skip_decode,args.pcr_margin_ms,args.ending_policy)
     except (CaptureValidationError,ReportValidationError) as error:
         print(f'Upload capture validation failed: {error}',file=sys.stderr); return 1
     except (OSError,ValueError,KeyError,TypeError,IndexError,subprocess.TimeoutExpired):

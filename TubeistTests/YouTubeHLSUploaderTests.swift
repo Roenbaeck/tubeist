@@ -9,6 +9,30 @@ import Testing
 
 struct YouTubeHLSUploaderTests {
 
+    @Test func manualEndingKeepsEveryEventEntryWithoutEndListOrGrace() async throws {
+        let transport = MockYouTubeHLSTransport(statuses: Array(repeating: 200, count: 14))
+        let uploader = try YouTubeHLSUploader(
+            endpoint: .manualPrimary(streamKey: "test"), sessionIdentifier: "manual_ending",
+            userAgent: "Tubeist/Test", transport: transport, endingPolicy: .manualDiagnostic,
+            sleeper: { _ in Issue.record("Manual ending must not wait for ENDLIST") }
+        )
+        for sequence in 0..<7 {
+            _ = try await uploader.upload(segment: Data([UInt8(sequence)]), duration: sequence == 6 ? 0.3 : 2)
+        }
+        #expect(try await uploader.finish() == false)
+        let records = await transport.recordedRequests()
+        #expect(records.count == 14)
+        #expect(records.last?.body == Data([6]))
+        let finalPlaylist = String(decoding: records[12].body, as: UTF8.self)
+        #expect(finalPlaylist.contains("#EXT-X-PLAYLIST-TYPE:EVENT"))
+        #expect(!finalPlaylist.contains("#EXT-X-ENDLIST"))
+        #expect(finalPlaylist.contains("#EXTINF:0.300000,"))
+        for sequence in 0..<7 { #expect(finalPlaylist.contains("tubeist_manual_ending_\(sequence).ts")) }
+        await #expect(throws: YouTubeHLSUploadError.stopped) {
+            _ = try await uploader.upload(segment: Data([7]), duration: 2)
+        }
+    }
+
     @Test(arguments: [0, 7, 12])
     func finalPlaylistWaitsFromTheLastMediaAcknowledgement(secondsAlreadyElapsed: Int) async throws {
         let clock = HLSGraceTestClock()

@@ -132,6 +132,27 @@ class RequestTests(unittest.TestCase):
         with self.assertRaisesRegex(CaptureValidationError,'wrong sequence'):
             parse_playlist(playlist([(1,2)],first=0))
 
+    def test_manual_ending_requires_open_event_and_all_acknowledged_media(self):
+        with tempfile.TemporaryDirectory() as d:
+            requests = self.make_requests(Path(d))
+            for index, entries in ((0, [(0,2)]), (2, [(0,2),(1,.9)]), (4, [(0,2),(1,.9)])):
+                body = playlist(entries, event=True, ended=index == 4)
+                requests[index]['path'].write_bytes(body)
+                requests[index]['sha256'] = hashlib.sha256(body).hexdigest()
+            with self.assertRaisesRegex(CaptureValidationError, 'unexpectedly sent ENDLIST'):
+                audit_requests(requests, 'manualDiagnostic')
+            open_requests = requests[:-1]
+            entries, accepted = audit_requests(open_requests, 'manualDiagnostic')
+            self.assertEqual(len(accepted), 2)
+            self.assertEqual(entries[1]['duration'], .9)
+            with self.assertRaisesRegex(CaptureValidationError, 'missing acknowledged final ENDLIST'):
+                audit_requests(open_requests)
+            with self.assertRaisesRegex(CaptureValidationError, 'missing media'):
+                audit_requests(open_requests[:-1], 'manualDiagnostic')
+            requests[0]['path'].write_bytes(playlist([(0,2)]))
+            with self.assertRaisesRegex(CaptureValidationError, 'requires an EVENT playlist'):
+                audit_requests(open_requests, 'manualDiagnostic')
+
     def make_requests(self,root):
         bodies=[playlist([(0,2)]),b'first',playlist([(0,2),(1,.9)]),b'last',playlist([(0,2),(1,.9)],ended=True)]
         names=['tubeist_test.m3u8','tubeist_test_0.ts','tubeist_test.m3u8','tubeist_test_1.ts','tubeist_test.m3u8']
@@ -175,6 +196,13 @@ class RequestTests(unittest.TestCase):
                 for i,e in enumerate(events): e['elapsed']=float(i)
                 (root/'uploads.jsonl').write_text('\n'.join(json.dumps(e) for e in events)+'\n')
             save();self.assertEqual(len(read_capture(root)),1)
+            with self.assertRaisesRegex(CaptureValidationError,'ending policy'):
+                read_capture(root, 'manualDiagnostic')
+            events[0]['endingPolicy'] = 'manualDiagnostic';save()
+            self.assertEqual(len(read_capture(root, 'manualDiagnostic')),1)
+            with self.assertRaisesRegex(CaptureValidationError,'ending policy'):
+                read_capture(root)
+            events[0]['endingPolicy'] = 'automatic';save()
             path.write_bytes(b'corrupt!!!!')
             with self.assertRaises(CaptureValidationError): read_capture(root)
             path.write_bytes(body);events[-1]['complete']=False;save()

@@ -25,7 +25,7 @@ final class HLSRequestCapture: @unchecked Sendable {
         self.maximumRequests = maximumRequests
     }
 
-    func start() async {
+    func start(endingPolicy: HLSStreamEndingPolicy = .automatic) async {
         await withCheckedContinuation { continuation in
             queue.async {
                 do {
@@ -36,7 +36,8 @@ final class HLSRequestCapture: @unchecked Sendable {
                         throw CocoaError(.fileWriteUnknown)
                     }
                     self.journal = try FileHandle(forWritingTo: url)
-                    try self.append(["kind": "captureStarted", "schema": 1, "maximumBytes": self.maximumBytes])
+                    try self.append(["kind": "captureStarted", "schema": 1, "maximumBytes": self.maximumBytes,
+                                     "endingPolicy": endingPolicy.rawValue])
                 } catch { self.markIncomplete("storageError") }
                 continuation.resume()
             }

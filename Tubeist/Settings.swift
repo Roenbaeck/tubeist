@@ -206,6 +206,7 @@ private struct AppliedSettingsSnapshot {
 #if DEBUG
     let captureRemuxFixtures: Bool
     let recordHLSAcceptance: Bool
+    let manualHLSEndingTest: Bool
 #endif
 
     static func capture(overlays: [OverlaySetting]) throws -> Self {
@@ -230,7 +231,8 @@ private struct AppliedSettingsSnapshot {
             overlays: overlays,
             overlayRefreshRate: Settings.overlayRefreshRate,
             captureRemuxFixtures: Settings.captureRemuxFixtures,
-            recordHLSAcceptance: Settings.recordHLSAcceptance
+            recordHLSAcceptance: Settings.recordHLSAcceptance,
+            manualHLSEndingTest: Settings.manualHLSEndingTest
         )
 #else
         Self(
@@ -278,6 +280,7 @@ private struct AppliedSettingsSnapshot {
 #if DEBUG
         Settings.captureRemuxFixtures = captureRemuxFixtures
         Settings.recordHLSAcceptance = recordHLSAcceptance
+        Settings.manualHLSEndingTest = manualHLSEndingTest
 #endif
         await Settings.configureJournal()
     }
@@ -308,6 +311,7 @@ struct SettingsView: View {
 #if DEBUG
     @State private var captureRemuxFixtures: Bool = Settings.captureRemuxFixtures
     @State private var recordHLSAcceptance: Bool = Settings.recordHLSAcceptance
+    @State private var manualHLSEndingTest: Bool = Settings.manualHLSEndingTest
 #endif
     @State private var newOverlayURL: String = ""
     @State private var selectedPreset: Preset? = nil
@@ -573,6 +577,13 @@ struct SettingsView: View {
                 ) {
                     Toggle("Capture fMP4 remux fixtures", isOn: $captureRemuxFixtures)
                     Toggle("Record YouTube HLS diagnostics", isOn: $recordHLSAcceptance)
+                }
+                Section(
+                    header: Text("Stream Ending Test"),
+                    footer: Text("Requires YouTube sign-in. Stop uploads all remaining media but leaves the broadcast open, with automatic ending disabled. Wait for the final words in the YouTube player, then end the broadcast manually in YouTube Studio. The YouTube indicator stays red until the broadcast ends. Diagnostics are recorded automatically. Turn this off for normal streams.")
+                ) {
+                    Toggle("End broadcast manually in Studio", isOn: $manualHLSEndingTest)
+                        .accessibilityIdentifier("manualHLSEndingTestToggle")
                 }
 #endif
 
@@ -1254,6 +1265,7 @@ struct SettingsView: View {
 #if DEBUG
         Settings.captureRemuxFixtures = captureRemuxFixtures
         Settings.recordHLSAcceptance = recordHLSAcceptance
+        Settings.manualHLSEndingTest = manualHLSEndingTest
 #endif
     }
 
@@ -1468,17 +1480,16 @@ final class Settings: Sendable {
         get { UserDefaults.standard.string(forKey: "SelectedCameraID") }
         set { UserDefaults.standard.set(newValue, forKey: "SelectedCameraID") }
     }
-    static var selectedMicrophone: String? {
-        get {
-            UserDefaults.standard.string(forKey: "SelectedMicrophone")
-        }
-        set {
-            UserDefaults.standard.set(newValue, forKey: "SelectedMicrophone")
-        }
+    // These are AVAudioSession port UIDs, not the legacy AVCaptureDevice ID.
+    // Existing installations default to Automatic rather than accidentally
+    // pinning the built-in mic based on an old "iPhone Microphone" label.
+    static var audioInputPortID: String? {
+        get { UserDefaults.standard.string(forKey: "AudioInputPortID") }
+        set { UserDefaults.standard.set(newValue, forKey: "AudioInputPortID") }
     }
-    static var selectedMicrophoneID: String? {
-        get { UserDefaults.standard.string(forKey: "SelectedMicrophoneID") }
-        set { UserDefaults.standard.set(newValue, forKey: "SelectedMicrophoneID") }
+    static var audioInputPortName: String? {
+        get { UserDefaults.standard.string(forKey: "AudioInputPortName") }
+        set { UserDefaults.standard.set(newValue, forKey: "AudioInputPortName") }
     }
 #if DEBUG
     static var captureRemuxFixtures: Bool {
@@ -1493,7 +1504,18 @@ final class Settings: Sendable {
         get { UserDefaults.standard.bool(forKey: "RecordHLSAcceptance") }
         set { UserDefaults.standard.set(newValue, forKey: "RecordHLSAcceptance") }
     }
+    static var manualHLSEndingTest: Bool {
+        get { UserDefaults.standard.bool(forKey: "ManualHLSEndingTest") }
+        set { UserDefaults.standard.set(newValue, forKey: "ManualHLSEndingTest") }
+    }
 #endif
+    static var hlsStreamEndingPolicy: HLSStreamEndingPolicy {
+#if DEBUG
+        manualHLSEndingTest ? .manualDiagnostic : .automatic
+#else
+        .automatic
+#endif
+    }
     static var cameraStabilization: String? {
         get {
             UserDefaults.standard.string(forKey: "CameraStabilization")

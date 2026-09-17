@@ -197,6 +197,14 @@ struct YouTubeHLSUploaderDiagnostics: Sendable, Equatable {
     var isReconnecting: Bool = false
 }
 
+/// Frozen at Start so an experiment cannot change shutdown halfway through a stream.
+enum HLSStreamEndingPolicy: String, Sendable {
+    case automatic
+    case manualDiagnostic
+
+    var automaticallyEndsBroadcast: Bool { self == .automatic }
+}
+
 actor YouTubeHLSUploader {
     typealias Sleeper = @Sendable (Duration) async throws -> Void
     static let finalSegmentGracePeriod: Duration = .seconds(10)
@@ -208,6 +216,7 @@ actor YouTubeHLSUploader {
     private let sleeper: Sleeper
     private let now: @Sendable () -> ContinuousClock.Instant
     private let keepRetrying: Bool
+    private let endingPolicy: HLSStreamEndingPolicy
     private var playlist: HLSMediaPlaylist
     private var stopped = false
     private var uploadInProgress = false
@@ -227,6 +236,7 @@ actor YouTubeHLSUploader {
         transport: any YouTubeHLSHTTPTransport = URLSessionYouTubeHLSHTTPTransport(),
         retryPolicy: YouTubeHLSRetryPolicy = .default,
         keepRetrying: Bool = false,
+        endingPolicy: HLSStreamEndingPolicy = .automatic,
         now: @escaping @Sendable () -> ContinuousClock.Instant = { .now },
         sleeper: @escaping Sleeper = { try await Task.sleep(for: $0) }
     ) throws {
@@ -244,6 +254,7 @@ actor YouTubeHLSUploader {
         self.sleeper = sleeper
         self.now = now
         self.keepRetrying = keepRetrying
+        self.endingPolicy = endingPolicy
         self.playlist = try HLSMediaPlaylist(sessionIdentifier: sessionIdentifier)
     }
 
@@ -354,6 +365,14 @@ actor YouTubeHLSUploader {
             }
             guard playlist.outstandingCount == 0 else {
                 throw YouTubeHLSUploadError.invalidResponse
+            }
+            if !endingPolicy.automaticallyEndsBroadcast {
+                // All media has drained. Keep the last full EVENT playlist open;
+                // false also prevents Streamer from requesting API completion.
+                stopped = true
+                await transport.invalidate()
+                LOG("YouTube ending test: uploads finished; no ENDLIST or completion sent. End the broadcast manually in YouTube Studio after checking the ending.", level: .info)
+                return false
             }
             if playlist.nextSequence > 0 {
                 guard let lastMediaAcknowledgedAt else {

@@ -103,7 +103,7 @@ struct YouTubeStream: Sendable, Equatable {
 struct YouTubeStreamingPreparation: Sendable, Equatable {
     let endpoint: YouTubeHLSEndpoint
     let broadcast: YouTubeBroadcast
-    let completionTarget: YouTubeBroadcastCompletionTarget
+    let completionTarget: YouTubeBroadcastCompletionTarget?
 }
 
 /// Captured at Start; completion must never follow a later Settings selection.
@@ -862,17 +862,25 @@ final class YouTubeService {
     func prepareForStreaming(
         streamKey: String,
         preferences: YouTubeBroadcastPreferences? = nil,
-        thumbnailData: Data? = nil
+        thumbnailData: Data? = nil,
+        endingPolicy: HLSStreamEndingPolicy = .automatic
     ) async throws -> YouTubeStreamingPreparation {
         beginLoading()
         defer { endLoading() }
 
         let scope = try authorizationScope()
         let key = YouTubeDiscoveryCache.key(scope: scope, streamKey: streamKey)
-        if let existing = discoveryCache.preparations[key] { return try await existing.value }
+        if let existing = discoveryCache.preparations[key] {
+            let result = try await existing.value
+            guard result.broadcast.enableAutoStop == endingPolicy.automaticallyEndsBroadcast else {
+                throw YouTubeError.invalidResponse
+            }
+            return result
+        }
         let task = Task { @MainActor in
             try await self.performStreamingPreparation(
-                streamKey: streamKey, preferences: preferences, thumbnailData: thumbnailData, scope: scope
+                streamKey: streamKey, preferences: preferences, thumbnailData: thumbnailData,
+                scope: scope, endingPolicy: endingPolicy
             )
         }
         discoveryCache.preparations[key] = task
@@ -885,7 +893,8 @@ final class YouTubeService {
     }
 
     private func performStreamingPreparation(
-        streamKey: String, preferences: YouTubeBroadcastPreferences?, thumbnailData: Data?, scope: String
+        streamKey: String, preferences: YouTubeBroadcastPreferences?, thumbnailData: Data?, scope: String,
+        endingPolicy: HLSStreamEndingPolicy
     ) async throws -> YouTubeStreamingPreparation {
         let selection = try await selectedBroadcast(forStreamKey: streamKey)
         let endpoint = try YouTubeStreamDiscovery.hlsEndpoint(for: selection.stream)
@@ -898,6 +907,7 @@ final class YouTubeService {
             if let preferences, preferences.streamId == selection.stream.id {
                 template = preferences.applying(to: template)
             }
+            template.enableAutoStop = endingPolicy.automaticallyEndsBroadcast
             broadcast = try await createOrResumeBroadcast(template: template, stream: selection.stream, scope: scope)
         }
         guard broadcast.lifeCycleStatus == "ready" else {
@@ -914,9 +924,9 @@ final class YouTubeService {
             preparedBroadcast.enableMonitorStream = false
             preparedBroadcast.broadcastStreamDelayMs = 0
         }
-        // Keep auto-stop as a fallback if explicit completion after HLS shutdown
-        // cannot reach YouTube, or authorization becomes unavailable.
-        preparedBroadcast.enableAutoStop = true
+        // Normal streams keep auto-stop as a fallback. The ending experiment
+        // must disable it, including on a reused event or saved preferences.
+        preparedBroadcast.enableAutoStop = endingPolicy.automaticallyEndsBroadcast
         if preparedBroadcast != broadcast {
             try await updateBroadcast(
                 id: broadcast.id,
@@ -930,8 +940,9 @@ final class YouTubeService {
                 enableEmbed: preparedBroadcast.enableEmbed,
                 recordFromStart: preparedBroadcast.recordFromStart,
                 enableAutoStart: preparedBroadcast.enableAutoStart,
-                enableAutoStop: true,
-                selfDeclaredMadeForKids: preparedBroadcast.selfDeclaredMadeForKids
+                enableAutoStop: preparedBroadcast.enableAutoStop,
+                selfDeclaredMadeForKids: preparedBroadcast.selfDeclaredMadeForKids,
+                verifyAutoStop: endingPolicy == .manualDiagnostic
             )
             broadcast = preparedBroadcast
         }
@@ -947,7 +958,8 @@ final class YouTubeService {
         return YouTubeStreamingPreparation(
             endpoint: endpoint,
             broadcast: broadcast,
-            completionTarget: YouTubeBroadcastCompletionTarget(id: broadcast.id, authorizationScope: scope)
+            completionTarget: endingPolicy.automaticallyEndsBroadcast
+                ? YouTubeBroadcastCompletionTarget(id: broadcast.id, authorizationScope: scope) : nil
         )
     }
 
@@ -1125,7 +1137,7 @@ final class YouTubeService {
                         "enableDvr": template.enableDvr, "latencyPreference": template.latencyPreference,
                         "monitorStream": ["enableMonitorStream": false, "broadcastStreamDelayMs": 0],
                         "enableEmbed": template.enableEmbed, "recordFromStart": template.recordFromStart,
-                        "enableAutoStart": true, "enableAutoStop": true
+                        "enableAutoStart": true, "enableAutoStop": template.enableAutoStop
                     ]
                 ]), operation: .createBroadcast
             )
@@ -1152,7 +1164,7 @@ final class YouTubeService {
 
     // MARK: - YouTube API: Update Broadcast
 
-    func updateBroadcast(id: String, title: String, privacyStatus: String, scheduledStartTime: String?, enableDvr: Bool, latencyPreference: String, enableMonitorStream: Bool, broadcastStreamDelayMs: Int, enableEmbed: Bool, recordFromStart: Bool, enableAutoStart: Bool, enableAutoStop: Bool, selfDeclaredMadeForKids: Bool? = nil) async throws {
+    func updateBroadcast(id: String, title: String, privacyStatus: String, scheduledStartTime: String?, enableDvr: Bool, latencyPreference: String, enableMonitorStream: Bool, broadcastStreamDelayMs: Int, enableEmbed: Bool, recordFromStart: Bool, enableAutoStart: Bool, enableAutoStop: Bool, selfDeclaredMadeForKids: Bool? = nil, verifyAutoStop: Bool = false) async throws {
         beginLoading()
         defer { endLoading() }
 
@@ -1192,6 +1204,9 @@ final class YouTubeService {
             operation: .updateBroadcast
         )
         guard resource.id == id else {
+            throw YouTubeError.invalidResponse
+        }
+        if verifyAutoStop, resource.contentDetails?.enableAutoStop != enableAutoStop {
             throw YouTubeError.invalidResponse
         }
 

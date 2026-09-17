@@ -100,6 +100,7 @@ actor YouTubeHLSStreamSink {
         endpoint: YouTubeHLSEndpoint,
         sessionIdentifier: String,
         userAgent: String,
+        endingPolicy: HLSStreamEndingPolicy = .automatic,
         transport: (any YouTubeHLSHTTPTransport)? = nil,
         bitrateController: AdaptiveBitrateController? = nil,
         retryPolicy: YouTubeHLSRetryPolicy = .default,
@@ -154,10 +155,10 @@ actor YouTubeHLSStreamSink {
 #if DEBUG
         if let directory = await HLSAcceptanceRecorder.shared.begin(
             sessionIdentifier: sessionIdentifier,
-            enabled: Settings.recordHLSAcceptance
+            enabled: Settings.recordHLSAcceptance || endingPolicy == .manualDiagnostic
         ) {
             let capture = HLSRequestCapture(directory: directory)
-            await capture.start()
+            await capture.start(endingPolicy: endingPolicy)
             uploadTransport = HLSCapturingHTTPTransport(underlying: uploadTransport, capture: capture)
         }
 #endif
@@ -167,7 +168,8 @@ actor YouTubeHLSStreamSink {
         }
         uploader = try YouTubeHLSUploader(
             endpoint: endpoint, sessionIdentifier: sessionIdentifier, userAgent: userAgent,
-            transport: uploadTransport, retryPolicy: retryPolicy, keepRetrying: true, sleeper: sleeper
+            transport: uploadTransport, retryPolicy: retryPolicy, keepRetrying: true,
+            endingPolicy: endingPolicy, sleeper: sleeper
         )
         isPrepared = true
         LOG("YouTube HLS output is prepared", level: .debug)
@@ -692,7 +694,8 @@ actor EncodedOutputRouter {
     func prepareYouTube(
         endpoint: YouTubeHLSEndpoint,
         sessionIdentifier: String,
-        userAgent: String
+        userAgent: String,
+        endingPolicy: HLSStreamEndingPolicy = .automatic
     ) async throws {
         resetOrdering()
         let generation = routingGeneration
@@ -701,6 +704,7 @@ actor EncodedOutputRouter {
             endpoint: endpoint,
             sessionIdentifier: sessionIdentifier,
             userAgent: userAgent,
+            endingPolicy: endingPolicy,
             bitrateController: Self.makeBitrateController()
         )
         guard generation == routingGeneration else {

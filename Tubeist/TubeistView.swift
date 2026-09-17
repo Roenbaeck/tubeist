@@ -49,18 +49,12 @@ struct TubeistView: View {
     @State private var showJournal = false
     @State private var enableFocusAndExposureTap = false
     @State private var isSettingsPresented = false
-    @State private var currentZoom = 0.0
-    @State private var totalZoom = 1.0
-    @State private var minZoom = 1.0
-    @State private var maxZoom = 1.0
-    @State private var opticalZoom = 1.0
+    @State private var cameraZoom = CameraZoomState()
     @State private var exposureBias: Float = 0.0
     @State private var lensPosition: Float = 1.0
     @State private var selectedCamera = DEFAULT_CAMERA
     @State private var selectedStabilization = "Off"
     @State private var cameras: [String] = []
-    @State private var selectedMicrophone: String = ""
-    @State private var microphones: [String] = []
     @State private var stabilizations: [String] = []
     @State private var style: String = Settings.style ?? NO_STYLE
     @State private var styleStrength: Float = 1.0
@@ -87,32 +81,31 @@ struct TubeistView: View {
         CommandLine.arguments.contains("-ui-testing")
     }
     
-    @State private var startMagnification: CGFloat?
+    @State private var gestureStartZoom: Double?
+    @State private var gestureCameraID: String?
     private var magnification: some Gesture {
         MagnifyGesture()
             .onChanged { value in
-                if startMagnification == nil {
-                    startMagnification = value.magnification
+                if gestureStartZoom == nil {
+                    gestureStartZoom = cameraZoom.factor
+                    gestureCameraID = cameraZoom.deviceID
                 }
-                currentZoom = value.magnification - (startMagnification ?? 1.0)
-                let zoomDelta = totalZoom * currentZoom
-                let safeZoom = max(minZoom, min(zoomDelta + totalZoom, maxZoom))
-                Task {
-                    await CaptureDirector.shared.setZoomFactor(safeZoom)
-                }
-                currentZoom = safeZoom - totalZoom
+                applyMagnification(value.magnification)
             }
             .onEnded { value in
-                totalZoom += currentZoom
-                totalZoom = max(minZoom, min(totalZoom, maxZoom))
-                Task {
-                    await CaptureDirector.shared.setZoomFactor(totalZoom)
-                }
-                currentZoom = 0
-                startMagnification = nil
+                applyMagnification(value.magnification)
+                gestureStartZoom = nil
+                gestureCameraID = nil
             }
     }
-    
+
+    private func applyMagnification(_ magnification: Double) {
+        guard let initial = gestureStartZoom, gestureCameraID == cameraZoom.deviceID else { return }
+        let factor = cameraZoom.clamped(initial * magnification)
+        let deviceID = cameraZoom.deviceID
+        Task { await CaptureDirector.shared.setZoomFactor(factor, deviceID: deviceID) }
+    }
+
     func fade(_ message: String) {
         LOG(message, level: .debug)
         fadeTask?.cancel()
@@ -162,8 +155,7 @@ struct TubeistView: View {
     
     func updateCameraProperties() async {
         await CaptureDirector.shared.bind(
-            totalZoom: $totalZoom,
-            currentZoom: $currentZoom,
+            zoom: $cameraZoom,
             exposureBias: $exposureBias,
             style: $style,
             effect: $effect
@@ -171,15 +163,6 @@ struct TubeistView: View {
         guard !Task.isCancelled else { return }
         selectedStabilization = Settings.cameraStabilization ?? "Off"
         appState.isStabilizationOn = selectedStabilization != "Off"
-        let minimum = await CaptureDirector.shared.getMinZoomFactor()
-        let maximum = await min(CaptureDirector.shared.getMaxZoomFactor(), ZOOM_LIMIT)
-        let optical = await CaptureDirector.shared.getOpticalZoomFactor()
-        guard !Task.isCancelled else { return }
-        minZoom = minimum
-        maxZoom = maximum
-        opticalZoom = optical
-        let safeZoom = max(minZoom, min(totalZoom, maxZoom))
-        await CaptureDirector.shared.setZoomFactor(safeZoom)
     }
 
     private func prepareCamera() async {
@@ -200,12 +183,10 @@ struct TubeistView: View {
             try Task.checkCancellation()
             // attachAll resolves saved device IDs before starting the session.
             // Reflect that choice in the UI instead of racing it with another
-            // task that writes camera and microphone selections.
+            // task that writes the camera selection.
             cameras = await CaptureDirector.shared.getCameras()
-            microphones = await CaptureDirector.shared.getMicrophones()
             try Task.checkCancellation()
             selectedCamera = Settings.selectedCamera
-            selectedMicrophone = Settings.selectedMicrophone ?? ""
             await updateCameraProperties()
             try Task.checkCancellation()
             guard !appState.soonGoingToBackground, !showSettings else { return }
@@ -544,213 +525,82 @@ struct TubeistView: View {
                         Spacer()
                         
                         if showCameraPicker {
-                            HStack(alignment: .center, spacing: 10) {
-                                Spacer()
-                                
-                                Text("Select Camera")
-                                Picker("Camera Selection", selection: $selectedCamera) {
-                                    ForEach(cameras, id: \.self) { camera in
-                                        Text(camera)
-                                            .tag(camera)
-                                    }
-                                }
-                                .pickerStyle(MenuPickerStyle())
-                                .background(
-                                    RoundedRectangle(cornerRadius: 10)
-                                        .fill(Color.black.opacity(0.6))
-                                )
-                                .onChange(of: selectedCamera) { _, newCamera in
-                                    guard newCamera != Settings.selectedCamera else { return }
-                                    LOG("Selected camera: \(newCamera)", level: .debug)
-                                    Task {
-                                        do {
-                                            guard await CaptureDirector.shared.selectCamera(named: newCamera) else {
-                                                throw CaptureSetupError.videoDeviceUnavailable
-                                            }
-                                            try await Streamer.shared.cycleSessions()
-                                        } catch {
-                                            fade(error.localizedDescription)
-                                            appState.activeAlert = error.localizedDescription
-                                            LOG("Could not change camera: \(error.localizedDescription)", level: .error)
-                                        }
-                                    }
-                                }
-                            }
-                            .padding(5)
-                            .background(
-                                Rectangle()
-                                    .fill(Color.black.opacity(0.4))
-                            )
-
-                            HStack(alignment: .center, spacing: 10) {
-                                Spacer()
-
-                                Text("Select Microphone")
-                                Picker("Microphone Selection", selection: $selectedMicrophone) {
-                                    ForEach(microphones, id: \.self) { microphone in
-                                        Text(microphone)
-                                            .tag(microphone)
-                                    }
-                                }
-                                .pickerStyle(MenuPickerStyle())
-                                .background(
-                                    RoundedRectangle(cornerRadius: 10)
-                                        .fill(Color.black.opacity(0.6))
-                                )
-                                .onChange(of: selectedMicrophone) { _, newMicrophone in
-                                    guard newMicrophone != (Settings.selectedMicrophone ?? "") else { return }
-                                    LOG("Selected microphone: \(newMicrophone)", level: .debug)
-                                    Task {
-                                        do {
-                                            guard await CaptureDirector.shared.selectMicrophone(named: newMicrophone) else {
-                                                throw CaptureSetupError.noMicrophone
-                                            }
-                                            try await Streamer.shared.cycleSessions()
-                                        } catch {
-                                            fade(error.localizedDescription)
-                                            appState.activeAlert = error.localizedDescription
-                                            LOG("Could not change microphone: \(error.localizedDescription)", level: .error)
-                                        }
-                                    }
-                                }
-                            }
-                            .padding(5)
-                            .background(
-                                Rectangle()
-                                    .fill(Color.black.opacity(0.4))
-                            )
-                            
-                            HStack(alignment: .center, spacing: 10) {
-                                Spacer()
-                                
-                                Text("Select Monitor")
-                                Picker("Monitor Selection", selection: Binding(
+                            CaptureControlsPanel(
+                                cameras: cameras,
+                                selectedCamera: $selectedCamera,
+                                selectedMonitor: Binding(
                                     get: { appState.activeMonitor },
                                     set: { appState.activeMonitor = $0 }
-                                )) {
-                                    Text("Camera (view without delay, not styled)").tag(Monitor.camera)
-                                    Text("Output (viewing is delayed, but styled)").tag(Monitor.output)
-                                }
-                                .pickerStyle(MenuPickerStyle())
-                                .background(
-                                    RoundedRectangle(cornerRadius: 10)
-                                        .fill(Color.black.opacity(0.6))
-                                )
+                                ),
+                                isDisabled: appState.isStreamSessionRunning
+                            ) { error in
+                                fade(error.localizedDescription)
+                                appState.activeAlert = error.localizedDescription
                             }
-                            .padding(5)
-                            .background(
-                                Rectangle()
-                                    .fill(Color.black.opacity(0.4))
-                            )
+                            .frame(width: min(420, width - 24))
+                            .padding(.horizontal, 12)
+                            .frame(maxWidth: .infinity, alignment: .trailing)
+                            .onChange(of: selectedCamera) { _, newCamera in
+                                guard newCamera != Settings.selectedCamera else { return }
+                                LOG("Selected camera: \(newCamera)", level: .debug)
+                                Task {
+                                    do {
+                                        guard await CaptureDirector.shared.selectCamera(named: newCamera) else {
+                                            throw CaptureSetupError.videoDeviceUnavailable
+                                        }
+                                        try await Streamer.shared.cycleSessions()
+                                    } catch {
+                                        fade(error.localizedDescription)
+                                        appState.activeAlert = error.localizedDescription
+                                        LOG("Could not change camera: \(error.localizedDescription)", level: .error)
+                                    }
+                                }
+                            }
                         }
                         if showStabilizationPicker {
-                            VStack(alignment: .trailing, spacing: 8) {
-                                HStack(alignment: .center, spacing: 10) {
-                                    Spacer()
-                                
-                                    Text("Select Stabilization Mode")
-                                    Picker("Stabilization Selection", selection: $selectedStabilization) {
-                                        ForEach(stabilizations, id: \.self) { stabilization in
-                                            Text(stabilization)
-                                                .tag(stabilization)
-                                        }
-                                    }
-                                    .pickerStyle(MenuPickerStyle())
-                                    .background(
-                                        RoundedRectangle(cornerRadius: 10)
-                                            .fill(Color.black.opacity(0.6))
-                                    )
-                                    .onChange(of: selectedStabilization) { _, newStabilization in
-                                        Task {
-                                            await CaptureDirector.shared.setCameraStabilization(to: newStabilization)
-                                            appState.refreshCameraView()
-                                            appState.isStabilizationOn = newStabilization != "Off"
-                                        }
-                                    }
-                                }
-                                Toggle("Show horizon level", isOn: $showHorizonLevel)
-                                    .fixedSize()
-                                    .tint(.green)
-                                    .accessibilityIdentifier("horizon-level-toggle")
-                                    .onChange(of: showHorizonLevel) { _, enabled in
-                                        Settings.showHorizonLevel = enabled
-                                    }
-                            }
-                            .padding(5)
-                            .background(
-                                Rectangle()
-                                    .fill(Color.black.opacity(0.4))
+                            StabilizationControlsPanel(
+                                modes: stabilizations,
+                                selectedMode: $selectedStabilization,
+                                showHorizonLevel: $showHorizonLevel
                             )
+                            .frame(width: min(420, width - 24))
+                            .padding(.horizontal, 12)
+                            .frame(maxWidth: .infinity, alignment: .trailing)
+                            .onChange(of: selectedStabilization) { _, newStabilization in
+                                Task {
+                                    await CaptureDirector.shared.setCameraStabilization(to: newStabilization)
+                                    appState.refreshCameraView()
+                                    appState.isStabilizationOn = newStabilization != "Off"
+                                }
+                            }
+                            .onChange(of: showHorizonLevel) { _, enabled in
+                                Settings.showHorizonLevel = enabled
+                            }
                         }
                         if showStylingPicker {
-                            HStack(alignment: .center, spacing: 10) {
-                                Spacer()
-                                
-                                Text("Select Style")
-                                Picker("Style Selection", selection: $style) {
-                                    ForEach(AVAILABLE_STYLES, id: \.self) { style in
-                                        Text(style)
-                                            .tag(style)
-                                    }
-                                }
-                                .pickerStyle(MenuPickerStyle())
-                                .background(
-                                    RoundedRectangle(cornerRadius: 10)
-                                        .fill(Color.black.opacity(0.6))
-                                )
+                            StylingControlsPanel(style: $style, effect: $effect)
+                                .frame(width: min(420, width - 24))
+                                .padding(.horizontal, 12)
+                                .frame(maxWidth: .infinity, alignment: .trailing)
                                 .onAppear {
                                     style = Settings.style ?? NO_STYLE
+                                    effect = Settings.effect ?? NO_EFFECT
                                     if appState.activeMonitor == .camera {
-                                        fade("Switch to output viev to preview styling")
+                                        fade("Switch to output view to preview styling")
                                     }
                                 }
                                 .onChange(of: style) { _, newStyle in
-                                    LOG("Seletected style: \(newStyle)", level: .debug)
+                                    LOG("Selected style: \(newStyle)", level: .debug)
                                     Settings.style = newStyle
-                                    Task {
-                                        await FrameGrabber.shared.refreshStyle()
-                                    }
-                                }
-                            }
-                            .padding(5)
-                            .background(
-                                Rectangle()
-                                    .fill(Color.black.opacity(0.4))
-                            )
-                            
-                            HStack(alignment: .center, spacing: 10) {
-                                Spacer()
-                                
-                                Text("Select Effect")
-                                Picker("Effect Selection", selection: $effect) {
-                                    ForEach(AVAILABLE_EFFECTS, id: \.self) { effect in
-                                        Text(effect)
-                                            .tag(effect)
-                                    }
-                                }
-                                .pickerStyle(MenuPickerStyle())
-                                .background(
-                                    RoundedRectangle(cornerRadius: 10)
-                                        .fill(Color.black.opacity(0.6))
-                                )
-                                .onAppear {
-                                    effect = Settings.effect ?? NO_EFFECT
+                                    Task { await FrameGrabber.shared.refreshStyle() }
                                 }
                                 .onChange(of: effect) { _, newEffect in
-                                    LOG("Seletected effect: \(newEffect)", level: .debug)
+                                    LOG("Selected effect: \(newEffect)", level: .debug)
                                     Settings.effect = newEffect
-                                    Task {
-                                        await FrameGrabber.shared.refreshEffect()
-                                    }
+                                    Task { await FrameGrabber.shared.refreshEffect() }
                                 }
-                            }
-                            .padding(5)
-                            .background(
-                                Rectangle()
-                                    .fill(Color.black.opacity(0.4))
-                            )
                         }
-                        
+
                         Spacer()
                     }
                     
@@ -815,12 +665,12 @@ struct TubeistView: View {
                             }
                             .padding(.bottom, 10)
                             
-                            let zoom = totalZoom + currentZoom
-                            
-                            Text(String(format: zoom == 1 || zoom > 10 ? "%.0f" : "%.1f", zoom) + "×")
+                            Text(cameraZoom.label)
                                 .font(.system(size: 17))
                                 .fontWeight(.semibold)
-                                .foregroundColor(zoom > opticalZoom ? .yellow : zoom > 1 ? .white : .white.opacity(0.5))
+                                .foregroundColor(cameraZoom.requiresUpscaling ? .yellow : .white)
+                                .accessibilityLabel("Zoom")
+                                .accessibilityValue(cameraZoom.label + (cameraZoom.requiresUpscaling ? ", digital upscaling" : ""))
                             
                             Spacer()
                             
@@ -969,8 +819,9 @@ struct TubeistView: View {
                                 foregroundColor: appState.isStreamSessionRunning || showCameraPicker ? .yellow : .white) {
                         if !appState.isStreamSessionRunning {
                             showCameraPicker.toggle()
-                            if showCameraPicker && showStabilizationPicker {
+                            if showCameraPicker {
                                 showStabilizationPicker = false
+                                showStylingPicker = false
                             }
                         }
                     }
@@ -982,11 +833,10 @@ struct TubeistView: View {
                             // encoder recovery to release the pipeline actor.
                             showStabilizationPicker = false
                         } else {
-                            Task {
-                                stabilizations = await CaptureDirector.shared.getStabilizations()
-                                showStabilizationPicker = true
-                                showCameraPicker = false
-                            }
+                            showStabilizationPicker = true
+                            showCameraPicker = false
+                            showStylingPicker = false
+                            Task { stabilizations = await CaptureDirector.shared.getStabilizations() }
                         }
                     }
                     
@@ -1005,6 +855,10 @@ struct TubeistView: View {
                                 foregroundColor: Purchaser.shared.isProductPurchased("tubeist_lifetime_styling") ? showStylingPicker ? .yellow : .white : .red) {
                         if Purchaser.shared.isProductPurchased("tubeist_lifetime_styling") {
                             showStylingPicker.toggle()
+                            if showStylingPicker {
+                                showCameraPicker = false
+                                showStabilizationPicker = false
+                            }
                         }
                     }
                     

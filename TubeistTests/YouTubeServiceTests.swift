@@ -813,6 +813,54 @@ struct YouTubeServiceTests {
     }
 
     @Test @MainActor
+    func manualEndingDisablesAutoStopOnAnExistingBroadcastDespiteSavedPreferences() async throws {
+        let transport = MockYouTubeAPITransport(responses: [
+            emptyYouTubePage(), broadcastPageResponse(status: "ready", bound: true, autoStop: true),
+            matchingStreamPage(), broadcastResourceResponse(status: "ready", bound: true, autoStop: false)
+        ])
+        let service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore(), discoveryCache: YouTubeDiscoveryCache())
+        let result = try await service.prepareForStreaming(
+            streamKey: "test-key", preferences: setupPreferences(), endingPolicy: .manualDiagnostic
+        )
+        #expect(!result.broadcast.enableAutoStop)
+        #expect(result.completionTarget == nil)
+        let requests = await transport.requests
+        #expect(requests.map(\.httpMethod) == ["GET", "GET", "GET", "PUT"])
+        #expect(requests.last?.httpBody?.range(of: Data(#""enableAutoStop":false"#.utf8)) != nil)
+    }
+
+    @Test @MainActor
+    func manualEndingCreatesANewBroadcastWithAutoStopAlreadyDisabled() async throws {
+        let transport = MockYouTubeAPITransport(responses: [
+            emptyYouTubePage(), emptyYouTubePage(), matchingStreamPage(),
+            broadcastResourceResponse(status: "created", bound: false, autoStop: false),
+            broadcastResourceResponse(status: "ready", bound: true, autoStop: false)
+        ])
+        let service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore(), discoveryCache: YouTubeDiscoveryCache())
+        let result = try await service.prepareForStreaming(
+            streamKey: "test-key", preferences: setupPreferences(), endingPolicy: .manualDiagnostic
+        )
+        #expect(!result.broadcast.enableAutoStop)
+        #expect(result.completionTarget == nil)
+        let requests = await transport.requests
+        #expect(requests.map(\.httpMethod) == ["GET", "GET", "GET", "POST", "POST"])
+        #expect(requests[3].httpBody?.range(of: Data(#""enableAutoStop":false"#.utf8)) != nil)
+    }
+
+    @Test(arguments: [false, true]) @MainActor
+    func manualEndingRequiresServerConfirmationThatAutoStopIsDisabled(omitsConfirmation: Bool) async throws {
+        let transport = MockYouTubeAPITransport(responses: [
+            emptyYouTubePage(), broadcastPageResponse(status: "ready", bound: true, autoStop: true),
+            matchingStreamPage(),
+            broadcastResourceResponse(status: "ready", bound: true, autoStop: omitsConfirmation ? nil : true)
+        ])
+        let service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore(), discoveryCache: YouTubeDiscoveryCache())
+        await #expect(throws: YouTubeError.invalidResponse) {
+            _ = try await service.prepareForStreaming(streamKey: "test-key", endingPolicy: .manualDiagnostic)
+        }
+    }
+
+    @Test @MainActor
     func startCreatesAndBindsFromSavedPreferencesWithoutACompletedTemplate() async throws {
         let fixedNow = Date(timeIntervalSince1970: 1_800_000_000)
         let transport = MockYouTubeAPITransport(responses: [
@@ -979,6 +1027,7 @@ struct YouTubeServiceTests {
         let preparation = try await readyService.prepareForStreaming(streamKey: "test-key")
         #expect(preparation.broadcast.id == "ready")
         #expect(preparation.broadcast.enableAutoStop)
+        #expect(preparation.completionTarget != nil)
         let readyRequests = await readyTransport.requests
         #expect(readyRequests.map(\.httpMethod) == ["GET", "GET", "GET", "PUT"])
         #expect(readyRequests[3].httpBody?.range(of: Data(#""enableAutoStop":true"#.utf8)) != nil)
@@ -1306,9 +1355,10 @@ private func streamResourceResponse() -> YouTubeAPIResponse {
     return .init(data: try! JSONSerialization.data(withJSONObject: resource), statusCode: 200)
 }
 
-private func broadcastResourceResponse(status: String, bound: Bool) -> YouTubeAPIResponse {
+private func broadcastResourceResponse(status: String, bound: Bool, autoStop: Bool? = nil) -> YouTubeAPIResponse {
     let statusFields: [String: Any] = ["privacyStatus": "private", "lifeCycleStatus": status, "selfDeclaredMadeForKids": false]
     var details: [String: Any] = ["enableEmbed": false]
+    if let autoStop { details["enableAutoStop"] = autoStop }
     if bound { details["boundStreamId"] = "stream-1" }
     let object: [String: Any] = [
         "id": "new-event", "snippet": ["title": "Saved title"],
@@ -1318,8 +1368,8 @@ private func broadcastResourceResponse(status: String, bound: Bool) -> YouTubeAP
     return .init(data: try! JSONSerialization.data(withJSONObject: object), statusCode: 200)
 }
 
-private func broadcastPageResponse(status: String, bound: Bool) -> YouTubeAPIResponse {
-    let resource = try! JSONSerialization.jsonObject(with: broadcastResourceResponse(status: status, bound: bound).data)
+private func broadcastPageResponse(status: String, bound: Bool, autoStop: Bool? = nil) -> YouTubeAPIResponse {
+    let resource = try! JSONSerialization.jsonObject(with: broadcastResourceResponse(status: status, bound: bound, autoStop: autoStop).data)
     return .init(data: try! JSONSerialization.data(withJSONObject: ["items": [resource]]), statusCode: 200)
 }
 

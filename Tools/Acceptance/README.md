@@ -62,6 +62,47 @@ documented YouTube buffer/rate guarantees. See [the model and limits](DELIVERY_P
 
 ## Exact upload capture and segment validation
 
+### Manual stream-ending experiment (Debug only)
+
+Enable **Settings → Stream Ending Test → End broadcast manually in Studio**,
+then Save. Sign in to YouTube first and select **Stream and Record** so the local
+MP4 provides a comparison. This setting is off by default and ignored in Release.
+
+The next signed-in Start disables YouTube auto-stop, including on an existing
+ready event, and confirms the API response if it changes that setting. Uploads
+keep the same adaptive pacing and complete EVENT history. Stop drains and
+acknowledges all remaining segments and finishes the local recording, but sends
+neither ENDLIST nor an API completion request. There is no ENDLIST grace wait.
+The YouTube indicator can remain red after Tubeist's local Stop finishes.
+
+Record a short spoken countdown with a distinct final word. After Stop, watch
+the YouTube player until that word arrives, or wait up to two minutes and record
+that it did not arrive. **Then end the broadcast manually in YouTube Studio.**
+Note the time of manual completion and retain the replay URL. Compare the local
+MP4 and exact uploaded media with the replay again after archive processing.
+This is an experiment, not a confirmed fix or a guarantee of YouTube's behavior.
+
+This mode automatically records diagnostics, even if the separate recording
+toggle is off. The first `uploads.jsonl` event records
+`"endingPolicy":"manualDiagnostic"`. Validate it explicitly with:
+
+```sh
+python3 Tools/Acceptance/validate_upload_capture.py /path/to/session \
+  --ending-policy manualDiagnostic > /path/to/validation.json
+```
+
+The validator requires a complete capture, full EVENT history, every advertised
+segment acknowledged, and **no ENDLIST at all**. The normal validator still
+requires ENDLIST; omitting it accidentally cannot pass as a normal stream.
+The capture proves upload behavior, not when YouTube finished processing it.
+
+Turn the test off and Save afterward. The next normal signed-in Start restores
+auto-stop; normal Stop waits ten seconds from the final media acknowledgement,
+sends ENDLIST, and attempts API completion. Changing the setting cannot end an
+already-open diagnostic broadcast: complete that broadcast in Studio first.
+
+### Capture contents
+
 The same Debug-only switch also records `uploads.jsonl` and a `bodies/` directory.
 The capture wraps the HTTP transport and saves the exact body passed to it for
 every playlist and media request, including retries and the final ENDLIST.

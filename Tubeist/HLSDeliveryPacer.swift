@@ -24,6 +24,7 @@ struct HLSDeliveryPacer: Sendable {
     private var lastStartedAt: TimeInterval?
     private var lastDuration = 0.0
     private var recoveryDeadline: TimeInterval?
+    private var awaitingFreshMedia = true
 
     init(policy: Policy = Policy()) {
         self.policy = policy
@@ -41,11 +42,11 @@ struct HLSDeliveryPacer: Sendable {
               finishBy.map({ $0.isFinite }) ?? true else {
             return Decision(rate: nil, delay: 0, reason: .invalidObservation)
         }
-        // One ready segment is normal; only the material behind it is backlog.
-        let backlog = max(0, queuedMediaSeconds - max(0, nextDuration))
-        if backlog == 0 {
-            recoveryDeadline = nil
-        } else if recoveryDeadline == nil {
+        // A fresh segment after an idle period is normal. A segment still
+        // waiting when the preceding upload finishes is backlog, even if it
+        // is the only one left. Only becameIdle() confirms that recovery ended.
+        if recoveryDeadline == nil, queuedMediaSeconds > 0,
+           !awaitingFreshMedia || queuedMediaSeconds > nextDuration {
             recoveryDeadline = now + policy.recoverySeconds
         }
         if queuedMediaSeconds >= maximumQueuedDuration - policy.queueReserveSeconds ||
@@ -57,9 +58,10 @@ struct HLSDeliveryPacer: Sendable {
             return Decision(rate: nil, delay: 0, reason: .recoveryDeadline)
         }
         // T is remaining time to the ORIGINAL deadline, not a new horizon.
-        // r = 1 + Q/T is the least constant service rate that clears Q in T
-        // while arrivals continue at 1x. There is deliberately no hard 2x cap.
-        let rate = remaining.map { 1 + backlog / $0 } ?? 1
+        // Q includes ALL waiting media, including the next upload. Subtracting
+        // that segment strands one segment at 1x indefinitely. There is no
+        // hard 2x cap; r = 1 + Q/T clears Q while arrivals continue at 1x.
+        let rate = remaining.map { 1 + queuedMediaSeconds / $0 } ?? 1
         let reason: Decision.Reason = remaining == nil ? .steady : .recovering
         var delay = 0.0
         if let lastStartedAt, now >= lastStartedAt {
@@ -83,11 +85,20 @@ struct HLSDeliveryPacer: Sendable {
     }
 
     mutating func becameIdle() {
+        if recoveryDeadline != nil {
+            // Recovery has actually drained through the final ACK. Rebase on
+            // the next fresh arrival rather than preserving the old delayed
+            // phase with artificial waits. Never reset while work remains.
+            lastStartedAt = nil
+            lastDuration = 0
+        }
         recoveryDeadline = nil
+        awaitingFreshMedia = true
     }
 
     mutating func beganUpload(duration: Double, now: TimeInterval) {
         guard duration.isFinite, duration >= 0, now.isFinite else { return }
+        awaitingFreshMedia = false
         lastStartedAt = now
         lastDuration = duration
     }

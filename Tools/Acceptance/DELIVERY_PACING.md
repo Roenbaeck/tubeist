@@ -16,13 +16,15 @@ rate or safe YouTube burst limit is known.
 
 ## Recovery equation
 
-Let Q be queued media seconds beyond the next ready segment, r the delivered
+Let Q be all waiting media seconds, including the next ready segment, r the delivered
 media seconds per wall-clock second, and assume ongoing capture produces 1x.
 The fluid approximation is Q' = 1 - r. Clearing Q within T requires an average
 rate of at least `r = 1 + Q/T`. This is the minimum constant rate satisfying that
 local objective, assuming sufficient capacity and no further interruptions.
 
-At the first observed backlog, set a recovery deadline twenty seconds ahead.
+One freshly produced segment after an idle period is normal. More than one
+ready segment, or even one still waiting when the previous upload finishes,
+starts a recovery deadline twenty seconds ahead.
 Subsequent decisions use the **time remaining to that same deadline**. Ten
 seconds of backlog initially asks for 1.5x. If five seconds remain after ten
 seconds, it still asks for 1.5x. If ten seconds remain after fifteen seconds, it
@@ -30,8 +32,13 @@ asks for 3x. There is no hard 2x ceiling.
 
 The previous moving twenty-second horizon instead approximated Q' = -Q/20,
 which decays exponentially and continually postpones full recovery. A fixed
-deadline increases urgency when progress falls short. Reset the episode only
-when no excess queue remains. Expiry makes delivery work-conserving (no
+deadline increases urgency when progress falls short. Keep the episode through
+the last waiting segment; subtracting that segment and returning to 1x stranded
+one segment indefinitely, oscillating between one and two resident segments.
+Reset only after the last upload is acknowledged and the queue is empty.
+Then rebase pacing on the next fresh arrival so the old delayed upload phase
+does not persist as an artificial wait. Ordinary idle periods outside recovery
+retain their spacing guard. Expiry makes delivery work-conserving (no
 intentional wait) until that backlog clears.
 
 Segment quantization, variable durations and request/acknowledgement time mean
@@ -73,6 +80,14 @@ speed. It covers repeated short connectivity windows, a long outage, a sustained
 unrecoverable deficit, variable-duration / variable-bitrate segments, and seeded
 changing networks. Each produced segment must be accounted for exactly once as
 accepted, deliberately dropped, in flight or queued, with accepted IDs ordered.
+
+The recovery regression covers a ten-second outage followed by links taking
+0.2, 1.0 and 1.8 seconds per two-second segment. After catch-up, the queue must
+be completely empty between uploads, with only the current fresh segment
+resident during each transfer. A sink integration test checks that displayed
+buffer metrics return to zero and that the next fresh segment inherits no
+artificial delay. One in-flight segment still legitimately counts as buffered;
+the warning threshold is unchanged.
 
 The repeated-outage case compares the old hard cap against the new deadline
 controller on identical capacity/arrival traces. Sink integration tests separately

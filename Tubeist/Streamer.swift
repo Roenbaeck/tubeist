@@ -677,6 +677,11 @@ final class Streamer: Sendable {
             throw StreamStartError.missingStreamKey
         }
 
+        let endingPolicy = Settings.hlsStreamEndingPolicy
+        if endingPolicy == .manualDiagnostic, Settings.youtubeRefreshToken == nil {
+            // Without API access we cannot guarantee auto-stop is disabled.
+            throw StreamStartError.endingTestRequiresSignIn
+        }
         let endpoint: YouTubeHLSEndpoint
         if Settings.youtubeRefreshToken != nil {
             let service = await YouTubeService()
@@ -687,7 +692,8 @@ final class Streamer: Sendable {
             let preparation = try await service.prepareForStreaming(
                 streamKey: streamKey,
                 preferences: preferences,
-                thumbnailData: thumbnailData
+                thumbnailData: thumbnailData,
+                endingPolicy: endingPolicy
             )
             endpoint = preparation.endpoint
             await streamingActor.setYouTubeBroadcast(
@@ -704,19 +710,25 @@ final class Streamer: Sendable {
         try await EncodedOutputRouter.shared.prepareYouTube(
             endpoint: endpoint,
             sessionIdentifier: streamID,
-            userAgent: userAgent
+            userAgent: userAgent,
+            endingPolicy: endingPolicy
         )
+        if endingPolicy == .manualDiagnostic {
+            LOG("YouTube ending test: auto-stop disabled; no ENDLIST or automatic completion. End this broadcast manually in YouTube Studio.", level: .info)
+        }
     }
 }
 
 enum StreamStartError: LocalizedError, Equatable {
     case missingStreamKey
     case noOutputSelected
+    case endingTestRequiresSignIn
 
     var errorDescription: String? {
         switch self {
         case .missingStreamKey: "Enter a YouTube HLS stream key before starting"
         case .noOutputSelected: "Enable YouTube streaming, local recording, or both"
+        case .endingTestRequiresSignIn: "Sign in to YouTube before using the stream ending test, or turn the test off in Settings"
         }
     }
 }

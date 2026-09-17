@@ -10,6 +10,49 @@ import Testing
 private let successfulSinkShutdownTimeout: TimeInterval = 10
 
 struct YouTubeHLSStreamSinkTests {
+    @Test func drainedRecoveryClearsBufferMetricsAndDoesNotDelayTheNextFreshSegment() async throws {
+        let clock = SinkPacingClock()
+        let transport = PacedSinkTransport(clock: clock, uploadSeconds: 0.2)
+        let sink = YouTubeHLSStreamSink()
+        try await sink.prepare(endpoint: .manualPrimary(streamKey: "test"),
+                               sessionIdentifier: "recovery_idle", userAgent: "Tubeist/Test",
+                               transport: transport, sleeper: { _ in },
+                               pacingNow: { clock.now() }, pacingSleeper: { clock.advance($0) })
+        await sink.enqueue(Fragment(sequence: 0, segment: directSentinel(0), duration: 2, container: .mpegTransportStream))
+        try await transport.waitUntilRequested()
+        clock.transfer(5) // Capture continues while the first request is stalled.
+        for sequence in 1...3 {
+            await sink.enqueue(Fragment(sequence: sequence, segment: directSentinel(UInt8(sequence)),
+                                        duration: 2, container: .mpegTransportStream))
+        }
+        #expect(await sink.metrics().queuedFragments == 4)
+        await transport.releaseFirstRequest()
+        try await waitForIdle(sink)
+        #expect(await sink.metrics().queuedDuration == 0)
+        #expect(await transport.media.count == 4)
+        #expect(clock.totalWait() > 0) // Backlog still drained gently.
+
+        clock.transfer(0.25)
+        let freshArrival = clock.now()
+        let previousWait = clock.totalWait()
+        await sink.enqueue(Fragment(sequence: 4, segment: directSentinel(4), duration: 2, container: .mpegTransportStream))
+        try await waitForIdle(sink)
+        #expect(await transport.media.last?.startedAt == freshArrival)
+        #expect(clock.totalWait() == previousWait)
+        #expect(await transport.media.map(\.body) == (0...4).map { directSentinel(UInt8($0)) })
+        #expect(await sink.metrics().queuedFragments == 0)
+        #expect(await sink.metrics().droppedFragments == 0)
+        #expect(try await sink.finish(timeout: successfulSinkShutdownTimeout))
+    }
+
+    private func waitForIdle(_ sink: YouTubeHLSStreamSink) async throws {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(15))
+        while await sink.metrics().queuedFragments != 0 {
+            guard ContinuousClock.now < deadline else { throw YouTubeHLSPackagingError.shutdownTimedOut }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+    }
+
     @Test func shortStopBudgetPrioritizesEveryRemainingSegmentOverPacing() async throws {
         let clock = SinkPacingClock()
         let transport = PacedSinkTransport(clock: clock, uploadSeconds: 0.1)
@@ -35,13 +78,16 @@ struct YouTubeHLSStreamSinkTests {
         #expect(clock.totalWait() == 0)
     }
 
-    @Test(arguments: [0.1, 3.0])
-    func queuedMediaAndStopTailUseAdaptiveSpacingWithoutChangingPayloads(uploadSeconds: Double) async throws {
+    @Test(arguments: [0.1, 3.0], [HLSStreamEndingPolicy.automatic, .manualDiagnostic])
+    func queuedMediaAndStopTailUseAdaptiveSpacingWithoutChangingPayloads(
+        uploadSeconds: Double, endingPolicy: HLSStreamEndingPolicy
+    ) async throws {
         let clock = SinkPacingClock()
         let transport = PacedSinkTransport(clock: clock, uploadSeconds: uploadSeconds)
         let sink = YouTubeHLSStreamSink()
         try await sink.prepare(endpoint: .manualPrimary(streamKey: "test"),
                                sessionIdentifier: "paced_queue", userAgent: "Tubeist/Test",
+                               endingPolicy: endingPolicy,
                                transport: transport, sleeper: { _ in },
                                pacingNow: { clock.now() }, pacingSleeper: { clock.advance($0) })
         await sink.enqueue(Fragment(sequence: 0, segment: directSentinel(0), duration: 2, container: .mpegTransportStream))
@@ -51,7 +97,7 @@ struct YouTubeHLSStreamSinkTests {
                                         duration: 2, container: .mpegTransportStream))
         }
         await transport.releaseFirstRequest()
-        #expect(try await sink.finish(timeout: 120))
+        #expect(try await sink.finish(timeout: 120) == endingPolicy.automaticallyEndsBroadcast)
         let media = await transport.media
         #expect(media.count == 7)
         #expect(media.first?.startedAt == 0)
@@ -61,13 +107,13 @@ struct YouTubeHLSStreamSinkTests {
             #expect(spacing <= max(uploadSeconds, 2) + 0.000001)
         }
         #expect(media.map(\.body) == (0...6).map { directSentinel(UInt8($0)) })
-        #expect(await transport.endListReceived)
+        #expect(await transport.endListReceived == endingPolicy.automaticallyEndsBroadcast)
         #expect(await sink.metrics().droppedFragments == 0)
         if uploadSeconds == 3 {
             #expect(clock.totalWait() == 0)
         } else {
             #expect(clock.totalWait() > 0)
-            #expect(abs(media[1].startedAt - 2 / 1.5) < 0.000001)
+            #expect(abs(media[1].startedAt - 2 / 1.6) < 0.000001)
         }
     }
 

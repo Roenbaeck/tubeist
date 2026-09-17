@@ -4,6 +4,25 @@ import Testing
 @testable import Tubeist
 
 struct HLSRequestCaptureTests {
+    @Test func manualEndingCaptureIsCompleteAndIdentifiesTheExperiment() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let capture = HLSRequestCapture(directory: directory)
+        await capture.start(endingPolicy: .manualDiagnostic)
+        let transport = CaptureTestTransport(statuses: [200, 200])
+        let uploader = try YouTubeHLSUploader(
+            endpoint: .manualPrimary(streamKey: "test-key"), sessionIdentifier: "manual_capture",
+            userAgent: "Tubeist/Test", transport: HLSCapturingHTTPTransport(underlying: transport, capture: capture),
+            endingPolicy: .manualDiagnostic
+        )
+        _ = try await uploader.upload(segment: Data([0x47]), duration: 0.5)
+        #expect(try await uploader.finish() == false)
+        let events = try readEvents(directory)
+        #expect(events.first?["endingPolicy"] as? String == "manualDiagnostic")
+        #expect(events.last?["complete"] as? Bool == true)
+        #expect(events.last?["requests"] as? Int == 2)
+    }
+
     @Test func capturesExactRetriesAndFinalPlaylistWithoutCredentials() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
