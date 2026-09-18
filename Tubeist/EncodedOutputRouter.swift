@@ -286,6 +286,9 @@ actor YouTubeHLSStreamSink {
             if finishingFailure == nil {
                 do {
                     endListAcknowledged = try await finishingUploader.finish(deadline: deadline)
+                    if finishingUploader.endingPolicy == .manualDiagnostic {
+                        LOG("YouTube ending test: uploads finished; no ENDLIST or completion sent. End the broadcast manually in YouTube Studio after checking the ending.", level: .info)
+                    }
                 } catch {
                     failure = String(describing: error)
                     LOG("YouTube final playlist publication failed: \(error)", level: .error)

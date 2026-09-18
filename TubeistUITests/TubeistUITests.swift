@@ -356,13 +356,14 @@ final class TubeistUITests: XCTestCase {
             ))
             let end = origin.withOffset(CGVector(
                 dx: handleFrame.midX - windowFrame.minX,
-                dy: destinationFrame.maxY + destinationFrame.height * 0.25 - windowFrame.minY
+                dy: destinationFrame.minY + destinationFrame.height * 0.75 - windowFrame.minY
             ))
             // Edit mode already exposes the drag handle; a long stationary
             // hold can leave iOS 26's lifted cell presentation unsettled.
-            // Cross the entire destination row and let its insertion animation
-            // settle before releasing. On a busy CI simulator, releasing after
-            // 0.15s can snap the lifted row back without committing the move.
+            // Cross the destination's midpoint, but keep the drop inside the
+            // row. Dropping below its bottom edge can land in the section
+            // footer and cancel the move when this is the final row.
+            // Let the insertion animation settle before releasing.
             start.press(forDuration: 0.15, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 1)
 
             // During a native reorder, cells and their lifted snapshots can

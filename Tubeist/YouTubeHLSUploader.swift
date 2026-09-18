@@ -216,7 +216,7 @@ actor YouTubeHLSUploader {
     private let sleeper: Sleeper
     private let now: @Sendable () -> ContinuousClock.Instant
     private let keepRetrying: Bool
-    private let endingPolicy: HLSStreamEndingPolicy
+    let endingPolicy: HLSStreamEndingPolicy
     private var playlist: HLSMediaPlaylist
     private var stopped = false
     private var uploadInProgress = false
@@ -371,7 +371,6 @@ actor YouTubeHLSUploader {
                 // false also prevents Streamer from requesting API completion.
                 stopped = true
                 await transport.invalidate()
-                LOG("YouTube ending test: uploads finished; no ENDLIST or completion sent. End the broadcast manually in YouTube Studio after checking the ending.", level: .info)
                 return false
             }
             if playlist.nextSequence > 0 {
