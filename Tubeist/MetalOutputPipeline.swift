@@ -23,6 +23,7 @@ struct OutputPreviewArguments {
     var chromaRange: Float
     var headroom: Float = 1
     var chromaOffset: SIMD2<Float> = .zero
+    var lumaCoefficients: SIMD2<Float>
 
     init(pixelBuffer: CVPixelBuffer) throws {
         switch CVPixelBufferGetPixelFormatType(pixelBuffer) {
@@ -38,8 +39,18 @@ struct OutputPreviewArguments {
         }
         guard CVPixelBufferGetPlaneCount(pixelBuffer) == 2,
               CVBufferCopyAttachment(pixelBuffer, kCVImageBufferColorPrimariesKey, nil) as? String == kCVImageBufferColorPrimaries_ITU_R_2020 as String,
-              CVBufferCopyAttachment(pixelBuffer, kCVImageBufferTransferFunctionKey, nil) as? String == kCVImageBufferTransferFunction_ITU_R_2100_HLG as String,
-              CVBufferCopyAttachment(pixelBuffer, kCVImageBufferYCbCrMatrixKey, nil) as? String == kCVImageBufferYCbCrMatrix_ITU_R_2020 as String else {
+              CVBufferCopyAttachment(pixelBuffer, kCVImageBufferTransferFunctionKey, nil) as? String == kCVImageBufferTransferFunction_ITU_R_2100_HLG as String else {
+            throw OutputPreviewError.unsupportedFrame
+        }
+        // Matrix coefficients describe YCbCr packing, separately from RGB
+        // primaries and transfer function. iPhone 12/iOS 18 supplies HLG/2020
+        // camera frames with a 709 matrix; decode what the frame declares.
+        let matrix = CVBufferCopyAttachment(pixelBuffer, kCVImageBufferYCbCrMatrixKey, nil) as? String
+        if matrix == kCVImageBufferYCbCrMatrix_ITU_R_2020 as String {
+            lumaCoefficients = SIMD2(0.2627, 0.0593)
+        } else if matrix == kCVImageBufferYCbCrMatrix_ITU_R_709_2 as String {
+            lumaCoefficients = SIMD2(0.2126, 0.0722)
+        } else {
             throw OutputPreviewError.unsupportedFrame
         }
 

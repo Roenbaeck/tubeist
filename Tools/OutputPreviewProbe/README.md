@@ -17,7 +17,11 @@ camera configuration. Slow preview operations and camera interruption reasons
 are logged to help diagnose device-only stalls.
 
 The shader reconstructs HLG RGB from full- or video-range ten-bit YCbCr,
-accounting for declared chroma siting. It uses the compositor's fixed BT.2100
+accounting for declared chroma siting and either BT.2020 or BT.709 YCbCr matrix
+coefficients. Matrix coefficients are independent of RGB primaries: the iPhone
+12 on iOS 18 supplies HLG/BT.2020 frames with a BT.709 matrix. The preview honors
+that matrix without changing the original buffer or its metadata.
+It uses the compositor's fixed BT.2100
 HLG reference EOTF (1,000-nit peak, system gamma 1.2), scaling 203-nit graphics
 white to EDR 1.0. The display layer uses linear BT.2020 and `toneMapMode = .never`
 so AVFoundation's HLG presentation adjustment is not applied again.
@@ -40,13 +44,14 @@ bash Tools/OutputPreviewProbe/validate.sh
 The probe compiles the production Swift pipeline and Metal shaders. An
 independent Double-precision reference reconstructs quantized input samples,
 including bilinear chroma interpolation, and evaluates the HLG EOTF. It checks
-150 GPU frames across 4:2:0/4:2:2 full and video range, 4:4:4 video range, six
+300 GPU frames across both matrices, 4:2:0/4:2:2 full and video range, 4:4:4 video range, six
 chroma locations, and headroom 1, 1.25, 2, 1000/203 and 8. Asymmetric patches
 check orientation; colors, gray ramps and HDR highlights check rendering.
 
 Every comparison checks source plane bytes (including padding) and attachments
 for exact preservation. SDR output must be bit-identical across headrooms;
-HDR peak white must reach the available headroom. Missing HLG metadata and
+HDR peak white must reach the available headroom. Missing color metadata,
+unsupported matrices, non-HLG transfer functions, non-BT.2020 primaries and
 unsupported pixel formats must be rejected. The tolerance against the CPU
 reference is 0.006 in linear EDR units, allowing half-float output quantization.
 

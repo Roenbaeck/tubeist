@@ -8,13 +8,22 @@ let library = try device.makeLibrary(source: String(contentsOfFile: CommandLine.
 let pipeline = try MetalOutputPipeline(device: device, library: library)
 let width = 64, height = 32
 let referencePeak = 1000.0 / 203.0
-let formats: [(String, OSType, Bool)] = [
+let pixelFormats: [(String, OSType, Bool)] = [
     ("420-full", kCVPixelFormatType_420YpCbCr10BiPlanarFullRange, false),
     ("420-video", kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange, true),
     ("422-full", kCVPixelFormatType_422YpCbCr10BiPlanarFullRange, false),
     ("422-video", kCVPixelFormatType_422YpCbCr10BiPlanarVideoRange, true),
     ("444-video", kCVPixelFormatType_444YpCbCr10BiPlanarVideoRange, true)
 ]
+let matrices: [(String, CFString, Double, Double)] = [
+    ("2020", kCVImageBufferYCbCrMatrix_ITU_R_2020, 0.2627, 0.0593),
+    ("709", kCVImageBufferYCbCrMatrix_ITU_R_709_2, 0.2126, 0.0722)
+]
+let formats = pixelFormats.flatMap { name, format, videoRange in
+    matrices.map { matrixName, matrix, kr, kb in
+        ("\(name)-matrix-\(matrixName)", format, videoRange, matrix, kr, kb)
+    }
+}
 // Asymmetric rows expose upside-down rendering. Include SDR, colored HDR,
 // reference white, peak white and black; each patch is 8 x 8 source pixels.
 let patches: [[Double]] = [
@@ -24,17 +33,17 @@ let patches: [[Double]] = [
     [0.2,0.2,0.2], [0.4,0.4,0.4], [0.6,0.6,0.6], [0.7,0.7,0.7], [0.8,0.8,0.8], [0.85,0.85,0.85], [0.95,0.95,0.95], [0.05,0.05,0.05]
 ]
 
-func makeBuffer(_ format: OSType) -> CVPixelBuffer {
+func makeBuffer(_ format: OSType, matrix: CFString = kCVImageBufferYCbCrMatrix_ITU_R_2020) -> CVPixelBuffer {
     var buffer: CVPixelBuffer?
     let attributes = [kCVPixelBufferIOSurfacePropertiesKey: [:], kCVPixelBufferMetalCompatibilityKey: true] as CFDictionary
     precondition(CVPixelBufferCreate(nil, width, height, format, attributes, &buffer) == kCVReturnSuccess)
     CVBufferSetAttachment(buffer!, kCVImageBufferColorPrimariesKey, kCVImageBufferColorPrimaries_ITU_R_2020, .shouldPropagate)
     CVBufferSetAttachment(buffer!, kCVImageBufferTransferFunctionKey, kCVImageBufferTransferFunction_ITU_R_2100_HLG, .shouldPropagate)
-    CVBufferSetAttachment(buffer!, kCVImageBufferYCbCrMatrixKey, kCVImageBufferYCbCrMatrix_ITU_R_2020, .shouldPropagate)
+    CVBufferSetAttachment(buffer!, kCVImageBufferYCbCrMatrixKey, matrix, .shouldPropagate)
     return buffer!
 }
 
-func fill(_ buffer: CVPixelBuffer, videoRange: Bool) {
+func fill(_ buffer: CVPixelBuffer, videoRange: Bool, kr: Double, kb: Double) {
     CVPixelBufferLockBaseAddress(buffer, [])
     defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
     let yo = videoRange ? 64.0 : 0.0, ys = videoRange ? 876.0 : 1023.0, cs = videoRange ? 896.0 : 1022.0
@@ -48,11 +57,11 @@ func fill(_ buffer: CVPixelBuffer, videoRange: Bool) {
         for y in 0..<ph {
             for x in 0..<pw {
                 let rgb = patches[(y * height / ph / 8) * 8 + x * width / pw / 8]
-                let luma = 0.2627 * rgb[0] + 0.678 * rgb[1] + 0.0593 * rgb[2]
+                let luma = kr * rgb[0] + (1 - kr - kb) * rgb[1] + kb * rgb[2]
                 if plane == 0 { base[y * stride + x] = quantize(luma * ys + yo) }
                 else {
-                    base[y * stride + 2 * x] = quantize((rgb[2] - luma) / 1.8814 * cs + 512)
-                    base[y * stride + 2 * x + 1] = quantize((rgb[0] - luma) / 1.4746 * cs + 512)
+                    base[y * stride + 2 * x] = quantize((rgb[2] - luma) / (2 * (1 - kb)) * cs + 512)
+                    base[y * stride + 2 * x + 1] = quantize((rgb[0] - luma) / (2 * (1 - kr)) * cs + 512)
                 }
             }
         }
@@ -95,7 +104,7 @@ func render(_ buffer: CVPixelBuffer, headroom: Double) throws -> [Double] {
 
 // Independent CPU reference: reconstruct the stored YCbCr samples including
 // chroma siting/interpolation, then apply the BT.2100 reference EOTF in Double.
-func reference(_ buffer: CVPixelBuffer, videoRange: Bool, offset: SIMD2<Double>) -> [[Double]] {
+func reference(_ buffer: CVPixelBuffer, videoRange: Bool, offset: SIMD2<Double>, kr: Double, kb: Double) -> [[Double]] {
     CVPixelBufferLockBaseAddress(buffer, .readOnly)
     defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
     func sample(plane: Int, u: Double, v: Double, component: Int = 0) -> Double {
@@ -114,8 +123,8 @@ func reference(_ buffer: CVPixelBuffer, videoRange: Bool, offset: SIMD2<Double>)
         let y = (sample(plane: 0, u: u, v: v) - (videoRange ? 64 : 0)) / (videoRange ? 876 : 1023)
         let cb = (sample(plane: 1, u: u + offset.x, v: v + offset.y) - 512) / (videoRange ? 896 : 1022)
         let cr = (sample(plane: 1, u: u + offset.x, v: v + offset.y, component: 1) - 512) / (videoRange ? 896 : 1022)
-        let r = y + 1.4746 * cr, b = y + 1.8814 * cb
-        let scene = [r, (y - 0.2627 * r - 0.0593 * b) / 0.678, b].map { signal in
+        let r = y + 2 * (1 - kr) * cr, b = y + 2 * (1 - kb) * cb
+        let scene = [r, (y - kr * r - kb * b) / (1 - kr - kb), b].map { signal in
             let s = abs(signal)
             let linear = s <= 0.5 ? s*s/3 : (exp((s-0.559910729529562)/0.17883277)+0.28466892)/12
             return signal < 0 ? -linear : linear
@@ -127,9 +136,9 @@ func reference(_ buffer: CVPixelBuffer, videoRange: Bool, offset: SIMD2<Double>)
 
 var frameCount = 0, componentCount = 0
 var maximumError = 0.0
-for (name, format, videoRange) in formats {
-    let buffer = makeBuffer(format)
-    fill(buffer, videoRange: videoRange)
+for (name, format, videoRange, matrix, kr, kb) in formats {
+    let buffer = makeBuffer(format, matrix: matrix)
+    fill(buffer, videoRange: videoRange, kr: kr, kb: kb)
     let dx = (Double(width) / Double(CVPixelBufferGetWidthOfPlane(buffer, 1)) - 1) / (2 * Double(width))
     let dy = (Double(height) / Double(CVPixelBufferGetHeightOfPlane(buffer, 1)) - 1) / (2 * Double(height))
     let locations: [(CFString, SIMD2<Double>)] = [
@@ -144,7 +153,7 @@ for (name, format, videoRange) in formats {
         CVBufferSetAttachment(buffer, kCVImageBufferChromaLocationTopFieldKey, location, .shouldPropagate)
         let before = sourceBytes(buffer)
         let attachments = CVBufferCopyAttachments(buffer, .shouldPropagate)! as NSDictionary
-        let expected = reference(buffer, videoRange: videoRange, offset: offset)
+        let expected = reference(buffer, videoRange: videoRange, offset: offset, kr: kr, kb: kb)
         var previous: [Double]?
         for headroom in [1.0, 1.25, 2.0, referencePeak, 8.0] {
             let actual = try render(buffer, headroom: headroom)
@@ -179,12 +188,26 @@ for (name, format, videoRange) in formats {
             frameCount += 1
         }
     }
-    CVBufferRemoveAttachment(buffer, kCVImageBufferTransferFunctionKey)
-    do { _ = try pipeline.prepare(buffer); fatalError("Accepted a frame without HLG metadata") }
-    catch OutputPreviewError.unsupportedFrame {}
+    for key in [kCVImageBufferTransferFunctionKey, kCVImageBufferColorPrimariesKey, kCVImageBufferYCbCrMatrixKey] {
+        let value = CVBufferCopyAttachment(buffer, key, nil)!
+        CVBufferRemoveAttachment(buffer, key)
+        do { _ = try pipeline.prepare(buffer); fatalError("Accepted a frame without \(key)") }
+        catch OutputPreviewError.unsupportedFrame {}
+        CVBufferSetAttachment(buffer, key, value, .shouldPropagate)
+    }
     print("PASS \(name): colors, chroma siting, orientation, SDR/HDR headroom, source preservation")
 }
 let sdr = makeBuffer(kCVPixelFormatType_32BGRA)
 do { _ = try pipeline.prepare(sdr); fatalError("Accepted an unsupported pixel format") }
 catch OutputPreviewError.unsupportedFrame {}
+for (key, value) in [
+    (kCVImageBufferYCbCrMatrixKey, kCVImageBufferYCbCrMatrix_ITU_R_601_4),
+    (kCVImageBufferColorPrimariesKey, kCVImageBufferColorPrimaries_ITU_R_709_2),
+    (kCVImageBufferTransferFunctionKey, kCVImageBufferTransferFunction_ITU_R_709_2)
+] {
+    let buffer = makeBuffer(kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange)
+    CVBufferSetAttachment(buffer, key, value, .shouldPropagate)
+    do { _ = try pipeline.prepare(buffer); fatalError("Accepted unsupported \(key)") }
+    catch OutputPreviewError.unsupportedFrame {}
+}
 print("PASS \(frameCount) GPU frames, \(componentCount) RGB comparisons; maximum linear EDR error \(maximumError)")

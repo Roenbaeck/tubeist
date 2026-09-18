@@ -148,11 +148,42 @@ struct VideoDecodeTimeline {
     }
 }
 
+enum HEVCEncoderConfiguration {
+    static func apply(frameRate: Double, bitrate: Int, keyframeInterval: Double,
+                      setProperty: (CFString, CFTypeRef) -> OSStatus) throws {
+        let properties: [(CFString, Any)] = [
+            (kVTCompressionPropertyKey_ProfileLevel, kVTProfileLevel_HEVC_Main10_AutoLevel),
+            (kVTCompressionPropertyKey_RealTime, true),
+            (kVTCompressionPropertyKey_AverageBitRate, bitrate),
+            (kVTCompressionPropertyKey_ExpectedFrameRate, frameRate),
+            (kVTCompressionPropertyKey_MaxKeyFrameInterval, Int(ceil(frameRate * min(2, keyframeInterval)))),
+            (kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration, min(2, keyframeInterval)),
+            (kVTCompressionPropertyKey_AllowFrameReordering, true),
+            (kVTCompressionPropertyKey_AllowOpenGOP, false),
+            (kVTCompressionPropertyKey_MaxFrameDelayCount, 8),
+            (kVTCompressionPropertyKey_ColorPrimaries, kCVImageBufferColorPrimaries_ITU_R_2020),
+            (kVTCompressionPropertyKey_TransferFunction, kCVImageBufferTransferFunction_ITU_R_2100_HLG),
+            (kVTCompressionPropertyKey_YCbCrMatrix, kCVImageBufferYCbCrMatrix_ITU_R_2020),
+            (kVTCompressionPropertyKey_HDRMetadataInsertionMode, kVTHDRMetadataInsertionMode_Auto)
+        ]
+        for (key, value) in properties {
+            let status = setProperty(key, value as CFTypeRef)
+            // Some hardware encoders (including iPhone 12 on iOS 18) advertise
+            // this property but reject setting it. Keep their native delay;
+            // the limit is an optimization, not a codec/timestamp requirement.
+            // All other settings, including Main10 HLG and closed GOPs, remain
+            // required, and unexpected failures of the delay setting still fail.
+            if key == kVTCompressionPropertyKey_MaxFrameDelayCount,
+               status == kVTPropertyNotSupportedErr { continue }
+            try checkMediaStatus(status, "Configuring Main10 HLG encoder property \(key)")
+        }
+    }
+}
+
 /// Owned and called serially by PipelineActor (also usable by offline probes).
 final class HEVCVideoEncoder {
     private var session: VTCompressionSession?
     private let output = VideoEncoderOutput()
-    private static let maximumFrameDelay = 8
     private var decodeTimeline: VideoDecodeTimeline
     private var timingFormat: CMFormatDescription?
     private var submittedFrames = 0
@@ -190,21 +221,10 @@ final class HEVCVideoEncoder {
         guard let created else { throw MediaEncodingError.invalid("No HEVC encoder was created") }
         session = created
         do {
-            try checkMediaStatus(VTSessionSetProperties(created, propertyDictionary: [
-                kVTCompressionPropertyKey_ProfileLevel: kVTProfileLevel_HEVC_Main10_AutoLevel,
-                kVTCompressionPropertyKey_RealTime: true,
-                kVTCompressionPropertyKey_AverageBitRate: bitrate,
-                kVTCompressionPropertyKey_ExpectedFrameRate: frameRate,
-                kVTCompressionPropertyKey_MaxKeyFrameInterval: Int(ceil(frameRate * min(2, keyframeInterval))),
-                kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration: min(2, keyframeInterval),
-                kVTCompressionPropertyKey_AllowFrameReordering: true,
-                kVTCompressionPropertyKey_AllowOpenGOP: false,
-                kVTCompressionPropertyKey_MaxFrameDelayCount: Self.maximumFrameDelay,
-                kVTCompressionPropertyKey_ColorPrimaries: kCVImageBufferColorPrimaries_ITU_R_2020,
-                kVTCompressionPropertyKey_TransferFunction: kCVImageBufferTransferFunction_ITU_R_2100_HLG,
-                kVTCompressionPropertyKey_YCbCrMatrix: kCVImageBufferYCbCrMatrix_ITU_R_2020,
-                kVTCompressionPropertyKey_HDRMetadataInsertionMode: kVTHDRMetadataInsertionMode_Auto
-            ] as CFDictionary), "Configuring Main10 HLG encoder")
+            try HEVCEncoderConfiguration.apply(frameRate: frameRate, bitrate: bitrate,
+                                                keyframeInterval: keyframeInterval) { key, value in
+                VTSessionSetProperty(created, key: key, value: value)
+            }
             try checkMediaStatus(VTCompressionSessionPrepareToEncodeFrames(created), "Preparing HEVC encoder")
         } catch {
             VTCompressionSessionInvalidate(created)

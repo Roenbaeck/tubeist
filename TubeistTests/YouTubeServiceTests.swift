@@ -1149,6 +1149,81 @@ struct YouTubeServiceTests {
         #expect(await transport.requestCount == 2)
     }
 
+    @Test(arguments: [500, 503]) @MainActor
+    func statusDiscoveryFailureWarnsAndTheNextRefreshCanRecover(_ statusCode: Int) async throws {
+        let captured = CapturedYouTubeDiagnostics()
+        let transport = MockYouTubeAPITransport(responses: [
+            .init(data: Data(#"{"error":{"message":"Service unavailable"}}"#.utf8), statusCode: statusCode),
+            currentBroadcastPage(status: "live"), matchingStreamPage(),
+        ])
+        let service = YouTubeService(
+            transport: transport, tokenStore: validMemoryTokenStore(), discoveryCache: YouTubeDiscoveryCache(),
+            diagnostics: captured.diagnostics.forStatusMonitoring()
+        )
+        await #expect(throws: YouTubeError.apiError(statusCode, "Service unavailable")) {
+            _ = try await service.findBroadcastForStreamKey("test-key")
+        }
+        let warnings = captured.entries.filter { $0.1 == .warning }.map(\.0)
+        #expect(warnings.count == 2)
+        #expect(warnings.contains { $0.contains("liveBroadcasts.list: HTTP \(statusCode)") })
+        #expect(warnings.contains { $0.contains("page 1 failed after 0 items; page token present=false") })
+        #expect(!captured.entries.contains { $0.1 == .error })
+        #expect(!service.isLoading)
+        #expect(await transport.requestCount == 1) // Leave retries to the polling interval.
+
+        let recovered = try await service.findBroadcastForStreamKey("test-key")
+        #expect(recovered.lifeCycleStatus == "live")
+        let requests = await transport.requests
+        #expect(requests.count == 3)
+        #expect(requests.allSatisfy { $0.httpMethod == "GET" })
+        #expect(requests[0].url == requests[1].url)
+        let query = queryItems(in: requests[0])
+        #expect(query.filter { ["broadcastStatus", "id", "mine"].contains($0.name) }
+            == [URLQueryItem(name: "broadcastStatus", value: "active")])
+        #expect(!query.contains { $0.name == "pageToken" })
+    }
+
+    @Test @MainActor
+    func lightweightStatusFailureWarnsAndRecoversWithoutChangingBroadcasts() async throws {
+        let captured = CapturedYouTubeDiagnostics()
+        let transport = MockYouTubeAPITransport(responses: [
+            .init(data: Data(#"{"error":{"message":"Service unavailable"}}"#.utf8), statusCode: 503),
+            currentBroadcastPage(status: "live"),
+        ])
+        let service = YouTubeService(
+            transport: transport, tokenStore: validMemoryTokenStore(), discoveryCache: YouTubeDiscoveryCache(),
+            diagnostics: captured.diagnostics.forStatusMonitoring()
+        )
+        await #expect(throws: YouTubeError.apiError(503, "Service unavailable")) {
+            _ = try await service.fetchBroadcastStatus(broadcastId: "ready")
+        }
+        #expect(captured.entries.last?.1 == .warning)
+        #expect(!captured.entries.contains { $0.1 == .error })
+        #expect(try await service.fetchBroadcastStatus(broadcastId: "ready") == "live")
+        let requests = await transport.requests
+        #expect(requests.count == 2)
+        #expect(requests[0].url == requests[1].url)
+        #expect(requests.allSatisfy { $0.httpMethod == "GET" })
+    }
+
+    @Test @MainActor
+    func unavailableYouTubeStillReportsAnErrorWhenItPreventsStreamPreparation() async throws {
+        let captured = CapturedYouTubeDiagnostics()
+        let transport = MockYouTubeAPITransport(responses: [
+            .init(data: Data(#"{"error":{"message":"Service unavailable"}}"#.utf8), statusCode: 503),
+        ])
+        let service = YouTubeService(
+            transport: transport, tokenStore: validMemoryTokenStore(), discoveryCache: YouTubeDiscoveryCache(),
+            diagnostics: captured.diagnostics
+        )
+        await #expect(throws: YouTubeError.apiError(503, "Service unavailable")) {
+            _ = try await service.prepareForStreaming(streamKey: "test-key")
+        }
+        #expect(captured.entries.filter { $0.1 == .error }.count == 2)
+        #expect(await transport.requestCount == 1)
+        #expect(!service.isLoading)
+    }
+
     @Test func requestDiagnosticsReportGoogleReasonsWithoutCredentials() async throws {
         let captured = CapturedYouTubeDiagnostics()
         let secret = "access-canary-123"

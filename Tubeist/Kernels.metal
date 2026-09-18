@@ -929,6 +929,7 @@ struct OutputPreviewArguments {
     float chromaRange;
     float headroom;
     float2 chromaOffset;
+    float2 lumaCoefficients;
 };
 
 struct OutputPreviewVertex {
@@ -950,9 +951,10 @@ fragment float4 outputPreviewFragment(
     constexpr sampler sample(coord::normalized, address::clamp_to_edge, filter::linear);
     float y = (luma.sample(sample, in.uv).r * (65535.0 / 64.0) - args.lumaOffset) / args.lumaRange;
     float2 cbcr = (chroma.sample(sample, in.uv + args.chromaOffset).rg * (65535.0 / 64.0) - 512.0) / args.chromaRange;
-    float r = y + 1.4746 * cbcr.y;
-    float b = y + 1.8814 * cbcr.x;
-    float g = (y - 0.2627 * r - 0.0593 * b) / 0.6780;
+    float kr = args.lumaCoefficients.x, kb = args.lumaCoefficients.y;
+    float r = y + 2.0 * (1.0 - kr) * cbcr.y;
+    float b = y + 2.0 * (1.0 - kb) * cbcr.x;
+    float g = (y - kr * r - kb * b) / (1.0 - kr - kb);
 
     // The same fixed HLG reference used by the compositor, now expressed as
     // linear BT.2020 EDR. 203-nit graphics white becomes ordinary UI white (1).

@@ -71,6 +71,16 @@ enum YouTubeAPIOperation: String, Sendable {
 struct YouTubeDiagnostics: Sendable {
     var log: @Sendable (String, LogLevel) -> Void = { LOG($0, level: $1) }
 
+    /// Status lookups are best-effort and cannot interrupt media delivery.
+    /// Apply this at the caller so the same API failure stays an error when
+    /// it prevents stream preparation or another required operation.
+    func forStatusMonitoring() -> Self {
+        let write = log
+        return Self(log: { message, level in
+            write(message, level == .error ? .warning : level)
+        })
+    }
+
     /// Sanitize before truncating so a partial credential cannot escape redaction.
     static func text(_ value: String, secrets: [String] = []) -> String {
         var result = value

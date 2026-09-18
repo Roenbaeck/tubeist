@@ -64,7 +64,7 @@ struct TubeistView: View {
     @State private var interaction = Interaction()
     @State private var youtubePollingTask: Task<Void, Never>? = nil
     @State private var youtubeStatusGeneration = UUID()
-    @State private var youtubeService = YouTubeService()
+    @State private var youtubeService = YouTubeService(diagnostics: YouTubeDiagnostics().forStatusMonitoring())
     @State private var isCameraReady = false
     @State private var showSplashScreen = true
     @State private var splashOpacity: Double = 1.0
@@ -652,7 +652,7 @@ struct TubeistView: View {
                                 Task {
                                     await OverlayBundler.shared.reloadOverlays(in: overlayURLs)
                                 }
-                                youtubeService = YouTubeService()
+                                youtubeService = YouTubeService(diagnostics: YouTubeDiagnostics().forStatusMonitoring())
                                 appState.isYouTubeSignedIn = youtubeService.isSignedIn
                                 if youtubeService.isSignedIn {
                                     bootstrapYouTubeStatus()
