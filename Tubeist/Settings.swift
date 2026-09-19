@@ -988,7 +988,7 @@ struct SettingsView: View {
                 Text(saveErrorMessage ?? "The settings could not be saved")
             }
             .sheet(item: $editingOverlay) { overlay in
-                NavigationView {
+                NavigationStack {
                     Form {
                         Section(footer: Text("Update the existing overlay URL. Swipe left on the overlay row to delete it instead.")) {
                             TextField("Overlay URL", text: $editedOverlayURL)

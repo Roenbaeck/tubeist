@@ -116,6 +116,7 @@ final class Overlay: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     private var currentNavigation: WKNavigation?
     private var isPageReady = false
     private var scale: Double
+    private var appliedScale: Double?
     
     init(url: URL, bundler: OverlayBundler, scale: Double = 1, retryPolicy: OverlayRetryPolicy = OverlayRetryPolicy(),
          refreshRate: @escaping () -> OverlayRefreshRate = { Settings.overlayRefreshRate }) {
@@ -163,6 +164,7 @@ final class Overlay: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         // Register once per web view; adding it on every didFinish crashes
         // when an overlay reloads or recovers after a later failure.
         config.userContentController.add(self, name: "domChanged")
+        installScaleScript(in: config.userContentController)
         
         let webView = WKWebView(frame: CGRect(x: 0, y: 0, width: width, height: height), configuration: config)
         webView.isUserInteractionEnabled = false
@@ -178,7 +180,6 @@ final class Overlay: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         webView.scrollView.pinchGestureRecognizer?.isEnabled = false
         webView.scrollView.contentInset = UIEdgeInsets.zero
         webView.scrollView.contentInsetAdjustmentBehavior = .never
-        webView.pageZoom = scale
 
         self.webView = webView
         loadOverlay()
@@ -189,11 +190,89 @@ final class Overlay: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         let value = OverlaySetting.normalizedScale(value)
         guard value != scale else { return }
         scale = value
-        webView?.pageZoom = value
+        guard let webView else { return }
+        installScaleScript(in: webView.configuration.userContentController)
         // A pending snapshot at the old scale must not replace the new one.
         // Reuse this web view so live page state and connections survive.
         invalidateCapture()
-        captureWebViewImageOrSchedule()
+        applyScale(in: webView)
+    }
+
+    private func installScaleScript(in controller: WKUserContentController) {
+        controller.removeAllUserScripts()
+        controller.addUserScript(WKUserScript(
+            source: Self.scaleScript(scale), injectionTime: .atDocumentEnd,
+            forMainFrameOnly: true, in: .defaultClient
+        ))
+    }
+
+    private static func scaleScript(_ scale: Double) -> String {
+        // Older WebKit can leave fonts unscaled by CSS zoom (bugs 272339 and
+        // 272351). Transform the document there, with a larger layout canvas
+        // to keep right/bottom anchors at the edge. iOS 27 handles text zoom
+        // correctly and keeps automatic viewport fitting stable with CSS zoom.
+        let needsTextZoomWorkaround: Bool
+        if #available(iOS 27.0, *) {
+            needsTextZoomWorkaround = false
+        } else {
+            needsTextZoomWorkaround = true
+        }
+        return """
+        (() => {
+            const root = document.documentElement;
+            if (!root) return false;
+            const properties = \(needsTextZoomWorkaround)
+                ? ['transform', 'transform-origin', 'width', 'height'] : ['zoom'];
+            const original = window.__tubeistOverlayScaleOriginal ??= {
+                properties: Object.fromEntries(properties.map(name =>
+                    [name, { value: root.style.getPropertyValue(name), priority: root.style.getPropertyPriority(name) }])),
+                transform: getComputedStyle(root).transform,
+                zoom: parseFloat(getComputedStyle(root).zoom) || 1
+            };
+            if (\(scale) === 1) {
+                for (const [name, property] of Object.entries(original.properties)) {
+                    if (property.value) root.style.setProperty(name, property.value, property.priority);
+                    else root.style.removeProperty(name);
+                }
+            } else if (\(needsTextZoomWorkaround)) {
+                const transform = original.transform === 'none' ? '' : original.transform;
+                root.style.setProperty('transform', 'scale(\(scale)) ' + transform, 'important');
+                root.style.setProperty('transform-origin', '0 0', 'important');
+                root.style.setProperty('width', 'calc(100% / \(scale))', 'important');
+                root.style.setProperty('height', 'calc(100vh / \(scale))', 'important');
+            } else {
+                root.style.setProperty('zoom', String(original.zoom * \(scale)), 'important');
+            }
+            // Older WebKit async bridges require a non-null result.
+            return true;
+        })();
+        """
+    }
+
+    private func applyScale(in webView: WKWebView) {
+        guard isPageReady else { return }
+        let generation = captureGeneration
+        let requestedScale = scale
+        Task { @MainActor [weak self, weak webView] in
+            guard let self, let webView, self.isPageReady,
+                  self.captureGeneration == generation, self.webView === webView else { return }
+            do {
+                let applied = try await webView.evaluateJavaScript(
+                    Self.scaleScript(requestedScale), in: nil, contentWorld: .defaultClient
+                )
+                guard self.isPageReady, self.webView === webView,
+                      self.captureGeneration == generation else { return }
+                guard applied as? Bool == true else {
+                    LOG("Could not apply overlay scale: page has no document root", level: .warning)
+                    return
+                }
+                self.appliedScale = requestedScale
+                self.captureWebViewImageOrSchedule()
+            } catch {
+                guard self.isPageReady, self.captureGeneration == generation else { return }
+                LOG("Could not apply overlay scale: \(error)", level: .warning)
+            }
+        }
     }
 
     private func loadOverlay() {
@@ -315,7 +394,7 @@ final class Overlay: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         captureSchedule.rate = refreshRate()
         didLogSnapshot = false
         LOG("Web view finished loading; maximum overlay refresh rate: \(captureSchedule.rate.rawValue)/s", level: .debug)
-        captureWebViewImageOrSchedule()
+        applyScale(in: webView)
         
         guard let mimeType, mimeType.hasSuffix("html") else {
             LOG("Not detecting DOM changes for non-HTML content", level: .debug)
@@ -331,6 +410,7 @@ final class Overlay: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     
     private func invalidateCapture() {
         captureGeneration += 1
+        appliedScale = nil
         captureSchedule.reset()
         forceSnapshot = false
         captureTask?.cancel()
@@ -346,7 +426,7 @@ final class Overlay: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     }
 
     private func startCaptureWorkerIfNeeded() {
-        guard isPageReady, captureSchedule.isPending, captureTask == nil else { return }
+        guard isPageReady, appliedScale == scale, captureSchedule.isPending, captureTask == nil else { return }
         captureTask = Task { [weak self] in
             await self?.processCaptureRequests()
         }
@@ -379,7 +459,7 @@ final class Overlay: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     }
 
     private func captureWebViewImage() async {
-        guard isPageReady, let webView else { return }
+        guard isPageReady, appliedScale == scale, let webView else { return }
         let generation = captureGeneration
         let forced = forceSnapshot
         forceSnapshot = false
@@ -399,7 +479,9 @@ final class Overlay: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         guard isPageReady, self.webView === webView, generation == captureGeneration,
               !Task.isCancelled else { return }
         let config = WKSnapshotConfiguration()
-        config.snapshotWidth = NSNumber(value: width / Int(UIScreen.main.scale))
+        config.rect = webView.bounds
+        let displayScale = max(1, webView.traitCollection.displayScale)
+        config.snapshotWidth = NSNumber(value: Double(width) / Double(displayScale))
         do {
             let image = try await webView.takeSnapshot(configuration: config)
             guard isPageReady, self.webView === webView, generation == captureGeneration,
@@ -408,7 +490,7 @@ final class Overlay: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
             if !didLogSnapshot {
                 didLogSnapshot = true
                 let colorSpace = (image.cgImage?.colorSpace?.name as String?)?.replacingOccurrences(of: "kCGColorSpace", with: "")
-                LOG("Captured overlay \(image.size), scale \(image.scale), and color space: \(colorSpace ?? "unknown")", level: .debug)
+                LOG("Captured overlay: \(image.cgImage?.width ?? 0)x\(image.cgImage?.height ?? 0) pixels, bitmap density \(image.scale)x, overlay scale \(Int((scale * 100).rounded()))%, color space: \(colorSpace ?? "unknown")", level: .debug)
             }
             // Backpressure includes composition and the GPU upload, not just
             // WebKit. At most one snapshot and one pending change per overlay.

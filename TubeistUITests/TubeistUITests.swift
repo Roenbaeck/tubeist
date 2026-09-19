@@ -421,6 +421,8 @@ final class TubeistUITests: XCTestCase {
         let row = app.buttons["edit-overlay-\(url)"]
         scrollTo(row, in: app, searchDirection: -1)
         row.tap()
+        XCTAssertTrue(app.navigationBars["Edit Overlay"].waitForExistence(timeout: 5),
+                      "The editor must open directly, without a collapsed sidebar button")
         let slider = app.sliders["overlay-scale"]
         scrollTo(slider, in: app)
         slider.adjust(toNormalizedSliderPosition: 0) // Use an exact endpoint; drag positions are approximate.

@@ -9,8 +9,10 @@ import WebKit
 struct OverlayRecoveryTests {
     private let retryPolicy = OverlayRetryPolicy(initialDelay: 0.05, maximumDelay: 0.1, requestTimeout: 10)
 
-    @Test func scaleChangesLiveContentAndSnapshotWithoutReloadingAndSurvivesReload() async throws {
-        let server = try OverlayHTTPTestServer(replies: [.page(Self.scaleFixture)])
+    @Test(arguments: ["width=device-width,initial-scale=1", "width=640,initial-scale=1", ""])
+    func scaleChangesLiveContentAndSnapshotWithoutReloadingAndSurvivesReload(viewport: String) async throws {
+        let fixture = Self.scaleFixture.replacingOccurrences(of: "width=device-width,initial-scale=1", with: viewport)
+        let server = try OverlayHTTPTestServer(replies: [.page(fixture)])
         try await server.start()
         defer { server.stop() }
         let overlay = Overlay(url: server.url, bundler: OverlayBundler(), retryPolicy: retryPolicy)
@@ -22,53 +24,221 @@ struct OverlayRecoveryTests {
         overlay.captureWebViewImageOrSchedule()
         try await waitUntil {
             guard let box = overlay.getOverlayImage()?.roughBoundingBox(scaledWidth: 320), let image = overlay.getOverlayImage() else { return false }
-            return box.width / (image.size.width * image.scale) > 0.28
+            return box.width / (image.size.width * image.scale) < 0.8
         }
         let fullSize = try #require(overlay.getOverlayImage())
         let fullBounds = try #require(fullSize.roughBoundingBox(scaledWidth: 320))
-        overlay.setScale(0.5)
-        #expect(webView.pageZoom == 0.5)
+        overlay.setScale(0.6)
+        #expect(webView.pageZoom == 1)
         try await waitUntil {
             guard let image = overlay.getOverlayImage(), image !== fullSize,
                   let box = image.roughBoundingBox(scaledWidth: 320) else { return false }
-            return box.width < fullBounds.width * 0.65
+            return box.width < fullBounds.width * 0.75
         }
-        let halfSize = try #require(overlay.getOverlayImage())
-        let halfBounds = try #require(halfSize.roughBoundingBox(scaledWidth: 320))
-        #expect(halfBounds.height < fullBounds.height * 0.65)
-        #expect(halfSize.size == fullSize.size) // Output canvas stays the same size.
+        let scaledImage = try #require(overlay.getOverlayImage())
+        let scaledBounds = try #require(scaledImage.roughBoundingBox(scaledWidth: 320))
+        #expect(abs(scaledBounds.width / fullBounds.width - 0.6) < 0.08)
+        #expect(abs(scaledBounds.height / fullBounds.height - 0.6) < 0.08)
+        #expect(scaledImage.size == fullSize.size) // Output canvas stays the same size.
         #expect(server.requests.count == 1)
         overlay.setScale(1)
         try await waitUntil {
-            guard let image = overlay.getOverlayImage(), image !== halfSize,
+            guard let image = overlay.getOverlayImage(), image !== scaledImage,
                   let box = image.roughBoundingBox(scaledWidth: 320) else { return false }
             return abs(box.width - fullBounds.width) < 10
         }
-        overlay.setScale(0.5)
+        overlay.setScale(0.6)
         overlay.reload()
-        try await waitUntil { server.requests.count == 2 && !webView.isLoading }
-        #expect(webView.pageZoom == 0.5)
+        try await waitUntil {
+            guard server.requests.count == 2, !webView.isLoading,
+                  let image = overlay.getOverlayImage(), image !== scaledImage,
+                  let box = image.roughBoundingBox(scaledWidth: 320) else { return false }
+            return abs(box.width / fullBounds.width - 0.6) < 0.08
+        }
+        #expect(webView.pageZoom == 1)
     }
 
-    @Test func initialOverlayScaleIsAppliedBeforeItsFirstSnapshot() async throws {
-        let server = try OverlayHTTPTestServer(replies: [.page(Self.scaleFixture)])
+    @Test(arguments: ["width=device-width,initial-scale=1", "width=640,initial-scale=1", ""])
+    func initialOverlayScaleIsAppliedBeforeItsFirstSnapshot(viewport: String) async throws {
+        let fixture = Self.scaleFixture.replacingOccurrences(of: "width=device-width,initial-scale=1", with: viewport)
+        let server = try OverlayHTTPTestServer(replies: [.page(fixture)])
         try await server.start()
         defer { server.stop() }
-        let overlay = Overlay(url: server.url, bundler: OverlayBundler(), scale: 0.5, retryPolicy: retryPolicy)
+        let overlay = Overlay(url: server.url, bundler: OverlayBundler(), scale: 0.6, retryPolicy: retryPolicy)
         let webView = overlay.createWebView(width: 320, height: 180)
         let window = display(webView)
         defer { window.isHidden = true; overlay.prepareForRemoval() }
         try await waitUntil { overlay.getOverlayImage() != nil }
-        #expect(webView.pageZoom == 0.5)
+        #expect(webView.pageZoom == 1)
         let image = try #require(overlay.getOverlayImage())
         let bounds = try #require(image.roughBoundingBox(scaledWidth: 320))
-        #expect(bounds.width / (image.size.width * image.scale) < 0.20)
+        #expect(bounds.width / (image.size.width * image.scale) < 0.23)
+        overlay.setScale(1)
+        try await waitUntil {
+            guard let fullImage = overlay.getOverlayImage(), fullImage !== image,
+                  let fullBounds = fullImage.roughBoundingBox(scaledWidth: 320) else { return false }
+            return abs(bounds.width / fullBounds.width - 0.6) < 0.08
+        }
     }
 
     private static let scaleFixture = """
         <html><head><meta name="viewport" content="width=device-width,initial-scale=1"></head>
         <body style="margin:0"><div style="background:red;width:100px;height:100px"></div></body></html>
         """
+
+    @Test(arguments: ["auto", "none", "100%"])
+    func scoreboardTextAndGraphicsScaleTogether(textSizeAdjustment: String) async throws {
+        // Wide scoreboard, fixed row heights and explicitly sized bold text:
+        // older WebKit can scale the boxes while leaving these fonts full size.
+        let fixture = """
+            <html><head><meta name="viewport" content="width=device-width,initial-scale=1">
+            <style>
+            html { -webkit-text-size-adjust: \(textSizeAdjustment); }
+            body { margin:0; background:transparent; }
+            .board { position:absolute; left:10px; top:10px; width:630px; }
+            .logo { float:left; width:90px; height:90px; background:lime; }
+            .teams { float:left; margin-left:20px; font: bold 28px/1.3 Arial; }
+            .row { width:320px; height:36px; margin-bottom:4px; background:blue; color:red; }
+            .row span { font-size:28px; font-weight:bold; }
+            </style></head><body><div class="board"><div class="logo"></div>
+            <div class="teams"><div class="row"><span>Reunion 20 25</span></div>
+            <div class="row"><span>Sollentuna 25 17</span></div></div></div></body></html>
+            """
+        let server = try OverlayHTTPTestServer(replies: [.page(fixture)])
+        try await server.start()
+        defer { server.stop() }
+        let overlay = Overlay(url: server.url, bundler: OverlayBundler(), retryPolicy: retryPolicy)
+        let webView = overlay.createWebView(width: 640, height: 360)
+        let window = display(webView)
+        defer { window.isHidden = true; overlay.prepareForRemoval() }
+        try await waitUntil { overlay.getOverlayImage() != nil }
+        let original = try #require(overlay.getOverlayImage())
+        let originalBoxes = try #require(colorBounds(original, channel: 2))
+        let originalText = try #require(colorBounds(original, channel: 0))
+        let originalLogo = try #require(colorBounds(original, channel: 1))
+        overlay.setScale(0.5)
+        try await waitUntil {
+            guard let image = overlay.getOverlayImage(), image !== original,
+                  let boxes = colorBounds(image, channel: 2) else { return false }
+            return abs(boxes.width / originalBoxes.width - 0.5) < 0.05
+        }
+        let reduced = try #require(overlay.getOverlayImage())
+        let text = try #require(colorBounds(reduced, channel: 0))
+        let logo = try #require(colorBounds(reduced, channel: 1))
+        #expect(abs(text.width / originalText.width - 0.5) < 0.06)
+        #expect(abs(text.height / originalText.height - 0.5) < 0.06)
+        #expect(abs(logo.width / originalLogo.width - 0.5) < 0.03)
+        #expect(reduced.size == original.size)
+        overlay.reload()
+        try await waitUntil { server.requests.count == 2 && overlay.getOverlayImage() !== reduced }
+        let reloaded = try #require(overlay.getOverlayImage())
+        let reloadedText = try #require(colorBounds(reloaded, channel: 0))
+        #expect(abs(reloadedText.width / originalText.width - 0.5) < 0.06)
+        #expect(abs(reloadedText.height / originalText.height - 0.5) < 0.06)
+        overlay.setScale(1)
+        try await waitUntil {
+            guard let image = overlay.getOverlayImage(), image !== reloaded,
+                  let boxes = colorBounds(image, channel: 2) else { return false }
+            return abs(boxes.width - originalBoxes.width) < 2
+        }
+        let restored = try #require(overlay.getOverlayImage())
+        let restoredText = try #require(colorBounds(restored, channel: 0))
+        #expect(abs(restoredText.width - originalText.width) < 2)
+        #expect(abs(restoredText.height - originalText.height) < 2)
+    }
+
+    @Test func scalingKeepsFixedOverlaysAnchoredToTheBottomRight() async throws {
+        let fixture = """
+            <html><head><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+            <body style="margin:0"><div style="position:fixed;bottom:10px;right:10px;
+            width:80px;height:40px;background:blue"></div></body></html>
+            """
+        let server = try OverlayHTTPTestServer(replies: [.page(fixture)])
+        try await server.start()
+        defer { server.stop() }
+        let overlay = Overlay(url: server.url, bundler: OverlayBundler(), retryPolicy: retryPolicy)
+        let window = display(overlay.createWebView(width: 320, height: 180))
+        defer { window.isHidden = true; overlay.prepareForRemoval() }
+        try await waitUntil { overlay.getOverlayImage() != nil }
+        let original = try #require(overlay.getOverlayImage())
+        let originalBounds = try #require(colorBounds(original, channel: 2))
+        overlay.setScale(0.5)
+        try await waitUntil { overlay.getOverlayImage() !== original }
+        let reduced = try #require(overlay.getOverlayImage())
+        let bounds = try #require(colorBounds(reduced, channel: 2))
+        let cgImage = try #require(reduced.cgImage)
+        let width = CGFloat(min(640, cgImage.width))
+        let height = width * CGFloat(cgImage.height) / CGFloat(cgImage.width)
+        #expect(abs(bounds.width / originalBounds.width - 0.5) < 0.03)
+        #expect(abs(bounds.height / originalBounds.height - 0.5) < 0.03)
+        #expect(abs((width - bounds.maxX) - (width - originalBounds.maxX) * 0.5) < 2)
+        #expect(abs((height - bounds.maxY) - (height - originalBounds.maxY) * 0.5) < 2)
+    }
+
+    private func colorBounds(_ image: UIImage, channel: Int) -> CGRect? {
+        guard let cgImage = image.cgImage else { return nil }
+        let width = min(640, cgImage.width)
+        let height = cgImage.height * width / cgImage.width
+        var pixels = [UInt8](repeating: 0, count: width * height * 4)
+        return pixels.withUnsafeMutableBytes { bytes in
+            guard let context = CGContext(data: bytes.baseAddress, width: width, height: height,
+                                          bitsPerComponent: 8, bytesPerRow: width * 4,
+                                          space: CGColorSpaceCreateDeviceRGB(),
+                                          bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+            context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+            var minX = width, minY = height, maxX = -1, maxY = -1
+            for y in 0..<height {
+                for x in 0..<width {
+                    let offset = (y * width + x) * 4
+                    if bytes[offset + channel] > 128,
+                       bytes[offset + (channel + 1) % 3] < 80,
+                       bytes[offset + (channel + 2) % 3] < 80 {
+                        minX = min(minX, x); maxX = max(maxX, x)
+                        minY = min(minY, y); maxY = max(maxY, y)
+                    }
+                }
+            }
+            guard maxX >= minX else { return nil }
+            return CGRect(x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1)
+        }
+    }
+
+    @Test func rapidScaleChangesUseTheLatestValueAndResetRestoresPageZoom() async throws {
+        let fixture = Self.scaleFixture.replacingOccurrences(of: "<html>", with: "<html style='zoom:1.25'>")
+        let server = try OverlayHTTPTestServer(replies: [.page(fixture)])
+        try await server.start()
+        defer { server.stop() }
+        let overlay = Overlay(url: server.url, bundler: OverlayBundler(), retryPolicy: retryPolicy)
+        let webView = overlay.createWebView(width: 320, height: 180)
+        let window = display(webView)
+        defer { window.isHidden = true; overlay.prepareForRemoval() }
+        try await waitUntil { overlay.getOverlayImage() != nil }
+        let original = try #require(overlay.getOverlayImage())
+        let originalBounds = try #require(original.roughBoundingBox(scaledWidth: 320))
+        overlay.setScale(0.6)
+        overlay.setScale(2)
+        overlay.setScale(0.25)
+        try await waitUntil {
+            guard let image = overlay.getOverlayImage(), image !== original,
+                  let box = image.roughBoundingBox(scaledWidth: 320) else { return false }
+            return abs(box.width / originalBounds.width - 0.25) < 0.05
+        }
+        let reduced = try #require(overlay.getOverlayImage())
+        overlay.setScale(2)
+        try await waitUntil {
+            guard let image = overlay.getOverlayImage(), image !== reduced,
+                  let box = image.roughBoundingBox(scaledWidth: 320) else { return false }
+            return abs(box.width / originalBounds.width - 2) < 0.08
+        }
+        overlay.setScale(1)
+        try await waitUntil {
+            guard let image = overlay.getOverlayImage(),
+                  let box = image.roughBoundingBox(scaledWidth: 320) else { return false }
+            return abs(box.width - originalBounds.width) < 10
+        }
+        #expect(try await webView.evaluateJavaScript("document.documentElement.style.zoom") as? String == "1.25")
+        #expect(server.requests.count == 1)
+    }
 
     @Test func highRateRefreshesWithoutDOMChangesAndReloadAppliesNewRate() async throws {
         let server = try OverlayHTTPTestServer(replies: [.html("Animated"), .html("Reloaded")])
