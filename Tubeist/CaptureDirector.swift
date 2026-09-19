@@ -260,9 +260,9 @@ private class DeviceActor {
                 // stereo even for mono presets, which the AAC encoder downmixes.
                 if audioInput.isMultichannelAudioModeSupported(.stereo) {
                     audioInput.multichannelAudioMode = .stereo
-                    if #available(iOS 26.4, *), audioInput.isAudioZoomSupported {
-                        audioInput.isAudioZoomEnabled = true
-                    }
+                    // Audio zoom defaults to enabled on supported devices/OS
+                    // versions when multichannel capture has a video input.
+                    // Rely on that default so older SDKs can build this path.
                 }
                 session.commitConfiguration()
             } catch {
