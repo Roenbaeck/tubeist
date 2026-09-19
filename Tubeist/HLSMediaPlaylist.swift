@@ -4,6 +4,7 @@
 //
 
 import Foundation
+import CryptoKit
 
 enum HLSPlaylistError: Error, Equatable, CustomStringConvertible {
     case invalidSessionIdentifier
@@ -31,25 +32,36 @@ struct HLSPlaylistEntry: Sendable, Equatable {
 
 struct HLSMediaPlaylist: Sendable, Equatable {
     static let maximumOutstandingSegments = 5
+    static let retainedSegmentCount = 15
 
     let sessionIdentifier: String
     let playlistFilename: String
+    private let filenamePrefix: String
     // HLS requires this value to remain constant for the entire playlist.
     // Five seconds also covers a delayed keyframe without changing the header.
     let targetDuration: Int = 5
-    let discontinuitySequence = 0
+    private(set) var discontinuitySequence = 0
     private(set) var entries: [HLSPlaylistEntry] = []
     private(set) var nextSequence: Int = 0
 
-    // EVENT playlists retain every entry through ENDLIST. Only the small playlist
-    // metadata is retained here; acknowledged media bytes can still be released.
+    // Keep a rolling history of acknowledged uploads, separate from the five
+    // outstanding uploads allowed by YouTube. No media bytes are retained here.
     init(sessionIdentifier: String) throws {
         guard Self.isSafeFilenameComponent(sessionIdentifier),
               !sessionIdentifier.isEmpty else {
             throw HLSPlaylistError.invalidSessionIdentifier
         }
         self.sessionIdentifier = sessionIdentifier
-        self.playlistFilename = "tubeist_\(sessionIdentifier).m3u8"
+        // Hash once per session, retaining 128 bits of identity in 22 URL-safe
+        // characters. This preserves stable retry names without repeating the
+        // human-readable timestamp and app name in every playlist entry.
+        let token = Data(SHA256.hash(data: Data(sessionIdentifier.utf8)).prefix(16))
+            .base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+        self.filenamePrefix = "t\(token)"
+        self.playlistFilename = "\(filenamePrefix).m3u8"
     }
 
     var mediaSequence: Int {
@@ -73,13 +85,14 @@ struct HLSMediaPlaylist: Sendable, Equatable {
         }
         let entry = HLSPlaylistEntry(
             sequence: nextSequence,
-            filename: "tubeist_\(sessionIdentifier)_\(nextSequence).ts",
+            filename: mediaFilename(sequence: nextSequence),
             duration: duration,
             discontinuity: discontinuity,
             acknowledged: false
         )
         entries.append(entry)
         nextSequence += 1
+        trimAcknowledgedHistory()
         return entry
     }
 
@@ -88,13 +101,33 @@ struct HLSMediaPlaylist: Sendable, Equatable {
             throw HLSPlaylistError.unknownSequence(sequence)
         }
         entries[index].acknowledged = true
+        trimAcknowledgedHistory()
+    }
+
+    func mediaFilename(sequence: Int) -> String {
+        "\(filenamePrefix)_\(String(sequence, radix: 36)).ts"
+    }
+
+    private mutating func trimAcknowledgedHistory() {
+        guard entries.count > Self.retainedSegmentCount else { return }
+        var duration = entries.reduce(0) { $0 + $1.duration }
+        var removed = 0
+        // HLS forbids shortening a live playlist below three target durations.
+        // Unusually short segments may therefore temporarily need >15 entries.
+        for entry in entries.prefix(entries.count - Self.retainedSegmentCount) {
+            guard entry.acknowledged,
+                  duration - entry.duration >= Double(3 * targetDuration) else { break }
+            duration -= entry.duration
+            if entry.discontinuity { discontinuitySequence += 1 }
+            removed += 1
+        }
+        entries.removeFirst(removed)
     }
 
     func render(endList: Bool = false) -> String {
         var lines = [
             "#EXTM3U",
             "#EXT-X-VERSION:3",
-            "#EXT-X-PLAYLIST-TYPE:EVENT",
             "#EXT-X-TARGETDURATION:\(targetDuration)",
             "#EXT-X-MEDIA-SEQUENCE:\(mediaSequence)",
             "#EXT-X-DISCONTINUITY-SEQUENCE:\(discontinuitySequence)",

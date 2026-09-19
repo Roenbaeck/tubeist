@@ -9,7 +9,7 @@ import Testing
 
 struct YouTubeHLSUploaderTests {
 
-    @Test func manualEndingKeepsEveryEventEntryWithoutEndListOrGrace() async throws {
+    @Test func manualEndingKeepsTheWindowWithoutEndListOrGrace() async throws {
         let transport = MockYouTubeHLSTransport(statuses: Array(repeating: 200, count: 14))
         let uploader = try YouTubeHLSUploader(
             endpoint: .manualPrimary(streamKey: "test"), sessionIdentifier: "manual_ending",
@@ -24,10 +24,10 @@ struct YouTubeHLSUploaderTests {
         #expect(records.count == 14)
         #expect(records.last?.body == Data([6]))
         let finalPlaylist = String(decoding: records[12].body, as: UTF8.self)
-        #expect(finalPlaylist.contains("#EXT-X-PLAYLIST-TYPE:EVENT"))
+        #expect(!finalPlaylist.contains("#EXT-X-PLAYLIST-TYPE"))
         #expect(!finalPlaylist.contains("#EXT-X-ENDLIST"))
         #expect(finalPlaylist.contains("#EXTINF:0.300000,"))
-        for sequence in 0..<7 { #expect(finalPlaylist.contains("tubeist_manual_ending_\(sequence).ts")) }
+        for sequence in 0..<7 { #expect(finalPlaylist.contains("t6Q8VYRyVDuX7SP-1r4sjDQ_\(String(sequence, radix: 36)).ts")) }
         await #expect(throws: YouTubeHLSUploadError.stopped) {
             _ = try await uploader.upload(segment: Data([7]), duration: 2)
         }
@@ -189,10 +189,10 @@ struct YouTubeHLSUploaderTests {
         #expect(second.sequence == 1)
         #expect(records.count == 4)
         #expect(records.map(\.method) == ["POST", "POST", "POST", "POST"])
-        #expect(records[0].url.hasSuffix("file=tubeist_session_abc.m3u8"))
-        #expect(records[1].url.hasSuffix("file=tubeist_session_abc_0.ts"))
-        #expect(records[2].url.hasSuffix("file=tubeist_session_abc.m3u8"))
-        #expect(records[3].url.hasSuffix("file=tubeist_session_abc_1.ts"))
+        #expect(records[0].url.hasSuffix("file=tsHXlVdhmo_12NTFw52NfbA.m3u8"))
+        #expect(records[1].url.hasSuffix("file=tsHXlVdhmo_12NTFw52NfbA_0.ts"))
+        #expect(records[2].url.hasSuffix("file=tsHXlVdhmo_12NTFw52NfbA.m3u8"))
+        #expect(records[3].url.hasSuffix("file=tsHXlVdhmo_12NTFw52NfbA_1.ts"))
         #expect(!records.map(\.url).contains { $0.contains("%2E") || $0.contains("%5F") })
         #expect(records[0].contentType == "application/vnd.apple.mpegurl")
         #expect(records[1].contentType == "video/mp2t")
@@ -203,10 +203,10 @@ struct YouTubeHLSUploaderTests {
         let firstPlaylist = try #require(String(data: records[0].body, encoding: .utf8))
         let secondPlaylist = try #require(String(data: records[2].body, encoding: .utf8))
         #expect(firstPlaylist.contains("#EXT-X-MEDIA-SEQUENCE:0"))
-        #expect(firstPlaylist.contains("tubeist_session_abc_0.ts"))
-        #expect(!firstPlaylist.contains("tubeist_session_abc_1.ts"))
-        #expect(secondPlaylist.contains("tubeist_session_abc_0.ts"))
-        #expect(secondPlaylist.contains("tubeist_session_abc_1.ts"))
+        #expect(firstPlaylist.contains("tsHXlVdhmo_12NTFw52NfbA_0.ts"))
+        #expect(!firstPlaylist.contains("tsHXlVdhmo_12NTFw52NfbA_1.ts"))
+        #expect(secondPlaylist.contains("tsHXlVdhmo_12NTFw52NfbA_0.ts"))
+        #expect(secondPlaylist.contains("tsHXlVdhmo_12NTFw52NfbA_1.ts"))
         #expect(await uploader.outstandingCount == 0)
     }
 
@@ -233,7 +233,7 @@ struct YouTubeHLSUploaderTests {
         let records = await transport.recordedRequests()
         #expect(records.count == 4)
         #expect(Set(records.prefix(3).map(\.url)).count == 1)
-        #expect(records[3].url.hasSuffix("tubeist_retry_session_0.ts"))
+        #expect(records[3].url.hasSuffix("t77cOpd9W37mxhCXpUoy_eA_0.ts"))
         let diagnostics = await uploader.diagnostics
         #expect(diagnostics.retryCount == 2)
         #expect(diagnostics.lastHTTPStatus == 200)
@@ -258,11 +258,11 @@ struct YouTubeHLSUploaderTests {
 
         let records = await transport.recordedRequests()
         #expect(records.count == 3)
-        #expect(records[0].url.hasSuffix("file=tubeist_final_session.m3u8"))
-        #expect(records[1].url.hasSuffix("file=tubeist_final_session_0.ts"))
-        #expect(records[2].url.hasSuffix("file=tubeist_final_session.m3u8"))
+        #expect(records[0].url.hasSuffix("file=tOadCzDfEoC_aihm9C8HTFw.m3u8"))
+        #expect(records[1].url.hasSuffix("file=tOadCzDfEoC_aihm9C8HTFw_0.ts"))
+        #expect(records[2].url.hasSuffix("file=tOadCzDfEoC_aihm9C8HTFw.m3u8"))
         let finalPlaylist = try #require(String(data: records[2].body, encoding: .utf8))
-        #expect(finalPlaylist.contains("tubeist_final_session_0.ts"))
+        #expect(finalPlaylist.contains("tOadCzDfEoC_aihm9C8HTFw_0.ts"))
         #expect(finalPlaylist.contains("#EXTINF:1.750000,"))
         #expect(finalPlaylist.hasSuffix("#EXT-X-ENDLIST\n"))
     }
@@ -505,7 +505,7 @@ struct YouTubeHLSUploaderTests {
         }
     }
 
-    @Test func retainsCompleteEventHistoryThroughShutdown() async throws {
+    @Test func retainsTheRollingWindowThroughShutdown() async throws {
         let transport = MockYouTubeHLSTransport(statuses: [])
         let endpoint = try YouTubeHLSEndpoint(URL(
             string: "https://upload.youtube.com/http_upload_hls?cid=redacted&file="
@@ -533,13 +533,11 @@ struct YouTubeHLSUploaderTests {
         }
         #expect(playlists.count == 50)
         for (sequence, playlist) in playlists.enumerated() {
-            #expect(playlist.contains("#EXT-X-PLAYLIST-TYPE:EVENT\n"))
-            #expect(playlist.contains("#EXT-X-MEDIA-SEQUENCE:0\n"))
+            let firstRetained = max(0, sequence - 14)
+            #expect(!playlist.contains("#EXT-X-PLAYLIST-TYPE"))
+            #expect(playlist.contains("#EXT-X-MEDIA-SEQUENCE:\(firstRetained)\n"))
             #expect(playlist.split(separator: "\n").filter { $0.hasSuffix(".ts") }.map(String.init)
-                == (0...sequence).map { "tubeist_long_session_\($0).ts" })
-            if sequence > 0 {
-                #expect(playlist.hasPrefix(playlists[sequence - 1]))
-            }
+                == (firstRetained...sequence).map { "tJx0g9E94V9LWBSp56-3AKA_\(String($0, radix: 36)).ts" })
         }
         let lastPlaylist = try #require(playlists.last)
         #expect(await uploader.outstandingCount == 0)

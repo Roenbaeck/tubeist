@@ -113,7 +113,9 @@ struct YouTubeHLSStreamSinkTests {
             #expect(clock.totalWait() == 0)
         } else {
             #expect(clock.totalWait() > 0)
-            #expect(abs(media[1].startedAt - 2 / 1.6) < 0.000001)
+            #expect(abs(media[1].startedAt - uploadSeconds) < 0.000001)
+            #expect(abs(media[2].startedAt - 2 * uploadSeconds) < 0.000001)
+            #expect(media[3].startedAt - media[2].startedAt > uploadSeconds)
         }
     }
 
@@ -132,7 +134,9 @@ struct YouTubeHLSStreamSinkTests {
         })
         await sink.enqueue(Fragment(sequence: 0, segment: directSentinel(0), duration: 2, container: .mpegTransportStream))
         try await oldTransport.waitUntilRequested()
-        await sink.enqueue(Fragment(sequence: 1, segment: directSentinel(1), duration: 2, container: .mpegTransportStream))
+        for sequence in 1...3 {
+            await sink.enqueue(Fragment(sequence: sequence, segment: directSentinel(UInt8(sequence)), duration: 2, container: .mpegTransportStream))
+        }
         await oldTransport.releaseFirstRequest()
         try await waiting.wait()
         if !replace { await sink.cancel() }
@@ -142,7 +146,7 @@ struct YouTubeHLSStreamSinkTests {
                                transport: newTransport, sleeper: { _ in })
         await sink.enqueue(Fragment(sequence: 0, segment: directSentinel(42), duration: 2, container: .mpegTransportStream))
         #expect(try await sink.finish(timeout: successfulSinkShutdownTimeout))
-        #expect(await oldTransport.media.count == 1)
+        #expect(await oldTransport.media.count == 3)
         #expect(await newTransport.requests().count == 3)
         #expect(await newTransport.requests()[1].body == directSentinel(42))
     }
@@ -161,13 +165,15 @@ struct YouTubeHLSStreamSinkTests {
         })
         await sink.enqueue(Fragment(sequence: 0, segment: directSentinel(0), duration: 2, container: .mpegTransportStream))
         try await transport.waitUntilRequested()
-        await sink.enqueue(Fragment(sequence: 1, segment: directSentinel(1), duration: 2, container: .mpegTransportStream))
+        for sequence in 1...3 {
+            await sink.enqueue(Fragment(sequence: sequence, segment: directSentinel(UInt8(sequence)), duration: 2, container: .mpegTransportStream))
+        }
         await transport.releaseFirstRequest()
         try await waiting.wait()
         await #expect(throws: YouTubeHLSPackagingError.self) { try await sink.finish(timeout: 0.05) }
         // Stop may bypass pacing and upload the tail, but must not bypass the
         // ENDLIST grace when there is insufficient budget to finish normally.
-        #expect(await transport.media.count <= 2)
+        #expect(await transport.media.count <= 4)
         #expect(await transport.endListReceived == false)
         #expect(await sink.metrics().queuedFragments == 0)
     }
@@ -191,18 +197,24 @@ struct YouTubeHLSStreamSinkTests {
         })
         await sink.enqueue(Fragment(sequence: 0, segment: directSentinel(0), duration: 2, container: .mpegTransportStream))
         try await transport.waitUntilRequested()
-        await sink.enqueue(Fragment(sequence: 1, segment: directSentinel(1), duration: 2, container: .mpegTransportStream))
+        for sequence in 1...3 {
+            await sink.enqueue(Fragment(sequence: sequence, segment: directSentinel(UInt8(sequence)), duration: 2, container: .mpegTransportStream))
+        }
         await transport.releaseFirstRequest()
         try await waiting.wait()
-        for sequence in 2...25 {
+        for sequence in 4...27 {
             await sink.enqueue(Fragment(sequence: sequence, segment: directSentinel(UInt8(sequence)),
                                         duration: 2, container: .mpegTransportStream))
         }
-        try await transport.waitUntilSecondMedia()
+        let deadline = ContinuousClock.now.advanced(by: .seconds(15))
+        while await transport.media.count < 4 {
+            guard ContinuousClock.now < deadline else { throw YouTubeHLSPackagingError.shutdownTimedOut }
+            try await Task.sleep(for: .milliseconds(5))
+        }
         let media = await transport.media
         #expect(media.first?.body == directSentinel(0))
-        #expect(media.count == 2)
-        #expect(media[1].body == directSentinel(1))
+        #expect(media.count == 4)
+        #expect(media[3].body == directSentinel(3))
         #expect(clock.isHoldingPacing()) // Safety overrides the pending wait.
         #expect(await sink.metrics().droppedFragments == 0)
         await sink.cancel()
@@ -612,15 +624,16 @@ struct YouTubeHLSStreamSinkTests {
             let playlist = String(decoding: playlistRequest.body, as: UTF8.self)
             #expect(playlistRequest.contentType == "application/vnd.apple.mpegurl")
             #expect(segmentRequest.contentType == "video/mp2t")
-            #expect(playlist.contains("tubeist_recovery_session_\(sequence).ts"))
+            #expect(playlist.contains("tb3gkQ16ELXaAeeuYq5GYFw_\(String(sequence, radix: 36)).ts"))
             #expect(!playlist.contains("#EXT-X-DISCONTINUITY\n"))
         }
         let finalPlaylist = String(decoding: requests[62].body, as: UTF8.self)
         #expect(finalPlaylist.hasSuffix("#EXT-X-ENDLIST\n"))
-        #expect(finalPlaylist.contains("#EXT-X-PLAYLIST-TYPE:EVENT\n"))
+        #expect(!finalPlaylist.contains("#EXT-X-PLAYLIST-TYPE"))
+        // The tiny fixture segments together span less than three target durations.
         #expect(finalPlaylist.contains("#EXT-X-MEDIA-SEQUENCE:0\n"))
         #expect(finalPlaylist.split(separator: "\n").filter { $0.hasSuffix(".ts") }.map(String.init)
-            == (0..<31).map { "tubeist_recovery_session_\($0).ts" })
+            == (0..<31).map { "tb3gkQ16ELXaAeeuYq5GYFw_\(String($0, radix: 36)).ts" })
         let finishedMetrics = await sink.metrics()
         #expect(finishedMetrics.lastAcceptedMediaSequence == 30)
         #expect(finishedMetrics.droppedFragments == 0)
@@ -742,7 +755,6 @@ private actor PacedSinkTransport: YouTubeHLSHTTPTransport {
     let clock: SinkPacingClock
     let uploadSeconds: Double
     private let started = SinkRequestStarted()
-    private let secondMedia = SinkRequestStarted()
     private var firstRequest = true
     private var gate: CheckedContinuation<Void, Error>?
     private(set) var media: [Media] = []
@@ -765,7 +777,6 @@ private actor PacedSinkTransport: YouTubeHLSHTTPTransport {
         if request.value(forHTTPHeaderField: "Content-Type") == "video/mp2t" {
             media.append(Media(startedAt: clock.now(), body: body))
             clock.transfer(uploadSeconds)
-            if media.count == 2 { secondMedia.signal() }
         } else if String(decoding: body, as: UTF8.self).contains("#EXT-X-ENDLIST") {
             endListReceived = true
         }
@@ -777,7 +788,6 @@ private actor PacedSinkTransport: YouTubeHLSHTTPTransport {
     }
 
     func waitUntilRequested() async throws { try await started.wait() }
-    func waitUntilSecondMedia() async throws { try await secondMedia.wait() }
     func releaseFirstRequest() { gate?.resume(); gate = nil }
     func invalidate() { gate?.resume(throwing: BlockingTransportError.invalidated); gate = nil }
 }

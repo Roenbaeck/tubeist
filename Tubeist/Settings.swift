@@ -83,9 +83,25 @@ struct Resolution: Hashable {
 struct OverlaySetting: Identifiable, Codable, Hashable {
     var id: String { url }
     var url: String
+    var scale: Double
 
-    init(url: String) {
+    static let scaleRange = 0.25...2.0
+    static func normalizedScale(_ value: Double) -> Double {
+        value.isFinite ? min(scaleRange.upperBound, max(scaleRange.lowerBound, value)) : 1
+    }
+
+    init(url: String, scale: Double = 1) {
         self.url = url
+        self.scale = Self.normalizedScale(scale)
+    }
+
+    enum CodingKeys: String, CodingKey { case url, scale }
+
+    init(from decoder: any Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        url = try values.decode(String.self, forKey: .url)
+        // Existing saved overlays keep their original size.
+        scale = Self.normalizedScale(try values.decodeIfPresent(Double.self, forKey: .scale) ?? 1)
     }
 }
 
@@ -339,6 +355,7 @@ struct SettingsView: View {
     @State private var isYouTubeRefreshCoolingDown: Bool = false
     @State private var editingOverlay: OverlaySetting? = nil
     @State private var editedOverlayURL: String = ""
+    @State private var editedOverlayScale: Double = 1
     @State private var overlayEditError: String?
     // Settings presents the stack front to back, with the top layer first.
     @State private var overlayDraft: [OverlaySetting] = []
@@ -717,13 +734,18 @@ struct SettingsView: View {
                     ForEach(overlayDraft) { overlay in
                         Button {
                             editingOverlay = overlay
-                            editedOverlayURL = overlay.url
-                            overlayEditError = nil
                         } label: {
                             HStack {
-                                Text(overlay.url)
-                                    .foregroundColor(.primary)
-                                    .multilineTextAlignment(.leading)
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(overlay.url)
+                                        .foregroundColor(.primary)
+                                        .multilineTextAlignment(.leading)
+                                    if overlay.scale != 1 {
+                                        Text("Scale: \(Int((overlay.scale * 100).rounded()))%")
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
+                                    }
+                                }
                                 Spacer()
                                 Image(systemName: "pencil")
                                     .foregroundColor(.secondary)
@@ -753,7 +775,7 @@ struct SettingsView: View {
                 } header: {
                     Text("Overlays")
                 } footer: {
-                    Text("The top overlay in this list appears in front in both INPUT and OUTPUT. New overlays are added on top. Tap Reorder overlays to change the stack, then Save to apply it. Audio is captured from the last playing overlay if audio from multiple overlays overlap.")
+                    Text("The top overlay in this list appears in front in both INPUT and OUTPUT. New overlays are added on top. Tap an overlay to edit its URL or scale, or Reorder overlays to change the stack. Save to apply your changes. Audio is captured from the last playing overlay if audio from multiple overlays overlap.")
                 }
 
                 Section {
@@ -951,9 +973,34 @@ struct SettingsView: View {
                                 Text(overlayEditError).foregroundColor(.red)
                             }
                         }
+                        Section {
+                            HStack {
+                                Text("Scale")
+                                Spacer()
+                                Text("\(Int((editedOverlayScale * 100).rounded()))%")
+                                    .monospacedDigit()
+                                    .foregroundColor(.secondary)
+                            }
+                            Slider(value: $editedOverlayScale, in: OverlaySetting.scaleRange, step: 0.05)
+                                .accessibilityLabel("Overlay scale")
+                                .accessibilityValue("\(Int((editedOverlayScale * 100).rounded())) percent")
+                                .accessibilityIdentifier("overlay-scale")
+                            Button("Reset to 100%") { editedOverlayScale = 1 }
+                        } header: {
+                            Text("Overlay Size")
+                        } footer: {
+                            Text("Reduce the scale to fit a large scoreboard or web page. Applies to this overlay in both monitors, the stream, and recordings. 100% keeps the original size.")
+                        }
                     }
                     .navigationTitle("Edit Overlay")
                     .navigationBarTitleDisplayMode(.inline)
+                    .onAppear {
+                        // Initialize from the presented item. A sheet's first
+                        // render can otherwise use stale values from its parent.
+                        editedOverlayURL = overlay.url
+                        editedOverlayScale = overlay.scale
+                        overlayEditError = nil
+                    }
                     .navigationBarItems(
                         leading: Button("Cancel") {
                             editingOverlay = nil
@@ -1084,6 +1131,7 @@ struct SettingsView: View {
             return
         }
         overlayDraft[index].url = trimmedURL
+        overlayDraft[index].scale = OverlaySetting.normalizedScale(editedOverlayScale)
         overlayEditError = nil
         editingOverlay = nil
         editedOverlayURL = ""

@@ -25,7 +25,13 @@ local objective, assuming sufficient capacity and no further interruptions.
 One freshly produced segment after an idle period is normal. More than one
 ready segment, or even one still waiting when the previous upload finishes,
 starts a recovery deadline twenty seconds ahead.
-Subsequent decisions use the **time remaining to that same deadline**. Ten
+The first two queued segments in that episode upload immediately, one at a
+time, without an added pacing delay. This gives the receiver a prompt refill
+after a stall. Only actual upload starts consume this allowance; recalculating
+the queue or interrupting a wait cannot renew it. An empty queue ends the
+episode and discards any unused allowance.
+
+After those two uploads, decisions use the **time remaining to that same deadline**. Ten
 seconds of backlog initially asks for 1.5x. If five seconds remain after ten
 seconds, it still asks for 1.5x. If ten seconds remain after fifteen seconds, it
 asks for 3x. There is no hard 2x ceiling.
@@ -50,7 +56,8 @@ The twenty seconds is a tunable engineering choice, not a YouTube buffer estimat
 
 - Start the first upload immediately. Transfer time consumes the spacing between
   starts, and slow transfers receive no extra sleep. Anchor each interval to the
-  actual previous upload start, so an outage does not accrue burst credit.
+  actual previous upload start, so an outage does not accrue unlimited burst
+  credit beyond the explicit two-upload recovery allowance.
 - A growing queue wakes an existing wait to recalculate the rate.
 - Stop pacing at 50 queued seconds or 28 queued fragments: the sixty-second /
   thirty-fragment bounds retain space for two five-second HLS segments. Both
@@ -69,7 +76,13 @@ The twenty seconds is a tunable engineering choice, not a YouTube buffer estimat
 
 Bitrate control uses actual upload time, excluding intentional waits, and shares
 the **remaining** recovery horizon. It retains its audio/transport allowance,
-user-selected ceiling and quality floor. Lowering future encoding bitrate cannot
+user-selected ceiling and quality floor. A new slow completed upload caps the
+smoothed capacity estimate immediately. Normal reductions require two
+segment-spaced congestion observations and can reduce the target by 20% per
+evaluation; a confirmed severe deficit can trigger a larger correction at once.
+An unfinished two-second segment starts constraining capacity after 2.5 seconds,
+while still requiring two observations before reducing on that evidence alone.
+Lowering future encoding bitrate cannot
 shrink already-encoded segments or manufacture bandwidth during an outage.
 
 ## Deterministic verification
@@ -94,6 +107,8 @@ controller on identical capacity/arrival traces. Sink integration tests separate
 exercise request serialization, queue pressure during a sleep, unchanged media
 bodies, cancellation, session replacement, overflow discontinuities and Stop.
 Uploader tests preserve the final-ACK grace and prevent an early ENDLIST.
+Recovery tests also verify that exactly two queued uploads bypass pacing,
+subsequent uploads are paced, and repeated decisions cannot extend the burst.
 
 These tests establish local behavior for the tested traces, not YouTube replay
 completeness. Repeat the physical-phone countdown with exact-upload diagnostics

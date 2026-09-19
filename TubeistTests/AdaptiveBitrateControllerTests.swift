@@ -61,15 +61,13 @@ struct AdaptiveBitrateControllerTests {
         #expect(controller.targetBitrate == 6_000_000)
     }
 
-    @Test func sustainedMildCongestionReducesGradually() {
+    @Test func sustainedMildCongestionReducesTwentyPercentAfterTwoObservations() {
         var controller = controller()
         controller.delivered(bytes: 1_500_000, elapsed: 2.2)
-        for now in [0.0, 2.0] {
-            controller.update(queuedBytes: 2_500_000, queuedMediaSeconds: 3.2, inFlightBytes: 1_500_000, inFlightSeconds: 2.2, now: now)
-            #expect(controller.targetBitrate == 6_000_000)
-        }
-        controller.update(queuedBytes: 2_500_000, queuedMediaSeconds: 3.2, inFlightBytes: 1_500_000, inFlightSeconds: 2.2, now: 4)
-        #expect(controller.targetBitrate == 5_400_000)
+        controller.update(queuedBytes: 2_500_000, queuedMediaSeconds: 3.2, inFlightBytes: 1_500_000, inFlightSeconds: 2.2, now: 0)
+        #expect(controller.targetBitrate == 6_000_000)
+        controller.update(queuedBytes: 2_500_000, queuedMediaSeconds: 3.2, inFlightBytes: 1_500_000, inFlightSeconds: 2.2, now: 2)
+        #expect(controller.targetBitrate == 4_800_000)
         #expect(controller.state == .catchingUp)
     }
 
@@ -86,10 +84,34 @@ struct AdaptiveBitrateControllerTests {
     @Test func repeatedObservationsWithinSegmentCannotAccelerateReduction() {
         var controller = controller()
         controller.delivered(bytes: 1_500_000, elapsed: 3)
+        controller.update(queuedBytes: 8_000_000, queuedMediaSeconds: 10, inFlightBytes: 1_500_000, inFlightSeconds: 3, now: 0)
+        let firstDecision = controller.targetBitrate
         for now in stride(from: 0.0, to: 1.9, by: 0.01) {
             controller.update(queuedBytes: 8_000_000, queuedMediaSeconds: 10, inFlightBytes: 1_500_000, inFlightSeconds: 3, now: now)
         }
-        #expect(controller.targetBitrate == 6_000_000)
+        #expect(controller.targetBitrate == firstDecision)
+    }
+
+    @Test func aNewSlowDeliveryIsNotHiddenByOldFastUploads() {
+        var controller = AdaptiveBitrateController(maximumBitrate: 20_000_000, minimumBitrate: 1_000_000, audioBitrate: 128_000)
+        for _ in 0..<10 { controller.delivered(bytes: 5_000_000, elapsed: 0.5) } // 80 Mbps history.
+        controller.update(queuedBytes: 0, queuedMediaSeconds: 0, inFlightBytes: 0, inFlightSeconds: 0, now: 0)
+        controller.delivered(bytes: 5_000_000, elapsed: 5) // Now only 8 Mbps.
+        controller.update(queuedBytes: 10_000_000, queuedMediaSeconds: 4, inFlightBytes: 0, inFlightSeconds: 0, now: 6,
+                          pacedRecoverySeconds: 20)
+        controller.update(queuedBytes: 10_000_000, queuedMediaSeconds: 4, inFlightBytes: 0, inFlightSeconds: 0, now: 8,
+                          pacedRecoverySeconds: 18)
+        #expect(controller.estimatedThroughput! > 70_000_000)
+        #expect(controller.targetBitrate < 20_000_000)
+    }
+
+    @Test func aConfirmedSevereDropUsesTheUrgentCorrectionImmediately() {
+        var controller = controller()
+        controller.delivered(bytes: 200_000, elapsed: 2) // 0.8 Mbps cannot sustain this preset.
+        controller.update(queuedBytes: 6_000_000, queuedMediaSeconds: 8,
+                          inFlightBytes: 0, inFlightSeconds: 0, now: 0)
+        #expect(controller.targetBitrate == controller.minimumBitrate)
+        #expect(controller.state == .capacityBelowQualityFloor)
     }
 
     @Test func qualityFloorIsReportedInsteadOfReducingWithoutLimit() {

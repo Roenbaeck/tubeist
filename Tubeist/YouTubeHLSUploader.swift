@@ -343,7 +343,7 @@ actor YouTubeHLSUploader {
 
     /// Publishes ENDLIST ten seconds after the final media acknowledgement,
     /// then closes the persistent ingestion connection.
-    /// Retains the acknowledged history and marks that no more segments follow.
+    /// Retains the current playlist window and marks that no more segments follow.
     /// Returns true only when a nonempty final playlist was acknowledged.
     @discardableResult
     func finish(deadline: ContinuousClock.Instant? = nil) async throws -> Bool {
@@ -367,7 +367,7 @@ actor YouTubeHLSUploader {
                 throw YouTubeHLSUploadError.invalidResponse
             }
             if !endingPolicy.automaticallyEndsBroadcast {
-                // All media has drained. Keep the last full EVENT playlist open;
+                // All media has drained. Keep the last rolling playlist open;
                 // false also prevents Streamer from requesting API completion.
                 stopped = true
                 await transport.invalidate()

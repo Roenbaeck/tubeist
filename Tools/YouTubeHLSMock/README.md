@@ -24,11 +24,13 @@ Tools/YouTubeHLSMock/validate_uploader_socket.sh
 The script requires Xcode command-line tools, Python 3, and OpenSSL. Validation
 artifacts are written to a unique temporary directory printed by the script.
 
-The uploader now sends an EVENT playlist and retains every entry, including in
-the final ENDLIST playlist, as an experiment for missing footage in YouTube
-replays. Only playlist metadata is retained; acknowledged media can still be
-released. Uploader and sink unit tests verify append-only history through
-shutdown and the unchanged limit of five outstanding segments.
+The uploader normally retains the latest 15 entries in a rolling playlist,
+including in the final ENDLIST playlist. Short segments can require a larger
+window to preserve three target durations. Only acknowledged entries can be
+removed. Compact session filenames and a bounded history keep playlist work
+and upload traffic small during long streams. Uploader and sink unit tests
+verify sequence continuity through shutdown and the independent limit of five
+outstanding segments.
 ENDLIST now waits until ten seconds after the last successful media upload.
 Unit tests use an injected monotonic clock to check the acknowledgement-based
 deadline and cancellation; this socket runner skips sleeping while checking the

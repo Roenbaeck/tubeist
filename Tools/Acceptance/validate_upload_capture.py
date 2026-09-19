@@ -18,8 +18,19 @@ from validate_report import load_report, validate_report, ReportValidationError
 
 
 MEDIA_NAME = re.compile(r'tubeist_([A-Za-z0-9_-]+)_([0-9]+)\.ts')
-PLAYLIST_NAME = re.compile(r'tubeist_([A-Za-z0-9_-]+)\.m3u8')
+PLAYLIST_NAME = re.compile(r'(?:tubeist_[A-Za-z0-9_-]+|t[A-Za-z0-9_-]{22})\.m3u8')
+COMPACT_MEDIA_NAME = re.compile(r'(t[A-Za-z0-9_-]{22})_([0-9a-z]+)\.ts')
 BODY_NAME = re.compile(r'([0-9a-f]{64})\.(ts|m3u8)')
+
+
+def media_identity(filename):
+    """Read compact base-36 names and legacy decimal names in older evidence."""
+    match = COMPACT_MEDIA_NAME.fullmatch(filename)
+    if match:
+        return match[1], int(match[2], 36)
+    match = MEDIA_NAME.fullmatch(filename)
+    require(match is not None, 'invalid media filename')
+    return 'tubeist_' + match[1], int(match[2])
 
 
 def parse_playlist(data):
@@ -45,7 +56,7 @@ def parse_playlist(data):
             require(tag not in tags, 'repeated playlist header tag')
             tags[tag] = value
         elif line:
-            require(duration is not None and MEDIA_NAME.fullmatch(line), 'invalid playlist URI or missing EXTINF')
+            require(duration is not None and (MEDIA_NAME.fullmatch(line) or COMPACT_MEDIA_NAME.fullmatch(line)), 'invalid playlist URI or missing EXTINF')
             entries.append({'filename':line, 'duration':duration, 'discontinuity':discontinuity})
             duration = None; discontinuity = False
     require(entries and duration is None and not discontinuity, 'incomplete playlist entry')
@@ -60,10 +71,10 @@ def parse_playlist(data):
     if playlist_type == 'EVENT':
         require(sequence == disc_sequence == 0, 'EVENT playlist removed its history')
     for i, entry in enumerate(entries):
-        match = MEDIA_NAME.fullmatch(entry['filename'])
-        require(int(match[2]) == sequence + i, 'playlist places a segment at the wrong sequence')
+        session, number = media_identity(entry['filename'])
+        require(number == sequence + i, 'playlist places a segment at the wrong sequence')
         entry['sequence'] = sequence + i
-        entry['session'] = match[1]
+        entry['session'] = session
     return {'sequence':sequence, 'discontinuitySequence':disc_sequence, 'target':target,
             'playlistType':playlist_type, 'entries':entries, 'endList':ended}
 
@@ -89,7 +100,7 @@ def read_capture(directory, ending_policy='automatic'):
             require(pending is None and e.get('id') == len(requests), 'requests overlap or have repeated/missing IDs')
             name = e.get('filename',''); body_name = e.get('body','')
             match = BODY_NAME.fullmatch(body_name)
-            require(match and (MEDIA_NAME.fullmatch(name) or PLAYLIST_NAME.fullmatch(name)), 'invalid captured filename')
+            require(match and (MEDIA_NAME.fullmatch(name) or COMPACT_MEDIA_NAME.fullmatch(name) or PLAYLIST_NAME.fullmatch(name)), 'invalid captured filename')
             require(name.endswith('.'+match[2]) and e.get('sha256') == match[1], 'body metadata disagrees')
             expected_type = 'video/mp2t' if match[2] == 'ts' else 'application/vnd.apple.mpegurl'
             require(e.get('contentType') == expected_type, 'wrong request content type')
@@ -133,7 +144,6 @@ def audit_requests(requests, ending_policy='automatic'):
             playlist = parse_playlist(r['path'].read_bytes())
             if ending_policy == 'manualDiagnostic':
                 require(not playlist['endList'], 'manual ending test unexpectedly sent ENDLIST')
-                require(playlist['playlistType'] == 'EVENT', 'manual ending test requires an EVENT playlist')
             if last_playlist is not None:
                 require(playlist['playlistType'] == last_playlist['playlistType'], 'playlist type changed')
                 if playlist['playlistType'] == 'EVENT':
@@ -146,10 +156,12 @@ def audit_requests(requests, ending_policy='automatic'):
             require(last_playlist is not None or playlist['sequence'] == 0, 'first playlist does not start at zero')
             # An entry keeps the same timing even when it appears in later snapshots.
             for entry in playlist['entries']:
-                require(playlist_name == 'tubeist_'+entry['session']+'.m3u8', 'playlist references another session')
+                require(playlist_name == entry['session']+'.m3u8', 'playlist references another session')
                 seq = entry['sequence']
                 require(seq not in entries or entries[seq] == entry, 'playlist changed a segment duration or identity')
                 entries[seq] = entry
+            require(all(n in accepted for n in entries if n < playlist['sequence']),
+                    'playlist removed unacknowledged media')
             expected_disc = sum(e['discontinuity'] for n,e in entries.items() if n < playlist['sequence'])
             require(expected_disc == playlist['discontinuitySequence'], 'wrong discontinuity-sequence header')
             require(sum(e['sequence'] not in accepted for e in playlist['entries']) <= 5, 'too many outstanding playlist entries')
@@ -158,7 +170,7 @@ def audit_requests(requests, ending_policy='automatic'):
             minimum_sequence = playlist['sequence']; disc_sequence = playlist['discontinuitySequence']
             last_playlist = playlist
         else:
-            seq = int(MEDIA_NAME.fullmatch(r['filename'])[2])
+            _, seq = media_identity(r['filename'])
             require(last_playlist and not last_playlist['endList'], 'media sent without a playlist or after ENDLIST')
             require(any(e['filename'] == r['filename'] for e in last_playlist['entries']), 'media not advertised in the preceding playlist')
             require(seq == len(accepted), 'media uploaded out of order or duplicated after acknowledgement')
@@ -169,7 +181,14 @@ def audit_requests(requests, ending_policy='automatic'):
     require(last_playlist and (last_playlist['endList'] or ending_policy == 'manualDiagnostic'),
             'missing acknowledged final ENDLIST playlist')
     require(set(entries) == set(accepted) and accepted, 'playlist references missing media')
-    first_retained = 0 if last_playlist['playlistType'] == 'EVENT' else max(0,len(accepted)-5)
+    compact_names = COMPACT_MEDIA_NAME.fullmatch(last_playlist['entries'][0]['filename']) is not None
+    retained_count = 15 if compact_names else 5  # Older rolling captures used five.
+    first_retained = 0 if last_playlist['playlistType'] == 'EVENT' else max(0,len(accepted)-retained_count)
+    if compact_names:
+        retained_duration = sum(entries[n]['duration'] for n in range(first_retained, len(accepted)))
+        while first_retained > 0 and retained_duration < 3 * last_playlist['target']:
+            first_retained -= 1
+            retained_duration += entries[first_retained]['duration']
     require([e['sequence'] for e in last_playlist['entries']] == list(range(first_retained,len(accepted))),
             'final playlist does not retain the required segment history in order')
     return entries, accepted
@@ -255,7 +274,7 @@ def main():
     parser.add_argument('directory',type=Path,help='one complete TubeistDirectHLSAcceptance session folder')
     parser.add_argument('--skip-decode',action='store_true',help='inspect structure/timing only; not a decoding pass')
     parser.add_argument('--ending-policy',choices=('automatic','manualDiagnostic'),default='automatic',
-                        help='manualDiagnostic requires a marked capture with full EVENT history and no ENDLIST')
+                        help='manualDiagnostic requires a marked capture with all media acknowledged and no ENDLIST')
     parser.add_argument('--pcr-margin-ms',type=int,choices=(0,700),default=700,
                         help='expected PCR-to-DTS margin; use 0 only for historical captures (default: 700)')
     args = parser.parse_args()

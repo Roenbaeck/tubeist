@@ -131,16 +131,15 @@ def expected_playlist(second: bool, end_list: bool = False) -> bytes:
     lines = [
         "#EXTM3U",
         "#EXT-X-VERSION:3",
-        "#EXT-X-PLAYLIST-TYPE:EVENT",
         "#EXT-X-TARGETDURATION:5",
         "#EXT-X-MEDIA-SEQUENCE:0",
         "#EXT-X-DISCONTINUITY-SEQUENCE:0",
         "#EXT-X-INDEPENDENT-SEGMENTS",
         "#EXTINF:2.000000,",
-        "tubeist_socket_session_0.ts",
+        "tT3KJR7zU2ZVTtNMZDoX12Q_0.ts",
     ]
     if second:
-        lines.extend(["#EXTINF:2.500000,", "tubeist_socket_session_1.ts"])
+        lines.extend(["#EXTINF:2.500000,", "tT3KJR7zU2ZVTtNMZDoX12Q_1.ts"])
     if end_list:
         lines.append("#EXT-X-ENDLIST")
     return ("\n".join(lines) + "\n").encode()
@@ -167,11 +166,11 @@ def validate(scenario: str, records: list[RequestRecord]) -> None:
     validate_common(records)
     if scenario == "contract":
         expected_files = [
-            "tubeist_socket_session.m3u8",
-            "tubeist_socket_session_0.ts",
-            "tubeist_socket_session.m3u8",
-            "tubeist_socket_session_1.ts",
-            "tubeist_socket_session.m3u8",
+            "tT3KJR7zU2ZVTtNMZDoX12Q.m3u8",
+            "tT3KJR7zU2ZVTtNMZDoX12Q_0.ts",
+            "tT3KJR7zU2ZVTtNMZDoX12Q.m3u8",
+            "tT3KJR7zU2ZVTtNMZDoX12Q_1.ts",
+            "tT3KJR7zU2ZVTtNMZDoX12Q.m3u8",
         ]
         if [record.filename for record in records] != expected_files:
             raise AssertionError("playlist/segment request order or filenames differ")
@@ -191,12 +190,12 @@ def validate(scenario: str, records: list[RequestRecord]) -> None:
             raise AssertionError(f"expected three requests, received {len(records)}")
         if records[0].filename != records[1].filename or records[0].body != records[1].body:
             raise AssertionError("the retried playlist changed filename or body")
-        if records[2].filename != "tubeist_socket_session_0.ts":
+        if records[2].filename != "tT3KJR7zU2ZVTtNMZDoX12Q_0.ts":
             raise AssertionError("segment did not follow the recovered playlist upload")
         if len({records[0].client_port, records[1].client_port}) < 2:
             raise AssertionError("the failed socket was not replaced for the retry")
     elif scenario in {"stop", "cancel"}:
-        if len(records) != 1 or records[0].filename != "tubeist_socket_session.m3u8":
+        if len(records) != 1 or records[0].filename != "tT3KJR7zU2ZVTtNMZDoX12Q.m3u8":
             raise AssertionError("shutdown allowed unexpected follow-up requests")
 
 

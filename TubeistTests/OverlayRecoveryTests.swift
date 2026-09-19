@@ -9,6 +9,67 @@ import WebKit
 struct OverlayRecoveryTests {
     private let retryPolicy = OverlayRetryPolicy(initialDelay: 0.05, maximumDelay: 0.1, requestTimeout: 10)
 
+    @Test func scaleChangesLiveContentAndSnapshotWithoutReloadingAndSurvivesReload() async throws {
+        let server = try OverlayHTTPTestServer(replies: [.page(Self.scaleFixture)])
+        try await server.start()
+        defer { server.stop() }
+        let overlay = Overlay(url: server.url, bundler: OverlayBundler(), retryPolicy: retryPolicy)
+        let webView = overlay.createWebView(width: 320, height: 180)
+        let window = display(webView)
+        defer { window.isHidden = true; overlay.prepareForRemoval() }
+        try await waitUntil { overlay.getOverlayImage() != nil }
+        _ = try await webView.evaluateJavaScript("document.body.style.margin='0'; document.querySelector('div').textContent=''; true")
+        overlay.captureWebViewImageOrSchedule()
+        try await waitUntil {
+            guard let box = overlay.getOverlayImage()?.roughBoundingBox(scaledWidth: 320), let image = overlay.getOverlayImage() else { return false }
+            return box.width / (image.size.width * image.scale) > 0.28
+        }
+        let fullSize = try #require(overlay.getOverlayImage())
+        let fullBounds = try #require(fullSize.roughBoundingBox(scaledWidth: 320))
+        overlay.setScale(0.5)
+        #expect(webView.pageZoom == 0.5)
+        try await waitUntil {
+            guard let image = overlay.getOverlayImage(), image !== fullSize,
+                  let box = image.roughBoundingBox(scaledWidth: 320) else { return false }
+            return box.width < fullBounds.width * 0.65
+        }
+        let halfSize = try #require(overlay.getOverlayImage())
+        let halfBounds = try #require(halfSize.roughBoundingBox(scaledWidth: 320))
+        #expect(halfBounds.height < fullBounds.height * 0.65)
+        #expect(halfSize.size == fullSize.size) // Output canvas stays the same size.
+        #expect(server.requests.count == 1)
+        overlay.setScale(1)
+        try await waitUntil {
+            guard let image = overlay.getOverlayImage(), image !== halfSize,
+                  let box = image.roughBoundingBox(scaledWidth: 320) else { return false }
+            return abs(box.width - fullBounds.width) < 10
+        }
+        overlay.setScale(0.5)
+        overlay.reload()
+        try await waitUntil { server.requests.count == 2 && !webView.isLoading }
+        #expect(webView.pageZoom == 0.5)
+    }
+
+    @Test func initialOverlayScaleIsAppliedBeforeItsFirstSnapshot() async throws {
+        let server = try OverlayHTTPTestServer(replies: [.page(Self.scaleFixture)])
+        try await server.start()
+        defer { server.stop() }
+        let overlay = Overlay(url: server.url, bundler: OverlayBundler(), scale: 0.5, retryPolicy: retryPolicy)
+        let webView = overlay.createWebView(width: 320, height: 180)
+        let window = display(webView)
+        defer { window.isHidden = true; overlay.prepareForRemoval() }
+        try await waitUntil { overlay.getOverlayImage() != nil }
+        #expect(webView.pageZoom == 0.5)
+        let image = try #require(overlay.getOverlayImage())
+        let bounds = try #require(image.roughBoundingBox(scaledWidth: 320))
+        #expect(bounds.width / (image.size.width * image.scale) < 0.20)
+    }
+
+    private static let scaleFixture = """
+        <html><head><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+        <body style="margin:0"><div style="background:red;width:100px;height:100px"></div></body></html>
+        """
+
     @Test func highRateRefreshesWithoutDOMChangesAndReloadAppliesNewRate() async throws {
         let server = try OverlayHTTPTestServer(replies: [.html("Animated"), .html("Reloaded")])
         try await server.start()
@@ -333,7 +394,7 @@ private enum OverlayFixtureError: Error { case timedOut }
 /// policy, and request timeout. No external overlay or physical phone is used.
 @MainActor
 private final class OverlayHTTPTestServer {
-    enum Reply { case disconnect, stall, status(Int), html(String), png(Data) }
+    enum Reply { case disconnect, stall, status(Int), html(String), page(String), png(Data) }
     private let listener: NWListener
     private let replies: [Reply]
     private var connections: [NWConnection] = []
@@ -421,6 +482,10 @@ private final class OverlayHTTPTestServer {
             status = 200
             contentType = "image/png"
             body = data
+        case .page(let html):
+            status = 200
+            contentType = "text/html"
+            body = Data(html.utf8)
         }
         let headers = "HTTP/1.1 \(status) \(status == 200 ? "OK" : "Unavailable")\r\nContent-Type: \(contentType)\r\nContent-Length: \(body.count)\r\nCache-Control: max-age=3600\r\nConnection: close\r\n\r\n"
         connection.send(content: Data(headers.utf8) + body, completion: .contentProcessed { _ in connection.cancel() })

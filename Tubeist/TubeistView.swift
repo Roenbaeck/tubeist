@@ -434,7 +434,7 @@ struct TubeistView: View {
                     
                     ForEach(overlayManager.overlays) { overlay in
                         if let url = URL(string: overlay.url) {
-                            OverlayView(url: url)
+                            OverlayView(url: url, scale: overlay.scale)
                                 .opacity(appState.areOverlaysHidden ? 0 : 1)
                                 .onDisappear {
                                     OverlayBundler.shared.removeOverlay(url: url)

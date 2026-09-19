@@ -62,6 +62,19 @@ documented YouTube buffer/rate guarantees. See [the model and limits](DELIVERY_P
 
 ## Exact upload capture and segment validation
 
+The ingest playlist normally retains the latest 15 entries (about 30 seconds),
+including both acknowledged and outstanding uploads. Only acknowledged entries
+can leave the front of the playlist. Short segments can require more entries to
+preserve HLS's minimum live duration of three target durations (15 seconds).
+The five-outstanding-upload limit is independent of this history window.
+Media and discontinuity sequence numbers advance as old entries leave; the
+playlist has no EVENT tag. The same window is retained through ENDLIST.
+
+Upload filenames use `t<22-character session token>_<base36 sequence>.ts`.
+The token is a URL-safe encoding of the first 128 bits of the session ID's SHA-256
+hash, computed once per session. Retries reuse exactly the same names and bytes.
+The validators also accept the longer decimal names in older captures.
+
 ### Manual stream-ending experiment (Debug only)
 
 Enable **Settings → Stream Ending Test → End broadcast manually in Studio**,
@@ -70,7 +83,7 @@ MP4 provides a comparison. This setting is off by default and ignored in Release
 
 The next signed-in Start disables YouTube auto-stop, including on an existing
 ready event, and confirms the API response if it changes that setting. Uploads
-keep the same adaptive pacing and complete EVENT history. Stop drains and
+keep the same adaptive pacing and rolling playlist history. Stop drains and
 acknowledges all remaining segments and finishes the local recording, but sends
 neither ENDLIST nor an API completion request. There is no ENDLIST grace wait.
 The YouTube indicator can remain red after Tubeist's local Stop finishes.
@@ -164,14 +177,13 @@ durations, and upload scheduling stay unchanged. The JSON result records
 `--pcr-margin-ms 0`; new captures should use the default 700 ms check. This is a
 YouTube compatibility experiment, not a confirmed fix for missing replay sections.
 
-The current experiment uses `#EXT-X-PLAYLIST-TYPE:EVENT`. Every playlist starts at
-sequence zero and retains all previously advertised entries, including their
-durations and discontinuity markers, through the final ENDLIST. Acknowledgement
-still releases uploaded media and the five-outstanding-segment limit remains;
-only playlist metadata grows. The validator rejects an EVENT playlist that
-removes or changes earlier entries. This isolates playlist retention from the
-existing PCR margin and unchanged media timestamps. Compare the next countdown's
-local recording and YouTube replay before treating it as a confirmed fix.
+Earlier captures used `#EXT-X-PLAYLIST-TYPE:EVENT`, with every playlist starting
+at sequence zero and retaining all entries through ENDLIST. The validator still
+checks that older EVENT captures never remove or change advertised entries.
+Current streams use the rolling window described above to avoid continually
+growing playlist uploads. This changes neither media timestamps nor the PCR
+margin. Compare a new countdown's local recording and YouTube replay to verify
+the smaller playlist still preserves playback under recovery conditions.
 
 Shutdown now waits until ten seconds after the final media acknowledgement before
 sending ENDLIST. The normal Stop path then requests completion of the broadcast

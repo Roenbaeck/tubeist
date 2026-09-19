@@ -9,6 +9,21 @@ import CoreImage
 @testable import Tubeist
 
 struct OverlayTests {
+    @Test func existingSavedOverlaysDefaultToFullSizeAndNewScalesRoundTrip() throws {
+        let old = Data(#"[{"url":"https://example.com/score"}]"#.utf8)
+        var overlays = try JSONDecoder().decode([OverlaySetting].self, from: old)
+        #expect(overlays[0].scale == 1)
+        overlays[0].scale = 0.5
+        let saved = try JSONEncoder().encode(overlays)
+        #expect(try JSONDecoder().decode([OverlaySetting].self, from: saved) == overlays)
+        #expect(overlays[0].id == "https://example.com/score")
+    }
+
+    @Test(arguments: [(-1.0, 0.25), (0, 0.25), (0.5, 0.5), (10, 2), (.infinity, 1), (.nan, 1)])
+    func overlayScaleIsBounded(example: (Double, Double)) {
+        #expect(OverlaySetting(url: "https://example.com/score", scale: example.0).scale == example.1)
+    }
+
     @Test(arguments: [
         "https://example.com/overlay",
         "http://127.0.0.1:8080/status",

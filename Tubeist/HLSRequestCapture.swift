@@ -52,7 +52,10 @@ final class HLSRequestCapture: @unchecked Sendable {
                     return
                 }
                 do {
-                    guard filename.hasPrefix("tubeist_"),
+                    guard filename.hasPrefix("tubeist_") || filename.range(
+                        of: "^t[A-Za-z0-9_-]{22}(\\.m3u8|_[0-9a-z]+\\.ts)$",
+                        options: .regularExpression
+                    ) != nil,
                           filename.utf8.allSatisfy({ (48...57).contains($0) || (65...90).contains($0)
                               || (97...122).contains($0) || $0 == 45 || $0 == 95 || $0 == 46 }),
                           (filename.hasSuffix(".ts") && contentType == "video/mp2t")

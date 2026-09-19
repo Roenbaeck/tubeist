@@ -128,11 +128,42 @@ class RequestTests(unittest.TestCase):
                     self.assertEqual(list(entries), list(range(12)))
                     self.assertEqual(len(accepted), 12)
 
+    def test_compact_rolling_playlists_keep_the_tail_through_endlist(self):
+        prefix = 'tOyFz3FCiDGeSA1X2QM4uRA'
+        def base36(n):
+            return ('0123456789abcdefghijklmnopqrstuvwxyz'[n] if n < 36
+                    else base36(n // 36) + base36(n % 36))
+        for failure in (None, 'tail', 'sequence', 'session'):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as d:
+                root = Path(d); requests = []
+                def add(body, name):
+                    path = root/str(len(requests)); path.write_bytes(body)
+                    requests.append({'filename':name, 'path':path,
+                                     'sha256':hashlib.sha256(body).hexdigest(), 'httpStatus':200})
+                for seq in range(50):
+                    first = max(0, seq - 14)
+                    body = playlist([(n,2) for n in range(first,seq+1)], first=first)
+                    for n in range(first,seq+1):
+                        body = body.replace(f'tubeist_test_{n}.ts'.encode(), f'{prefix}_{base36(n)}.ts'.encode())
+                    add(body, prefix+'.m3u8')
+                    add(bytes([seq]), f'{prefix}_{base36(seq)}.ts')
+                final = body + b'#EXT-X-ENDLIST\n'
+                if failure == 'tail': final = final.replace(b'#EXTINF:2.000000,\n'+prefix.encode()+b'_1d.ts\n', b'')
+                if failure == 'sequence': final = final.replace(b'MEDIA-SEQUENCE:35', b'MEDIA-SEQUENCE:36')
+                if failure == 'session': final = final.replace(prefix.encode(), b'tAAAAAAAAAAAAAAAAAAAAAA')
+                add(final, prefix+'.m3u8')
+                if failure:
+                    with self.assertRaises(CaptureValidationError): audit_requests(requests)
+                else:
+                    entries, accepted = audit_requests(requests)
+                    self.assertEqual(len(accepted), 50)
+                    self.assertEqual(entries[36]['filename'], prefix+'_10.ts')
+
     def test_wrong_playlist_position_is_rejected(self):
         with self.assertRaisesRegex(CaptureValidationError,'wrong sequence'):
             parse_playlist(playlist([(1,2)],first=0))
 
-    def test_manual_ending_requires_open_event_and_all_acknowledged_media(self):
+    def test_manual_ending_requires_open_playlist_and_all_acknowledged_media(self):
         with tempfile.TemporaryDirectory() as d:
             requests = self.make_requests(Path(d))
             for index, entries in ((0, [(0,2)]), (2, [(0,2),(1,.9)]), (4, [(0,2),(1,.9)])):
@@ -149,9 +180,10 @@ class RequestTests(unittest.TestCase):
                 audit_requests(open_requests)
             with self.assertRaisesRegex(CaptureValidationError, 'missing media'):
                 audit_requests(open_requests[:-1], 'manualDiagnostic')
-            requests[0]['path'].write_bytes(playlist([(0,2)]))
-            with self.assertRaisesRegex(CaptureValidationError, 'requires an EVENT playlist'):
-                audit_requests(open_requests, 'manualDiagnostic')
+            for index, items in ((0, [(0,2)]), (2, [(0,2),(1,.9)])):
+                requests[index]['path'].write_bytes(playlist(items))
+            _, accepted = audit_requests(open_requests, 'manualDiagnostic')
+            self.assertEqual(len(accepted), 2)
 
     def make_requests(self,root):
         bodies=[playlist([(0,2)]),b'first',playlist([(0,2),(1,.9)]),b'last',playlist([(0,2),(1,.9)],ended=True)]

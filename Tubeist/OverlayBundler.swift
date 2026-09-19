@@ -115,11 +115,13 @@ final class Overlay: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     private var retryTask: Task<Void, Never>?
     private var currentNavigation: WKNavigation?
     private var isPageReady = false
+    private var scale: Double
     
-    init(url: URL, bundler: OverlayBundler, retryPolicy: OverlayRetryPolicy = OverlayRetryPolicy(),
+    init(url: URL, bundler: OverlayBundler, scale: Double = 1, retryPolicy: OverlayRetryPolicy = OverlayRetryPolicy(),
          refreshRate: @escaping () -> OverlayRefreshRate = { Settings.overlayRefreshRate }) {
         self.url = url
         self.bundler = bundler
+        self.scale = OverlaySetting.normalizedScale(scale)
         self.retryPolicy = retryPolicy
         self.retryDelay = retryPolicy.initialDelay
         self.refreshRate = refreshRate
@@ -176,10 +178,22 @@ final class Overlay: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         webView.scrollView.pinchGestureRecognizer?.isEnabled = false
         webView.scrollView.contentInset = UIEdgeInsets.zero
         webView.scrollView.contentInsetAdjustmentBehavior = .never
+        webView.pageZoom = scale
 
         self.webView = webView
         loadOverlay()
         return webView
+    }
+
+    func setScale(_ value: Double) {
+        let value = OverlaySetting.normalizedScale(value)
+        guard value != scale else { return }
+        scale = value
+        webView?.pageZoom = value
+        // A pending snapshot at the old scale must not replace the new one.
+        // Reuse this web view so live page state and connections survive.
+        invalidateCapture()
+        captureWebViewImageOrSchedule()
     }
 
     private func loadOverlay() {
@@ -559,9 +573,10 @@ actor OverlayBundler {
 
 struct OverlayView: UIViewRepresentable {
     var url: URL
+    var scale: Double = 1
 
     func makeCoordinator() -> Overlay {
-        let overlay = Overlay(url: url, bundler: OverlayBundler.shared)
+        let overlay = Overlay(url: url, bundler: OverlayBundler.shared, scale: scale)
         Task {
             await OverlayBundler.shared.addOverlay(url: url, overlay: overlay)
         }
@@ -577,6 +592,6 @@ struct OverlayView: UIViewRepresentable {
     }
 
     func updateUIView(_ webView: WKWebView, context: Context) {
-        // Handle updates if needed
+        context.coordinator.setScale(scale)
     }
 }

@@ -4,7 +4,10 @@ import Foundation
 /// This is a fluid queue model, not knowledge of YouTube's playable buffer.
 struct HLSDeliveryPacer: Sendable {
     struct Policy: Sendable {
-        let recoverySeconds = 20.0
+        var recoverySeconds = 20.0
+        // Refill the receiver promptly after a stall, then return to pacing.
+        // This is a bounded count of serialized uploads, not parallel requests.
+        var immediateRecoverySegments = 2
         // Leave space for two maximum-duration HLS segments while waiting.
         let queueReserveSeconds = 10.0
         let queueReserveFragments = 2
@@ -12,7 +15,7 @@ struct HLSDeliveryPacer: Sendable {
 
     struct Decision: Sendable {
         enum Reason: String, Sendable {
-            case steady, recovering, recoveryDeadline, queuePressure, shutdownDeadline, invalidObservation
+            case steady, recoveryBurst, recovering, recoveryDeadline, queuePressure, shutdownDeadline, invalidObservation
         }
         /// nil means work-conserving delivery: no deliberate wait.
         let rate: Double?
@@ -24,6 +27,7 @@ struct HLSDeliveryPacer: Sendable {
     private var lastStartedAt: TimeInterval?
     private var lastDuration = 0.0
     private var recoveryDeadline: TimeInterval?
+    private var immediateRecoverySegmentsRemaining = 0
     private var awaitingFreshMedia = true
 
     init(policy: Policy = Policy()) {
@@ -48,6 +52,7 @@ struct HLSDeliveryPacer: Sendable {
         if recoveryDeadline == nil, queuedMediaSeconds > 0,
            !awaitingFreshMedia || queuedMediaSeconds > nextDuration {
             recoveryDeadline = now + policy.recoverySeconds
+            immediateRecoverySegmentsRemaining = max(0, policy.immediateRecoverySegments)
         }
         if queuedMediaSeconds >= maximumQueuedDuration - policy.queueReserveSeconds ||
             queuedFragments >= maximumQueuedFragments - policy.queueReserveFragments {
@@ -56,6 +61,9 @@ struct HLSDeliveryPacer: Sendable {
         let remaining = recoveryTimeRemaining(at: now)
         if let remaining, remaining <= 0 {
             return Decision(rate: nil, delay: 0, reason: .recoveryDeadline)
+        }
+        if immediateRecoverySegmentsRemaining > 0 {
+            return Decision(rate: nil, delay: 0, reason: .recoveryBurst)
         }
         // T is remaining time to the ORIGINAL deadline, not a new horizon.
         // Q includes ALL waiting media, including the next upload. Subtracting
@@ -93,12 +101,16 @@ struct HLSDeliveryPacer: Sendable {
             lastDuration = 0
         }
         recoveryDeadline = nil
+        immediateRecoverySegmentsRemaining = 0
         awaitingFreshMedia = true
     }
 
     mutating func beganUpload(duration: Double, now: TimeInterval) {
         guard duration.isFinite, duration >= 0, now.isFinite else { return }
         awaitingFreshMedia = false
+        // Only actual uploads consume the allowance. Repeated decisions,
+        // interrupted waits and new arrivals cannot renew a recovery burst.
+        if immediateRecoverySegmentsRemaining > 0 { immediateRecoverySegmentsRemaining -= 1 }
         lastStartedAt = now
         lastDuration = duration
     }

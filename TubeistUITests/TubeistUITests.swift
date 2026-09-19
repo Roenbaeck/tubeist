@@ -406,6 +406,55 @@ final class TubeistUITests: XCTestCase {
     }
 
     @MainActor
+    func testOverlayScaleCanBeSavedAndCancelled() throws {
+        let app = launchForUITesting()
+        app.buttons["Settings"].tap()
+        let key = app.secureTextFields["YouTube HLS Stream Key"]
+        XCTAssertTrue(key.waitForExistence(timeout: 5))
+        key.tap()
+        key.typeText("abcd-efgh-1234\n")
+        let url = "http://127.0.0.1:9/scale-\(UUID().uuidString.prefix(8))"
+        let newURL = app.textFields["New Overlay URL"]
+        scrollTo(newURL, in: app)
+        newURL.tap()
+        newURL.typeText(url + "\n")
+        let row = app.buttons["edit-overlay-\(url)"]
+        scrollTo(row, in: app, searchDirection: -1)
+        row.tap()
+        let slider = app.sliders["overlay-scale"]
+        scrollTo(slider, in: app)
+        slider.adjust(toNormalizedSliderPosition: 0) // Use an exact endpoint; drag positions are approximate.
+        XCTAssertEqual(slider.value as? String, "25 percent")
+        let editor = XCTAttachment(screenshot: app.screenshot())
+        editor.name = "Overlay scale editor"
+        editor.lifetime = .keepAlways
+        add(editor)
+        app.navigationBars["Edit Overlay"].buttons["Save"].tap()
+        XCTAssertTrue(row.waitForExistence(timeout: 3))
+        app.navigationBars["Settings"].buttons["Save"].tap()
+        XCTAssertTrue(app.buttons["Settings"].waitForExistence(timeout: 5))
+        app.terminate()
+        app.launch()
+        app.buttons["Settings"].tap()
+        scrollTo(row, in: app)
+        row.tap()
+        scrollTo(slider, in: app)
+        XCTAssertEqual(slider.value as? String, "25 percent")
+        scrollTo(app.buttons["Reset to 100%"], in: app)
+        app.buttons["Reset to 100%"].tap()
+        app.navigationBars["Edit Overlay"].buttons["Save"].tap()
+        // Cancelling Settings must discard the accepted editor draft too.
+        app.navigationBars["Settings"].buttons["Cancel"].tap()
+        app.buttons["Settings"].tap()
+        scrollTo(row, in: app)
+        row.tap()
+        scrollTo(slider, in: app)
+        XCTAssertEqual(slider.value as? String, "25 percent")
+        app.navigationBars["Edit Overlay"].buttons["Cancel"].tap()
+        app.navigationBars["Settings"].buttons["Cancel"].tap()
+    }
+
+    @MainActor
     func testOverlayEditExplainsInvalidAndDuplicateURLs() throws {
         let app = launchForUITesting()
         app.buttons["Settings"].tap()

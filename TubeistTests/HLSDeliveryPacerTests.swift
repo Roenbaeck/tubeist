@@ -2,9 +2,47 @@ import Testing
 @testable import Tubeist
 
 struct HLSDeliveryPacerTests {
+    @Test func recoverySendsExactlyTwoSegmentsWithoutWaitingThenResumesPacing() throws {
+        var pacer = HLSDeliveryPacer()
+        pacer.beganUpload(duration: 2, now: 0)
+        // The initial upload stalls while capture builds a backlog.
+        for _ in 0..<20 {
+            let first = pacer.decision(queuedMediaSeconds: 12, nextDuration: 2, now: 10)
+            #expect(first.reason == .recoveryBurst && first.delay == 0 && first.rate == nil)
+        }
+        pacer.beganUpload(duration: 2, now: 10)
+        let second = pacer.decision(queuedMediaSeconds: 10, nextDuration: 2, now: 10.1)
+        #expect(second.reason == .recoveryBurst && second.delay == 0)
+        pacer.beganUpload(duration: 2, now: 10.1)
+        let third = pacer.decision(queuedMediaSeconds: 8, nextDuration: 2, now: 10.2)
+        #expect(third.reason == .recovering && third.delay > 0)
+        #expect(abs((try #require(third.rate)) - (1 + 8 / 19.8)) < 0.000001)
+        // More queued media cannot replenish the two-upload allowance.
+        #expect(pacer.decision(queuedMediaSeconds: 20, nextDuration: 2, now: 10.2).reason == .recovering)
+        #expect(pacer.recoveryTimeRemaining(at: 15) == 15)
+        pacer.becameIdle()
+        #expect(pacer.decision(queuedMediaSeconds: 2, nextDuration: 2, now: 16).reason == .steady)
+        pacer.beganUpload(duration: 2, now: 16)
+        #expect(pacer.decision(queuedMediaSeconds: 6, nextDuration: 2, now: 20).reason == .recoveryBurst)
+    }
+
+    @Test func shortRecoveryDoesNotLeaveBurstCreditForHealthyUploads() {
+        var pacer = HLSDeliveryPacer()
+        pacer.beganUpload(duration: 2, now: 0)
+        #expect(pacer.decision(queuedMediaSeconds: 2, nextDuration: 2, now: 3).reason == .recoveryBurst)
+        pacer.beganUpload(duration: 2, now: 3)
+        pacer.becameIdle()
+        #expect(pacer.decision(queuedMediaSeconds: 2, nextDuration: 2, now: 4).reason == .steady)
+        pacer.beganUpload(duration: 2, now: 4)
+        pacer.becameIdle()
+        let healthy = pacer.decision(queuedMediaSeconds: 2, nextDuration: 2, now: 4.5)
+        #expect(healthy.reason == .steady && healthy.delay == 1.5)
+    }
+
+    // Exercise the paced phase independently of its two-upload entry burst.
     @Test(arguments: [(2.0, 1.1), (4, 1.2), (8, 1.4), (12, 1.6), (22, 2.1), (32, 2.6)])
     func initialRateMatchesTheRecoveryEquation(example: (Double, Double)) throws {
-        var pacer = HLSDeliveryPacer()
+        var pacer = HLSDeliveryPacer(policy: .init(immediateRecoverySegments: 0))
         pacer.beganUpload(duration: 2, now: 0)
         let decision = pacer.decision(queuedMediaSeconds: example.0, nextDuration: 2, now: 0)
         #expect(abs((try #require(decision.rate)) - example.1) < 0.000001)
@@ -18,7 +56,7 @@ struct HLSDeliveryPacerTests {
     }
 
     @Test func successfulRecoveryKeepsItsRateInsteadOfMovingTheDeadline() throws {
-        var pacer = HLSDeliveryPacer()
+        var pacer = HLSDeliveryPacer(policy: .init(immediateRecoverySegments: 0))
         let initial = pacer.decision(queuedMediaSeconds: 12, nextDuration: 2, now: 0)
         let halfway = pacer.decision(queuedMediaSeconds: 6, nextDuration: 2, now: 10)
         #expect(initial.rate == 1.6)
@@ -36,7 +74,7 @@ struct HLSDeliveryPacerTests {
     }
 
     @Test func failedRecoveryExceedsTwoTimesThenBecomesWorkConserving() throws {
-        var pacer = HLSDeliveryPacer()
+        var pacer = HLSDeliveryPacer(policy: .init(immediateRecoverySegments: 0))
         _ = pacer.decision(queuedMediaSeconds: 10, nextDuration: 2, now: 0)
         let struggling = pacer.decision(queuedMediaSeconds: 10, nextDuration: 2, now: 15)
         #expect((try #require(struggling.rate)) == 3)
@@ -62,7 +100,7 @@ struct HLSDeliveryPacerTests {
     }
 
     @Test func shutdownBudgetOverridesPacingBeforeItCanConsumeTheTail() {
-        var pacer = HLSDeliveryPacer()
+        var pacer = HLSDeliveryPacer(policy: .init(immediateRecoverySegments: 0))
         pacer.beganUpload(duration: 2, now: 10)
         #expect(pacer.decision(queuedMediaSeconds: 2, nextDuration: 2, now: 10.1, finishBy: 100).delay > 1)
         let urgent = pacer.decision(queuedMediaSeconds: 2, nextDuration: 2, now: 10.1, finishBy: 13)
@@ -80,7 +118,7 @@ struct HLSDeliveryPacerTests {
     }
 
     @Test func transferTimeCountsTowardSpacingAndSlowUploadsNeverWait() {
-        var pacer = HLSDeliveryPacer()
+        var pacer = HLSDeliveryPacer(policy: .init(immediateRecoverySegments: 0))
         pacer.beganUpload(duration: 2, now: 100)
         let decision = pacer.decision(queuedMediaSeconds: 12, nextDuration: 2, now: 100.5)
         #expect(abs(decision.delay - (2 / 1.6 - 0.5)) < 0.000001)
@@ -88,7 +126,7 @@ struct HLSDeliveryPacerTests {
     }
 
     @Test func longOutageDoesNotAccumulateBurstCredit() {
-        var pacer = HLSDeliveryPacer()
+        var pacer = HLSDeliveryPacer(policy: .init(immediateRecoverySegments: 0))
         pacer.beganUpload(duration: 2, now: 0)
         #expect(pacer.decision(queuedMediaSeconds: 20, nextDuration: 2, now: 30).delay == 0)
         pacer.beganUpload(duration: 2, now: 30)
@@ -96,7 +134,7 @@ struct HLSDeliveryPacerTests {
     }
 
     @Test func changingBacklogAndSegmentLengthsChangeTheNextDeadline() {
-        var pacer = HLSDeliveryPacer()
+        var pacer = HLSDeliveryPacer(policy: .init(immediateRecoverySegments: 0))
         pacer.beganUpload(duration: 3, now: 10)
         let small = pacer.decision(queuedMediaSeconds: 4, nextDuration: 2, now: 10.5)
         let large = pacer.decision(queuedMediaSeconds: 12, nextDuration: 2, now: 10.5)
@@ -108,7 +146,7 @@ struct HLSDeliveryPacerTests {
     }
 
     @Test func oneSegmentWaitingAfterASlowUploadStartsRecovery() {
-        var pacer = HLSDeliveryPacer()
+        var pacer = HLSDeliveryPacer(policy: .init(immediateRecoverySegments: 0))
         pacer.beganUpload(duration: 2, now: 0)
         let next = pacer.decision(queuedMediaSeconds: 2, nextDuration: 2, now: 3)
         #expect(next.reason == .recovering)
@@ -140,7 +178,7 @@ struct HLSDeliveryPacerTests {
         #expect(adaptive.remaining <= 2)
         #expect(adaptive.maximumResidentAtEnd <= 1)
         #expect(adaptive.idleSecondsAtEnd > 0.5)
-        #expect(adaptive.maximumRate > 2 || adaptive.usedDeadlineOverride)
+        #expect(adaptive.usedRecoveryBurst || adaptive.maximumRate > 2 || adaptive.usedDeadlineOverride)
         print("Repeated-outage trace: fixed cap dropped \(capped.dropped), deadline controller dropped \(adaptive.dropped); peak queue \(adaptive.maximumQueue)s, final pipeline \(adaptive.remaining)s, peak scheduled rate \(adaptive.maximumRate)x")
     }
 
@@ -190,6 +228,7 @@ struct HLSDeliveryPacerTests {
         var maximumCount = 0
         var remaining = 0.0
         var usedDeadlineOverride = false
+        var usedRecoveryBurst = false
         var maximumRate = 1.0
         var idleSecondsAtEnd = 0.0
         var maximumResidentAtEnd = 0
@@ -256,6 +295,7 @@ struct HLSDeliveryPacerTests {
                     delay = decision.delay
                     result.maximumRate = max(result.maximumRate, decision.rate ?? 1)
                     result.usedDeadlineOverride = result.usedDeadlineOverride || decision.reason == .recoveryDeadline
+                    result.usedRecoveryBurst = result.usedRecoveryBurst || decision.reason == .recoveryBurst
                 }
                 if delay <= 0.001 {
                     inFlight = queue.removeFirst()

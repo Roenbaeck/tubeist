@@ -9,7 +9,7 @@ struct AdaptiveBitrateController: Sendable {
         var assumedRemoteBufferSeconds = 12.0
         var safetyReserveSeconds = 4.0
         var segmentSeconds = 2.0
-        var normalDecreaseFraction = 0.10
+        var normalDecreaseFraction = 0.20
         var wireOverhead = 1.08
     }
 
@@ -62,8 +62,11 @@ struct AdaptiveBitrateController: Sendable {
         lastEvaluation = now
         let canRecover = hasFreshDelivery
         hasFreshDelivery = false
-        var capacity = estimatedThroughput
-        if inFlightBytes > 0, inFlightSeconds > policy.segmentSeconds * 2 {
+        // The median/EMA guards recovery against one unusually fast upload.
+        // It must not hide a new slow upload when deciding whether to reduce.
+        var capacity = estimatedThroughput.map { min($0, latestThroughput ?? $0) }
+        let slowUploadThreshold = policy.segmentSeconds * 1.25
+        if inFlightBytes > 0, inFlightSeconds > slowUploadThreshold {
             let upperBound = Double(inFlightBytes) * 8 / inFlightSeconds
             capacity = min(capacity ?? upperBound, upperBound)
         }
@@ -74,7 +77,7 @@ struct AdaptiveBitrateController: Sendable {
         // constitutes backlog. Byte accounting follows bitrate changes exactly.
         let backlogBits = max(0, Double(queuedBytes) * 8 - wireRate * policy.segmentSeconds)
         let lag = max(0, queuedMediaSeconds - policy.segmentSeconds)
-        let congested = lag >= 1 || inFlightSeconds > policy.segmentSeconds * 2
+        let congested = lag >= 1 || inFlightSeconds > slowUploadThreshold
         let usableBuffer = max(policy.segmentSeconds * 2,
                                policy.assumedRemoteBufferSeconds - policy.safetyReserveSeconds)
         var catchUpSeconds = max(policy.segmentSeconds * 2, usableBuffer - lag)
@@ -96,7 +99,7 @@ struct AdaptiveBitrateController: Sendable {
         // estimate so old fast uploads cannot override a new slow one. Never
         // recover from an unfinished upload's optimistic bound alone, or reuse
         // a measurement from before the last reduction.
-        if canRecover, let latestThroughput, inFlightSeconds <= policy.segmentSeconds * 2 {
+        if canRecover, let latestThroughput, inFlightSeconds <= slowUploadThreshold {
             let sustainable = sustainableVideoBitrate(at: min(capacity, latestThroughput))
             let desired = Int(max(0, min(Double(maximumBitrate), sustainable)))
             if desired > targetBitrate {
@@ -111,10 +114,11 @@ struct AdaptiveBitrateController: Sendable {
             congestedObservations += 1
             let growth = max(0, 1 - capacity / max(1, wireRate))
             let timeToExhaustion = growth > 0 ? max(0, usableBuffer - lag) / growth : .infinity
-            // Normal action waits for three segment observations. A clearly
-            // unsustainable preset may need one larger correction to avoid a gap.
+            // Confirm congestion across two segment-spaced observations.
+            // A completed slow upload plus an almost exhausted allowance is
+            // enough evidence to act immediately; an in-flight bound alone is not.
             let urgent = timeToExhaustion <= policy.segmentSeconds * 3
-            guard congestedObservations >= 3 || (urgent && congestedObservations >= 2) else { return }
+            guard congestedObservations >= 2 || (urgent && canRecover) else { return }
             let sustainable = sustainableVideoBitrate(at: capacity)
             let desired = max(minimumBitrate, Int(max(0, min(Double(maximumBitrate), sustainable))))
             state = sustainable < Double(minimumBitrate) ? .capacityBelowQualityFloor : .catchingUp
