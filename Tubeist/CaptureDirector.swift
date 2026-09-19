@@ -217,10 +217,29 @@ private class DeviceActor {
             videoDevice.unlockForConfiguration()
             videoOutput.alwaysDiscardsLateVideoFrames = true
 
+            do {
+                try AVAudioSession.sharedInstance().setCategory(
+                    .playAndRecord,
+                    mode: .videoRecording,
+                    // HFP uses the same option bit as the older allowBluetooth
+                    // name and works on all iOS versions supported by Tubeist.
+                    options: [.mixWithOthers, .overrideMutedMicrophoneInterruption, .allowBluetoothHFP]
+                )
+                try AVAudioSession.sharedInstance().setPreferredSampleRate(AUDIO_SAMPLE_RATE)
+                try AVAudioSession.sharedInstance().setActive(true)
+            } catch {
+                throw CaptureSetupError.audioSession(error.localizedDescription)
+            }
+
             session.beginConfiguration()
             session.sessionPreset = .inputPriority
             session.automaticallyConfiguresCaptureDeviceForWideColor = true
-            session.automaticallyConfiguresApplicationAudioSession = false
+            // Let capture choose a microphone data source and polar pattern
+            // matching the camera. Establish our category/preferences above,
+            // before capture applies its configuration. The AAC encoder uses
+            // the actual PCM sample rate and resamples to its output rate.
+            session.automaticallyConfiguresApplicationAudioSession = true
+            session.configuresApplicationAudioSessionToMixWithOthers = true
             var addedInputs: [AVCaptureInput] = []
             var addedOutputs: [AVCaptureOutput] = []
             do {
@@ -236,6 +255,15 @@ private class DeviceActor {
                 guard session.canAddOutput(audioOutput) else { throw CaptureSetupError.cannotAddAudioOutput }
                 session.addOutput(audioOutput)
                 addedOutputs.append(audioOutput)
+                // This mode applies only to the built-in microphone; external
+                // microphones keep their own channel configuration. Capture
+                // stereo even for mono presets, which the AAC encoder downmixes.
+                if audioInput.isMultichannelAudioModeSupported(.stereo) {
+                    audioInput.multichannelAudioMode = .stereo
+                    if #available(iOS 26.4, *), audioInput.isAudioZoomSupported {
+                        audioInput.isAudioZoomEnabled = true
+                    }
+                }
                 session.commitConfiguration()
             } catch {
                 for output in addedOutputs { session.removeOutput(output) }
@@ -244,20 +272,9 @@ private class DeviceActor {
                 throw error
             }
 
-            do {
-                try AVAudioSession.sharedInstance().setCategory(
-                    .playAndRecord,
-                    mode: .videoRecording,
-                    // HFP uses the same option bit as the older allowBluetooth
-                    // name and works on all iOS versions supported by Tubeist.
-                    options: [.mixWithOthers, .overrideMutedMicrophoneInterruption, .allowBluetoothHFP]
-                )
-                try AVAudioSession.sharedInstance().setPreferredSampleRate(AUDIO_SAMPLE_RATE)
-                try AVAudioSession.sharedInstance().setActive(true)
-                AudioInputRouter.shared.activate()
-            } catch {
-                throw CaptureSetupError.audioSession(error.localizedDescription)
-            }
+            // Restore the user's port preference after automatic configuration;
+            // selecting the built-in port still leaves its direction to capture.
+            AudioInputRouter.shared.activate()
 
             self.videoDevice = videoDevice
             self.videoInput = videoInput

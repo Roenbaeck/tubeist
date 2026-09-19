@@ -532,3 +532,41 @@ and immediate restart. Settings changes affect only the next session.
 
 Preserve validated remuxer behavior unless a focused test and device measurement
 justify a change.
+
+## Deferred camera and audio improvements
+
+Saved for later on 2026-09-19. These are optional follow-up features, outside the
+current release criteria. Prioritize the first three, then evaluate subject
+tracking. Gate each feature on the active device, route, and format capabilities.
+
+- [ ] Add explicit wind-noise control for supported built-in microphones
+  (iOS 18+). Inspect the framework's current setting, expose a toggle, and compare
+  outdoor speech and ambient sound with reduction on and off.
+  [Apple API](https://developer.apple.com/documentation/avfoundation/avcapturedeviceinput/iswindnoiseremovalenabled)
+- [ ] Enable high-quality AirPods recording on iOS 26+, retaining HFP fallback.
+  Verify selection, reconnect behavior, audio quality, and A/V synchronization.
+  [Apple overview](https://developer.apple.com/videos/play/wwdc2025/251/)
+- [ ] Add a discreet lens-smudge warning on supported iOS 26+ cameras. Initially
+  run detection once after camera startup and check false positives and startup
+  cost before considering periodic checks.
+  [Apple API](https://developer.apple.com/documentation/avfoundation/avcapturedevice/setcameralenssmudgedetectionenabled(_:detectioninterval:))
+- [ ] Expose supported microphone processing modes through the system UI,
+  including the iOS 26 input picker, and display the active mode. Preserve the
+  existing saved input selection and leave Voice Isolation optional for music,
+  crowd sound, and performances.
+  [Apple overview](https://developer.apple.com/documentation/avfoundation/system-video-effects-and-microphone-modes)
+- [ ] Add optional tap-to-track autofocus on supported iOS 27+ formats. Subscribe
+  to tracking metadata, indicate acquired/lost tracking, and preserve manual
+  focus and the existing single-focus behavior.
+  [Apple API](https://developer.apple.com/documentation/avfoundation/avcapturedevice/iscontinuousautofocustrackingenabled)
+- [ ] Evaluate iOS 27 low-light video noise reduction. First confirm support for
+  Tubeist's HDR video-data output, then measure detail, motion quality, power,
+  and thermal behavior before choosing defaults.
+  [Apple API](https://developer.apple.com/documentation/avfoundation/avcaptureconnection/automaticallyenableslowlightvideonoisereduction)
+- [ ] Evaluate optional Center Stage framing for front-camera presenters on
+  compatible iPhones, preserving fixed stream dimensions and correct orientation.
+  [Apple walkthrough](https://developer.apple.com/videos/play/wwdc2026/341/)
+
+Spatial audio and Cinematic capture remain lower priority because they require
+more changes to capture and recording. Low-latency stabilization is already
+exposed in Tubeist.
