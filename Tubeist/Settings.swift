@@ -18,6 +18,34 @@ struct Preset: Codable, Equatable, Identifiable, Hashable {
     let audioChannels: Int
     let audioBitrate: Int
     let videoBitrate: Int
+    let bitrateLadder: BitrateLadder
+
+    init(name: String, width: Int, height: Int, frameRate: Double, keyframeInterval: Double,
+         audioChannels: Int, audioBitrate: Int, videoBitrate: Int) {
+        self.name = name
+        self.width = width
+        self.height = height
+        self.frameRate = frameRate
+        self.keyframeInterval = keyframeInterval
+        self.audioChannels = audioChannels
+        self.audioBitrate = audioBitrate
+        self.videoBitrate = videoBitrate
+        let pixelsPerSecond = Double(width) * Double(height) * frameRate
+        let floor = pixelsPerSecond.isFinite ? Int(max(250_000, min(Double(Int.max / 2), pixelsPerSecond * 0.015))) : 250_000
+        bitrateLadder = BitrateLadder(maximum: videoBitrate, minimum: floor)
+    }
+
+    init(from decoder: any Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(name: try values.decode(String.self, forKey: .name),
+                  width: try values.decode(Int.self, forKey: .width),
+                  height: try values.decode(Int.self, forKey: .height),
+                  frameRate: try values.decode(Double.self, forKey: .frameRate),
+                  keyframeInterval: try values.decode(Double.self, forKey: .keyframeInterval),
+                  audioChannels: try values.decode(Int.self, forKey: .audioChannels),
+                  audioBitrate: try values.decode(Int.self, forKey: .audioBitrate),
+                  videoBitrate: try values.decode(Int.self, forKey: .videoBitrate))
+    }
 
     enum CodingKeys: String, CodingKey {
         case name

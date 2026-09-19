@@ -79,9 +79,9 @@ shallow sample-buffer copy cannot pass. Run a selected scenario with, for exampl
 
 The live upload path retries transient failures until stopped, including HTTP 408
 and 429. Permanent HTTP errors still fail visibly. Retry filenames and media bytes
-remain fixed until acknowledged. Once the local queue exceeds 30 segments or 60
-seconds, old complete segments are discarded and the queue is reduced toward six
-seconds of media. This limit is a local latency policy, not a promise about YouTube's
+remain fixed until acknowledged. Once the local queue exceeds 30 fragments or ten
+seconds, old complete segments are discarded. After the active upload finishes,
+delivery resumes with the newest complete queued segment. This limit is a local latency policy, not a promise about YouTube's
 playback buffer. HLS and MPEG-TS discontinuity signaling accompanies any skipped media.
 
 Simulator unit tests separately cover timestamp arithmetic and clock drift,

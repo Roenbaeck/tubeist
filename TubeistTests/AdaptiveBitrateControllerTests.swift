@@ -1,303 +1,258 @@
+import Foundation
 import Testing
 @testable import Tubeist
 
 struct AdaptiveBitrateControllerTests {
-    @Test func shrinkingRecoveryBudgetDoesNotRenewTheBitrateAllowance() {
-        var relaxed = AdaptiveBitrateController(maximumBitrate: 15_000_000,
-            minimumBitrate: 1_000_000, audioBitrate: 128_000)
-        var urgent = relaxed
-        for now in [0.0, 2.0, 4.0] {
-            for seconds in [20.0, 2.0] {
-                var controller = seconds == 20 ? relaxed : urgent
-                controller.delivered(bytes: 3_750_000, elapsed: 1)
-                controller.update(queuedBytes: 10_000_000, queuedMediaSeconds: 8,
-                    inFlightBytes: 0, inFlightSeconds: 0, now: now,
-                    pacedRecoverySeconds: seconds)
-                if seconds == 20 { relaxed = controller } else { urgent = controller }
-            }
-        }
-        #expect(relaxed.targetBitrate == 15_000_000)
-        #expect(urgent.targetBitrate < relaxed.targetBitrate)
-    }
-
-    @Test func deliberatePacingDoesNotDemandAnUnnecessarilyFastBitrateRecovery() {
-        var paced = AdaptiveBitrateController(maximumBitrate: 15_000_000,
-            minimumBitrate: 1_000_000, audioBitrate: 128_000)
-        var unpaced = paced
-        for now in [0.0, 2.0, 4.0, 6.0] {
-            for isPaced in [false, true] {
-                var controller = isPaced ? paced : unpaced
-                controller.delivered(bytes: 3_750_000, elapsed: 1) // 30 Mbps.
-                controller.update(queuedBytes: 15_000_000, queuedMediaSeconds: 8,
-                    inFlightBytes: 0, inFlightSeconds: 0, now: now,
-                    pacedRecoverySeconds: isPaced ? 20 : nil)
-                if isPaced { paced = controller } else { unpaced = controller }
-            }
-        }
-        #expect(paced.targetBitrate == 15_000_000)
-        #expect(unpaced.targetBitrate < paced.targetBitrate)
-    }
-
-    @Test func pacingAllowanceStillRespondsToRealNetworkCongestion() {
-        var controller = controller()
-        for now in [0.0, 2.0, 4.0, 6.0] {
-            controller.delivered(bytes: 1_000_000, elapsed: 3)
-            controller.update(queuedBytes: 8_000_000, queuedMediaSeconds: 12,
-                inFlightBytes: 1_000_000, inFlightSeconds: 5, now: now,
-                pacedRecoverySeconds: 20)
-        }
-        #expect(controller.targetBitrate < 6_000_000)
-    }
-
     private func controller() -> AdaptiveBitrateController {
         AdaptiveBitrateController(maximumBitrate: 6_000_000, minimumBitrate: 1_000_000, audioBitrate: 128_000)
     }
 
-    @Test func isolatedSlowUploadDoesNotChangeQuality() {
-        var controller = controller()
-        controller.delivered(bytes: 1_600_000, elapsed: 1)
-        controller.update(queuedBytes: 3_200_000, queuedMediaSeconds: 4, inFlightBytes: 1_600_000, inFlightSeconds: 3, now: 0)
-        controller.update(queuedBytes: 0, queuedMediaSeconds: 0, inFlightBytes: 0, inFlightSeconds: 0, now: 2)
-        #expect(controller.targetBitrate == 6_000_000)
+    private func observe(_ c: inout AdaptiveBitrateController, at now: Double,
+                         bytes: Int = 0, seconds: Double = 0,
+                         inFlightBytes: Int = 0, age: Double = 0, duration: Double = 2) {
+        c.update(waitingBytes: bytes, waitingMediaSeconds: seconds, inFlightBytes: inFlightBytes,
+                 inFlightDuration: duration, inFlightSeconds: age, now: now)
     }
 
-    @Test func sustainedMildCongestionReducesTwentyPercentAfterTwoObservations() {
-        var controller = controller()
-        controller.delivered(bytes: 1_500_000, elapsed: 2.2)
-        controller.update(queuedBytes: 2_500_000, queuedMediaSeconds: 3.2, inFlightBytes: 1_500_000, inFlightSeconds: 2.2, now: 0)
-        #expect(controller.targetBitrate == 6_000_000)
-        controller.update(queuedBytes: 2_500_000, queuedMediaSeconds: 3.2, inFlightBytes: 1_500_000, inFlightSeconds: 2.2, now: 2)
-        #expect(controller.targetBitrate == 4_800_000)
-        #expect(controller.state == .catchingUp)
+    private func ack(_ c: inout AdaptiveBitrateController, at now: Double, capacity: Double,
+                     elapsed: Double = 1, bytes: Int = 0, seconds: Double = 0) {
+        c.delivered(bytes: Int(capacity * elapsed / 8), elapsed: elapsed, mediaDuration: 2, now: now)
+        observe(&c, at: now, bytes: bytes, seconds: seconds)
     }
 
-    @Test func noFirstAckCanStillCorrectGrosslyExcessivePreset() {
-        var controller = AdaptiveBitrateController(maximumBitrate: 20_000_000, minimumBitrate: 1_000_000, audioBitrate: 128_000)
-        for now in stride(from: 2.0, through: 10.0, by: 2) {
-            controller.update(queuedBytes: Int((now + 2) * 2_500_000), queuedMediaSeconds: now + 2,
-                              inFlightBytes: 5_000_000, inFlightSeconds: now, now: now)
+    @Test func ladderHasExactEndpointsAndUsefulUniqueSteps() {
+        let ladder = BitrateLadder(maximum: 6_000_000, minimum: 1_000_000)
+        #expect(ladder.rungs == [6_000_000, 4_800_000, 3_850_000, 3_050_000, 2_450_000,
+                                1_950_000, 1_550_000, 1_250_000, 1_000_000])
+        #expect(BitrateLadder(maximum: 99_999, minimum: 250_000).rungs == [99_999])
+        #expect(BitrateLadder(maximum: 1_025_000, minimum: 1_000_000).rungs == [1_025_000, 1_000_000])
+        #expect(BitrateLadder(maximum: 0, minimum: -1).rungs == [1])
+        #expect(ladder.fitting(3_900_000) == 3_850_000)
+        #expect(ladder.next(above: 3_850_000) == 4_800_000)
+    }
+
+    @Test func pollingOneSlowCompletionDoesNotCountItTwice() {
+        var c = controller()
+        ack(&c, at: 3, capacity: 4_000_000, elapsed: 3)
+        for now in stride(from: 3.1, through: 20, by: 0.1) { observe(&c, at: now) }
+        #expect(c.targetBitrate == 6_000_000)
+        ack(&c, at: 21, capacity: 4_000_000, elapsed: 3)
+        #expect(c.targetBitrate < 4_000_000)
+    }
+
+    @Test func stallBeforeFirstAckCanReduceAndCannotAuthorizeRecovery() {
+        var c = controller()
+        for now in stride(from: 4.0, through: 16, by: 2) {
+            observe(&c, at: now, bytes: 3_000_000, seconds: 4, inFlightBytes: 1_500_000, age: now)
         }
-        #expect(controller.targetBitrate < 10_000_000)
-        #expect(controller.targetBitrate >= 1_000_000)
+        #expect(c.targetBitrate == c.minimumBitrate)
+        #expect(c.state == .capacityBelowQualityFloor)
+        for now in stride(from: 18.0, through: 60, by: 2) { observe(&c, at: now) }
+        #expect(c.targetBitrate == c.minimumBitrate)
     }
 
-    @Test func repeatedObservationsWithinSegmentCannotAccelerateReduction() {
-        var controller = controller()
-        controller.delivered(bytes: 1_500_000, elapsed: 3)
-        controller.update(queuedBytes: 8_000_000, queuedMediaSeconds: 10, inFlightBytes: 1_500_000, inFlightSeconds: 3, now: 0)
-        let firstDecision = controller.targetBitrate
-        for now in stride(from: 0.0, to: 1.9, by: 0.01) {
-            controller.update(queuedBytes: 8_000_000, queuedMediaSeconds: 10, inFlightBytes: 1_500_000, inFlightSeconds: 3, now: now)
+    @Test func drainingOldLargeSegmentsNeitherRaisesNorRepeatedlyCutsTheTarget() {
+        var c = controller()
+        ack(&c, at: 4, capacity: 4_000_000, elapsed: 3, bytes: 2_000_000, seconds: 4)
+        let reduced = c.targetBitrate
+        #expect(reduced < 6_000_000)
+        ack(&c, at: 5, capacity: 20_000_000, bytes: 1_500_000, seconds: 3)
+        ack(&c, at: 6, capacity: 20_000_000, bytes: 1_000_000, seconds: 2)
+        ack(&c, at: 7, capacity: 20_000_000, bytes: 500_000, seconds: 1)
+        #expect(c.targetBitrate == reduced)
+    }
+
+    @Test func recentlyProvenQualityReturnsAfterFourSecondsOfFreshClearDelivery() {
+        var c = controller()
+        for now in stride(from: 0.0, through: 40, by: 2) { ack(&c, at: now, capacity: 12_000_000) }
+        ack(&c, at: 42, capacity: 4_000_000, elapsed: 3, bytes: 1_000_000, seconds: 4)
+        let reduced = c.targetBitrate
+        for now in [44.0, 46] {
+            ack(&c, at: now, capacity: 12_000_000)
+            #expect(c.targetBitrate == reduced)
         }
-        #expect(controller.targetBitrate == firstDecision)
+        ack(&c, at: 48, capacity: 12_000_000)
+        #expect(c.targetBitrate == 6_000_000)
     }
 
-    @Test func aNewSlowDeliveryIsNotHiddenByOldFastUploads() {
-        var controller = AdaptiveBitrateController(maximumBitrate: 20_000_000, minimumBitrate: 1_000_000, audioBitrate: 128_000)
-        for _ in 0..<10 { controller.delivered(bytes: 5_000_000, elapsed: 0.5) } // 80 Mbps history.
-        controller.update(queuedBytes: 0, queuedMediaSeconds: 0, inFlightBytes: 0, inFlightSeconds: 0, now: 0)
-        controller.delivered(bytes: 5_000_000, elapsed: 5) // Now only 8 Mbps.
-        controller.update(queuedBytes: 10_000_000, queuedMediaSeconds: 4, inFlightBytes: 0, inFlightSeconds: 0, now: 6,
-                          pacedRecoverySeconds: 20)
-        controller.update(queuedBytes: 10_000_000, queuedMediaSeconds: 4, inFlightBytes: 0, inFlightSeconds: 0, now: 8,
-                          pacedRecoverySeconds: 18)
-        #expect(controller.estimatedThroughput! > 70_000_000)
-        #expect(controller.targetBitrate < 20_000_000)
+    @Test func fastBurstCannotReplaceWallClockRecoveryEvidence() {
+        var c = controller()
+        for now in stride(from: 0.0, through: 40, by: 2) { ack(&c, at: now, capacity: 12_000_000) }
+        ack(&c, at: 42, capacity: 4_000_000, elapsed: 3, bytes: 1_000_000, seconds: 4)
+        let reduced = c.targetBitrate
+        for now in stride(from: 42.1, through: 44, by: 0.1) { ack(&c, at: now, capacity: 24_000_000, elapsed: 0.1) }
+        #expect(c.targetBitrate == reduced)
     }
 
-    @Test func aConfirmedSevereDropUsesTheUrgentCorrectionImmediately() {
-        var controller = controller()
-        controller.delivered(bytes: 200_000, elapsed: 2) // 0.8 Mbps cannot sustain this preset.
-        controller.update(queuedBytes: 6_000_000, queuedMediaSeconds: 8,
-                          inFlightBytes: 0, inFlightSeconds: 0, now: 0)
-        #expect(controller.targetBitrate == controller.minimumBitrate)
-        #expect(controller.state == .capacityBelowQualityFloor)
+    @Test func transientPeakAfterSustainedCongestionDoesNotRaiseQuality() {
+        var c = controller()
+        ack(&c, at: 3, capacity: 3_000_000, elapsed: 3, bytes: 500_000, seconds: 4)
+        for now in stride(from: 6.0, through: 60, by: 2) { ack(&c, at: now, capacity: 3_000_000) }
+        let reduced = c.targetBitrate
+        ack(&c, at: 62, capacity: 30_000_000)
+        ack(&c, at: 64, capacity: 3_000_000)
+        #expect(c.targetBitrate == reduced)
     }
 
-    @Test func qualityFloorIsReportedInsteadOfReducingWithoutLimit() {
-        var controller = controller()
-        controller.delivered(bytes: 100_000, elapsed: 5)
-        for now in [0.0, 2.0, 4.0] {
-            controller.update(queuedBytes: 10_000_000, queuedMediaSeconds: 12, inFlightBytes: 1_500_000, inFlightSeconds: 10, now: now)
-        }
-        #expect(controller.targetBitrate == 1_000_000)
-        #expect(controller.state == .capacityBelowQualityFloor)
+    @Test func failedIncreaseRollsBackAndBlocksFurtherIncreases() {
+        var c = controller()
+        c.discardedBacklog(now: 0)
+        for now in stride(from: 2.0, through: 20, by: 2) { ack(&c, at: now, capacity: 20_000_000) }
+        let increased = c.targetBitrate
+        #expect(increased == 1_250_000)
+        ack(&c, at: 23, capacity: 1_000_000, elapsed: 3)
+        ack(&c, at: 26, capacity: 1_000_000, elapsed: 3)
+        #expect(c.targetBitrate == 1_000_000)
+        for now in stride(from: 28.0, through: 44, by: 2) { ack(&c, at: now, capacity: 20_000_000) }
+        #expect(c.targetBitrate == 1_000_000)
+        ack(&c, at: 46, capacity: 20_000_000)
+        #expect(c.targetBitrate == 1_250_000)
     }
 
-    private func reducedFifteenMegabitController() -> AdaptiveBitrateController {
-        var controller = AdaptiveBitrateController(maximumBitrate: 15_000_000,
-            minimumBitrate: 10_000_000, audioBitrate: 128_000)
-        // A previously healthy 30 Mbps connection stalls. The unfinished
-        // upload bounds current capacity before a new measurement arrives.
-        controller.delivered(bytes: 3_750_000, elapsed: 1)
-        for now in [0.0, 2.0, 4.0] {
-            controller.update(queuedBytes: 7_500_000, queuedMediaSeconds: 10,
-                inFlightBytes: 3_750_000, inFlightSeconds: 6, now: now)
-        }
-        #expect(controller.targetBitrate == 10_000_000)
-        return controller
+    @Test func emptyQueueDuringLongCaptureGapDoesNotCountAsSustainedEvidence() {
+        var c = controller()
+        c.discardedBacklog(now: 0)
+        ack(&c, at: 20, capacity: 20_000_000)
+        ack(&c, at: 22, capacity: 20_000_000)
+        ack(&c, at: 100, capacity: 20_000_000)
+        #expect(c.targetBitrate == 1_000_000)
     }
 
-    @Test func restoredCapacityImmediatelyReturnsTenToFifteenMegabits() {
-        var controller = reducedFifteenMegabitController()
-        controller.delivered(bytes: 3_750_000, elapsed: 1)
-        controller.update(queuedBytes: 0, queuedMediaSeconds: 0,
-            inFlightBytes: 0, inFlightSeconds: 0, now: 6)
-        #expect(controller.targetBitrate == 15_000_000)
-        #expect(controller.state == .steady)
-    }
-
-    @Test func oldFastMeasurementsCannotUndoReduction() {
-        var controller = reducedFifteenMegabitController()
-        for now in stride(from: 6.0, through: 60.0, by: 2) {
-            controller.update(queuedBytes: 0, queuedMediaSeconds: 0, inFlightBytes: 0, inFlightSeconds: 0, now: now)
-            #expect(controller.targetBitrate == 10_000_000)
+    @Test func recurrentDipsDisableFastRestoration() {
+        var c = controller()
+        for now in stride(from: 0.0, through: 40, by: 2) { ack(&c, at: now, capacity: 12_000_000) }
+        ack(&c, at: 42, capacity: 4_000_000, elapsed: 3, bytes: 1_000_000, seconds: 4)
+        for now in [44.0, 46, 48] { ack(&c, at: now, capacity: 12_000_000) }
+        #expect(c.targetBitrate == 6_000_000)
+        ack(&c, at: 53, capacity: 4_000_000, elapsed: 3, bytes: 1_000_000, seconds: 4)
+        let reduced = c.targetBitrate
+        #expect(reduced < 6_000_000)
+        for now in [54.0, 56, 58, 60, 62, 64] {
+            ack(&c, at: now, capacity: 12_000_000)
+            #expect(c.targetBitrate == reduced)
         }
     }
 
-    @Test func latestSlowUploadCapsHistoricallyHighCapacity() {
-        var controller = reducedFifteenMegabitController()
-        controller.delivered(bytes: 1_000_000, elapsed: 1)
-        controller.update(queuedBytes: 0, queuedMediaSeconds: 0,
-            inFlightBytes: 0, inFlightSeconds: 0, now: 6)
-        #expect(controller.estimatedThroughput! > 15_000_000)
-        #expect(controller.targetBitrate == 10_000_000)
+    @Test func uploadLatenessUsesItsActualMediaDuration() {
+        var c = controller()
+        observe(&c, at: 3, bytes: 1_000_000, seconds: 2, inFlightBytes: 3_000_000, age: 3, duration: 4)
+        #expect(c.targetBitrate == 6_000_000)
+        observe(&c, at: 6, bytes: 1_000_000, seconds: 2, inFlightBytes: 3_000_000, age: 6, duration: 4)
+        #expect(c.targetBitrate < 6_000_000)
     }
 
-    @Test func oneFastOutlierDoesNotOverrideSustainedLowCapacity() {
-        var controller = reducedFifteenMegabitController()
-        for _ in 0..<20 { controller.delivered(bytes: 1_000_000, elapsed: 1) }
-        controller.delivered(bytes: 3_750_000, elapsed: 1)
-        controller.update(queuedBytes: 0, queuedMediaSeconds: 0,
-            inFlightBytes: 0, inFlightSeconds: 0, now: 6)
-        #expect(controller.targetBitrate == 10_000_000)
+    @Test func invalidSamplesAndObservationsCannotChangeTheTarget() {
+        var c = controller()
+        c.delivered(bytes: 0, elapsed: 1, mediaDuration: 2, now: 0)
+        c.delivered(bytes: 1, elapsed: .nan, mediaDuration: 2, now: 0)
+        c.delivered(bytes: 1, elapsed: 1, mediaDuration: 0, now: 0)
+        observe(&c, at: .infinity)
+        observe(&c, at: 1, seconds: .nan)
+        #expect(c.estimatedThroughput == nil)
+        #expect(c.targetBitrate == 6_000_000)
     }
 
-    @Test func recoveryReservesBandwidthBeyondVideoBitrate() {
-        var controller = reducedFifteenMegabitController()
-        controller.delivered(bytes: 2_000_000, elapsed: 1) // 16 Mbps total, not video alone.
-        controller.update(queuedBytes: 0, queuedMediaSeconds: 0,
-            inFlightBytes: 0, inFlightSeconds: 0, now: 6)
-        #expect(controller.targetBitrate > 10_000_000)
-        #expect(controller.targetBitrate < 15_000_000)
-        #expect(Double(controller.targetBitrate + 128_000) * 1.08 <= 16_000_000 * 0.92)
+    @Test(arguments: [0.0, 0.5, 1.0, 1.5])
+    func shortHalvingAtDifferentSegmentPhasesRecoversWithoutDrops(phase: Double) {
+        let result = simulate(seconds: 90) { now in (40 + phase..<42 + phase).contains(now) ? 5_000_000 : 10_000_000 }
+        #expect(result.dropped == 0)
+        #expect(result.maximumWaiting <= 4)
+        #expect(result.rates.filter { $0.at >= 55 }.allSatisfy { $0.rate == 6_000_000 })
     }
 
-    @Test func ampleCapacityRestoresTargetWhileBacklogStillDrains() {
-        var controller = reducedFifteenMegabitController()
-        controller.delivered(bytes: 3_750_000, elapsed: 1)
-        controller.update(queuedBytes: 6_000_000, queuedMediaSeconds: 4,
-            inFlightBytes: 3_000_000, inFlightSeconds: 1, now: 6)
-        #expect(controller.targetBitrate == 15_000_000)
+    @Test func sustainedHalvingSettlesThenRecoversWithoutOscillation() {
+        let result = simulate(seconds: 240) { now in (40..<140).contains(now) ? 5_000_000 : 10_000_000 }
+        #expect(result.dropped == 0)
+        #expect(result.maximumWaiting <= 8)
+        let settled = result.rates.filter { (90..<140).contains($0.at) }.map(\.rate)
+        #expect(Set(settled).count == 1)
+        #expect(settled.first! < 5_000_000)
+        #expect(result.rates.last!.rate == 6_000_000)
+        #expect(result.rates.filter { $0.at >= 210 }.allSatisfy { $0.rate == 6_000_000 })
     }
 
-    @Test func largeBacklogKeepsRecoveredCapacityAvailableForCatchUp() {
-        var controller = reducedFifteenMegabitController()
-        controller.delivered(bytes: 3_750_000, elapsed: 1)
-        controller.update(queuedBytes: 15_000_000, queuedMediaSeconds: 8,
-            inFlightBytes: 3_000_000, inFlightSeconds: 1, now: 6)
-        #expect(controller.targetBitrate == 10_000_000)
+    @Test func prolongedOutageUsesFloorAndStillEventuallyRestoresQuality() {
+        let result = simulate(seconds: 240) { now in (40..<70).contains(now) ? 0 : 10_000_000 }
+        #expect(result.dropped > 0)
+        #expect(result.maximumWaiting <= 10)
+        #expect(result.rates.contains { $0.rate == 1_000_000 })
+        #expect(result.rates.last!.rate == 6_000_000)
     }
 
-    @Test func eachRecoveryDecisionNeedsANewCompletedUpload() {
-        var controller = reducedFifteenMegabitController()
-        controller.delivered(bytes: 3_750_000, elapsed: 1)
-        controller.update(queuedBytes: 8_500_000, queuedMediaSeconds: 6,
-            inFlightBytes: 3_000_000, inFlightSeconds: 1, now: 6)
-        let partialRecovery = controller.targetBitrate
-        #expect(partialRecovery > 10_000_000 && partialRecovery < 15_000_000)
-        controller.update(queuedBytes: 0, queuedMediaSeconds: 0,
-            inFlightBytes: 0, inFlightSeconds: 0, now: 8)
-        #expect(controller.targetBitrate == partialRecovery)
-        controller.delivered(bytes: 3_750_000, elapsed: 1)
-        controller.update(queuedBytes: 0, queuedMediaSeconds: 0,
-            inFlightBytes: 0, inFlightSeconds: 0, now: 10)
-        #expect(controller.targetBitrate == 15_000_000)
-    }
-
-    @Test func anotherStalledUploadPreventsPrematureRecovery() {
-        var controller = reducedFifteenMegabitController()
-        controller.delivered(bytes: 3_750_000, elapsed: 1)
-        controller.update(queuedBytes: 7_500_000, queuedMediaSeconds: 4,
-            inFlightBytes: 3_750_000, inFlightSeconds: 6, now: 6)
-        #expect(controller.targetBitrate == 10_000_000)
-    }
-
-    @Test func freshDeliveryWaitsOnlyForNextDecisionBoundary() {
-        var controller = reducedFifteenMegabitController()
-        controller.delivered(bytes: 3_750_000, elapsed: 1)
-        for now in stride(from: 4.1, to: 6, by: 0.1) {
-            controller.update(queuedBytes: 0, queuedMediaSeconds: 0,
-                inFlightBytes: 0, inFlightSeconds: 0, now: now)
-            #expect(controller.targetBitrate == 10_000_000)
+    @Test func briefPeakDuringSustainedLowCapacityDoesNotCauseAnIncrease() {
+        let result = simulate(seconds: 180) { now in
+            if (100..<102).contains(now) { return 20_000_000 }
+            return now < 40 ? 10_000_000 : 4_000_000
         }
-        controller.update(queuedBytes: 0, queuedMediaSeconds: 0,
-            inFlightBytes: 0, inFlightSeconds: 0, now: 6)
-        #expect(controller.targetBitrate == 15_000_000)
+        let baseline = simulate(seconds: 180) { $0 < 40 ? 10_000_000 : 4_000_000 }
+        let aroundPeak = result.rates.filter { (100..<110).contains($0.at) }.map(\.rate)
+        let withoutPeak = baseline.rates.filter { (100..<110).contains($0.at) }.map(\.rate)
+        #expect(aroundPeak == withoutPeak)
+        #expect(result.dropped == 0)
     }
 
-    @Test func invalidMeasurementsAndLowSelectedCeilingAreSafe() {
-        var controller = AdaptiveBitrateController(maximumBitrate: 100_000, minimumBitrate: 1_000_000, audioBitrate: 64_000)
-        controller.delivered(bytes: 0, elapsed: .nan)
-        controller.delivered(bytes: 100, elapsed: 0)
-        controller.update(queuedBytes: 0, queuedMediaSeconds: 0, inFlightBytes: 0, inFlightSeconds: 0, now: .infinity)
-        #expect(controller.targetBitrate == 100_000)
-        #expect(controller.minimumBitrate == 100_000)
-        #expect(controller.estimatedThroughput == nil)
+    private struct Trace {
+        var dropped = 0
+        var maximumWaiting = 0.0
+        var rates: [(at: Double, rate: Int)] = []
     }
 
-    @Test func leakyBucketTraceDrainsBacklogWithoutOscillating() {
+    /// A continuous link with serialized transactions, 80 ms request latency,
+    /// variable segment sizes, and bitrate captured at the START of encoding.
+    /// This includes the encoder/segment delay missing from instantaneous models.
+    private func simulate(seconds: Double, capacity: (Double) -> Double) -> Trace {
         struct Segment {
-            var remainingBits: Double
-            let totalBytes: Int
-            var startedAt: Double?
+            let bytes: Int
+            let duration = 2.0
+            var remaining: Double
+            var started = 0.0
         }
-        var controller = controller()
+        var c = controller()
         var queue: [Segment] = []
-        var maximumQueue = 0
-        var minimumRate = controller.targetBitrate
-        var rateAtRecoveryStart = 0
-        var fullRecoveryTime: Double?
-        var settledRates: [Int] = []
-        var nextSegmentTime = 0.0
-        // 20s healthy, a sustained 25% bandwidth deficit, then recovery.
-        // Transfers progress continuously; samples arrive in two-second bursts.
-        for step in 0..<3000 {
-            let now = Double(step) / 10
-            let capacity = now < 20 || now >= 120 ? 10_000_000.0 : 4_500_000.0
-            if now >= nextSegmentTime {
-                let wireBits = Double(controller.targetBitrate + 128_000) * 1.08 * 2
-                queue.append(Segment(remainingBits: wireBits, totalBytes: Int(wireBits / 8)))
-                nextSegmentTime += 2
-            }
-            if !queue.isEmpty {
-                if queue[0].startedAt == nil { queue[0].startedAt = now }
-                queue[0].remainingBits -= capacity / 10
-                if queue[0].remainingBits <= 0 {
-                    let delivered = queue.removeFirst()
-                    controller.delivered(bytes: delivered.totalBytes, elapsed: now + 0.1 - delivered.startedAt!)
+        var current: Segment?
+        var nextArrival = 2.0
+        var nextObservation = 0.0
+        var encodingRate = c.targetBitrate
+        var index = 0
+        var trace = Trace()
+        let dt = 0.02
+        for step in 0...Int(seconds / dt) {
+            let now = Double(step) * dt
+            var event = false
+            if now + 0.0001 >= nextArrival {
+                let vbr = [0.90, 1.10, 1.0, 1.05, 0.95][index % 5]
+                let bits = (Double(encodingRate) * vbr + 128_000) * 1.08 * 2
+                if queue.count >= 5 {
+                    trace.dropped += queue.count
+                    queue.removeAll()
+                    c.discardedBacklog(now: now)
                 }
+                queue.append(Segment(bytes: Int(bits / 8), remaining: bits))
+                event = true
+                nextArrival += 2
+                index += 1
+                encodingRate = c.targetBitrate
             }
-            controller.update(queuedBytes: queue.reduce(0) { $0 + $1.totalBytes },
-                              queuedMediaSeconds: Double(queue.count) * 2,
-                              inFlightBytes: queue.first?.totalBytes ?? 0,
-                              inFlightSeconds: queue.first?.startedAt.map { now - $0 } ?? 0,
-                              now: now)
-            maximumQueue = max(maximumQueue, queue.count)
-            minimumRate = min(minimumRate, controller.targetBitrate)
-            if step == 1200 { rateAtRecoveryStart = controller.targetBitrate }
-            if now >= 100 && now < 120 { settledRates.append(controller.targetBitrate) }
-            if now >= 120, fullRecoveryTime == nil, controller.targetBitrate == controller.maximumBitrate {
-                fullRecoveryTime = now
+            if var segment = current {
+                if now - segment.started >= 0.08 { segment.remaining -= capacity(now) * dt }
+                if segment.remaining <= 0 {
+                    current = nil
+                    event = true
+                    c.delivered(bytes: segment.bytes, elapsed: now - segment.started, mediaDuration: 2, now: now)
+                } else { current = segment }
             }
+            if event || now >= nextObservation {
+                observe(&c, at: now, bytes: queue.reduce(0) { $0 + $1.bytes }, seconds: Double(queue.count) * 2,
+                        inFlightBytes: current?.bytes ?? 0, age: current.map { now - $0.started } ?? 0)
+                nextObservation = now + 0.25
+            }
+            if current == nil, !queue.isEmpty {
+                current = queue.removeFirst()
+                current?.started = now
+            }
+            trace.maximumWaiting = max(trace.maximumWaiting, Double(queue.count) * 2)
+            if step % 50 == 0 { trace.rates.append((now, c.targetBitrate)) }
         }
-        #expect(maximumQueue <= 5)
-        #expect(minimumRate > controller.minimumBitrate)
-        #expect(queue.count <= 1)
-        #expect(rateAtRecoveryStart < controller.maximumBitrate)
-        #expect(controller.targetBitrate == controller.maximumBitrate)
-        #expect(fullRecoveryTime != nil && fullRecoveryTime! < 135)
-        // A lasting drop must settle rather than continually recover into it.
-        #expect(Double(settledRates.max()! - settledRates.min()!) / Double(settledRates.min()!) < 0.05)
+        return trace
     }
 }

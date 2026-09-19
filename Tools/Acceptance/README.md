@@ -43,22 +43,21 @@ it must still be compared with capture time, the local recording, and the
 YouTube archive. Keep those media files and private URLs out of Git.
 
 Current `segmentAccepted` events report the sink's remaining local queue in
-`queuedDuration`. Their optional `detail` records the scheduled media delivery
-`rate` (or `unpaced`), `pacingReason`, actual `pacingWait` seconds, requested `videoTarget` bits/second at upload
+`queuedDuration`. Their optional `detail` retains the legacy delivery fields:
+`rate=unpaced`, `pacingReason=workConserving`, `pacingWait=0`, requested `videoTarget` bits/second at upload
 start, and the segment's muxed `mediaMbps`. Older reports used the uploader's
 already-acknowledged playlist queue, which generally reported zero even when
 segments were waiting in the sink. Do not compare that older value as if it were
 the full local backlog.
 
-Delivery pacing uses `1 + backlogSeconds / remainingRecoverySeconds`. A recovery
-episode gets one twenty-second deadline; it is never postponed while that
-backlog persists. The rate can exceed 2x if progress is insufficient. Pacing stops
-when the recovery deadline expires, when the queue has less than two maximum-size
-segments of duration/count headroom, or when waiting would threaten the Stop
-budget. Upload time counts toward spacing; startup is immediate. Queue overflow
-still trims to six seconds with a discontinuity, and ENDLIST still waits ten
-seconds after the final media acknowledgement. These are local policies, not
-documented YouTube buffer/rate guarantees. See [the model and limits](DELIVERY_PACING.md).
+Uploads run continuously and serially, including while catching up. Bitrate
+reductions reserve capacity to drain queued media; increases wait for a final
+ACK that leaves no work queued. Waiting media is bounded by ten seconds or 30
+fragments. Overflow keeps the active transaction, then resumes at the newest
+complete segment with a discontinuity, preserving any Stop-tail callbacks.
+ENDLIST still waits ten seconds after the final media acknowledgement. These
+are local policies, not documented YouTube buffer/rate guarantees. See
+[the controller and limits](../../Docs/AdaptiveBitrate.md).
 
 ## Exact upload capture and segment validation
 

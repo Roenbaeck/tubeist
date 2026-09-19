@@ -50,8 +50,9 @@
 - The 2026-08-21 repeat-stream, buffer-continuity, and Stop-tail fixes pass all
   103 unit tests on the iPhone 16 Pro iOS 18.2 simulator, Swift parsing, the
   YouTube-only source check, and an unsigned generic-device Release build.
-- The local YouTube jitter queue is now explicitly distinct from YouTube's
-  five-outstanding-segment protocol limit: it absorbs at least sixty seconds of
+- Historical queue policy (superseded by the September adaptive delivery update
+  documented in `Docs/AdaptiveBitrate.md`): the local jitter queue was distinct from YouTube's
+  five-outstanding-segment protocol limit: it absorbed at least sixty seconds of
   two-second fragments before a bounded discontinuity is required, and upload
   retries remain active for up to two minutes. Stop freezes audio at the user's
   action and lets stabilized video reach that timestamp before capture is
@@ -376,9 +377,9 @@ and Settings Save/Cancel behavior is truthful.
 - [x] Bound Journal ordering/storage and batch UI publication.
 - [x] Make acceptance recording opt-in and append/batch bounded output instead of
   rewriting the full report per segment.
-- [x] Prove with an ordered uploader test that the enlarged local jitter queue
-  survives a recovered 60-second network stall without a discontinuity; confirm
-  longer stalls remain bounded and surface degradation.
+- [x] Verify ordered upload, bounded local backlog and discontinuity after overflow.
+  The September adaptive delivery policy replaces the old 60-second continuity
+  allowance with a ten-second waiting-media limit; see `Docs/AdaptiveBitrate.md`.
 - [x] Fix deterministic overlay order, clearing the last overlay, transparent
   bounds, and main-actor UIKit/WebKit isolation.
 - [ ] Profile stream-only and stream-and-record with Instruments before changing
@@ -459,9 +460,9 @@ legacy behavior or accidental development-only gate.
 - [ ] Exercise rapid controls, backgrounding, interruptions, route changes,
   media-services reset, low storage, network loss, timeout, 5xx, authentication
   failure, and thermal pressure.
-- [ ] On device, recover from a 60-second network interruption without an archive
-  gap; extend the interruption past one minute and verify bounded, visibly
-  degraded behavior.
+- [ ] On device, recover from short network interruptions without an archive gap;
+  exceed the ten-second waiting-media limit and verify bounded, visibly degraded
+  behavior with a correctly signaled discontinuity and complete local recording.
 - [ ] Verify budgets with acceptance diagnostics disabled.
 - [ ] Scan logs, preferences, app container, and crash context for a canary key.
 - [ ] Repeat the core matrix in TestFlight, including migration from the

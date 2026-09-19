@@ -5,6 +5,19 @@ import UIKit
 
 @MainActor
 struct SettingsDraftTests {
+    @Test func presetDerivesLadderAndReloadsLegacySettingsWithoutPersistingDerivedValues() throws {
+        let preset = Preset(name: "Custom", width: 1920, height: 1080, frameRate: 30, keyframeInterval: 2,
+                            audioChannels: 2, audioBitrate: 96_000, videoBitrate: 6_000_000)
+        #expect(preset.bitrateLadder.maximum == 6_000_000)
+        #expect(preset.bitrateLadder.minimum == 933_120)
+        let data = try JSONEncoder().encode(preset)
+        #expect(!String(decoding: data, as: UTF8.self).contains("ladder"))
+        #expect(try JSONDecoder().decode(Preset.self, from: data).bitrateLadder == preset.bitrateLadder)
+        let low = Preset(name: "Custom", width: 3840, height: 2160, frameRate: 60, keyframeInterval: 2,
+                         audioChannels: 2, audioBitrate: 128_000, videoBitrate: 100_000)
+        #expect(low.bitrateLadder.rungs == [100_000])
+    }
+
     @Test func switchingCameraModesKeepsResolutionAndUsesTheNewBitrateAndKeyframeInterval() throws {
         for stationary in stationaryCameraPresets {
             let moving = Preset.forCameraPosition("moving", matching: stationary)

@@ -8,6 +8,7 @@ let AUDIO_SAMPLE_RATE = 44_100.0
 struct Preset: Sendable {
     let width = 320, height = 180
     let frameRate = 30.0, keyframeInterval = 2.0
+    let bitrateLadder = BitrateLadder(maximum: 1_000_000, minimum: 250_000)
     var audioChannels = 2
     let audioBitrate = 64_000, videoBitrate = 1_000_000
 }

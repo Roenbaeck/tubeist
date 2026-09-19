@@ -86,6 +86,9 @@ The interface displays operational information—including current throughput, u
 
 Choose **Settings → Monitoring → System health bar position** to place the bar at the top or bottom, then tap **Save**. At the top, the order is audio meter, system health, and fading messages; at the bottom, the order is reversed. The adaptive video bitrate appears yellow whenever it is below the selected preset's target. Bandwidth below the quality threshold produces a fading warning instead of widening the health bar.
 
+Tubeist derives a bitrate ladder from the selected preset. It reduces quality when uploads fall behind, holds that target while the queue drains, and restores a recently proven bitrate faster than it explores new capacity. Uploads drain continuously. If waiting media exceeds ten seconds, Tubeist skips older queued segments and signals a discontinuity while preserving the active upload and local recording. See [adaptive delivery](Docs/AdaptiveBitrate.md) for the controller, recovery policy, and verification details.
+
+
 ## Overlays, styles, and effects
 
 Web overlays can add live graphics and information to the encoded output. Tubeist also includes visual styles and effects that can be combined with overlays while recording or streaming. Some styles and effects are available through an in-app purchase.
