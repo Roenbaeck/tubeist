@@ -74,6 +74,78 @@ struct YouTubeHLSUploaderTests {
         #expect(await transport.recordedRequests().count == 2)
     }
 
+    @Test(arguments: [0, 7, 15])
+    func completionGraceStartsAfterEndListAcknowledgement(acknowledgementDelay: Int) async throws {
+        let clock = HLSGraceTestClock()
+        let transport = HLSGraceTestTransport(clock: clock,
+            endListAcknowledgementDelay: .seconds(acknowledgementDelay))
+        let uploader = try YouTubeHLSUploader(
+            endpoint: .manualPrimary(streamKey: "test"), sessionIdentifier: "completion_grace",
+            userAgent: "Tubeist/Test", transport: transport,
+            now: { clock.now() }, sleeper: { clock.advance($0) }
+        )
+        _ = try await uploader.upload(segment: Data([1]), duration: 2)
+        let mediaAcknowledgedAt = clock.now()
+        #expect(try await uploader.finish())
+        let endListAcknowledgedAt = clock.now()
+        #expect(mediaAcknowledgedAt.duration(to: endListAcknowledgedAt)
+            == .seconds(10 + acknowledgementDelay))
+
+        let deadline = try await YouTubeCompletionGrace.wait(
+            deadline: clock.now().advanced(by: .seconds(120)),
+            now: { clock.now() }, sleep: { clock.advance($0) }
+        )
+        #expect(endListAcknowledgedAt.duration(to: clock.now()) == .seconds(10))
+        // Waiting must not use up the API request's own eight-second budget.
+        #expect(clock.now().duration(to: deadline) == .seconds(8))
+    }
+
+    @Test(arguments: [0, 5, 10])
+    func completionGraceNeverShortensTheWaitToMeetADeadline(secondsRemaining: Int) async throws {
+        let clock = HLSGraceTestClock()
+        await #expect(throws: URLError(.timedOut)) {
+            try await YouTubeCompletionGrace.wait(
+                deadline: clock.now().advanced(by: .seconds(secondsRemaining)),
+                now: { clock.now() },
+                sleep: { _ in Issue.record("Insufficient time must leave completion to auto-stop") }
+            )
+        }
+    }
+
+    @Test(arguments: [12, 30])
+    func completionRequestStaysWithinTheShutdownDeadline(secondsRemaining: Int) async throws {
+        let clock = HLSGraceTestClock()
+        let shutdownDeadline = clock.now().advanced(by: .seconds(secondsRemaining))
+        let requestDeadline = try await YouTubeCompletionGrace.wait(
+            deadline: shutdownDeadline, now: { clock.now() }, sleep: { clock.advance($0) }
+        )
+        #expect(requestDeadline == min(shutdownDeadline, clock.now().advanced(by: .seconds(8))))
+    }
+
+    @Test func completionGraceRejectsAnExpiredDeadlineAfterResuming() async throws {
+        let clock = HLSGraceTestClock()
+        await #expect(throws: URLError(.timedOut)) {
+            try await YouTubeCompletionGrace.wait(
+                deadline: clock.now().advanced(by: .seconds(20)),
+                now: { clock.now() }, sleep: { _ in clock.advance(.seconds(30)) }
+            )
+        }
+    }
+
+    @Test func completionGraceCanBeCancelled() async throws {
+        let started = GraceWaitSignal()
+        let finishing = Task {
+            try await YouTubeCompletionGrace.wait(deadline: .now.advanced(by: .seconds(120)),
+                sleep: { delay in
+                    await started.signal()
+                    try await Task.sleep(for: delay)
+                })
+        }
+        await started.wait()
+        finishing.cancel()
+        await #expect(throws: CancellationError.self) { try await finishing.value }
+    }
+
     @Test func deadlineInterruptsGraceWithoutPublishingAnEarlyEndList() async throws {
         let transport = MockYouTubeHLSTransport(statuses: [200, 200])
         let uploader = try YouTubeHLSUploader(
@@ -561,10 +633,14 @@ private final class HLSGraceTestClock: @unchecked Sendable {
 
 private actor HLSGraceTestTransport: YouTubeHLSHTTPTransport {
     let clock: HLSGraceTestClock
+    let endListAcknowledgementDelay: Duration
     private(set) var endListSentAt: ContinuousClock.Instant?
     private(set) var mediaUploads = 0
 
-    init(clock: HLSGraceTestClock) { self.clock = clock }
+    init(clock: HLSGraceTestClock, endListAcknowledgementDelay: Duration = .zero) {
+        self.clock = clock
+        self.endListAcknowledgementDelay = endListAcknowledgementDelay
+    }
 
     func send(_ request: URLRequest, body: Data) async throws -> YouTubeHLSHTTPResponse {
         if request.value(forHTTPHeaderField: "Content-Type") == "video/mp2t" {
@@ -573,6 +649,7 @@ private actor HLSGraceTestTransport: YouTubeHLSHTTPTransport {
             clock.advance(.seconds(15))
         } else if String(decoding: body, as: UTF8.self).contains("#EXT-X-ENDLIST") {
             endListSentAt = clock.now()
+            clock.advance(endListAcknowledgementDelay)
         }
         return YouTubeHLSHTTPResponse(statusCode: 200)
     }

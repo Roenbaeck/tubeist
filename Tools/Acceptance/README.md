@@ -68,6 +68,10 @@ preserve HLS's minimum live duration of three target durations (15 seconds).
 The five-outstanding-upload limit is independent of this history window.
 Media and discontinuity sequence numbers advance as old entries leave; the
 playlist has no EVENT tag. The same window is retained through ENDLIST.
+New playlists declare version 6, matching FFmpeg's declaration when emitting
+`EXT-X-INDEPENDENT-SEGMENTS`. This is a compatibility alignment, not evidence
+that version 3 caused YouTube to omit media. Historical version-3 captures
+remain valid inputs to these tools.
 
 Upload filenames use `t<22-character session token>_<base36 sequence>.ts`.
 The token is a URL-safe encoding of the first 128 bits of the session ID's SHA-256
@@ -110,7 +114,8 @@ The capture proves upload behavior, not when YouTube finished processing it.
 
 Turn the test off and Save afterward. The next normal signed-in Start restores
 auto-stop; normal Stop waits ten seconds from the final media acknowledgement,
-sends ENDLIST, and attempts API completion. Changing the setting cannot end an
+sends ENDLIST, waits another ten seconds after its acknowledgement, and attempts
+API completion. Changing the setting cannot end an
 already-open diagnostic broadcast: complete that broadcast in Studio first.
 
 ### Capture contents
@@ -185,12 +190,17 @@ margin. Compare a new countdown's local recording and YouTube replay to verify
 the smaller playlist still preserves playback under recovery conditions.
 
 Shutdown now waits until ten seconds after the final media acknowledgement before
-sending ENDLIST. The normal Stop path then requests completion of the broadcast
-captured at Start, when the same YouTube authorization is still available. This
-API step has an eight-second budget within the overall shutdown deadline; failure
-leaves auto-stop and status polling in place. Completion is shown only after API
-confirmation. The upload journal records the last media response and the ENDLIST
-request separately, so their elapsed-time difference verifies the grace period.
+sending ENDLIST. After ENDLIST is acknowledged, the normal signed-in Stop path
+waits another ten seconds before requesting completion of the broadcast captured
+at Start, when the same YouTube authorization is still available. This API step
+has an eight-second budget starting after the second wait, bounded by the overall
+shutdown deadline. If the full second wait cannot fit, explicit completion is
+skipped; the wait is never shortened to force an earlier transition. Cancellation
+also prevents that request. Failure leaves auto-stop and status polling in place.
+Completion is shown only after API confirmation. The upload journal records the
+last media response and the ENDLIST request/response separately. The app's debug
+log marks the start of the additional completion wait and confirmed completion.
+The HTTP capture ends with ingestion and does not capture the later API request.
 This experiment does not establish that YouTube preserves the whole ending;
 compare the captured media, local recording, and processed replay again.
 

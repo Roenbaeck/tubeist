@@ -113,6 +113,28 @@ enum CaptureTailAlignment {
     }
 }
 
+enum YouTubeCompletionGrace {
+    static let duration: Duration = .seconds(10)
+    static let requestTimeout: Duration = .seconds(8)
+
+    /// Call only after ENDLIST is acknowledged. Never shorten the grace to fit
+    /// the shutdown budget: leave completion to YouTube's auto-stop instead.
+    static func wait(
+        deadline: ContinuousClock.Instant,
+        now: @Sendable () -> ContinuousClock.Instant = { .now },
+        sleep: @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
+    ) async throws -> ContinuousClock.Instant {
+        try Task.checkCancellation()
+        let readyAt = now().advanced(by: duration)
+        guard readyAt < deadline else { throw URLError(.timedOut) }
+        try await sleep(duration)
+        try Task.checkCancellation()
+        let resumedAt = now()
+        guard resumedAt < deadline else { throw URLError(.timedOut) }
+        return min(deadline, resumedAt.advanced(by: requestTimeout))
+    }
+}
+
 actor StreamingActor {
     private var appState: AppState?
     private var state: StreamSessionState = .idle
@@ -572,9 +594,11 @@ final class Streamer: Sendable {
         if endListAcknowledged,
            let target = await streamingActor.activeYouTubeCompletionTarget() {
             do {
+                LOG("YouTube ENDLIST acknowledged; waiting 10 seconds before requesting broadcast completion", level: .debug)
+                let completionDeadline = try await YouTubeCompletionGrace.wait(deadline: deadline)
                 let service = await YouTubeService()
                 try await service.completeBroadcastAfterUpload(
-                    target, deadline: min(deadline, clock.now.advanced(by: .seconds(8)))
+                    target, deadline: completionDeadline
                 )
                 await streamingActor.confirmYouTubeCompletion(target)
                 LOG("YouTube broadcast completion confirmed", level: .debug)

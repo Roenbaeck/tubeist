@@ -18,7 +18,7 @@ struct HLSMediaPlaylistTests {
         #expect(playlist.targetDuration == 5)
         #expect(playlist.render() == """
         #EXTM3U
-        #EXT-X-VERSION:3
+        #EXT-X-VERSION:6
         #EXT-X-TARGETDURATION:5
         #EXT-X-MEDIA-SEQUENCE:0
         #EXT-X-DISCONTINUITY-SEQUENCE:0

@@ -1,5 +1,11 @@
 > The encoding architecture below records the earlier AssetWriter migration.
 > The VideoToolbox branch replaces that live path; see [the current design and validation](Tools/VideoToolboxProbe/README.md).
+> The auto-stop-only policy below is also historical. The current signed-in Stop
+> waits ten seconds after the final media ACK, sends ENDLIST, waits another ten
+> seconds after its ACK, then requests completion within the shutdown deadline.
+> See [current ending behavior](Tools/Acceptance/README.md). Fixes for replay gaps
+> and tail loss remain unverified; earlier successful tests did not establish a
+> complete fix.
 
 # Tubeist YouTube-only hardening plan
 

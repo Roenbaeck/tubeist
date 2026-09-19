@@ -125,9 +125,11 @@ struct HLSMediaPlaylist: Sendable, Equatable {
     }
 
     func render(endList: Bool = false) -> String {
+        // Match FFmpeg's version declaration for independent MPEG-TS segments.
+        // Keep it constant, including when discontinuities or ENDLIST are added.
         var lines = [
             "#EXTM3U",
-            "#EXT-X-VERSION:3",
+            "#EXT-X-VERSION:6",
             "#EXT-X-TARGETDURATION:\(targetDuration)",
             "#EXT-X-MEDIA-SEQUENCE:\(mediaSequence)",
             "#EXT-X-DISCONTINUITY-SEQUENCE:\(discontinuitySequence)",
