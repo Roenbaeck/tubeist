@@ -44,7 +44,7 @@ def sample_transport(pts=90000, key=True, aud=True, counter=0, pcr_margin_ticks=
 
 
 def playlist(entries, first=0, ended=False, event=False):
-    lines=['#EXTM3U','#EXT-X-VERSION:3','#EXT-X-TARGETDURATION:5',f'#EXT-X-MEDIA-SEQUENCE:{first}',
+    lines=['#EXTM3U','#EXT-X-VERSION:6','#EXT-X-TARGETDURATION:5',f'#EXT-X-MEDIA-SEQUENCE:{first}',
            '#EXT-X-DISCONTINUITY-SEQUENCE:0','#EXT-X-INDEPENDENT-SEGMENTS']
     if event: lines += ['#EXT-X-PLAYLIST-TYPE:EVENT']
     for seq,duration in entries:

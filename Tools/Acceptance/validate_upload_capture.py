@@ -65,7 +65,9 @@ def parse_playlist(data):
     disc_sequence = int(tags['#EXT-X-DISCONTINUITY-SEQUENCE'])
     target = int(tags['#EXT-X-TARGETDURATION'])
     require(sequence >= 0 and disc_sequence >= 0 and target == 5, 'invalid Tubeist playlist sequence or target')
-    require(tags.get('#EXT-X-VERSION') == '3', 'unexpected playlist version')
+    # Tubeist declares 6 for independent MPEG-TS segments; 3 is retained
+    # so captures recorded before that change still validate.
+    require(tags.get('#EXT-X-VERSION') in ('6', '3'), 'unexpected playlist version')
     playlist_type = tags.get('#EXT-X-PLAYLIST-TYPE')
     require(playlist_type in (None, 'EVENT'), 'unexpected playlist type')
     if playlist_type == 'EVENT':
