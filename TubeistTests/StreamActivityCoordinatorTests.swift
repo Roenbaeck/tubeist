@@ -107,8 +107,8 @@ struct StreamActivityCoordinatorTests {
     @Test("Quota rejections back off far longer than ordinary failures")
     func quotaBackoff() {
         #expect(StreamActivityCoordinator.backoff(after: YouTubeError.apiError(403, "quota")) == 300)
-        #expect(StreamActivityCoordinator.backoff(after: YouTubeError.apiError(500, "oops")) == 15)
-        #expect(StreamActivityCoordinator.backoff(after: YouTubeError.invalidResponse) == 15)
-        #expect(StreamActivityCoordinator.backoff(after: URLError(.timedOut)) == 15)
+        #expect(StreamActivityCoordinator.backoff(after: YouTubeError.apiError(500, "oops")) == 30)
+        #expect(StreamActivityCoordinator.backoff(after: YouTubeError.invalidResponse) == 30)
+        #expect(StreamActivityCoordinator.backoff(after: URLError(.timedOut)) == 30)
     }
 }

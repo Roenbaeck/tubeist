@@ -1152,4 +1152,16 @@ struct YouTubeStreamHealthFetchTests {
             #expect(error == .apiError(403, "quota exceeded"))
         }
     }
+
+    @Test
+    func statusPollFailuresAreLoggedAsDebugNotError() {
+        // The health and viewer pollers run every stream, log their own .debug line
+        // and do not affect the stream, so a failing poll must not write a red ERROR
+        // line every cycle. Everything else keeps its level.
+        #expect(YouTubeAPIOperation.streamHealth.failureLevel == .debug)
+        #expect(YouTubeAPIOperation.videoLiveDetails.failureLevel == .debug)
+        #expect(YouTubeAPIOperation.channels.failureLevel == .warning)
+        #expect(YouTubeAPIOperation.broadcasts.failureLevel == .error)
+        #expect(YouTubeAPIOperation.transitionBroadcast.failureLevel == .error)
+    }
 }

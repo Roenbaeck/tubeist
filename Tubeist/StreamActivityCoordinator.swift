@@ -14,8 +14,11 @@ import UIKit
 @MainActor
 final class StreamActivityCoordinator {
     private static let tick: Duration = .seconds(5)
-    private static let healthInterval: TimeInterval = 15
-    private static let viewerInterval: TimeInterval = 30
+    // Polling costs YouTube API quota: one unit per call against a default 10,000
+    // per day. At 30 s, health is 120 units/h; viewers at 60 s another 60 units/h,
+    // so a long Full-detail stream stays well inside the daily budget.
+    private static let healthInterval: TimeInterval = 30
+    private static let viewerInterval: TimeInterval = 60
     private static let quotaBackoff: TimeInterval = 300
 
     private let controller: any StreamActivitySink

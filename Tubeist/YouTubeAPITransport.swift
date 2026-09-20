@@ -68,7 +68,16 @@ enum YouTubeAPIOperation: String, Sendable {
     var successLevel: LogLevel {
         (self == .broadcastStatus || self == .streamHealth || self == .videoLiveDetails) ? .debug : .info
     }
-    var failureLevel: LogLevel { self == .channels ? .warning : .error }
+    /// The status pollers behind the Live Activity are cosmetic and already log a
+    /// `.debug` line of their own, so a failed poll must not paint the journal red
+    /// once per cycle; the stream itself is unaffected by either one failing.
+    var failureLevel: LogLevel {
+        switch self {
+        case .streamHealth, .videoLiveDetails: .debug
+        case .channels: .warning
+        default: .error
+        }
+    }
 }
 
 struct YouTubeDiagnostics: Sendable {

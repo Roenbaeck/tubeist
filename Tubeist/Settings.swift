@@ -754,7 +754,7 @@ struct SettingsView: View {
 
                 Section(
                     header: Text("Apple Watch"),
-                    footer: Text("Shows stream status as a Live Activity that appears on your Apple Watch. Full also shows viewers, bitrate, upload quality, temperature and battery, and uses a little more YouTube API quota.")
+                    footer: Text("Shows stream status as a Live Activity that is designed to appear on your Apple Watch. Full also shows viewers, bitrate, upload quality, temperature and battery. While streaming, Tubeist polls YouTube and uses YouTube API quota: stream health about every 30 seconds, and with Full, viewers about every minute.")
                 ) {
                     Picker("Live Activity detail", selection: $liveActivityDetail) {
                         ForEach(LiveActivityDetail.allCases, id: \.self) { Text($0.label).tag($0) }
