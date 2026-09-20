@@ -202,6 +202,9 @@ private struct AppliedSettingsSnapshot {
     let youtubeBroadcastPreferences: YouTubeBroadcastPreferences?
     let youtubeThumbnailData: Data?
     let overlays: [OverlaySetting]
+    let liveActivityDetail: LiveActivityDetail
+    let alertOnBadHealth: Bool
+    let alertOnRecovery: Bool
 #if DEBUG
     let captureRemuxFixtures: Bool
     let recordHLSAcceptance: Bool
@@ -227,6 +230,9 @@ private struct AppliedSettingsSnapshot {
             youtubeBroadcastPreferences: Settings.youtubeBroadcastPreferences,
             youtubeThumbnailData: try Settings.loadYouTubeThumbnailData(),
             overlays: overlays,
+            liveActivityDetail: Settings.liveActivityDetail,
+            alertOnBadHealth: Settings.alertOnBadHealth,
+            alertOnRecovery: Settings.alertOnRecovery,
             captureRemuxFixtures: Settings.captureRemuxFixtures,
             recordHLSAcceptance: Settings.recordHLSAcceptance
         )
@@ -248,7 +254,10 @@ private struct AppliedSettingsSnapshot {
             selectedPlaylistID: Settings.youtubeSelectedPlaylistId,
             youtubeBroadcastPreferences: Settings.youtubeBroadcastPreferences,
             youtubeThumbnailData: try Settings.loadYouTubeThumbnailData(),
-            overlays: overlays
+            overlays: overlays,
+            liveActivityDetail: Settings.liveActivityDetail,
+            alertOnBadHealth: Settings.alertOnBadHealth,
+            alertOnRecovery: Settings.alertOnRecovery
         )
 #endif
     }
@@ -271,6 +280,9 @@ private struct AppliedSettingsSnapshot {
         Settings.youtubeBroadcastPreferences = youtubeBroadcastPreferences
         try Settings.setYouTubeThumbnailData(youtubeThumbnailData)
         manager.replaceOverlays(with: overlays)
+        Settings.liveActivityDetail = liveActivityDetail
+        Settings.alertOnBadHealth = alertOnBadHealth
+        Settings.alertOnRecovery = alertOnRecovery
 #if DEBUG
         Settings.captureRemuxFixtures = captureRemuxFixtures
         Settings.recordHLSAcceptance = recordHLSAcceptance
@@ -295,6 +307,9 @@ struct SettingsView: View {
     @State private var journalWarning: Bool = Settings.journalWarning
     @State private var journalInfo: Bool = Settings.journalInfo
     @State private var journalDebug: Bool = Settings.journalDebug
+    @State private var liveActivityDetail: LiveActivityDetail = Settings.liveActivityDetail
+    @State private var alertOnBadHealth: Bool = Settings.alertOnBadHealth
+    @State private var alertOnRecovery: Bool = Settings.alertOnRecovery
 #if DEBUG
     @State private var captureRemuxFixtures: Bool = Settings.captureRemuxFixtures
     @State private var recordHLSAcceptance: Bool = Settings.recordHLSAcceptance
@@ -737,6 +752,18 @@ struct SettingsView: View {
                     }
                 }
 
+                Section(
+                    header: Text("Apple Watch"),
+                    footer: Text("Shows stream status as a Live Activity that appears on your Apple Watch. Full also shows viewers, bitrate, upload quality, temperature and battery, and uses a little more YouTube API quota.")
+                ) {
+                    Picker("Live Activity detail", selection: $liveActivityDetail) {
+                        ForEach(LiveActivityDetail.allCases, id: \.self) { Text($0.label).tag($0) }
+                    }
+                    Toggle("Alert on Bad / No Data", isOn: $alertOnBadHealth)
+                    Toggle("Alert when recovered", isOn: $alertOnRecovery)
+                        .disabled(!alertOnBadHealth)
+                }
+
                 Section(header: Text("Journal"), footer: Text("Configure which types of messages to record in the journal")) {
                     HStack {
                         Toggle("Error", isOn: $journalError).labelsHidden()
@@ -1109,6 +1136,9 @@ struct SettingsView: View {
         Settings.journalDebug = journalDebug
         Settings.youtubeSelectedPlaylistId = selectedPlaylistId
         overlayManager.replaceOverlays(with: Array(overlayDraft.reversed()))
+        Settings.liveActivityDetail = liveActivityDetail
+        Settings.alertOnBadHealth = alertOnBadHealth
+        Settings.alertOnRecovery = alertOnRecovery
 #if DEBUG
         Settings.captureRemuxFixtures = captureRemuxFixtures
         Settings.recordHLSAcceptance = recordHLSAcceptance
