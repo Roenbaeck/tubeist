@@ -81,7 +81,13 @@ final class StreamActivityCoordinator {
                     }
                 }
 
-                let bitrate = await EncodedOutputRouter.shared.recommendedVideoBitrate()
+                // Standard detail discards the bitrate, so only Full pays for the read.
+                // This is the non-mutating read: asking for a *recommendation* would run
+                // the adaptive-bitrate controller and steal the encoding pipeline's own
+                // evaluation slot.
+                let bitrate = detail == .full
+                    ? await EncodedOutputRouter.shared.currentVideoBitrate()
+                    : nil
                 // A poll cancelled mid-flight surfaces as a thrown error and lands
                 // here, so re-check before touching the Live Activity: a stopped loop
                 // must never start or update one behind stop()'s back.

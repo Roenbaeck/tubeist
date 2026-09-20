@@ -59,6 +59,34 @@ struct YouTubeHLSStreamSinkTests {
         #expect(metrics.videoBitrate == 4_000_000)
     }
 
+    /// The Live Activity reads the bitrate every few seconds while streaming, so the
+    /// read must report the encoder's current target without running the adaptive
+    /// controller (which `recommendedVideoBitrate()` does for the encoding pipeline).
+    @Test func currentVideoBitrateReportsTheTargetWithoutEvaluating() async throws {
+        let sink = YouTubeHLSStreamSink()
+        #expect(await sink.currentVideoBitrate() == nil)
+
+        let transport = DirectSinkTransport()
+        let endpoint = try YouTubeHLSEndpoint(URL(
+            string: "https://upload.youtube.com/http_upload_hls?cid=not-a-real-key&file="
+        )!)
+        try await sink.prepare(
+            endpoint: endpoint,
+            sessionIdentifier: "bitrate_read_session",
+            userAgent: "Tubeist/Test",
+            transport: transport,
+            bitrateController: AdaptiveBitrateController(
+                maximumBitrate: 4_000_000, minimumBitrate: 1_000_000, audioBitrate: 128_000
+            )
+        )
+        let first = await sink.currentVideoBitrate()
+        let second = await sink.currentVideoBitrate()
+        #expect(first == 4_000_000)
+        #expect(second == first)
+        #expect(await sink.metrics().videoBitrate == first)
+        try await sink.finish(timeout: successfulSinkShutdownTimeout)
+    }
+
     @Test func remuxesWriterFragmentsWithoutUploadingTheInitializationSegment() async throws {
         let transport = DirectSinkTransport()
         let endpoint = try YouTubeHLSEndpoint(URL(

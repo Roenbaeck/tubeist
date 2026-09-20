@@ -78,6 +78,31 @@ struct AdaptiveBitrateControllerTests {
         #expect(controller.state == .steady)
     }
 
+    /// A status display (the Live Activity) must read the target, never ask the
+    /// controller for a recommendation: an evaluation consumes the fresh delivery
+    /// sample and the segment-paced evaluation slot that belong to the encoding
+    /// pipeline, so a poll landing just before a segment boundary can swallow a
+    /// recovery the pipeline would otherwise have applied.
+    @Test func readingTheTargetDoesNotConsumeThePipelinesEvaluation() {
+        var reading = reducedFifteenMegabitController()
+        reading.delivered(bytes: 3_750_000, elapsed: 1)
+        _ = reading.targetBitrate  // what the status display does now, repeatedly
+        _ = reading.targetBitrate
+        reading.update(queuedBytes: 0, queuedMediaSeconds: 0,
+            inFlightBytes: 0, inFlightSeconds: 0, now: 6.5)
+        #expect(reading.targetBitrate == 15_000_000)
+
+        var polled = reducedFifteenMegabitController()
+        polled.delivered(bytes: 3_750_000, elapsed: 1)
+        // What a mutating status read did: evaluate the controller mid-upload,
+        // half a second before the pipeline's own segment boundary.
+        polled.update(queuedBytes: 7_500_000, queuedMediaSeconds: 10,
+            inFlightBytes: 3_750_000, inFlightSeconds: 6, now: 6)
+        polled.update(queuedBytes: 0, queuedMediaSeconds: 0,
+            inFlightBytes: 0, inFlightSeconds: 0, now: 6.5)
+        #expect(polled.targetBitrate == 10_000_000)
+    }
+
     @Test func oldFastMeasurementsCannotUndoReduction() {
         var controller = reducedFifteenMegabitController()
         for now in stride(from: 6.0, through: 60.0, by: 2) {

@@ -338,6 +338,14 @@ actor YouTubeHLSStreamSink {
         return bitrateController?.targetBitrate
     }
 
+    /// The target the encoder is currently aiming at, read without running the
+    /// adaptive controller. Status displays must use this: `recommendedVideoBitrate()`
+    /// evaluates the controller, which consumes the fresh delivery sample and the
+    /// segment-paced evaluation slot that belong to the encoding pipeline.
+    func currentVideoBitrate() -> Int? {
+        bitrateController?.targetBitrate
+    }
+
     private func updateBitrateController() {
         let previous = bitrateController?.state
         let now = ProcessInfo.processInfo.systemUptime
@@ -617,6 +625,13 @@ actor EncodedOutputRouter {
     func recommendedVideoBitrate() async -> Int? {
         guard case .direct = mode else { return nil }
         return await YouTubeHLSStreamSink.shared.recommendedVideoBitrate()
+    }
+
+    /// Non-mutating read of the current video target, for status displays that must
+    /// not perturb the adaptive-bitrate loop. See the sink's `currentVideoBitrate()`.
+    func currentVideoBitrate() async -> Int? {
+        guard case .direct = mode else { return nil }
+        return await YouTubeHLSStreamSink.shared.currentVideoBitrate()
     }
 
     func route(_ fragment: Fragment) {
