@@ -66,3 +66,19 @@ struct StreamActivityAttributes: ActivityAttributes {
     /// When the stream went live; drives the elapsed-time timer.
     var startedAt: Date
 }
+
+extension StreamActivityAttributes.ContentState {
+    /// Human-readable uplink rate, or nil when the bitrate is unknown.
+    var bitrateLabel: String? {
+        bitrateKbps.map(Self.bitrateLabel(kbps:))
+    }
+
+    /// Formats a kbps value for display.
+    ///
+    /// Integer division by 1000 would round 4500 kbps down to "4 Mbps" and hide any
+    /// sub-megabit uplink behind "0 Mbps", so megabits carry one decimal and anything
+    /// below 1 Mbps stays in kbps.
+    static func bitrateLabel(kbps: Int) -> String {
+        kbps >= 1000 ? String(format: "%.1f Mbps", Double(kbps) / 1000) : "\(kbps) kbps"
+    }
+}

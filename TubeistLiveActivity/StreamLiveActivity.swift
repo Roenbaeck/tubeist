@@ -74,8 +74,12 @@ struct StreamDetailRows: View {
             }
             HStack(spacing: 12) {
                 if let viewers = state.viewers { Label("\(viewers)", systemImage: "eye") }
-                if let kbps = state.bitrateKbps { Label("\(kbps / 1000) Mbps", systemImage: "arrow.up") }
+                if let bitrate = state.bitrateLabel { Label(bitrate, systemImage: "arrow.up") }
                 if let battery = state.batteryPercent { Label("\(battery)%", systemImage: "battery.75") }
+                if let link = state.link, link != .good, link != .unknown {
+                    Label(link.rawValue.capitalized, systemImage: "wifi")
+                        .foregroundStyle(link == .degraded ? .yellow : .red)
+                }
                 if let thermal = state.thermal, thermal != .nominal {
                     Label(thermal.rawValue.capitalized, systemImage: "thermometer.medium")
                         .foregroundStyle(thermal == .fair ? .yellow : .red)
