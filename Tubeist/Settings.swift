@@ -1271,6 +1271,31 @@ final class Settings: Sendable {
             UserDefaults.standard.set(newValue, forKey: "Stream")
         }
     }
+    static var liveActivityDetail: LiveActivityDetail {
+        get {
+            UserDefaults.standard.string(forKey: "LiveActivityDetail")
+                .flatMap(LiveActivityDetail.init(rawValue:)) ?? .standard
+        }
+        set {
+            UserDefaults.standard.set(newValue.rawValue, forKey: "LiveActivityDetail")
+        }
+    }
+    static var alertOnBadHealth: Bool {
+        get {
+            bool(forKey: "AlertOnBadHealth", default: true)
+        }
+        set {
+            UserDefaults.standard.set(newValue, forKey: "AlertOnBadHealth")
+        }
+    }
+    static var alertOnRecovery: Bool {
+        get {
+            bool(forKey: "AlertOnRecovery", default: false)
+        }
+        set {
+            UserDefaults.standard.set(newValue, forKey: "AlertOnRecovery")
+        }
+    }
     static var record: Bool {
         get {
             UserDefaults.standard.bool(forKey: "Record")

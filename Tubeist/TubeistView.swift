@@ -71,6 +71,7 @@ struct TubeistView: View {
     @State private var youtubePollingTask: Task<Void, Never>? = nil
     @State private var youtubeStatusGeneration = UUID()
     @State private var youtubeService = YouTubeService()
+    @State private var streamActivityCoordinator = StreamActivityCoordinator()
     @State private var isCameraReady = false
     @State private var showSplashScreen = true
     @State private var splashOpacity: Double = 1.0
@@ -1172,6 +1173,7 @@ struct TubeistView: View {
                 youtubeStatusGeneration = UUID()
                 youtubePollingTask?.cancel()
                 youtubePollingTask = nil
+                streamActivityCoordinator.stop()
             } else if appState.isStreamActive {
                 startYouTubePolling()
             } else if appState.youtubeBroadcastId != nil {
@@ -1187,9 +1189,11 @@ struct TubeistView: View {
             youtubeStatusGeneration = UUID()
             if state.isLive {
                 startYouTubePolling()
+                streamActivityCoordinator.start(appState: appState, youtubeService: youtubeService)
             }
             else {
                 stopYouTubePolling()
+                streamActivityCoordinator.stop()
             }
         }
         .onAppear {
@@ -1199,6 +1203,7 @@ struct TubeistView: View {
             appState.isYouTubeSignedIn = youtubeService.isSignedIn
             if appState.isStreamActive {
                 startYouTubePolling()
+                streamActivityCoordinator.start(appState: appState, youtubeService: youtubeService)
             }
         }
         .onDisappear {
