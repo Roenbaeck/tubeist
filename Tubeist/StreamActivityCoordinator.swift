@@ -18,16 +18,29 @@ final class StreamActivityCoordinator {
     private static let viewerInterval: TimeInterval = 30
     private static let quotaBackoff: TimeInterval = 300
 
-    private let controller = StreamActivityController()
+    private let controller: any StreamActivitySink
     private var task: Task<Void, Never>?
+    /// The pending teardown of the previous loop. A new loop waits for it, so a
+    /// stop() that is immediately followed by a start() can never end the activity
+    /// the new loop has just requested.
+    private var teardown: Task<Void, Never>?
+
+    init(controller: any StreamActivitySink = StreamActivityController()) {
+        self.controller = controller
+    }
 
     func start(appState: AppState, youtubeService: YouTubeService) {
-        task?.cancel()
+        // Cancel and fully tear down whatever was running first; the new loop then
+        // waits for that teardown before touching the Live Activity.
+        stop()
         let detail = Settings.liveActivityDetail
         let alertOnBad = Settings.alertOnBadHealth
         guard detail != .off || alertOnBad else { return }
 
+        let pendingTeardown = teardown
         task = Task { [controller] in
+            await pendingTeardown?.value
+            guard !Task.isCancelled else { return }
             if alertOnBad || Settings.alertOnRecovery { await StreamAlertNotifier.prepare() }
             UIDevice.current.isBatteryMonitoringEnabled = true
 
@@ -36,7 +49,9 @@ final class StreamActivityCoordinator {
                 alertOnBad: alertOnBad,
                 alertOnRecovery: Settings.alertOnRecovery
             )
-            let startedAt = Date()
+            // Only used if the session start is somehow unknown; the Live Activity's
+            // elapsed timer otherwise runs from when the stream actually went live.
+            let fallbackStartedAt = Date()
             var health = YouTubeStreamHealth.unknown
             var healthUpdatedAt: Date?
             var viewers: Int?
@@ -67,6 +82,10 @@ final class StreamActivityCoordinator {
                 }
 
                 let bitrate = await EncodedOutputRouter.shared.recommendedVideoBitrate()
+                // A poll cancelled mid-flight surfaces as a thrown error and lands
+                // here, so re-check before touching the Live Activity: a stopped loop
+                // must never start or update one behind stop()'s back.
+                guard !Task.isCancelled else { break }
                 let snapshot = Self.snapshot(
                     appState: appState,
                     health: health,
@@ -75,7 +94,11 @@ final class StreamActivityCoordinator {
                     bitrateKbps: bitrate.map { $0 / 1000 }
                 )
                 let decision = policy.evaluate(snapshot, now: now)
-                await controller.apply(decision, streamStartedAt: startedAt, now: now)
+                await controller.apply(
+                    decision,
+                    streamStartedAt: appState.streamStartedAt ?? fallbackStartedAt,
+                    now: now
+                )
 
                 try? await Task.sleep(for: Self.tick)
             }
@@ -83,9 +106,18 @@ final class StreamActivityCoordinator {
     }
 
     func stop() {
-        task?.cancel()
+        // Nothing running means the previous stop already scheduled the teardown.
+        guard let running = task else { return }
         task = nil
-        Task { [controller] in await controller.end() }
+        running.cancel()
+        let pendingTeardown = teardown
+        teardown = Task { [controller] in
+            await pendingTeardown?.value
+            // Ending only once the loop is out guarantees no update can follow the
+            // end and resurrect an activity nothing would ever end again.
+            await running.value
+            await controller.end()
+        }
     }
 
     /// Quota rejections are expensive to retry, so they wait out a long backoff;

@@ -114,6 +114,11 @@ final class AppState {
     var hadToStopStreaming = false
     var isBackgroundStopCommitted = false
     var streamHealth = StreamHealth.silenced
+    /// When the current session first went live; nil while no session is live.
+    /// The Live Activity's elapsed timer reads this so that restarting the
+    /// coordinator — after a brief trip through the background, say — does not
+    /// reset the clock.
+    var streamStartedAt: Date?
     var isYouTubeSignedIn = false
     var youtubeStatus: String? = nil
     var youtubeBroadcastId: String? = nil
@@ -126,14 +131,23 @@ final class AppState {
     func setStreamSessionState(_ state: StreamSessionState) {
         streamSessionState = state
         switch state {
-        case .preparing, .live:
+        case .preparing:
             streamHealth = .awaiting
+        case .live:
+            streamHealth = .awaiting
+            // Only the first transition into live counts: going live again after a
+            // transient state must not restart the elapsed-time clock.
+            if streamStartedAt == nil {
+                streamStartedAt = Date()
+            }
         case .idle:
             streamHealth = .silenced
+            streamStartedAt = nil
         case .stopping:
             break
         case .failed:
             streamHealth = .unusable
+            streamStartedAt = nil
             if case .failed(let message) = state {
                 activeAlert = message
             }

@@ -11,8 +11,16 @@ import ActivityKit
 import Foundation
 import UserNotifications
 
+/// The slice of the controller that `StreamActivityCoordinator` drives, so the tick
+/// loop can be exercised in tests without ActivityKit.
 @MainActor
-final class StreamActivityController {
+protocol StreamActivitySink: AnyObject {
+    func apply(_ decision: StreamActivityPolicy.Decision, streamStartedAt: Date, now: Date) async
+    func end() async
+}
+
+@MainActor
+final class StreamActivityController: StreamActivitySink {
     static let maxActivityAge: TimeInterval = 7.5 * 3600
     private static let staleInterval: TimeInterval = 90
 
@@ -33,6 +41,17 @@ final class StreamActivityController {
 
         func end() async {
             await activity.end(nil, dismissalPolicy: .immediate)
+        }
+
+        /// True once the activity has been dismissed by the user or ended by iOS, at
+        /// which point `update` is silently a no-op. `.stale` is deliberately not
+        /// counted: it only says the content outlived its stale date, and the
+        /// activity is still on screen and still updatable.
+        var isGone: Bool {
+            switch activity.activityState {
+            case .ended, .dismissed: true
+            default: false
+            }
         }
     }
 
@@ -77,6 +96,13 @@ final class StreamActivityController {
         if let started = activityStartedAt, now.timeIntervalSince(started) > Self.maxActivityAge {
             LOG("Live Activity reached its age limit; restarting", level: .info)
             await end()
+        }
+        if handle?.isGone == true {
+            // Updating a dismissed activity does nothing, which would also swallow the
+            // alert riding on it. Drop the handle and request a fresh activity below.
+            LOG("Live Activity was dismissed; requesting a new one", level: .debug)
+            handle = nil
+            activityStartedAt = nil
         }
         if handle == nil {
             do {

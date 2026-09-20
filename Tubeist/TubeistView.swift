@@ -1176,6 +1176,9 @@ struct TubeistView: View {
                 streamActivityCoordinator.stop()
             } else if appState.isStreamActive {
                 startYouTubePolling()
+                // Back in the foreground within the grace period with the stream still
+                // running: bring the Live Activity back with it.
+                streamActivityCoordinator.start(appState: appState, youtubeService: youtubeService)
             } else if appState.youtubeBroadcastId != nil {
                 stopYouTubePolling()
             }
