@@ -13,8 +13,9 @@ and alert on the watch when stream health becomes Bad or No Data.
 An iOS Live Activity (ActivityKit) defined in a widget extension and driven
 directly by the running Tubeist app. watchOS 11+ mirrors iPhone Live Activities
 to the Smart Stack automatically, so no watchOS target is needed. No backend and
-no APNs: Tubeist is running (camera capture + `BackgroundExecutionLease`) for
-the whole stream, so it can update the activity locally.
+no APNs: Tubeist stays in the foreground for the whole stream (it disables the
+idle timer, and the `scenePhase` handler in `TubeistApp` stops the stream if the
+app is backgrounded), so it can update the activity locally.
 
 Rejected: a native watchOS companion app (extra target, WatchConnectivity, more
 testing for a glanceable status) and a backend push service (only needed if
@@ -26,8 +27,10 @@ which covers stream health and viewer counts. No new sign-in or scope.
 ## Components
 
 - `StreamSnapshot` — immutable value: session state, start time, YouTube health
-  (`good|ok|bad|noData|unknown`), concurrent viewers, bitrate, dropped frames,
-  thermal state, battery, warning text, last-updated time.
+  (`good|ok|bad|noData|unknown`), concurrent viewers, bitrate, local pipeline
+  health (`good|degraded|poor|unknown`, mapped from `StreamHealth`), thermal
+  state, battery, warning text, last-updated time. (There is no dropped-frame
+  counter in the codebase, so local pipeline health is shown instead.)
 - `StreamActivityPolicy` — pure logic, no ActivityKit. Selects fields per detail
   level, throttles updates (~1 per 5 s), marks values stale after ~60 s, and runs
   the alert state machine (debounce ~10 s, cooldown 60 s, optional recovery alert).
@@ -46,7 +49,7 @@ which covers stream health and viewer counts. No new sign-in or scope.
 
 - Live Activity detail: Off / Standard / Full.
   - Standard: state, elapsed time, YouTube health, reconnect/upload-outage warning.
-  - Full: Standard plus viewers, bitrate, dropped frames, thermal state, battery.
+  - Full: Standard plus viewers, bitrate, local pipeline health, thermal state, battery.
 - Alert on Bad / No Data (default on).
 - Alert when recovered (default off).
 
@@ -71,6 +74,13 @@ Bad/NoData persists ~10 s; repeats limited to one per minute.
 
 - iOS ends a Live Activity after 8 h; the controller restarts it for longer streams.
 - Live Activities disabled in iOS Settings → feature falls back to notifications only.
+- **Key risk, verify on device first:** Tubeist normally runs with the iPhone
+  unlocked and the app in the foreground. iOS generally mirrors notifications to
+  the watch only while the iPhone is locked, and may not show the Live Activity
+  on the watch while the phone is actively in use. If a real-device test shows
+  the watch does not get the activity or the Bad/NoData haptic in this state,
+  the fallback is a watchOS companion app fed over WatchConnectivity (a
+  follow-up, out of scope for this change).
 - Viewer counts from YouTube lag by tens of seconds; polling costs API quota.
 - Watch rendering and haptics can only be verified on a real device.
 
@@ -82,6 +92,14 @@ Bad/NoData persists ~10 s; repeats limited to one per minute.
 - `xcodebuild build` and `test` on a simulator with signing disabled.
 - Manual device checklist: activity appears on watch, health change alerts,
   8-hour restart, Live Activities disabled path.
+
+## Project mechanics
+
+The project uses Xcode synchronized folders (`objectVersion 77`), so new files
+under `Tubeist/` join the app target automatically. The widget extension gets its
+own folder, and the shared ActivityKit types live in `Shared/`, a synchronized
+folder that both targets include. `NSSupportsLiveActivities` is set as the build
+setting `INFOPLIST_KEY_NSSupportsLiveActivities` rather than in `Info.plist`.
 
 ## Delivery
 
