@@ -89,10 +89,12 @@ struct StreamerTests {
 
         await actor.setYouTubeBroadcast(
             id: "next-broadcast",
+            streamId: "next-stream",
             status: "ready"
         )
 
         #expect(appState.youtubeBroadcastId == "next-broadcast")
+        #expect(appState.youtubeStreamId == "next-stream")
         #expect(appState.youtubeStatus == "ready")
         await actor.completeStop()
         #expect(appState.youtubeBroadcastId == "next-broadcast")

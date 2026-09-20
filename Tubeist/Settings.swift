@@ -916,6 +916,7 @@ struct SettingsView: View {
         appState.isYouTubeSignedIn = false
         appState.youtubeStatus = nil
         appState.youtubeBroadcastId = nil
+        appState.youtubeStreamId = nil
     }
     
     func saveCustomPreset() {
@@ -981,6 +982,7 @@ struct SettingsView: View {
         youtubeConfigLoaded = false
         youtubeService.errorMessage = nil
         appState.youtubeBroadcastId = nil
+        appState.youtubeStreamId = nil
         appState.youtubeStatus = nil
     }
 
@@ -1011,6 +1013,7 @@ struct SettingsView: View {
                 ?? broadcast.latencyPreference
             loadedBroadcast = broadcast
             appState.youtubeBroadcastId = broadcast.id
+            appState.youtubeStreamId = broadcast.boundStreamId
             appState.youtubeStatus = broadcast.lifeCycleStatus
             playlists = loadedPlaylists
             selectedPlaylistId = matchingPreferences?.playlistId

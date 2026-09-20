@@ -262,6 +262,7 @@ struct TubeistView: View {
               !streamKey.isEmpty else {
             appState.youtubeStatus = nil
             appState.youtubeBroadcastId = nil
+            appState.youtubeStreamId = nil
             return
         }
 
@@ -279,6 +280,7 @@ struct TubeistView: View {
                   appState.streamSessionState == sessionState,
                   appState.youtubeBroadcastId == broadcastID else { return }
             appState.youtubeBroadcastId = broadcast.id
+            appState.youtubeStreamId = broadcast.boundStreamId
             appState.youtubeStatus = broadcast.lifeCycleStatus
         } catch {
             LOG("YouTube \(logContext) status failed: \(error.localizedDescription)", level: .debug)
@@ -785,6 +787,7 @@ struct TubeistView: View {
                                 } else {
                                     appState.youtubeStatus = nil
                                     appState.youtubeBroadcastId = nil
+                                    appState.youtubeStreamId = nil
                                 }
                             }) {
                                 SettingsView(overlayManager: overlayManager)

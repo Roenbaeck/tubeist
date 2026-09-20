@@ -117,6 +117,7 @@ final class AppState {
     var isYouTubeSignedIn = false
     var youtubeStatus: String? = nil
     var youtubeBroadcastId: String? = nil
+    var youtubeStreamId: String? = nil
     var activeAlert: String?
     var availableProducts: [String: Product] = [:]
     var lastKnownBrightness: CGFloat = UIScreen.main.brightness
