@@ -12,6 +12,7 @@ struct StreamActivityPolicyTests {
 
     private func snapshot(
         health: YouTubeStreamHealth = .good,
+        healthTracked: Bool = true,
         healthAge: TimeInterval? = 0,
         at now: Date,
         phase: StreamPhase = .live,
@@ -20,6 +21,7 @@ struct StreamActivityPolicyTests {
         StreamSnapshot(
             phase: phase,
             youtubeHealth: health,
+            healthTracked: healthTracked,
             healthUpdatedAt: healthAge.map { now.addingTimeInterval(-$0) },
             viewers: viewers,
             bitrateKbps: 6000,
@@ -172,5 +174,62 @@ struct StreamActivityPolicyTests {
         var p = policy()
         let decision = p.evaluate(snapshot(healthAge: nil, at: t0), now: t0)
         #expect(decision.content?.isStale == true)
+    }
+
+    @Test func unchangedContentIsStillPushedOnceAMinute() {
+        // Every push renews the activity's 90 s stale date; a healthy stream whose
+        // content never changes would otherwise be marked stale by iOS.
+        var p = policy()
+        #expect(p.evaluate(snapshot(at: t0), now: t0).content != nil)
+
+        let t10 = t0.addingTimeInterval(10)
+        #expect(p.evaluate(snapshot(at: t10), now: t10).content == nil)
+        let t59 = t0.addingTimeInterval(59)
+        #expect(p.evaluate(snapshot(at: t59), now: t59).content == nil)
+        let t60 = t0.addingTimeInterval(60)
+        #expect(p.evaluate(snapshot(at: t60), now: t60).content != nil)
+        // The heartbeat restarts from that push rather than firing every tick after.
+        let t70 = t0.addingTimeInterval(70)
+        #expect(p.evaluate(snapshot(at: t70), now: t70).content == nil)
+        let t120 = t0.addingTimeInterval(120)
+        #expect(p.evaluate(snapshot(at: t120), now: t120).content != nil)
+    }
+
+    @Test func aStaleGapRestartsTheBadHealthDebounce() {
+        var p = policy()
+        #expect(p.evaluate(snapshot(health: .bad, at: t0), now: t0).alert == nil)
+        // Polling breaks down; nothing is known for a while.
+        let t30 = t0.addingTimeInterval(30)
+        #expect(p.evaluate(snapshot(health: .bad, healthAge: 120, at: t30), now: t30).alert == nil)
+        // A fresh bad reading must debounce from scratch, not from the pre-gap one.
+        let t60 = t0.addingTimeInterval(60)
+        #expect(p.evaluate(snapshot(health: .bad, at: t60), now: t60).alert == nil)
+        let t70 = t0.addingTimeInterval(70)
+        #expect(p.evaluate(snapshot(health: .bad, at: t70), now: t70).alert == .degraded(.bad))
+    }
+
+    @Test func untrackedHealthIsNeverStaleAndNeverAlerts() {
+        var p = policy()
+        let first = p.evaluate(snapshot(healthTracked: false, healthAge: nil, at: t0), now: t0)
+        #expect(first.content?.healthTracked == false)
+        #expect(first.content?.isStale == false)
+        #expect(first.content?.health == .unknown)
+        #expect(first.alert == nil)
+
+        // Even a bad reading left over from before cannot alert when nothing polls.
+        for offset in [10.0, 60, 300] {
+            let t = t0.addingTimeInterval(offset)
+            let decision = p.evaluate(
+                snapshot(health: .bad, healthTracked: false, healthAge: nil, at: t0),
+                now: t
+            )
+            #expect(decision.alert == nil)
+            #expect(decision.content?.isStale != true)
+        }
+    }
+
+    @Test func trackedHealthStillReportsItselfAsTracked() {
+        var p = policy()
+        #expect(p.evaluate(snapshot(at: t0), now: t0).content?.healthTracked == true)
     }
 }

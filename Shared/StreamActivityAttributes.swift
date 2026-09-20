@@ -52,6 +52,10 @@ struct StreamActivityAttributes: ActivityAttributes {
     struct ContentState: Codable, Hashable {
         var phase: StreamPhase
         var health: YouTubeStreamHealth
+        /// False when no YouTube stream is bound (manual stream key, or not signed
+        /// in), so there is no health to report. The UI then shows a plain "Live"
+        /// rather than an unanswerable "Live ?", and health never goes stale.
+        var healthTracked: Bool = true
         /// True when the health value is older than the stale threshold.
         var isStale: Bool
         var warning: String?

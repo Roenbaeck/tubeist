@@ -24,6 +24,9 @@ enum LiveActivityDetail: String, CaseIterable, Sendable {
 struct StreamSnapshot: Equatable, Sendable {
     var phase: StreamPhase
     var youtubeHealth: YouTubeStreamHealth
+    /// False when nothing is polling health (no bound YouTube stream id), so the
+    /// absence of a reading is expected rather than a problem.
+    var healthTracked: Bool = true
     /// When `youtubeHealth` was last fetched successfully; nil = never.
     var healthUpdatedAt: Date?
     var viewers: Int?
@@ -59,6 +62,10 @@ struct StreamActivityPolicy {
     static let staleAfter: TimeInterval = 60
     static let alertDebounce: TimeInterval = 10
     static let alertCooldown: TimeInterval = 60
+    /// A healthy stream's content stops changing, but every push renews the
+    /// activity's 90 s stale date, so an unchanged activity must still be pushed
+    /// periodically or iOS dims a perfectly healthy Live Activity.
+    static let heartbeatInterval: TimeInterval = 60
 
     struct Decision: Equatable {
         /// nil = do not touch the Live Activity (off, or throttled).
@@ -83,9 +90,14 @@ struct StreamActivityPolicy {
     }
 
     mutating func evaluate(_ snapshot: StreamSnapshot, now: Date) -> Decision {
-        let stale = snapshot.healthUpdatedAt
-            .map { now.timeIntervalSince($0) > Self.staleAfter } ?? true
-        let alert = nextAlert(health: snapshot.youtubeHealth, stale: stale, now: now)
+        // Untracked health is not missing health: there is nothing to poll, so it can
+        // neither go stale nor raise an alert.
+        let stale = snapshot.healthTracked
+            ? snapshot.healthUpdatedAt.map { now.timeIntervalSince($0) > Self.staleAfter } ?? true
+            : false
+        let alert = snapshot.healthTracked
+            ? nextAlert(health: snapshot.youtubeHealth, stale: stale, now: now)
+            : nil
 
         var content: StreamActivityAttributes.ContentState?
         if detail != .off {
@@ -93,7 +105,10 @@ struct StreamActivityPolicy {
             let phaseChanged = candidate.phase != lastPushed?.phase
             let due = lastPushedAt.map { now.timeIntervalSince($0) >= Self.updateInterval } ?? true
             let changed = candidate != lastPushed
-            if (changed && (due || phaseChanged)) || alert != nil {
+            // The heartbeat re-arms the activity's stale date on a stream whose content
+            // never changes; without it a healthy Standard activity goes stale at 90 s.
+            let heartbeat = lastPushedAt.map { now.timeIntervalSince($0) >= Self.heartbeatInterval } ?? true
+            if (changed && (due || phaseChanged)) || heartbeat || alert != nil {
                 content = candidate
                 lastPushed = candidate
                 lastPushedAt = now
@@ -109,7 +124,8 @@ struct StreamActivityPolicy {
         let full = detail == .full
         return StreamActivityAttributes.ContentState(
             phase: snapshot.phase,
-            health: snapshot.youtubeHealth,
+            health: snapshot.healthTracked ? snapshot.youtubeHealth : .unknown,
+            healthTracked: snapshot.healthTracked,
             isStale: stale,
             warning: snapshot.warning,
             viewers: full ? snapshot.viewers : nil,
@@ -125,7 +141,12 @@ struct StreamActivityPolicy {
         stale: Bool,
         now: Date
     ) -> StreamAlert? {
-        guard !stale else { return nil }
+        // A stale gap means nothing is known about the stream, so a bad reading after
+        // it starts the debounce over rather than continuing a count from before it.
+        guard !stale else {
+            badSince = nil
+            return nil
+        }
 
         if health.isAlarming {
             guard alertOnBad else { return nil }

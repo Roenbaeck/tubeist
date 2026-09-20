@@ -15,11 +15,13 @@ struct StreamActivityCoordinatorTests {
         youtube: YouTubeStreamHealth = .good,
         healthUpdatedAt: Date? = nil,
         viewers: Int? = nil,
-        bitrateKbps: Int? = nil
+        bitrateKbps: Int? = nil,
+        streamId: String? = "stream-1"
     ) -> StreamSnapshot {
         let appState = AppState()
         appState.streamSessionState = session
         appState.streamHealth = health
+        appState.youtubeStreamId = streamId
         return StreamActivityCoordinator.snapshot(
             appState: appState,
             health: youtube,
@@ -72,6 +74,14 @@ struct StreamActivityCoordinatorTests {
         #expect(result.healthUpdatedAt == polledAt)
         #expect(result.viewers == 42)
         #expect(result.bitrateKbps == 4500)
+    }
+
+    @Test("Health counts as tracked only while a YouTube stream id is bound")
+    func healthTrackingFollowsTheBoundStream() {
+        // Manual stream key, or not signed in to YouTube: nothing polls health, so
+        // the Live Activity must not report it as missing or stale.
+        #expect(snapshot(streamId: nil).healthTracked == false)
+        #expect(snapshot(streamId: "stream-1").healthTracked == true)
     }
 
     @Test("The snapshot always carries a thermal reading")

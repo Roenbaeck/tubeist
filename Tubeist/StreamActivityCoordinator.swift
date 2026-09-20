@@ -167,6 +167,9 @@ final class StreamActivityCoordinator {
         return StreamSnapshot(
             phase: phase,
             youtubeHealth: health,
+            // Without a bound YouTube stream id (manual stream key, or not signed in)
+            // nothing polls health, so the Live Activity must not pretend to show it.
+            healthTracked: appState.youtubeStreamId != nil,
             healthUpdatedAt: healthUpdatedAt,
             viewers: viewers,
             bitrateKbps: bitrateKbps,

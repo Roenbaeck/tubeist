@@ -105,7 +105,13 @@ struct HealthBadge: View {
         case .connecting: "Connecting"
         case .stopping: "Stopping"
         case .ended: "Ended"
-        case .live: state.isStale ? "Live ?" : "Live · \(state.health.label)"
+        // With no bound YouTube stream there is no health to report, so the badge
+        // says only that the stream is live rather than an unanswerable "Live ?".
+        case .live: if !state.healthTracked {
+            "Live"
+        } else {
+            state.isStale ? "Live ?" : "Live · \(state.health.label)"
+        }
         }
     }
 }
@@ -118,7 +124,9 @@ struct HealthDot: View {
     }
 
     private var color: Color {
-        if state.phase != .live || state.isStale { return .gray }
+        // Untracked health gets the neutral dot: no health was promised, so neither a
+        // green "all good" nor a grey "something is wrong" would be honest.
+        if state.phase != .live || state.isStale || !state.healthTracked { return .gray }
         switch state.health {
         case .good: return .green
         case .ok: return .yellow
