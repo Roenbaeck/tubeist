@@ -74,8 +74,19 @@ for scenario in contract reconnect timeout stop cancel; do
 
   port=$(<"${port_file}")
   endpoint="https://127.0.0.1:${port}/http_upload_hls?cid=redacted&copy=0&file="
-  "${tool_binary}" "${endpoint}" "${scenario}"
-  wait ${server_pid}
+  echo "Running socket scenario: ${scenario}"
+  if ! "${tool_binary}" "${endpoint}" "${scenario}"; then
+    echo "Uploader socket scenario failed: ${scenario}" >&2
+    sed -n '1,200p' "${server_output}" >&2 || true
+    [[ -f ${log_file} ]] && sed -n '1,240p' "${log_file}" >&2 || true
+    exit 1
+  fi
+  if ! wait ${server_pid}; then
+    echo "HTTPS mock scenario failed: ${scenario}" >&2
+    sed -n '1,200p' "${server_output}" >&2 || true
+    [[ -f ${log_file} ]] && sed -n '1,240p' "${log_file}" >&2 || true
+    exit 1
+  fi
   server_pid=""
 done
 

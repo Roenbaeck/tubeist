@@ -192,8 +192,10 @@ def validate(scenario: str, records: list[RequestRecord]) -> None:
             raise AssertionError("the retried playlist changed filename or body")
         if records[2].filename != "tT3KJR7zU2ZVTtNMZDoX12Q_0.ts":
             raise AssertionError("segment did not follow the recovered playlist upload")
-        if len({records[0].client_port, records[1].client_port}) < 2:
-            raise AssertionError("the failed socket was not replaced for the retry")
+        # The first reconnect request is deliberately closed before a response
+        # is sent.  The second request therefore necessarily arrived on a new
+        # TCP connection, but its ephemeral source port is allowed to be the
+        # same: macOS may immediately reuse a recently closed client port.
     elif scenario in {"stop", "cancel"}:
         if len(records) != 1 or records[0].filename != "tT3KJR7zU2ZVTtNMZDoX12Q.m3u8":
             raise AssertionError("shutdown allowed unexpected follow-up requests")
