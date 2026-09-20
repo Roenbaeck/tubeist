@@ -148,11 +148,72 @@ struct VideoDecodeTimeline {
     }
 }
 
+enum HEVCChromaSampling: String, Sendable {
+    case yuv420 = "4:2:0"
+    case yuv422 = "4:2:2"
+
+    var profile: CFString {
+        self == .yuv422 ? kVTProfileLevel_HEVC_Main42210_AutoLevel : kVTProfileLevel_HEVC_Main10_AutoLevel
+    }
+
+    var pixelFormat: OSType {
+        self == .yuv422 ? kCVPixelFormatType_422YpCbCr10BiPlanarVideoRange
+            : kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
+    }
+
+    static func preferred(for sourcePixelFormat: OSType) -> Self {
+        switch sourcePixelFormat {
+        case kCVPixelFormatType_422YpCbCr10BiPlanarVideoRange,
+             kCVPixelFormatType_422YpCbCr10BiPlanarFullRange:
+            return .yuv422
+        default:
+            return .yuv420
+        }
+    }
+}
+
+/// Negotiate once from the delivered camera format and actual hardware setup.
+/// Recovery must retain the chosen profile, including a previous 4:2:0 fallback:
+/// changing it after samples have reached the MP4 track would invalidate it.
+struct HEVCEncoderSelection {
+    private(set) var chroma: HEVCChromaSampling?
+    private(set) var fallbackReason: String?
+
+    mutating func makeEncoder<Encoder>(sourcePixelFormat: OSType,
+                                      create: (HEVCChromaSampling) throws -> Encoder) throws -> Encoder {
+        if let chroma { return try create(chroma) }
+        if HEVCChromaSampling.preferred(for: sourcePixelFormat) == .yuv422 {
+            do {
+                let encoder = try create(.yuv422)
+                chroma = .yuv422
+                return encoder
+            } catch {
+                // The factory must release the failed hardware session before
+                // returning. Do not run an extra encoder alongside the stream.
+                fallbackReason = error.localizedDescription
+            }
+        }
+        let encoder = try create(.yuv420)
+        chroma = .yuv420
+        return encoder
+    }
+}
+
 enum HEVCEncoderConfiguration {
+    static func validate(width: Int, height: Int, frameRate: Double, bitrate: Int,
+                         keyframeInterval: Double) throws {
+        guard width > 0, width <= Int32.max, height > 0, height <= Int32.max,
+              frameRate.isFinite, frameRate > 0, frameRate <= 120, bitrate > 0,
+              keyframeInterval.isFinite, keyframeInterval > 0 else {
+            throw MediaEncodingError.invalid("Invalid HEVC encoder configuration")
+        }
+    }
+
     static func apply(frameRate: Double, bitrate: Int, keyframeInterval: Double,
+                      chroma: HEVCChromaSampling = .yuv420,
                       setProperty: (CFString, CFTypeRef) -> OSStatus) throws {
         let properties: [(CFString, Any)] = [
-            (kVTCompressionPropertyKey_ProfileLevel, kVTProfileLevel_HEVC_Main10_AutoLevel),
+            (kVTCompressionPropertyKey_ProfileLevel, chroma.profile),
             (kVTCompressionPropertyKey_RealTime, true),
             (kVTCompressionPropertyKey_AverageBitRate, bitrate),
             (kVTCompressionPropertyKey_ExpectedFrameRate, frameRate),
@@ -175,7 +236,7 @@ enum HEVCEncoderConfiguration {
             // required, and unexpected failures of the delay setting still fail.
             if key == kVTCompressionPropertyKey_MaxFrameDelayCount,
                status == kVTPropertyNotSupportedErr { continue }
-            try checkMediaStatus(status, "Configuring Main10 HLG encoder property \(key)")
+            try checkMediaStatus(status, "Configuring \(chroma == .yuv422 ? "Main42210" : "Main10") HLG encoder property \(key)")
         }
     }
 }
@@ -192,22 +253,20 @@ final class HEVCVideoEncoder {
     let frameDuration: CMTime
     private(set) var bitrate: Int
 
-    init(width: Int, height: Int, frameRate: Double, bitrate: Int, keyframeInterval: Double = 2) throws {
-        guard width > 0, width <= Int32.max, height > 0, height <= Int32.max,
-              frameRate.isFinite, frameRate > 0, frameRate <= 120, bitrate > 0,
-              keyframeInterval.isFinite, keyframeInterval > 0 else {
-            throw MediaEncodingError.invalid("Invalid HEVC encoder configuration")
-        }
+    init(width: Int, height: Int, frameRate: Double, bitrate: Int, keyframeInterval: Double = 2,
+         chroma: HEVCChromaSampling = .yuv420) throws {
+        try HEVCEncoderConfiguration.validate(width: width, height: height, frameRate: frameRate,
+                                             bitrate: bitrate, keyframeInterval: keyframeInterval)
         self.bitrate = bitrate
         let duration = CMTime(seconds: 1 / frameRate, preferredTimescale: 90_000)
         frameDuration = duration
         decodeTimeline = VideoDecodeTimeline(frameDuration: duration)
         var created: VTCompressionSession?
-        try checkMediaStatus(VTCompressionSessionCreate(
+        let creationStatus = VTCompressionSessionCreate(
             allocator: nil, width: Int32(width), height: Int32(height), codecType: kCMVideoCodecType_HEVC,
             encoderSpecification: [kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder: true] as CFDictionary,
             imageBufferAttributes: [
-                kCVPixelBufferPixelFormatTypeKey: kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
+                kCVPixelBufferPixelFormatTypeKey: chroma.pixelFormat,
                 kCVPixelBufferIOSurfacePropertiesKey: [:]
             ] as CFDictionary,
             compressedDataAllocator: nil,
@@ -217,12 +276,16 @@ final class HEVCVideoEncoder {
                     .receive(status: status, flags: flags, sample: sample)
             },
             refcon: Unmanaged.passUnretained(output).toOpaque(), compressionSessionOut: &created
-        ), "Creating HEVC encoder")
+        )
+        if creationStatus != noErr {
+            if let created { VTCompressionSessionInvalidate(created) }
+            try checkMediaStatus(creationStatus, "Creating HEVC encoder")
+        }
         guard let created else { throw MediaEncodingError.invalid("No HEVC encoder was created") }
         session = created
         do {
             try HEVCEncoderConfiguration.apply(frameRate: frameRate, bitrate: bitrate,
-                                                keyframeInterval: keyframeInterval) { key, value in
+                                                keyframeInterval: keyframeInterval, chroma: chroma) { key, value in
                 VTSessionSetProperty(created, key: key, value: value)
             }
             try checkMediaStatus(VTCompressionSessionPrepareToEncodeFrames(created), "Preparing HEVC encoder")

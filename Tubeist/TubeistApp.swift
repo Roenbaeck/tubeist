@@ -167,7 +167,9 @@ struct TubeistApp: App {
     var body: some Scene {
         WindowGroup {
 #if DEBUG
-            if HLSUploadReplay.isRequested {
+            if HEVC422Probe.isRequested {
+                HEVC422ProbeView()
+            } else if HLSUploadReplay.isRequested {
                 HLSUploadReplayView()
             } else {
                 applicationView
@@ -178,7 +180,7 @@ struct TubeistApp: App {
         }
         .onChange(of: scenePhase) { oldValue, newValue in
 #if DEBUG
-            guard !HLSUploadReplay.isRequested else { return }
+            guard !HLSUploadReplay.isRequested, !HEVC422Probe.isRequested else { return }
 #endif
             handleScenePhase(oldValue, newValue)
         }
@@ -291,7 +293,7 @@ struct TubeistApp: App {
     
     init() {
 #if DEBUG
-        if HLSUploadReplay.isRequested {
+        if HLSUploadReplay.isRequested || HEVC422Probe.isRequested {
             startupAlert = nil
             UIApplication.shared.isIdleTimerDisabled = true
             return

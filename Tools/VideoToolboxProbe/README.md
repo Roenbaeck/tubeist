@@ -30,7 +30,10 @@ delegate delivery code save those fragments. Recording quality consequently
 follows adaptive streaming bitrate. Recording-only sessions keep the selected
 bitrate. Debug fMP4 fixture capture now requires recording to be enabled.
 
-HEVC stays Main10, HLG, BT.2020 with closed GOPs and frame reordering. An
+HEVC uses Main42210 for delivered 10-bit 4:2:2 camera buffers when hardware
+configuration and preparation succeed; otherwise it uses Main10 4:2:0. Selection
+happens once per session, on the first camera buffer, and remains fixed through
+capture recovery. Both profiles retain HLG, BT.2020, closed GOPs and frame reordering. An
 eight-frame encoder window bounds work retained during compression. Decode
 timing instead uses the highest temporal layer's `sps_max_num_reorder_pics`,
 read from the emitted HEVC configuration, as its lead along the actual input

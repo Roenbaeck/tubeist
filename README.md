@@ -2,7 +2,7 @@
 
 # Tubeist
 
-Tubeist is a native Swift 6 camera app for recording and streaming HDR video from an iPhone. It sends HEVC Main10 HLG video and AAC audio directly to YouTube over HLS, without an intermediate relay server. VideoToolbox and an AAC encoder feed MPEG-2 TS segments directly. When local recording is enabled, AVAssetWriter saves the same compressed samples as fragmented MP4 without another encode.
+Tubeist is a native Swift 6 camera app for recording and streaming HDR video from an iPhone. It sends 10-bit HEVC HLG video and AAC audio directly to YouTube over HLS, without an intermediate relay server. VideoToolbox and an AAC encoder feed MPEG-2 TS segments directly. When local recording is enabled, AVAssetWriter saves the same compressed samples as fragmented MP4 without another encode.
 
 Tubeist is designed for events, sports, education, performances, and other long-form productions where image quality matters more than conversational latency. Watch [Tubeist demos on YouTube](https://youtube.com/playlist?list=PLFnkPgO2HxdAp_YiFVSWVpyak--0y6m5U&si=b2vjD-jVe0FY2egZ).
 
@@ -11,7 +11,7 @@ Tubeist is designed for events, sports, education, performances, and other long-
 ## Features
 
 - Direct YouTube HLS delivery from the iPhone, with no relay server
-- HEVC Main10 HLG video and AAC audio
+- HEVC HLG video and AAC audio, preserving 10-bit 4:2:2 when both the camera and hardware encoder support it, with 4:2:0 fallback
 - Record-only, stream-only, and simultaneous stream-and-record modes
 - Fragmented MP4 local recordings using the original encoded media
 - Built-in presets from 540p through 4K, subject to the selected camera's capabilities
@@ -54,7 +54,7 @@ Manual-key streaming does not require Google sign-in. Signing in is optional and
 
 Signed-in streams also check YouTube's ingest health for the stream selected at Start. Polling runs every ten seconds during the first two minutes, then once per minute while healthy or every thirty seconds when health is uncertain or problematic. Failed API checks back off to five minutes and do not stop uploads. Fresh YouTube errors turn the stream health indicator red; warnings turn it yellow. Missing or stale health is shown as unknown rather than healthy, with a one-minute startup grace period. Changed issues and recovery are logged, and a brief on-screen message points to the log when attention is needed. Tap the YouTube indicator to refresh both broadcast status and ingest health. This works in release builds and Battery Saving Mode, requires Google sign-in, and does not change encoding or bitrate settings. These API reports describe ingest health, not acknowledgement that each segment has reached playback or the archive.
 
-Open the log and tap **Copy log** to copy all retained entries as text, including timestamps, severity, repeat counts, and app/iOS version details. Enable debug logging before starting a diagnostic stream to include the detailed YouTube responses. The log retains up to 1,000 distinct messages and coalesces repeated messages, so copy it soon after a problem occurs.
+Open the log and use the **Debug**, **Info**, **Warning**, and **Error** filters to show any combination of severities. All are selected initially; leave only Warning and Error selected to focus on problems. **Copy log** copies the matching retained entries as text, including timestamps, severity, repeat counts, and app/iOS version details. Filters affect viewing and copying; the logging settings control which messages are collected. Enable debug logging before starting a diagnostic stream to include the detailed YouTube responses. The log retains up to 1,000 distinct messages and coalesces repeated messages, so copy it soon after a problem occurs.
 
 Debug builds offer an opt-in [manual stream-ending experiment](Tools/Acceptance/README.md#manual-stream-ending-experiment-debug-only) for investigating missing final seconds. It disables ENDLIST and automatic completion and requires ending the broadcast manually in YouTube Studio.
 

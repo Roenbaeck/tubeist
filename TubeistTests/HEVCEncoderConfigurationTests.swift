@@ -3,6 +3,97 @@ import VideoToolbox
 @testable import Tubeist
 
 struct HEVCEncoderConfigurationTests {
+    @Test func camera420NeverAttempts422() throws {
+        for pixelFormat in [kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
+                            kCVPixelFormatType_420YpCbCr10BiPlanarFullRange,
+                            kCVPixelFormatType_32BGRA] {
+            var selection = HEVCEncoderSelection()
+            var attempts: [HEVCChromaSampling] = []
+            let result = try selection.makeEncoder(sourcePixelFormat: pixelFormat) { chroma in
+                attempts.append(chroma)
+                return chroma
+            }
+            #expect(result == .yuv420)
+            #expect(attempts == [.yuv420])
+        }
+    }
+
+    @Test func camera422Uses422WhenHardwareAcceptsIt() throws {
+        for pixelFormat in [kCVPixelFormatType_422YpCbCr10BiPlanarVideoRange,
+                            kCVPixelFormatType_422YpCbCr10BiPlanarFullRange] {
+            var selection = HEVCEncoderSelection()
+            let chosen = try selection.makeEncoder(sourcePixelFormat: pixelFormat) { chroma in
+                var profile: String?
+                try HEVCEncoderConfiguration.apply(frameRate: 60, bitrate: 20_000_000,
+                    keyframeInterval: 2, chroma: chroma) { key, value in
+                    if key == kVTCompressionPropertyKey_ProfileLevel { profile = value as? String }
+                    return noErr
+                }
+                return profile
+            }
+            #expect(chosen == kVTProfileLevel_HEVC_Main42210_AutoLevel as String)
+            #expect(selection.chroma == .yuv422)
+            #expect(selection.fallbackReason == nil)
+        }
+    }
+
+    @Test func unsupported422FallsBackAndRecoveryKeeps420() throws {
+        var selection = HEVCEncoderSelection()
+        var attempts: [HEVCChromaSampling] = []
+        let chosen = try selection.makeEncoder(sourcePixelFormat: kCVPixelFormatType_422YpCbCr10BiPlanarVideoRange) { chroma in
+            attempts.append(chroma)
+            if chroma == .yuv422 { throw MediaEncodingError.operation("Preparing encoder", kVTPropertyNotSupportedErr) }
+            return chroma
+        }
+        #expect(chosen == .yuv420)
+        #expect(attempts == [.yuv422, .yuv420])
+        #expect(selection.fallbackReason != nil)
+        attempts.removeAll()
+        // Even if resources/capabilities change, a recording cannot change profile.
+        _ = try selection.makeEncoder(sourcePixelFormat: kCVPixelFormatType_422YpCbCr10BiPlanarVideoRange) { chroma in
+            attempts.append(chroma)
+        }
+        #expect(attempts == [.yuv420])
+    }
+
+    @Test func failedFallbackDoesNotCommitSelectionOrHideFailure() {
+        var selection = HEVCEncoderSelection()
+        var attempts: [HEVCChromaSampling] = []
+        do {
+            _ = try selection.makeEncoder(sourcePixelFormat: kCVPixelFormatType_422YpCbCr10BiPlanarVideoRange) { chroma in
+                attempts.append(chroma)
+                throw MediaEncodingError.invalid(chroma.rawValue)
+            }
+            Issue.record("Accepted an encoder when both profiles failed")
+        } catch MediaEncodingError.invalid(let message) {
+            #expect(message == "4:2:0")
+        } catch { Issue.record("Unexpected error: \(error)") }
+        #expect(attempts == [.yuv422, .yuv420])
+        #expect(selection.chroma == nil)
+    }
+
+    @Test func recoveryFailureDoesNotChangeAnEstablished422Profile() throws {
+        var selection = HEVCEncoderSelection()
+        _ = try selection.makeEncoder(sourcePixelFormat: kCVPixelFormatType_422YpCbCr10BiPlanarVideoRange) { $0 }
+        var attempts: [HEVCChromaSampling] = []
+        #expect(throws: MediaEncodingError.self) {
+            try selection.makeEncoder(sourcePixelFormat: kCVPixelFormatType_422YpCbCr10BiPlanarVideoRange) { chroma in
+                attempts.append(chroma)
+                throw MediaEncodingError.operation("Recovering encoder", kVTVideoEncoderNotAvailableNowErr)
+            }
+        }
+        #expect(attempts == [.yuv422])
+        #expect(selection.chroma == .yuv422)
+    }
+
+    @Test func newSessionReevaluatesTheCameraFormat() throws {
+        var selection = HEVCEncoderSelection()
+        _ = try selection.makeEncoder(sourcePixelFormat: kCVPixelFormatType_422YpCbCr10BiPlanarVideoRange) { $0 }
+        selection = HEVCEncoderSelection()
+        let chosen = try selection.makeEncoder(sourcePixelFormat: kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange) { $0 }
+        #expect(chosen == .yuv420)
+    }
+
     @Test func unsupportedDelayLimitStillAppliesHDRAndClosedGOPSettings() throws {
         var applied: [String: AnyObject] = [:]
         try HEVCEncoderConfiguration.apply(frameRate: 60, bitrate: 20_000_000, keyframeInterval: 2) { key, value in

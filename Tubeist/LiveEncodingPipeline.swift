@@ -3,6 +3,7 @@ import AVFoundation
 @PipelineActor
 final class LiveEncodingPipeline {
     private var videoEncoder: HEVCVideoEncoder?
+    private var encoderSelection = HEVCEncoderSelection()
     private var audioEncoder: AACAudioEncoder?
     private var recording: RecordingAssetWriter?
     private var streams = false
@@ -58,12 +59,17 @@ final class LiveEncodingPipeline {
 
     func start(preset: Preset, stream: Bool, recording: RecordingAssetWriter?) throws {
         guard !isActive else { throw ContentPackagingError.alreadyEncoding }
+        try HEVCEncoderConfiguration.validate(width: preset.width, height: preset.height,
+            frameRate: preset.frameRate, bitrate: preset.videoBitrate, keyframeInterval: preset.keyframeInterval)
         self.preset = preset
         generation &+= 1
         lifecycleGeneration &+= 1
         timelineStartedAt = nil
-        videoEncoder = try HEVCVideoEncoder(width: preset.width, height: preset.height, frameRate: preset.frameRate,
-                                             bitrate: preset.videoBitrate, keyframeInterval: preset.keyframeInterval)
+        // Defer hardware setup until the first actual camera buffer, so capture
+        // format differences across cameras/OS versions cannot select 4:2:2 for
+        // a 4:2:0 source. Audio retains its bounded startup history meanwhile.
+        videoEncoder = nil
+        encoderSelection = HEVCEncoderSelection()
         audioEncoder = AACAudioEncoder(channels: preset.audioChannels, bitratePerChannel: preset.audioBitrate,
                                         sampleRate: AUDIO_SAMPLE_RATE)
         self.recording = recording
@@ -74,7 +80,7 @@ final class LiveEncodingPipeline {
         muxer.reset()
         sequence = 0
         nextBoundary = 0
-        repair = VideoCaptureRepair(frameDuration: videoEncoder!.frameDuration)
+        repair = nil
         lastPixels = nil
         lastRealVideoPTS = nil
         lastRealAudioEndPTS = nil
@@ -110,6 +116,7 @@ final class LiveEncodingPipeline {
         guard sourcePTS.isNumeric else { throw CaptureContinuityError.invalidTiming }
         if recovering { try await receiveRecovery(sample, video: true); return }
         if basePTS == nil {
+            try prepareVideoEncoder(for: pixels)
             basePTS = sourcePTS
             timelineStartedAt = now()
             for audio in startupAudio { try encodeAudio(audio, basePTS: sourcePTS) }
@@ -146,6 +153,22 @@ final class LiveEncodingPipeline {
         lastRealVideoPTS = pts
         liveness.receivedVideo(at: now())
         try await publishReadySegments()
+    }
+
+    private func prepareVideoEncoder(for pixels: CVPixelBuffer) throws {
+        guard let preset else { throw MediaEncodingError.invalid("Missing HEVC preset") }
+        let firstSetup = encoderSelection.chroma == nil
+        videoEncoder = try encoderSelection.makeEncoder(sourcePixelFormat: CVPixelBufferGetPixelFormatType(pixels)) { chroma in
+            try HEVCVideoEncoder(width: preset.width, height: preset.height, frameRate: preset.frameRate,
+                bitrate: preset.videoBitrate, keyframeInterval: preset.keyframeInterval, chroma: chroma)
+        }
+        repair = VideoCaptureRepair(frameDuration: videoEncoder!.frameDuration)
+        if firstSetup, let chroma = encoderSelection.chroma {
+            LOG("HEVC hardware encoding: 10-bit \(chroma.rawValue) HLG", level: .info)
+            if let reason = encoderSelection.fallbackReason {
+                LOG("HEVC 4:2:2 unavailable; using 4:2:0: \(reason)", level: .debug)
+            }
+        }
     }
 
     private func submitVideo(_ pixels: CVPixelBuffer, at pts: CMTime) throws {
@@ -354,6 +377,7 @@ final class LiveEncodingPipeline {
         }
         guard candidateVideoCount >= 2, candidateAudioCount >= 2,
               let videoSample = candidateVideo, let audioSample = candidateAudio, let preset,
+              let pixels = CMSampleBufferGetImageBuffer(videoSample),
               now() - min(candidateVideoAt, candidateAudioAt) < 0.5 else { return }
         let videoPTS = CMSampleBufferGetPresentationTimeStamp(videoSample)
         let audioPTS = CMSampleBufferGetPresentationTimeStamp(audioSample)
@@ -370,11 +394,9 @@ final class LiveEncodingPipeline {
         let resumeTime = max(now() - (timelineStartedAt ?? liveness.startedAt), lastOutputEnd + 0.5 + audioLead)
         let recoveryBasePTS = CMTimeSubtract(videoPTS, CMTime(seconds: resumeTime, preferredTimescale: 90_000))
         basePTS = recoveryBasePTS
-        videoEncoder = try HEVCVideoEncoder(width: preset.width, height: preset.height, frameRate: preset.frameRate,
-            bitrate: preset.videoBitrate, keyframeInterval: preset.keyframeInterval)
+        try prepareVideoEncoder(for: pixels)
         audioEncoder = AACAudioEncoder(channels: preset.audioChannels, bitratePerChannel: preset.audioBitrate,
                                        sampleRate: AUDIO_SAMPLE_RATE)
-        repair = VideoCaptureRepair(frameDuration: videoEncoder!.frameDuration)
         // The new encoder timestamps already continue the shared timeline.
         // Preserve the transport's original timestamp shift and packet counters.
         nextBoundary = resumeTime

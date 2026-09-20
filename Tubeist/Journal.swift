@@ -15,11 +15,20 @@ func LOG(_ message: String, level: LogLevel = .info) {
     Journal.shared.log(message, level: level)
 }
 
-enum LogLevel: Hashable, Sendable {
+enum LogLevel: CaseIterable, Hashable, Sendable {
     case debug
     case info
     case warning
     case error
+
+    var title: String {
+        switch self {
+        case .debug: "Debug"
+        case .info: "Info"
+        case .warning: "Warning"
+        case .error: "Error"
+        }
+    }
     
     var color: Color {
         switch self {
@@ -265,6 +274,7 @@ final class JournalPublicationGate: @unchecked Sendable {
 
 struct JournalView: View {
     @State var journalPublisher = Journal.publisher
+    @State private var visibleLevels = Set(LogLevel.allCases)
     @State private var didCopy = false
     @State private var copyFeedbackTask: Task<Void, Never>?
     private let hh_mm_ss = {
@@ -273,8 +283,13 @@ struct JournalView: View {
         return formatter
     }()
     private let almostBlack = Color(red: 0.1, green: 0.1, blue: 0.1)
+
+    private var filteredEntries: [LogEntry] {
+        journalPublisher.journal.filter { visibleLevels.contains($0.level) }
+    }
     
     var body: some View {
+        let entries = filteredEntries
         VStack(spacing: 0) {
             HStack {
                 Button(action: copyLog) {
@@ -287,19 +302,27 @@ struct JournalView: View {
                 .buttonStyle(.plain)
                 .foregroundStyle(.white)
                 .background(.white.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
-                .disabled(journalPublisher.journal.isEmpty)
-                .opacity(journalPublisher.journal.isEmpty ? 0.4 : 1)
+                .disabled(entries.isEmpty)
+                .opacity(entries.isEmpty ? 0.4 : 1)
                 .accessibilityLabel(didCopy ? "Log copied" : "Copy log")
-                .accessibilityHint("Copies all retained log entries as text")
+                .accessibilityHint("Copies retained entries matching the selected severity filters as text")
                 .accessibilityIdentifier("copyLogButton")
-                Spacer()
+
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        ForEach(LogLevel.allCases, id: \.self) { level in
+                            severityFilter(level)
+                        }
+                    }
+                }
+                .frame(height: 44)
             }
             .padding(.horizontal)
             .padding(.vertical, 8)
 
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
-                    ForEach(journalPublisher.journal.reversed()) { log in
+                    ForEach(entries.reversed()) { log in
                         HStack(alignment: .top) {
                             Text(log.timestamp, formatter: hh_mm_ss)
                                 .font(.caption2)
@@ -325,14 +348,56 @@ struct JournalView: View {
                     }
                 }
             }
+            .overlay {
+                if entries.isEmpty {
+                    Text(visibleLevels.isEmpty
+                         ? "Select a severity to show log entries."
+                         : "No matching log entries.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .padding()
+                }
+            }
         }
         .background(Color.black)
         .onDisappear { copyFeedbackTask?.cancel() }
     }
 
+    private func severityFilter(_ level: LogLevel) -> some View {
+        let isVisible = visibleLevels.contains(level)
+        return Button {
+            if isVisible {
+                visibleLevels.remove(level)
+            } else {
+                visibleLevels.insert(level)
+            }
+            copyFeedbackTask?.cancel()
+            didCopy = false
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: isVisible ? "checkmark.circle.fill" : "circle")
+                    .foregroundStyle(isVisible ? level.color : .gray)
+                Text(level.title)
+            }
+            .font(.caption.weight(.semibold))
+            .fixedSize()
+            .frame(minHeight: 44)
+            .padding(.horizontal, 10)
+            .foregroundStyle(isVisible ? .white : .gray)
+            .background(.white.opacity(isVisible ? 0.12 : 0.04),
+                        in: RoundedRectangle(cornerRadius: 10))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(level.title) log entries")
+        .accessibilityValue(isVisible ? "Shown" : "Hidden")
+        .accessibilityAddTraits(isVisible ? .isSelected : [])
+        .accessibilityHint("Double tap to \(isVisible ? "hide" : "show") this severity")
+        .accessibilityIdentifier("logFilter\(level.title)")
+    }
+
     private func copyLog() {
         // Copy one consistent snapshot, including entries outside the visible rows.
-        let entries = journalPublisher.journal.sorted { $0.timestamp < $1.timestamp }
+        let entries = filteredEntries.sorted { $0.timestamp < $1.timestamp }
         guard !entries.isEmpty else { return }
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -341,15 +406,11 @@ struct JournalView: View {
         Tubeist \(VERSION_BUILD)
         \(UIDevice.current.model), iOS \(UIDevice.current.systemVersion)
         Copied: \(formatter.string(from: Date()))
-        \(entries.count) retained entries, oldest first. Repeats show their last occurrence.
+        Severities: \(LogLevel.allCases.filter { visibleLevels.contains($0) }.map(\.title).joined(separator: ", "))
+        \(entries.count) of \(journalPublisher.journal.count) retained entries, oldest first. Repeats show their last occurrence.
         """
         let lines = entries.map { entry in
-            let level: String = switch entry.level {
-            case .debug: "DEBUG"
-            case .info: "INFO"
-            case .warning: "WARNING"
-            case .error: "ERROR"
-            }
+            let level = entry.level.title.uppercased()
             let repetitions = entry.repeatCount > 1 ? " (\(entry.repeatCount) occurrences)" : ""
             return "\(formatter.string(from: entry.timestamp)) [\(level)]\(repetitions) \(entry.message)"
         }
