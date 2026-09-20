@@ -37,6 +37,11 @@ jobs:
       - uses: actions/checkout@v5
       - name: Report Xcode version
         run: xcodebuild -version
+      - name: Install Metal toolchain
+        # Xcode 26 no longer bundles Metal with the hosted runner image. The
+        # project contains Kernels.metal, so every build must install the
+        # matching optional component before xcodebuild starts.
+        run: xcodebuild -downloadComponent MetalToolchain
       - name: Prepare test simulator
         id: simulator
         timeout-minutes: 20
