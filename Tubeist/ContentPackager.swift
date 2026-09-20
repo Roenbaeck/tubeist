@@ -345,7 +345,9 @@ final class ContentPackager: NSObject, AVAssetWriterDelegate, Sendable {
         await fragmentDispatcher.prepare(stream: false, record: record)
         if record { await recording.prepareForNewSession() }
         let recordingWriter = try await makeRecordingWriter(enabled: record)
-        try await Self.pipeline.start(preset: Settings.selectedPreset, stream: stream, recording: recordingWriter)
+        try await Self.pipeline.start(preset: Settings.selectedPreset, stream: stream,
+                                      recording: recordingWriter,
+                                      allows422: Settings.prefers422Chroma)
         LOG("VideoToolbox and AAC encoders are now accepting sample buffers", level: .debug)
     }
 

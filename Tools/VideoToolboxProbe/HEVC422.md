@@ -1,17 +1,24 @@
 # HEVC colour sampling selection
 
-Debug and Release builds automatically select Main42210 when the first camera
-buffer is 10-bit 4:2:2 and a hardware encoder can configure and prepare that
-profile at the chosen resolution/frame rate. If preparation fails, the failed
-session is released before trying Main10 4:2:0. A 4:2:0 source goes directly to
-Main10. There is no phone-model allowlist, software encoder, extra encode, or
-per-frame capability query.
+Debug and Release builds automatically select Main42210 when **Prefer 10-bit
+4:2:2 color** is on in Settings, the first camera buffer is 10-bit 4:2:2, and a
+hardware encoder can configure and prepare that profile at the chosen
+resolution/frame rate. If preparation fails, the failed session is released
+before trying Main10 4:2:0. A 4:2:0 source goes directly to Main10. There is no
+phone-model allowlist, software encoder, extra encode, or per-frame capability
+query.
+
+The setting defaults to on and is read once, when streaming or recording starts.
+Turning it off skips the Main42210 attempt entirely, so no hardware session is
+created for that profile; the log records `turned off in Settings` at Debug
+level. This is the supported way out for an account or playback device that
+does not accept 4:2:2, given YouTube's documented 4:2:0 requirement below.
 
 Selection is fixed for the entire stream/recording, including capture recovery,
 so the MP4 track cannot unexpectedly change profile. A new session re-evaluates
-the camera and hardware. The log reports the chosen sampling at Info level and
-any fallback reason at Debug level. The former experimental setting is ignored
-and its toggle has been removed.
+the camera, the setting, and the hardware. The log reports the chosen sampling
+at Info level and any fallback reason at Debug level. Changing the setting while
+live has no effect until the next start.
 
 YouTube's
 [HDR HLS specification](https://developers.google.com/youtube/v3/live/guides/hls-ingestion#hdr)

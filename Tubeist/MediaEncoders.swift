@@ -176,21 +176,32 @@ enum HEVCChromaSampling: String, Sendable {
 /// Recovery must retain the chosen profile, including a previous 4:2:0 fallback:
 /// changing it after samples have reached the MP4 track would invalidate it.
 struct HEVCEncoderSelection {
+    /// Frozen at Start. YouTube documents a 10-bit 4:2:0 HDR requirement, so a
+    /// stream or playback device that rejects 4:2:2 needs a way to opt out.
+    let allows422: Bool
     private(set) var chroma: HEVCChromaSampling?
     private(set) var fallbackReason: String?
+
+    init(allows422: Bool = true) {
+        self.allows422 = allows422
+    }
 
     mutating func makeEncoder<Encoder>(sourcePixelFormat: OSType,
                                       create: (HEVCChromaSampling) throws -> Encoder) throws -> Encoder {
         if let chroma { return try create(chroma) }
         if HEVCChromaSampling.preferred(for: sourcePixelFormat) == .yuv422 {
-            do {
-                let encoder = try create(.yuv422)
-                chroma = .yuv422
-                return encoder
-            } catch {
-                // The factory must release the failed hardware session before
-                // returning. Do not run an extra encoder alongside the stream.
-                fallbackReason = error.localizedDescription
+            if allows422 {
+                do {
+                    let encoder = try create(.yuv422)
+                    chroma = .yuv422
+                    return encoder
+                } catch {
+                    // The factory must release the failed hardware session before
+                    // returning. Do not run an extra encoder alongside the stream.
+                    fallbackReason = error.localizedDescription
+                }
+            } else {
+                fallbackReason = "turned off in Settings"
             }
         }
         let encoder = try create(.yuv420)

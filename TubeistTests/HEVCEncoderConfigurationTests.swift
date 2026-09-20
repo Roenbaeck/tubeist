@@ -37,6 +37,30 @@ struct HEVCEncoderConfigurationTests {
         }
     }
 
+    @Test func disabling422SkipsTheAttemptEvenForA422Camera() throws {
+        for pixelFormat in [kCVPixelFormatType_422YpCbCr10BiPlanarVideoRange,
+                            kCVPixelFormatType_422YpCbCr10BiPlanarFullRange] {
+            var selection = HEVCEncoderSelection(allows422: false)
+            var attempts: [HEVCChromaSampling] = []
+            let chosen = try selection.makeEncoder(sourcePixelFormat: pixelFormat) { chroma in
+                attempts.append(chroma)
+                return chroma
+            }
+            #expect(chosen == .yuv420)
+            // No hardware session may be created for a profile the user declined.
+            #expect(attempts == [.yuv420])
+            #expect(selection.chroma == .yuv420)
+            #expect(selection.fallbackReason == "turned off in Settings")
+        }
+    }
+
+    @Test func disabling422LeavesA420CameraUnremarked() throws {
+        var selection = HEVCEncoderSelection(allows422: false)
+        let chosen = try selection.makeEncoder(sourcePixelFormat: kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange) { $0 }
+        #expect(chosen == .yuv420)
+        #expect(selection.fallbackReason == nil)
+    }
+
     @Test func unsupported422FallsBackAndRecoveryKeeps420() throws {
         var selection = HEVCEncoderSelection()
         var attempts: [HEVCChromaSampling] = []

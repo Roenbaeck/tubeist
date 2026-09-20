@@ -57,7 +57,8 @@ final class LiveEncodingPipeline {
         self.reportFailure = reportFailure
     }
 
-    func start(preset: Preset, stream: Bool, recording: RecordingAssetWriter?) throws {
+    func start(preset: Preset, stream: Bool, recording: RecordingAssetWriter?,
+               allows422: Bool = true) throws {
         guard !isActive else { throw ContentPackagingError.alreadyEncoding }
         try HEVCEncoderConfiguration.validate(width: preset.width, height: preset.height,
             frameRate: preset.frameRate, bitrate: preset.videoBitrate, keyframeInterval: preset.keyframeInterval)
@@ -69,7 +70,7 @@ final class LiveEncodingPipeline {
         // format differences across cameras/OS versions cannot select 4:2:2 for
         // a 4:2:0 source. Audio retains its bounded startup history meanwhile.
         videoEncoder = nil
-        encoderSelection = HEVCEncoderSelection()
+        encoderSelection = HEVCEncoderSelection(allows422: allows422)
         audioEncoder = AACAudioEncoder(channels: preset.audioChannels, bitratePerChannel: preset.audioBitrate,
                                         sampleRate: AUDIO_SAMPLE_RATE)
         self.recording = recording
@@ -166,7 +167,7 @@ final class LiveEncodingPipeline {
         if firstSetup, let chroma = encoderSelection.chroma {
             LOG("HEVC hardware encoding: 10-bit \(chroma.rawValue) HLG", level: .info)
             if let reason = encoderSelection.fallbackReason {
-                LOG("HEVC 4:2:2 unavailable; using 4:2:0: \(reason)", level: .debug)
+                LOG("HEVC 4:2:2 not used: \(reason)", level: .debug)
             }
         }
     }

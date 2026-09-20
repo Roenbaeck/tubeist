@@ -233,6 +233,7 @@ private struct AppliedSettingsSnapshot {
     let stream: Bool
     let record: Bool
     let inputSyncsWithOutput: Bool
+    let prefers422Chroma: Bool
     let areSystemMetricsAtTop: Bool
     let measuredBandwidth: Int
     let networkSharing: String
@@ -260,6 +261,7 @@ private struct AppliedSettingsSnapshot {
             stream: Settings.stream,
             record: Settings.record,
             inputSyncsWithOutput: Settings.isInputSyncedWithOutput,
+            prefers422Chroma: Settings.prefers422Chroma,
             areSystemMetricsAtTop: Settings.areSystemMetricsAtTop,
             measuredBandwidth: Settings.measuredBandwidth,
             networkSharing: Settings.networkSharing,
@@ -284,6 +286,7 @@ private struct AppliedSettingsSnapshot {
             stream: Settings.stream,
             record: Settings.record,
             inputSyncsWithOutput: Settings.isInputSyncedWithOutput,
+            prefers422Chroma: Settings.prefers422Chroma,
             areSystemMetricsAtTop: Settings.areSystemMetricsAtTop,
             measuredBandwidth: Settings.measuredBandwidth,
             networkSharing: Settings.networkSharing,
@@ -307,6 +310,7 @@ private struct AppliedSettingsSnapshot {
         Settings.stream = stream
         Settings.record = record
         Settings.isInputSyncedWithOutput = inputSyncsWithOutput
+        Settings.prefers422Chroma = prefers422Chroma
         Settings.areSystemMetricsAtTop = areSystemMetricsAtTop
         Settings.measuredBandwidth = measuredBandwidth
         Settings.networkSharing = networkSharing
@@ -343,6 +347,7 @@ struct SettingsView: View {
     @State private var stream: Bool = Settings.stream
     @State private var record: Bool = Settings.record
     @State private var inputSyncsWithOutput: Bool = Settings.isInputSyncedWithOutput
+    @State private var prefers422Chroma: Bool = Settings.prefers422Chroma
     @State private var areSystemMetricsAtTop = Settings.areSystemMetricsAtTop
     @State private var measuredBandwidth: Int = Settings.measuredBandwidth
     @State private var networkSharing: String = Settings.networkSharing
@@ -757,7 +762,18 @@ struct SettingsView: View {
                         Text("Input resolution is always 4K regardless of output resolution. Camera video frames will be downsampled to the output resolution if it is lower than 4K. This yields the best possible color fidelity at the cost of higher CPU usage.")
                     }
                 }
-                
+
+                Section {
+                    Toggle("Prefer 10-bit 4:2:2 color", isOn: $prefers422Chroma)
+                } footer: {
+                    if prefers422Chroma {
+                        Text("Keeps 4:2:2 chroma detail when the camera delivers it and this iPhone's hardware encoder accepts it at the selected resolution and frame rate. Anything else uses 4:2:0. YouTube documents 4:2:0 for HDR, so turn this off if a stream fails to process or plays back incorrectly. The choice is made once when streaming or recording starts and does not change until the next start.")
+                    }
+                    else {
+                        Text("Always encodes 10-bit 4:2:0, which is what YouTube documents for HDR. Use this if 4:2:2 causes problems with your stream or on your playback devices.")
+                    }
+                }
+
                 Section {
                     ForEach(overlayDraft) { overlay in
                         Button {
@@ -1327,6 +1343,7 @@ struct SettingsView: View {
         Settings.stream = stream
         Settings.record = record
         Settings.isInputSyncedWithOutput = inputSyncsWithOutput
+        Settings.prefers422Chroma = prefers422Chroma
         Settings.areSystemMetricsAtTop = areSystemMetricsAtTop
         Settings.measuredBandwidth = measuredBandwidth
         Settings.networkSharing = networkSharing
@@ -1489,6 +1506,17 @@ final class Settings: Sendable {
         youtubeTokenExpiry = nil
     }
     
+    // YouTube's HDR HLS guide documents a 10-bit 4:2:0 requirement. Tubeist
+    // negotiates 4:2:2 because a live trial succeeded, so keep an opt-out for
+    // accounts or players where that turns out not to hold.
+    static var prefers422Chroma: Bool {
+        get {
+            bool(forKey: "Prefers422Chroma", default: true)
+        }
+        set {
+            UserDefaults.standard.set(newValue, forKey: "Prefers422Chroma")
+        }
+    }
     static var isInputSyncedWithOutput: Bool {
         get {
             bool(forKey: "InputSyncsWithOutput", default: true)

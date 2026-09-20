@@ -11,7 +11,7 @@ Tubeist is designed for events, sports, education, performances, and other long-
 ## Features
 
 - Direct YouTube HLS delivery from the iPhone, with no relay server
-- HEVC HLG video and AAC audio, preserving 10-bit 4:2:2 when both the camera and hardware encoder support it, with 4:2:0 fallback
+- HEVC HLG video and AAC audio, preserving 10-bit 4:2:2 when both the camera and hardware encoder support it, with 4:2:0 fallback and a Settings switch to stay on 4:2:0
 - Record-only, stream-only, and simultaneous stream-and-record modes
 - Fragmented MP4 local recordings using the original encoded media
 - Built-in presets from 540p through 4K, subject to the selected camera's capabilities
