@@ -471,6 +471,19 @@ legacy behavior or accidental development-only gate.
 Exit gate: all release criteria pass in a Release-equivalent build and no P1 issue
 can truncate, corrupt, expose, or indefinitely delay a stream.
 
+### Phase 11 — Apple Watch Live Activity
+
+Spec: `docs/superpowers/specs/2026-09-20-watch-live-activity-design.md`.
+Plan: `docs/superpowers/plans/2026-09-20-watch-live-activity.md`.
+
+Acceptance:
+- [ ] Unit tests pass for `StreamActivityPolicy` and the YouTube health/viewer fetches.
+- [ ] App and `TubeistLiveActivity` build for iOS Simulator.
+- [ ] Device: Live Activity appears on the paired watch Smart Stack during a stream, including with the iPhone unlocked and Tubeist in the foreground (key risk; see spec).
+- [ ] Device: Bad / No Data health produces a watch alert and haptic; recovery alert respects its toggle.
+- [ ] Device: Off/Standard/Full change what is shown; Live Activities disabled in iOS Settings falls back to notifications.
+- [ ] Device: a stream longer than 8 h keeps a Live Activity (restart path).
+
 ## Regression matrix
 
 | Mode | fMP4 recording | TS remux | YouTube upload |

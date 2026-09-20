@@ -22,6 +22,7 @@ Tubeist is designed for events, sports, education, performances, and other long-
 - Web overlays for graphics and live information
 - Built-in image styles and effects
 - Optional Google sign-in for YouTube broadcast discovery and management
+- Apple Watch Live Activity showing stream status, health and elapsed time on the watch Smart Stack, with optional Bad / No Data alerts (Settings > Apple Watch)
 
 ## Installation
 
@@ -89,6 +90,9 @@ In Settings, overlays are listed from front to back: the top row appears above t
 iOS does not permit indefinite camera capture in the background. If Tubeist moves to the background during capture, it stops capture and uses finite background execution time to finalize the local recording and accepted YouTube tail. Keep the app in the foreground for an active stream. When no stream is running, an expected background camera-preview interruption is recovered silently when Tubeist returns to the foreground.
 
 Battery-saving mode can reduce display power use during long sessions while leaving the capture pipeline active.
+
+While streaming, Tubeist shows a Live Activity that iOS mirrors to a paired Apple Watch Smart Stack. Settings > Apple Watch selects the detail level (Off, Standard, Full) and whether Bad / No Data health, and recovery, raise a watch alert; Full detail polls YouTube for viewers and uses a little more API quota.
+Live Activities and Time Sensitive notifications must be allowed for Tubeist in iOS Settings; if Live Activities are disabled, alerts fall back to notifications.
 
 ## Privacy and credentials
 
