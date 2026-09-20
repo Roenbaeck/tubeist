@@ -91,7 +91,7 @@ iOS does not permit indefinite camera capture in the background. If Tubeist move
 
 Battery-saving mode can reduce display power use during long sessions while leaving the capture pipeline active.
 
-While streaming, Tubeist shows a Live Activity that iOS mirrors to a paired Apple Watch Smart Stack. Settings > Apple Watch selects the detail level (Off, Standard, Full) and whether Bad / No Data health, and recovery, raise a watch alert; Full detail polls YouTube for viewers and uses a little more API quota.
+While streaming, Tubeist shows a Live Activity that is designed to appear in the Smart Stack of a paired Apple Watch (not yet verified on hardware). Settings > Apple Watch selects the detail level (Off, Standard, Full) and whether Bad / No Data health, and recovery, raise a watch alert. While streaming, Tubeist polls YouTube and uses YouTube API quota: stream health about every 30 seconds, and with Full detail, viewers about every minute.
 Live Activities and Time Sensitive notifications must be allowed for Tubeist in iOS Settings; if Live Activities are disabled, alerts fall back to notifications.
 
 ## Privacy and credentials

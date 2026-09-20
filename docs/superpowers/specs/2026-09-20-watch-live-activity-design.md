@@ -56,10 +56,13 @@ which covers stream health and viewer counts. No new sign-in or scope.
 ## Data flow and polling
 
 `Streamer` state changes and a poller feed a `StreamSnapshot`; the policy turns
-it into an activity update. Health is polled ~every 15 s; viewers ~every 30 s and
+it into an activity update. Health is polled ~every 30 s; viewers ~every 60 s and
 only in Full. A failed poll keeps last values and marks them stale (shown as
-"?", never a false "good"). 403/quota errors back off the interval. All work is
-off the media pipeline and fire-and-forget; nothing here may disturb streaming.
+"?", never a false "good"); with no bound YouTube stream id nothing is polled
+and no health is claimed at all. 403/quota errors back off the interval. All
+work is off the media pipeline and fire-and-forget; nothing here may disturb
+streaming, including the bitrate reading, which never evaluates the adaptive
+controller.
 
 ## Alerts
 
