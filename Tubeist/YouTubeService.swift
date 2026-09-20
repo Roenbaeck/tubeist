@@ -104,6 +104,7 @@ struct YouTubeStreamingPreparation: Sendable, Equatable {
     let endpoint: YouTubeHLSEndpoint
     let broadcast: YouTubeBroadcast
     let completionTarget: YouTubeBroadcastCompletionTarget?
+    let healthTarget: YouTubeHealthTarget
 }
 
 /// Captured at Start; completion must never follow a later Settings selection.
@@ -959,7 +960,9 @@ final class YouTubeService {
             endpoint: endpoint,
             broadcast: broadcast,
             completionTarget: endingPolicy.automaticallyEndsBroadcast
-                ? YouTubeBroadcastCompletionTarget(id: broadcast.id, authorizationScope: scope) : nil
+                ? YouTubeBroadcastCompletionTarget(id: broadcast.id, authorizationScope: scope) : nil,
+            healthTarget: YouTubeHealthTarget(streamID: selection.stream.id, broadcastID: broadcast.id,
+                                              authorizationScope: scope)
         )
     }
 
@@ -1214,6 +1217,33 @@ final class YouTubeService {
     }
 
     // MARK: - YouTube API: Broadcast Status (lightweight, 1 unit)
+
+    /// Uses the stream chosen at Start, not a fresh scan of the channel's streams.
+    func fetchIngestHealth(target: YouTubeHealthTarget) async throws -> YouTubeIngestStatus {
+        try Task.checkCancellation()
+        try checkAuthorization(target.authorizationScope)
+        let token = try await getValidAccessToken()
+        try checkAuthorization(target.authorizationScope)
+        let url = try resourceURL("liveStreams", query: [
+            .init(name: "part", value: "status"), .init(name: "id", value: target.streamID)
+        ])
+        guard let requestURL = URL(string: url) else { throw YouTubeError.invalidResponse }
+        var request = URLRequest(url: requestURL)
+        request.timeoutInterval = 15
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        struct Resource: Decodable, Sendable {
+            let id: String?
+            let status: YouTubeIngestStatus?
+        }
+        let data = try await authenticatedData(for: request, fallbackToken: token, operation: .streamHealth)
+        let response = try requestExecutor.decode(YouTubeListResponse<Resource>.self, from: data, operation: .streamHealth)
+        try Task.checkCancellation()
+        try checkAuthorization(target.authorizationScope)
+        guard let status = response.items.first(where: { $0.id == target.streamID })?.status else {
+            throw YouTubeError.invalidResponse
+        }
+        return status.sanitized(secrets: [token, tokenStore.accessToken ?? "", tokenStore.refreshToken ?? "", Settings.streamKey ?? ""])
+    }
 
     func fetchBroadcastStatus(broadcastId: String) async throws -> String? {
         let token = try await getValidAccessToken()

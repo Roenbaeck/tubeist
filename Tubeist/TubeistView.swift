@@ -73,6 +73,17 @@ struct TubeistView: View {
     @State private var fadeTask: Task<Void, Never>?
     @State private var isYouTubeRefreshCoolingDown: Bool = false
 
+    private var youtubeHealthPollingTarget: YouTubeHealthTarget? {
+        appState.isStreamActive && !appState.soonGoingToBackground ? appState.youtubeHealth.target : nil
+    }
+
+    private func refreshYouTubeIngestHealth() async {
+        guard let target = youtubeHealthPollingTarget else { return }
+        await appState.youtubeHealth.refresh(target: target, fetch: youtubeService.fetchIngestHealth) {
+            fade($0)
+        }
+    }
+
     private var canPrepareCamera: Bool {
         scenePhase == .active && !appState.soonGoingToBackground && !showSettings
     }
@@ -303,6 +314,7 @@ struct TubeistView: View {
                 if let status = try await youtubeService.fetchBroadcastStatus(broadcastId: broadcastId) {
                     try Task.checkCancellation()
                     appState.youtubeStatus = status
+                    await refreshYouTubeIngestHealth()
                     return
                 }
             } catch {
@@ -312,6 +324,7 @@ struct TubeistView: View {
         }
 
         await refreshCurrentYouTubeBroadcastStatus(logContext: "manual refresh")
+        await refreshYouTubeIngestHealth()
     }
 
     func startYouTubePolling() {
@@ -1041,6 +1054,12 @@ struct TubeistView: View {
             // still be unavailable. Wait for .active before resuming capture.
             guard canPrepareCamera else { return }
             await prepareCamera()
+        }
+        .task(id: youtubeHealthPollingTarget) {
+            guard let target = youtubeHealthPollingTarget else { return }
+            await appState.youtubeHealth.run(target: target, fetch: youtubeService.fetchIngestHealth) {
+                fade($0)
+            }
         }
         .task(id: appState.cameraMonitorId) {
             guard isCameraReady, !isUITesting, !appState.soonGoingToBackground else { return }

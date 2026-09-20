@@ -7,7 +7,7 @@
 import CoreMedia
 import UIKit
 
-enum StreamHealth {
+enum StreamHealth: Equatable {
     case silenced   // When stream is not running
     case awaiting   // Health has not been determined
     case unusable   // Stream is too bad to watch
@@ -179,7 +179,8 @@ actor StreamingActor {
     }
 
     func setYouTubeBroadcast(
-        id: String?, status: String?, completionTarget: YouTubeBroadcastCompletionTarget? = nil
+        id: String?, status: String?, completionTarget: YouTubeBroadcastCompletionTarget? = nil,
+        healthTarget: YouTubeHealthTarget? = nil
     ) async {
         youTubeCompletionTarget = completionTarget
         let appState = self.appState
@@ -187,6 +188,7 @@ actor StreamingActor {
             appState?.isYouTubeSignedIn = id != nil
             appState?.youtubeBroadcastId = id
             appState?.youtubeStatus = status
+            appState?.youtubeHealth.configure(healthTarget)
         }
     }
 
@@ -723,7 +725,8 @@ final class Streamer: Sendable {
             await streamingActor.setYouTubeBroadcast(
                 id: preparation.broadcast.id,
                 status: preparation.broadcast.lifeCycleStatus,
-                completionTarget: preparation.completionTarget
+                completionTarget: preparation.completionTarget,
+                healthTarget: preparation.healthTarget
             )
         } else {
             endpoint = try YouTubeHLSEndpoint.manualPrimary(streamKey: streamKey)

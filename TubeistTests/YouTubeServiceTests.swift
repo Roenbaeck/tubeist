@@ -8,6 +8,58 @@ import Testing
 @testable import Tubeist
 
 struct YouTubeServiceTests {
+    @Test(arguments: ["1800000000", "\"1800000000\""]) @MainActor
+    func readsHealthForOnlyThePinnedStreamAndDecodesGoogleTimestamps(timestamp: String) async throws {
+        let body = """
+        {"items":[{"id":"session-stream","status":{"streamStatus":"active","healthStatus":{
+        "status":"bad","lastUpdateTimeSeconds":\(timestamp),"configurationIssues":[{
+        "type":"noAudioStream","severity":"error","reason":"Check audio","description":"Missing audio; valid-access refresh-token"}]}}}]}
+        """
+        let transport = MockYouTubeAPITransport(responses: [.init(data: Data(body.utf8), statusCode: 200)])
+        let service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore(), discoveryCache: YouTubeDiscoveryCache())
+        let target = YouTubeHealthTarget(streamID: "session-stream", broadcastID: "session-broadcast",
+            authorizationScope: YouTubeDiscoveryCache.scope(refreshToken: "refresh-token"))
+        let health = try await service.fetchIngestHealth(target: target)
+        #expect(health.streamStatus == "active")
+        #expect(health.healthStatus?.lastUpdateTimeSeconds == 1_800_000_000)
+        #expect(health.healthStatus?.configurationIssues?.first?.severity == "error")
+        #expect(health.healthStatus?.configurationIssues?.first?.description == "Missing audio; [redacted] [redacted]")
+        let requests = await transport.requests
+        #expect(requests.count == 1)
+        #expect(requests[0].url?.path == "/youtube/v3/liveStreams")
+        #expect(Set(queryItems(in: requests[0])) == Set([
+            URLQueryItem(name: "part", value: "status"), URLQueryItem(name: "id", value: "session-stream")]))
+    }
+
+    @Test @MainActor func healthLookupRejectsAccountChangesAndWrongStreamResponses() async throws {
+        let transport = MockYouTubeAPITransport(responses: [.init(
+            data: Data(#"{"items":[{"id":"wrong-stream","status":{"streamStatus":"active"}}]}"#.utf8), statusCode: 200)])
+        let store = validMemoryTokenStore()
+        let service = YouTubeService(transport: transport, tokenStore: store, discoveryCache: YouTubeDiscoveryCache())
+        let target = YouTubeHealthTarget(streamID: "session-stream", broadcastID: "session-broadcast",
+            authorizationScope: YouTubeDiscoveryCache.scope(refreshToken: "refresh-token"))
+        await #expect(throws: YouTubeError.invalidResponse) { try await service.fetchIngestHealth(target: target) }
+        store.refreshToken = "another-account"
+        await #expect(throws: YouTubeError.notSignedIn) { try await service.fetchIngestHealth(target: target) }
+        #expect(await transport.requests.count == 1)
+    }
+
+    @Test @MainActor func healthLookupRefreshesExpiredAuthorizationAndStillUsesTheSameStream() async throws {
+        let transport = MockYouTubeAPITransport(responses: [
+            .init(data: Data(#"{"error":{"message":"expired"}}"#.utf8), statusCode: 401),
+            .init(data: Data(#"{"access_token":"new-access","expires_in":3600,"token_type":"Bearer"}"#.utf8), statusCode: 200),
+            .init(data: Data(#"{"items":[{"id":"session-stream","status":{"streamStatus":"active","healthStatus":{"status":"good"}}}]}"#.utf8), statusCode: 200)
+        ])
+        let service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore(), discoveryCache: YouTubeDiscoveryCache())
+        let target = YouTubeHealthTarget(streamID: "session-stream", broadcastID: "session-broadcast",
+            authorizationScope: YouTubeDiscoveryCache.scope(refreshToken: "refresh-token"))
+        #expect(try await service.fetchIngestHealth(target: target).healthStatus?.status == "good")
+        let requests = await transport.requests
+        #expect(requests.count == 3)
+        #expect(requests.first?.url == requests.last?.url)
+        #expect(requests.last?.value(forHTTPHeaderField: "Authorization") == "Bearer new-access")
+    }
+
     @Test @MainActor
     func completesOnlyTheBroadcastCapturedAtStart() async throws {
         let transport = MockYouTubeAPITransport(responses: [

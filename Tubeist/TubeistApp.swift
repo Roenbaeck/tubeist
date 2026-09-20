@@ -113,7 +113,15 @@ final class AppState {
     var justCameFromBackground = false
     var hadToStopStreaming = false
     var isBackgroundStopCommitted = false
-    var streamHealth = StreamHealth.silenced
+    private var localStreamHealth = StreamHealth.silenced
+    let youtubeHealth = YouTubeStreamHealthMonitor()
+    var streamHealth: StreamHealth {
+        get {
+            guard isStreamActive, youtubeHealth.target != nil else { return localStreamHealth }
+            return youtubeHealth.assessment.combining(localStreamHealth)
+        }
+        set { localStreamHealth = newValue }
+    }
     var isYouTubeSignedIn = false
     var youtubeStatus: String? = nil
     var youtubeBroadcastId: String? = nil
@@ -124,6 +132,7 @@ final class AppState {
     var activeMonitor: Monitor = DEFAULT_MONITOR
     func setStreamSessionState(_ state: StreamSessionState) {
         streamSessionState = state
+        if !state.isLive { youtubeHealth.configure(nil) }
         switch state {
         case .preparing, .live:
             streamHealth = .awaiting

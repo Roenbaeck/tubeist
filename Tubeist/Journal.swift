@@ -9,6 +9,7 @@ import OSLog
 import Foundation
 import SwiftUI
 import Observation
+import UIKit
 
 func LOG(_ message: String, level: LogLevel = .info) {
     Journal.shared.log(message, level: level)
@@ -264,6 +265,8 @@ final class JournalPublicationGate: @unchecked Sendable {
 
 struct JournalView: View {
     @State var journalPublisher = Journal.publisher
+    @State private var didCopy = false
+    @State private var copyFeedbackTask: Task<Void, Never>?
     private let hh_mm_ss = {
         let formatter = DateFormatter()
         formatter.dateFormat = "HH:mm ss"
@@ -272,34 +275,91 @@ struct JournalView: View {
     private let almostBlack = Color(red: 0.1, green: 0.1, blue: 0.1)
     
     var body: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 0) {
-                ForEach(journalPublisher.journal.reversed()) { log in
-                    HStack(alignment: .top) {
-                        Text(log.timestamp, formatter: hh_mm_ss)
-                            .font(.caption2)
-                            .padding(.top, 1)
-                            .monospacedDigit()
-                        Text(log.repeatCount.description)
-                            .font(.caption2)
-                            .foregroundColor(.orange)
-                            .padding(.top, 1)
-                            .frame(minWidth: 15)
-                        Text(log.message)
-                            .font(.caption)
-                            .foregroundColor(log.level.color)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    .padding(.horizontal)
-                    .overlay(alignment: .bottom) {
-                        Rectangle()
-                            .frame(height: 1)
-                            .foregroundColor(almostBlack)
-                            .padding(.horizontal)
+        VStack(spacing: 0) {
+            HStack {
+                Button(action: copyLog) {
+                    Label(didCopy ? "Copied" : "Copy log",
+                          systemImage: didCopy ? "checkmark" : "doc.on.doc")
+                        .font(.subheadline.weight(.medium))
+                        .frame(minHeight: 44)
+                        .padding(.horizontal, 12)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.white)
+                .background(.white.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
+                .disabled(journalPublisher.journal.isEmpty)
+                .opacity(journalPublisher.journal.isEmpty ? 0.4 : 1)
+                .accessibilityLabel(didCopy ? "Log copied" : "Copy log")
+                .accessibilityHint("Copies all retained log entries as text")
+                .accessibilityIdentifier("copyLogButton")
+                Spacer()
+            }
+            .padding(.horizontal)
+            .padding(.vertical, 8)
+
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    ForEach(journalPublisher.journal.reversed()) { log in
+                        HStack(alignment: .top) {
+                            Text(log.timestamp, formatter: hh_mm_ss)
+                                .font(.caption2)
+                                .padding(.top, 1)
+                                .monospacedDigit()
+                            Text(log.repeatCount.description)
+                                .font(.caption2)
+                                .foregroundColor(.orange)
+                                .padding(.top, 1)
+                                .frame(minWidth: 15)
+                            Text(log.message)
+                                .font(.caption)
+                                .foregroundColor(log.level.color)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .padding(.horizontal)
+                        .overlay(alignment: .bottom) {
+                            Rectangle()
+                                .frame(height: 1)
+                                .foregroundColor(almostBlack)
+                                .padding(.horizontal)
+                        }
                     }
                 }
             }
         }
         .background(Color.black)
+        .onDisappear { copyFeedbackTask?.cancel() }
+    }
+
+    private func copyLog() {
+        // Copy one consistent snapshot, including entries outside the visible rows.
+        let entries = journalPublisher.journal.sorted { $0.timestamp < $1.timestamp }
+        guard !entries.isEmpty else { return }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        formatter.timeZone = .current
+        let header = """
+        Tubeist \(VERSION_BUILD)
+        \(UIDevice.current.model), iOS \(UIDevice.current.systemVersion)
+        Copied: \(formatter.string(from: Date()))
+        \(entries.count) retained entries, oldest first. Repeats show their last occurrence.
+        """
+        let lines = entries.map { entry in
+            let level: String = switch entry.level {
+            case .debug: "DEBUG"
+            case .info: "INFO"
+            case .warning: "WARNING"
+            case .error: "ERROR"
+            }
+            let repetitions = entry.repeatCount > 1 ? " (\(entry.repeatCount) occurrences)" : ""
+            return "\(formatter.string(from: entry.timestamp)) [\(level)]\(repetitions) \(entry.message)"
+        }
+        UIPasteboard.general.string = header + "\n\n" + lines.joined(separator: "\n")
+        didCopy = true
+        copyFeedbackTask?.cancel()
+        copyFeedbackTask = Task {
+            do { try await Task.sleep(for: .seconds(2)) }
+            catch { return }
+            didCopy = false
+        }
     }
 }
