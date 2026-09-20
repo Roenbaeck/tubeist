@@ -41,7 +41,10 @@ final class StreamActivityCoordinator {
         task = Task { [controller] in
             await pendingTeardown?.value
             guard !Task.isCancelled else { return }
-            if alertOnBad || Settings.alertOnRecovery { await StreamAlertNotifier.prepare() }
+            // Only installs the delegate. Authorization is requested away from
+            // go-live (TubeistView.onAppear), so no system modal lands on the
+            // camera UI as the stream starts.
+            if alertOnBad || Settings.alertOnRecovery { StreamAlertNotifier.prepare() }
             UIDevice.current.isBatteryMonitoringEnabled = true
 
             var policy = StreamActivityPolicy(

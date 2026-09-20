@@ -1207,6 +1207,17 @@ struct TubeistView: View {
             if appState.isStreamActive {
                 startYouTubePolling()
                 streamActivityCoordinator.start(appState: appState, youtubeService: youtubeService)
+            } else {
+                Task {
+                    // A crash or a force-quit leaves a Live Activity on screen, still
+                    // counting up, with no app behind it; sweep those away first.
+                    await StreamActivityController.endOrphanedActivities()
+                    // Ask for notification permission here rather than at go-live,
+                    // where the system modal would land on top of the camera UI.
+                    if Settings.alertOnBadHealth {
+                        await StreamAlertNotifier.requestAuthorizationIfNeeded()
+                    }
+                }
             }
         }
         .onDisappear {

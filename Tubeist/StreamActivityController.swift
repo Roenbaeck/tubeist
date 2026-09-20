@@ -80,10 +80,30 @@ final class StreamActivityController: StreamActivitySink {
     }
 
     func end() async {
-        guard let handle else { return }
-        self.handle = nil
+        handle = nil
         activityStartedAt = nil
-        await handle.end()
+        // Ending every activity of this type, not just the tracked handle: an
+        // activity the app lost track of (a previous launch, a dropped handle) would
+        // otherwise stay on screen with its elapsed timer running and nothing to end
+        // it. There is never more than one Tubeist activity in normal operation.
+        await Self.endAllActivities()
+    }
+
+    /// Ends Live Activities left behind by a crash, a force-quit or a lost handle.
+    /// Call at launch while no stream is live: ActivityKit keeps activities alive
+    /// across app launches, so a killed app leaves a permanent "live and good"
+    /// activity whose timer keeps counting.
+    static func endOrphanedActivities() async {
+        let orphans = Activity<StreamActivityAttributes>.activities.count
+        guard orphans > 0 else { return }
+        LOG("Ending \(orphans) leftover Live Activity/Activities from a previous session", level: .info)
+        await endAllActivities()
+    }
+
+    private static func endAllActivities() async {
+        for activity in Activity<StreamActivityAttributes>.activities {
+            await ActivityHandle(activity: activity).end()
+        }
     }
 
     /// Returns true when the alert was attached to a Live Activity update.
@@ -97,12 +117,15 @@ final class StreamActivityController: StreamActivitySink {
             LOG("Live Activity reached its age limit; restarting", level: .info)
             await end()
         }
-        if handle?.isGone == true {
+        if let gone = handle, gone.isGone {
             // Updating a dismissed activity does nothing, which would also swallow the
-            // alert riding on it. Drop the handle and request a fresh activity below.
+            // alert riding on it. End it before dropping the handle — an ended but
+            // still visible activity would otherwise sit beside the new one — and
+            // request a fresh activity below.
             LOG("Live Activity was dismissed; requesting a new one", level: .debug)
             handle = nil
             activityStartedAt = nil
+            await gone.end()
         }
         if handle == nil {
             do {
@@ -138,9 +161,26 @@ final class StreamActivityController: StreamActivitySink {
 final class StreamAlertNotifier: NSObject, UNUserNotificationCenterDelegate {
     static let shared = StreamAlertNotifier()
 
-    /// Call once at stream start when alerts are enabled.
-    static func prepare() async {
+    private static var didRequestAuthorization = false
+
+    /// Installs the delegate so alerts show while Tubeist is in the foreground.
+    /// Idempotent, and deliberately silent: asking for authorization here would put
+    /// a system modal over the camera UI at every stream start.
+    static func prepare() {
         UNUserNotificationCenter.current().delegate = shared
+    }
+
+    /// Asks for notification permission at a moment that is not go-live. Only when
+    /// the user has never answered, and at most once per launch.
+    static func requestAuthorizationIfNeeded() async {
+        guard !didRequestAuthorization else { return }
+        didRequestAuthorization = true
+        let status = await UNUserNotificationCenter.current().notificationSettings().authorizationStatus
+        guard status == .notDetermined else { return }
+        await requestAuthorization()
+    }
+
+    private static func requestAuthorization() async {
         // No `.timeSensitive` option: it was deprecated in iOS 15 in favour of the
         // com.apple.developer.usernotifications.time-sensitive entitlement, which
         // Tubeist now carries.
@@ -149,6 +189,13 @@ final class StreamAlertNotifier: NSObject, UNUserNotificationCenterDelegate {
     }
 
     static func post(_ alert: StreamAlert) async {
+        // Last resort for a user who turned alerts on and went live before ever
+        // being asked: an unauthorized post is dropped silently, so ask now rather
+        // than swallow the alert. Only when the question has never been answered.
+        if await UNUserNotificationCenter.current().notificationSettings().authorizationStatus == .notDetermined {
+            didRequestAuthorization = true
+            await requestAuthorization()
+        }
         let content = UNMutableNotificationContent()
         content.title = alert.title
         content.body = alert.body

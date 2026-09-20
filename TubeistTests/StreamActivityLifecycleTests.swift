@@ -7,8 +7,10 @@
 //  stop, and the activity must only be ended once the tick loop is out.
 //
 
+import ActivityKit
 import Foundation
 import Testing
+import UserNotifications
 @testable import Tubeist
 
 @MainActor
@@ -197,6 +199,31 @@ struct StreamActivityCoordinatorLifecycleTests {
 
         Settings.liveActivityDetail = detail
         Settings.alertOnBadHealth = onBad
+    }
+}
+
+@MainActor
+struct StreamActivityCleanupTests {
+    @Test("The launch sweep leaves no Live Activity of this type behind")
+    func orphanSweepClearsEverything() async {
+        // ActivityKit itself cannot be driven in tests (no activity can be requested
+        // here), so this covers the sweep's postcondition and that it is safe to run
+        // at every launch, including when there is nothing to end.
+        await StreamActivityController.endOrphanedActivities()
+        #expect(Activity<StreamActivityAttributes>.activities.isEmpty)
+    }
+
+    @Test("Preparing alerts only installs the delegate, and is idempotent")
+    func prepareOnlyInstallsTheDelegate() {
+        // prepare() runs from the tick loop at go-live; it must not ask for
+        // notification permission there, which would put a system modal over the
+        // camera UI. The request happens from TubeistView.onAppear while idle.
+        let previous = UNUserNotificationCenter.current().delegate
+        StreamAlertNotifier.prepare()
+        #expect(UNUserNotificationCenter.current().delegate === StreamAlertNotifier.shared)
+        StreamAlertNotifier.prepare()
+        #expect(UNUserNotificationCenter.current().delegate === StreamAlertNotifier.shared)
+        UNUserNotificationCenter.current().delegate = previous
     }
 }
 
