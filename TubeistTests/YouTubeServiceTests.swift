@@ -1076,3 +1076,80 @@ private func streamItem(
 private func streamsResponse(_ items: [[String: Any]]) throws -> Data {
     try JSONSerialization.data(withJSONObject: ["items": items], options: [.sortedKeys])
 }
+
+struct YouTubeStreamHealthFetchTests {
+    @Test @MainActor
+    func streamHealthDecodesEveryStatusAndQueriesStatusPart() async throws {
+        let statuses = ["good", "ok", "bad", "noData"]
+        let responses = statuses.map { status in
+            YouTubeAPIResponse(
+                data: Data(#"{"items":[{"id":"s1","status":{"streamStatus":"active","healthStatus":{"status":"\#(status)"}}}]}"#.utf8),
+                statusCode: 200
+            )
+        }
+        let transport = MockYouTubeAPITransport(responses: responses)
+        let service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore())
+
+        var results: [YouTubeStreamHealth] = []
+        for _ in statuses {
+            results.append(try await service.fetchStreamHealth(streamId: "s1"))
+        }
+
+        #expect(results == [.good, .ok, .bad, .noData])
+        let requests = await transport.requests
+        let request = try #require(requests.first)
+        let url = try #require(request.url)
+        let components = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
+        #expect(components.path.hasSuffix("/liveStreams"))
+        #expect(components.queryItems?.contains(URLQueryItem(name: "part", value: "status")) == true)
+        #expect(components.queryItems?.contains(URLQueryItem(name: "id", value: "s1")) == true)
+    }
+
+    @Test @MainActor
+    func streamHealthIsUnknownWhenStreamOrStatusMissing() async throws {
+        let transport = MockYouTubeAPITransport(responses: [
+            YouTubeAPIResponse(data: Data(#"{"items":[]}"#.utf8), statusCode: 200),
+            YouTubeAPIResponse(data: Data(#"{"items":[{"id":"s1","status":{"streamStatus":"inactive"}}]}"#.utf8), statusCode: 200),
+        ])
+        let service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore())
+
+        #expect(try await service.fetchStreamHealth(streamId: "s1") == .unknown)
+        #expect(try await service.fetchStreamHealth(streamId: "s1") == .unknown)
+    }
+
+    @Test @MainActor
+    func concurrentViewersParsesStringCountAndHandlesAbsence() async throws {
+        let transport = MockYouTubeAPITransport(responses: [
+            YouTubeAPIResponse(data: Data(#"{"items":[{"id":"b1","liveStreamingDetails":{"concurrentViewers":"1234"}}]}"#.utf8), statusCode: 200),
+            YouTubeAPIResponse(data: Data(#"{"items":[{"id":"b1","liveStreamingDetails":{}}]}"#.utf8), statusCode: 200),
+            YouTubeAPIResponse(data: Data(#"{"items":[]}"#.utf8), statusCode: 200),
+        ])
+        let service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore())
+
+        #expect(try await service.fetchConcurrentViewers(videoId: "b1") == 1234)
+        #expect(try await service.fetchConcurrentViewers(videoId: "b1") == nil)
+        #expect(try await service.fetchConcurrentViewers(videoId: "b1") == nil)
+
+        let requests = await transport.requests
+        let request = try #require(requests.first)
+        let url = try #require(request.url)
+        let components = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
+        #expect(components.path.hasSuffix("/videos"))
+        #expect(components.queryItems?.contains(URLQueryItem(name: "part", value: "liveStreamingDetails")) == true)
+    }
+
+    @Test @MainActor
+    func quotaErrorSurfacesAsApiError() async throws {
+        let transport = MockYouTubeAPITransport(responses: [
+            YouTubeAPIResponse(data: Data(#"{"error":{"message":"quota exceeded"}}"#.utf8), statusCode: 403),
+        ])
+        let service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore())
+
+        do {
+            _ = try await service.fetchStreamHealth(streamId: "s1")
+            Issue.record("Expected quota error")
+        } catch let error as YouTubeError {
+            #expect(error == .apiError(403, "quota exceeded"))
+        }
+    }
+}

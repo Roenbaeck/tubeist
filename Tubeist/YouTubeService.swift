@@ -155,6 +155,25 @@ struct YouTubeLiveStreamResource: Decodable, Sendable {
     let cdn: CDN?
 }
 
+struct YouTubeStreamHealthResource: Decodable, Sendable {
+    struct Status: Decodable, Sendable {
+        struct Health: Decodable, Sendable { let status: String? }
+        let streamStatus: String?
+        let healthStatus: Health?
+    }
+    let id: String?
+    let status: Status?
+}
+
+struct YouTubeVideoLiveDetailsResource: Decodable, Sendable {
+    struct Details: Decodable, Sendable {
+        /// YouTube returns this as a JSON string; absent until viewers are counted.
+        let concurrentViewers: String?
+    }
+    let id: String?
+    let liveStreamingDetails: Details?
+}
+
 struct YouTubeBroadcastResource: Decodable, Sendable {
     struct Snippet: Decodable, Sendable {
         let title: String?
@@ -1000,6 +1019,31 @@ final class YouTubeService {
             operation: .broadcastStatus
         )
         return response.items.first?.status?.lifeCycleStatus
+    }
+
+    // MARK: - YouTube API: Stream Health and Viewers (lightweight, 1 unit each)
+
+    func fetchStreamHealth(streamId: String) async throws -> YouTubeStreamHealth {
+        let token = try await getValidAccessToken()
+        let url = "\(YOUTUBE_API_BASE)/liveStreams?part=status&id=\(streamId)"
+        let response: YouTubeListResponse<YouTubeStreamHealthResource> = try await apiGet(
+            url: url,
+            token: token,
+            operation: .streamHealth
+        )
+        return YouTubeStreamHealth(apiValue: response.items.first?.status?.healthStatus?.status)
+    }
+
+    /// `videoId` is the broadcast id (a YouTube broadcast is a video).
+    func fetchConcurrentViewers(videoId: String) async throws -> Int? {
+        let token = try await getValidAccessToken()
+        let url = "\(YOUTUBE_API_BASE)/videos?part=liveStreamingDetails&id=\(videoId)"
+        let response: YouTubeListResponse<YouTubeVideoLiveDetailsResource> = try await apiGet(
+            url: url,
+            token: token,
+            operation: .videoLiveDetails
+        )
+        return response.items.first?.liveStreamingDetails?.concurrentViewers.flatMap { Int($0) }
     }
 
     // MARK: - YouTube API: Transition (Stop)

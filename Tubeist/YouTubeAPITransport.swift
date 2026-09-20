@@ -54,6 +54,8 @@ enum YouTubeAPIOperation: String, Sendable {
     case streams = "liveStreams.list"
     case broadcasts = "liveBroadcasts.list"
     case broadcastStatus = "liveBroadcasts.list (status)"
+    case streamHealth = "liveStreams.list (health)"
+    case videoLiveDetails = "videos.list (liveStreamingDetails)"
     case createBroadcast = "liveBroadcasts.insert"
     case bindBroadcast = "liveBroadcasts.bind"
     case updateBroadcast = "liveBroadcasts.update"
@@ -63,7 +65,9 @@ enum YouTubeAPIOperation: String, Sendable {
     case playlistItems = "playlistItems.list"
     case insertPlaylistItem = "playlistItems.insert"
 
-    var successLevel: LogLevel { self == .broadcastStatus ? .debug : .info }
+    var successLevel: LogLevel {
+        (self == .broadcastStatus || self == .streamHealth || self == .videoLiveDetails) ? .debug : .info
+    }
     var failureLevel: LogLevel { self == .channels ? .warning : .error }
 }
 
