@@ -338,7 +338,12 @@ final class TubeistUITests: XCTestCase {
             app.cells.containing(.staticText, identifier: "overlay-order-\(url)").firstMatch
         }
         func moveBelow(_ source: String, _ destination: String) {
-            let handle = row(source).buttons["Reorder \(source)"]
+            // iOS 18 labels the native reorder control simply "Reorder"; iOS 26
+            // appends the row's own label. Accept either rather than pinning the
+            // test to one OS's wording for a system-supplied accessibility label.
+            let handle = row(source).buttons.matching(
+                NSPredicate(format: "label == %@ OR label == %@", "Reorder", "Reorder \(source)")
+            ).firstMatch
             XCTAssertTrue(handle.waitForExistence(timeout: 5))
             XCTAssertTrue(handle.isHittable)
             XCTAssertTrue(row(destination).waitForExistence(timeout: 5))

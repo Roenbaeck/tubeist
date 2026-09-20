@@ -92,15 +92,15 @@ struct YouTubeHLSUploaderTests {
             == .seconds(10 + acknowledgementDelay))
 
         let deadline = try await YouTubeCompletionGrace.wait(
-            deadline: clock.now().advanced(by: .seconds(120)),
+            deadline: clock.now().advanced(by: .seconds(140)),
             now: { clock.now() }, sleep: { clock.advance($0) }
         )
-        #expect(endListAcknowledgedAt.duration(to: clock.now()) == .seconds(10))
+        #expect(endListAcknowledgedAt.duration(to: clock.now()) == .seconds(120))
         // Waiting must not use up the API request's own eight-second budget.
         #expect(clock.now().duration(to: deadline) == .seconds(8))
     }
 
-    @Test(arguments: [0, 5, 10])
+    @Test(arguments: [0, 18, 119, 120])
     func completionGraceNeverShortensTheWaitToMeetADeadline(secondsRemaining: Int) async throws {
         let clock = HLSGraceTestClock()
         await #expect(throws: URLError(.timedOut)) {
@@ -112,7 +112,7 @@ struct YouTubeHLSUploaderTests {
         }
     }
 
-    @Test(arguments: [12, 30])
+    @Test(arguments: [122, 140])
     func completionRequestStaysWithinTheShutdownDeadline(secondsRemaining: Int) async throws {
         let clock = HLSGraceTestClock()
         let shutdownDeadline = clock.now().advanced(by: .seconds(secondsRemaining))
@@ -126,8 +126,8 @@ struct YouTubeHLSUploaderTests {
         let clock = HLSGraceTestClock()
         await #expect(throws: URLError(.timedOut)) {
             try await YouTubeCompletionGrace.wait(
-                deadline: clock.now().advanced(by: .seconds(20)),
-                now: { clock.now() }, sleep: { _ in clock.advance(.seconds(30)) }
+                deadline: clock.now().advanced(by: .seconds(140)),
+                now: { clock.now() }, sleep: { _ in clock.advance(.seconds(150)) }
             )
         }
     }
@@ -135,7 +135,7 @@ struct YouTubeHLSUploaderTests {
     @Test func completionGraceCanBeCancelled() async throws {
         let started = GraceWaitSignal()
         let finishing = Task {
-            try await YouTubeCompletionGrace.wait(deadline: .now.advanced(by: .seconds(120)),
+            try await YouTubeCompletionGrace.wait(deadline: .now.advanced(by: .seconds(140)),
                 sleep: { delay in
                     await started.signal()
                     try await Task.sleep(for: delay)

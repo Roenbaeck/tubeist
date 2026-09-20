@@ -8,6 +8,22 @@ import Testing
 @testable import Tubeist
 
 struct YouTubeServiceTests {
+    @Test @MainActor func shutdownObservesOnlyTheOriginalBroadcastAndAccount() async throws {
+        let transport = MockYouTubeAPITransport(responses: [.init(
+            data: Data(#"{"items":[{"id":"session-broadcast","status":{"lifeCycleStatus":"complete"}}]}"#.utf8), statusCode: 200)])
+        let store = validMemoryTokenStore()
+        let service = YouTubeService(transport: transport, tokenStore: store, discoveryCache: YouTubeDiscoveryCache())
+        let target = YouTubeHealthTarget(streamID: "session-stream", broadcastID: "session-broadcast",
+            authorizationScope: YouTubeDiscoveryCache.scope(refreshToken: "refresh-token"))
+        #expect(try await service.fetchBroadcastStatus(target: target) == "complete")
+        store.refreshToken = "another-account"
+        await #expect(throws: YouTubeError.notSignedIn) { try await service.fetchBroadcastStatus(target: target) }
+        let requests = await transport.requests
+        #expect(requests.count == 1)
+        #expect(requests[0].httpMethod == "GET")
+        #expect(queryItems(in: requests[0]).contains(URLQueryItem(name: "id", value: target.broadcastID)))
+    }
+
     @Test(arguments: ["1800000000", "\"1800000000\""]) @MainActor
     func readsHealthForOnlyThePinnedStreamAndDecodesGoogleTimestamps(timestamp: String) async throws {
         let body = """

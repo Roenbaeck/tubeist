@@ -114,7 +114,8 @@ enum CaptureTailAlignment {
 }
 
 enum YouTubeCompletionGrace {
-    static let duration: Duration = .seconds(10)
+    // Shutdown experiment: observe YouTube's natural end before intervening.
+    static let duration: Duration = .seconds(120)
     static let requestTimeout: Duration = .seconds(8)
 
     /// Call only after ENDLIST is acknowledged. Never shorten the grace to fit
@@ -142,6 +143,7 @@ actor StreamingActor {
     private var isHandlingRuntimeFailure = false
     private var outputPlan: StreamOutputPlan?
     private var youTubeCompletionTarget: YouTubeBroadcastCompletionTarget?
+    private var youTubeHealthTarget: YouTubeHealthTarget?
 
     func setAppState(_ appState: AppState) {
         self.appState = appState
@@ -160,6 +162,7 @@ actor StreamingActor {
             mediaIntakeActive = false
             outputPlan = nil
             youTubeCompletionTarget = nil
+            youTubeHealthTarget = nil
             await transition(to: .preparing)
         case .preparing, .live, .stopping:
             throw StreamSessionError.sessionBusy(state)
@@ -183,6 +186,7 @@ actor StreamingActor {
         healthTarget: YouTubeHealthTarget? = nil
     ) async {
         youTubeCompletionTarget = completionTarget
+        youTubeHealthTarget = healthTarget
         let appState = self.appState
         await MainActor.run {
             appState?.isYouTubeSignedIn = id != nil
@@ -198,6 +202,10 @@ actor StreamingActor {
 
     func activeYouTubeCompletionTarget() -> YouTubeBroadcastCompletionTarget? {
         youTubeCompletionTarget
+    }
+
+    func activeYouTubeHealthTarget() -> YouTubeHealthTarget? {
+        youTubeHealthTarget
     }
 
     func confirmYouTubeCompletion(_ target: YouTubeBroadcastCompletionTarget) async {
@@ -228,6 +236,7 @@ actor StreamingActor {
         isHandlingRuntimeFailure = false
         outputPlan = nil
         youTubeCompletionTarget = nil
+        youTubeHealthTarget = nil
         await transition(to: .idle)
     }
 
@@ -236,6 +245,7 @@ actor StreamingActor {
         isHandlingRuntimeFailure = false
         outputPlan = nil
         youTubeCompletionTarget = nil
+        youTubeHealthTarget = nil
         await transition(to: .failed(error.localizedDescription))
     }
 
@@ -371,7 +381,8 @@ final class Streamer: Sendable {
 
     func endStream(
         resumePreviewAfterStop: Bool = true,
-        shutdownTimeout: TimeInterval = 120
+        // Up to 120s to drain, then 120s observation and a bounded API request.
+        shutdownTimeout: TimeInterval = 260
     ) async throws -> StreamStopResult {
         try await commandQueue.run { [self] in
             try await performStop(
@@ -489,9 +500,25 @@ final class Streamer: Sendable {
         guard await streamingActor.beginStopping() else {
             return .alreadyIdle
         }
-        await ContentPackager.shared.beginFinalization()
         let clock = ContinuousClock()
-        let deadline = clock.now.advanced(by: .seconds(max(1, shutdownTimeout)))
+        let stoppedAt = clock.now
+        let shutdownDeadline = stoppedAt.advanced(by: .seconds(max(1, shutdownTimeout)))
+        // Longer observation must not increase how long stalled uploads drain.
+        let deadline = min(shutdownDeadline, stoppedAt.advanced(by: .seconds(120)))
+        let shutdownMonitor = await YouTubeShutdownMonitor(stoppedAt: stoppedAt)
+        let healthTarget = await streamingActor.activeYouTubeHealthTarget()
+        let observationTask: Task<Void, Never>? = healthTarget.map { target in
+            Task { @MainActor in
+                let service = YouTubeService(diagnostics: YouTubeDiagnostics().forStatusMonitoring())
+                await shutdownMonitor.run(target: target, fetchHealth: service.fetchIngestHealth,
+                    fetchBroadcast: service.fetchBroadcastStatus)
+            }
+        }
+        defer { observationTask?.cancel() }
+        if healthTarget != nil {
+            await shutdownMonitor.event("Stop requested; draining media; observing YouTube every 5 seconds", level: .info)
+        }
+        await ContentPackager.shared.beginFinalization()
         let outputPlan = await streamingActor.activeOutputPlan()
         let monitor = await streamingActor.getMonitor()
 
@@ -589,6 +616,9 @@ final class Streamer: Sendable {
         var endListAcknowledged = false
         do {
             endListAcknowledged = try await EncodedOutputRouter.shared.finish(deadline: deadline)
+            if endListAcknowledged {
+                await shutdownMonitor.endListAcknowledged()
+            }
         } catch {
             youTubeStatus = .failed(error.localizedDescription)
             LOG("Encoded output shutdown failed: \(error.localizedDescription)", level: .error)
@@ -596,18 +626,23 @@ final class Streamer: Sendable {
         if endListAcknowledged,
            let target = await streamingActor.activeYouTubeCompletionTarget() {
             do {
-                LOG("YouTube ENDLIST acknowledged; waiting 10 seconds before requesting broadcast completion", level: .debug)
-                let completionDeadline = try await YouTubeCompletionGrace.wait(deadline: deadline)
-                let service = await YouTubeService()
-                try await service.completeBroadcastAfterUpload(
-                    target, deadline: completionDeadline
-                )
+                let completionDeadline = try await YouTubeCompletionGrace.wait(deadline: shutdownDeadline)
+                observationTask?.cancel()
+                if await shutdownMonitor.observedCompletion {
+                    await shutdownMonitor.event("Observation finished; broadcast already complete; no completion request needed", level: .info)
+                } else {
+                    await shutdownMonitor.event("120-second observation finished; requesting broadcast completion", level: .info)
+                    let service = await YouTubeService()
+                    try await service.completeBroadcastAfterUpload(
+                        target, deadline: completionDeadline
+                    )
+                    await shutdownMonitor.event("Broadcast completion request confirmed", level: .info)
+                }
                 await streamingActor.confirmYouTubeCompletion(target)
-                LOG("YouTube broadcast completion confirmed", level: .debug)
             } catch {
                 // Uploads and local recording are already finalized. Leave the
                 // remote status truthful and let auto-stop/polling finish it.
-                LOG("YouTube completion was not confirmed; waiting for automatic stop (\(YouTubeDiagnostics.failure(error)))", level: .warning)
+                await shutdownMonitor.event("Completion was not confirmed; leaving YouTube auto-stop in control (\(YouTubeDiagnostics.failure(error)))", level: .warning)
             }
         }
         let result = StreamStopResult(

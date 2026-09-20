@@ -1256,6 +1256,17 @@ final class YouTubeService {
         return response.items.first(where: { $0.id == broadcastId })?.status?.lifeCycleStatus
     }
 
+    /// Shutdown must observe the broadcast/account selected at Start, even if
+    /// Settings or authorization change while the two-minute wait is running.
+    func fetchBroadcastStatus(target: YouTubeHealthTarget) async throws -> String? {
+        try Task.checkCancellation()
+        try checkAuthorization(target.authorizationScope)
+        let status = try await fetchBroadcastStatus(broadcastId: target.broadcastID)
+        try Task.checkCancellation()
+        try checkAuthorization(target.authorizationScope)
+        return status.map { YouTubeDiagnostics.text($0) }
+    }
+
     // MARK: - YouTube API: Transition (Stop)
 
     /// Best-effort completion after ENDLIST has been acknowledged. The caller

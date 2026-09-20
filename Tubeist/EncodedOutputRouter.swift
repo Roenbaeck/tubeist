@@ -263,6 +263,9 @@ actor YouTubeHLSStreamSink {
         if let finishingUploader {
             if finishingFailure == nil {
                 do {
+                    if let sequence = lastAcceptedMediaSequence {
+                        LOG("YouTube upload queue drained; final acknowledged media sequence \(sequence)", level: .debug)
+                    }
                     endListAcknowledged = try await finishingUploader.finish(deadline: deadline)
                     if finishingUploader.endingPolicy == .manualDiagnostic {
                         LOG("YouTube ending test: uploads finished; no ENDLIST or completion sent. End the broadcast manually in YouTube Studio after checking the ending.", level: .info)

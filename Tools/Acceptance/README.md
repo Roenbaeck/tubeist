@@ -114,7 +114,7 @@ The capture proves upload behavior, not when YouTube finished processing it.
 
 Turn the test off and Save afterward. The next normal signed-in Start restores
 auto-stop; normal Stop waits ten seconds from the final media acknowledgement,
-sends ENDLIST, waits another ten seconds after its acknowledgement, and attempts
+sends ENDLIST, observes YouTube for 120 seconds after its acknowledgement, and attempts
 API completion. Changing the setting cannot end an
 already-open diagnostic broadcast: complete that broadcast in Studio first.
 
@@ -191,15 +191,30 @@ the smaller playlist still preserves playback under recovery conditions.
 
 Shutdown now waits until ten seconds after the final media acknowledgement before
 sending ENDLIST. After ENDLIST is acknowledged, the normal signed-in Stop path
-waits another ten seconds before requesting completion of the broadcast captured
+waits another 120 seconds before requesting completion of the broadcast captured
 at Start, when the same YouTube authorization is still available. This API step
 has an eight-second budget starting after the second wait, bounded by the overall
 shutdown deadline. If the full second wait cannot fit, explicit completion is
 skipped; the wait is never shortened to force an earlier transition. Cancellation
 also prevents that request. Failure leaves auto-stop and status polling in place.
+The foreground shutdown budget is 260 seconds, with media draining still capped
+at 120 seconds. A shorter explicit deadline (such as background shutdown) keeps
+its original bound and cannot cause an early completion request.
 Completion is shown only after API confirmation. The upload journal records the
-last media response and the ENDLIST request/response separately. The app's debug
-log marks the start of the additional completion wait and confirmed completion.
+last media response and the ENDLIST request/response separately.
+
+During this experiment, Stop owns a separate read-only observer that polls the
+session's stream health and broadcast status every five seconds, even after
+YouTube completes the broadcast automatically. A natural completion is logged
+and avoids a redundant completion request at the end of the observation period.
+`noData` and `inactive` are logged as observations, not interpreted as drained
+buffers or errors. Lookup failures do not cancel uploads or shorten the wait.
+Debug log lines include elapsed time from Stop and ENDLIST acknowledgement so
+repeated reports remain distinct in the copied log. Info entries mark Stop,
+ENDLIST, natural completion, and any explicit completion request and response.
+For the countdown test, keep Tubeist in the foreground with debug logging on
+until the observation finishes, then copy all log severities and retain the
+local recording and YouTube replay URL.
 The HTTP capture ends with ingestion and does not capture the later API request.
 This experiment does not establish that YouTube preserves the whole ending;
 compare the captured media, local recording, and processed replay again.
