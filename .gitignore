@@ -40,3 +40,6 @@ fastlane/sign&cert
 ._*
 *.bak
 /modified-files
+
+# Local contributor patch archive
+/tubeist-watch-live-activity.zip
