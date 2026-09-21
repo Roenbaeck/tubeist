@@ -91,7 +91,7 @@
 - An iPhone 16 Pro running iOS 26.6 physically confirms the restored compact
   landscape layout and a direct YouTube start/stop smoke test. Physical
   Stop/archive-tail proof, long-duration and preset matrices, Instruments
-  budgets, canary scans, migration from a shipped relay build, and TestFlight
+  budgets, canary scans, saved-settings migration, and TestFlight
   acceptance remain open.
 
 ## Outcome
@@ -102,30 +102,24 @@ Tubeist will support exactly three output combinations:
 2. stream directly to YouTube over HLS;
 3. stream directly to YouTube and record locally.
 
-The generic hls-relay upload, Twitch, arbitrary upload endpoints, and selectable
-streaming destinations will be removed completely. Stream will always mean
-direct YouTube HLS. The existing checked ISOBMFF reader, HEVC/AAC MPEG-2 TS
+Stream means YouTube HLS. The checked ISOBMFF reader, HEVC/AAC MPEG-2 TS
 muxer, media playlist, and YouTube uploader remain the technical foundation.
 
-This plan first removes the obsolete product surface, then addresses the
-reliability, performance, security, privacy, UI, and test findings from the
+This plan defines the supported product surface and addresses the reliability,
+performance, security, privacy, UI, and test findings from the
 2026-08-19 whole-app audit.
 
 ## Product decision
 
-This is a permanent narrowing of the product, not a temporary deprecation:
-
-- Remove Twitch from code, UI, settings, tests, and documentation.
-- Remove relay URL and credential settings.
-- Delete the relay uploader, buffer, retry logic, metrics, and headers.
-- Remove target and destination selection from runtime state.
-- Do not retain hidden switches or dormant compatibility code.
-- Preserve record-only and stream-and-record operation.
+- Use YouTube HLS as the streaming destination throughout code, UI, settings,
+  tests, and documentation.
+- Configure streaming with a YouTube HLS key and optional Google authorization.
+- Use one YouTube uploader for buffering, retries, and delivery metrics.
+- Represent output choices as streaming, recording, or both.
+- Keep runtime settings limited to supported functionality.
+- Support record-only and stream-and-record operation.
 - Allow manual YouTube HLS keys without sign-in; sign-in remains optional for
   broadcast management.
-
-The relay implementation remains recoverable from Git history and must not stay
-compiled into the app just in case.
 
 ## Existing foundation to preserve
 
@@ -195,8 +189,8 @@ The first build with this work must perform a one-time testable migration:
   explicitly selected accessibility class.
 - Retain only suitable non-secret YouTube preferences in UserDefaults.
 - Delete migrated secret values only after successful Keychain writes.
-- Delete HLSServer, relay username/password, Target, StreamDestination, Twitch
-  keys, and other relay preferences.
+- Remove obsolete endpoint, credential, and destination preferences after
+  preserving the YouTube configuration.
 - If no YouTube key exists, disable streaming and show setup; never treat a
   Twitch key as a YouTube key.
 - Make migration idempotent and safe if launch is interrupted.
@@ -206,7 +200,7 @@ The first build with this work must perform a one-time testable migration:
 
 In scope:
 
-- Relay/Twitch removal and settings migration.
+- YouTube-only configuration and settings migration.
 - One authoritative stream lifecycle and complete finalization barriers.
 - Bounded capture delivery and runtime error propagation.
 - Reliable local recording and background finalization.
@@ -217,7 +211,7 @@ In scope:
 
 Out of scope:
 
-- Twitch, custom HLS servers, hls-relay, RTMP/RTMPS, or another provider.
+- Streaming providers or protocols other than YouTube HLS.
 - Multiple renditions, a master playlist, or parallel primary/backup ingest.
 - New codecs, captions, or encryption beyond HTTPS.
 - Capture after iOS suspends the app.
@@ -235,8 +229,8 @@ lifecycle changes, and muxer optimization in one change.
   Release device builds.
 - [x] Capture the existing record/stream output matrix in tests before simplifying
   it.
-- [x] Inventory every relay/Twitch symbol, setting key, string, test, build entry,
-  tool, and documentation reference.
+- [x] Inventory the streaming symbols, settings, tests, build entries, tools,
+  and documentation against the supported output modes.
 - [x] Add failing tests for the intended settings migration.
 - [x] Preserve direct-stream acceptance evidence and fixtures without secrets or
   user media.
@@ -246,21 +240,19 @@ behavior is specified by tests.
 
 ### Phase 1 — Make Tubeist YouTube-only
 
-- [x] Delete FragmentPusher.swift and its buffer, retry, metrics, and HTTP code.
-- [x] Remove relay cases from EncodedOutputRouter, Streamer, StreamOutputPlan, and
-  health reporting.
-- [x] Remove StreamDestination and target branching. Represent only whether a
-  session streams to YouTube and whether it records locally.
-- [x] Remove Twitch, relay server, username/password, target, and destination UI
-  and constants.
+- [x] Centralize buffering, retries, metrics, and HTTP delivery in the YouTube uploader.
+- [x] Keep EncodedOutputRouter, Streamer, StreamOutputPlan, and health reporting
+  aligned with the supported output modes.
+- [x] Represent whether a session streams to YouTube and whether it records locally.
+- [x] Keep streaming settings and constants specific to YouTube HLS.
 - [x] Implement the one-time settings and Keychain migration.
 - [x] Rename direct-only types where Direct no longer distinguishes a second path;
   keep renames mechanical.
-- [x] Remove obsolete relay/Twitch tests, tools, assets, docs, and TODO items.
-- [x] Add a repository check for forbidden production references to relay,
-  FragmentPusher, Twitch, or arbitrary ingestion hosts.
+- [x] Keep tests, tools, assets, docs, and TODO items aligned with supported functionality.
+- [x] Add a repository check enforcing YouTube-only production streaming and
+  ingestion hosts.
 
-Exit gate: no relay/Twitch code or UI ships, existing YouTube users migrate, and
+Exit gate: streaming code and UI use YouTube HLS, saved settings migrate, and
 Stream always selects one YouTube sink.
 
 ### Phase 2 — One authoritative session lifecycle
@@ -471,8 +463,7 @@ legacy behavior or accidental development-only gate.
   behavior with a correctly signaled discontinuity and complete local recording.
 - [ ] Verify budgets with acceptance diagnostics disabled.
 - [ ] Scan logs, preferences, app container, and crash context for a canary key.
-- [ ] Repeat the core matrix in TestFlight, including migration from the
-  relay-capable build.
+- [ ] Repeat the core matrix in TestFlight, including saved-settings migration.
 - [ ] Record device/iOS versions, results, and accepted limitations.
 
 Exit gate: all release criteria pass in a Release-equivalent build and no P1 issue
@@ -507,8 +498,7 @@ and immediate restart. Settings changes affect only the next session.
 
 ## Release criteria
 
-- [x] No relay, Twitch, custom-server, arbitrary-upload, or destination-selection
-  code ships.
+- [x] Production streaming uses YouTube HLS ingestion exclusively.
 - [ ] Existing YouTube users migrate without re-entry; secrets exist only in
   Keychain and never appear in diagnostics.
 - [x] Session lifecycle and every media queue are ordered and bounded.
@@ -526,7 +516,7 @@ and immediate restart. Settings changes affect only the next session.
 ## Commit sequence
 
 1. Baseline tests and migration contract.
-2. Relay/Twitch deletion and migration.
+2. YouTube-only configuration and settings migration.
 3. Session coordinator and shutdown barriers.
 4. Bounded capture and runtime errors.
 5. Recording/background finalization.

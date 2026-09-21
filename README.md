@@ -2,7 +2,7 @@
 
 # Tubeist
 
-Tubeist is a native Swift 6 camera app for recording and streaming HDR video from an iPhone. It sends 10-bit HEVC HLG video and AAC audio directly to YouTube over HLS, without an intermediate relay server. VideoToolbox and an AAC encoder feed MPEG-2 TS segments directly. When local recording is enabled, AVAssetWriter saves the same compressed samples as fragmented MP4 without another encode.
+Tubeist is a native Swift 6 camera app for recording and streaming HDR video from an iPhone. It sends 10-bit HEVC HLG video and AAC audio to YouTube over HLS. VideoToolbox and an AAC encoder feed MPEG-2 TS segments directly. When local recording is enabled, AVAssetWriter saves the same compressed samples as fragmented MP4 without another encode.
 
 Tubeist is designed for events, sports, education, performances, and other long-form productions where image quality matters more than conversational latency. Watch [Tubeist demos on YouTube](https://youtube.com/playlist?list=PLFnkPgO2HxdAp_YiFVSWVpyak--0y6m5U&si=b2vjD-jVe0FY2egZ).
 
@@ -10,7 +10,7 @@ Tubeist is designed for events, sports, education, performances, and other long-
 
 ## Features
 
-- Direct YouTube HLS delivery from the iPhone, with no relay server
+- YouTube HLS streaming from the iPhone
 - HEVC HLG video and AAC audio, preserving 10-bit 4:2:2 when both the camera and hardware encoder support it, with 4:2:0 fallback and a Settings switch to stay on 4:2:0
 - Record-only, stream-only, and simultaneous stream-and-record modes
 - Fragmented MP4 local recordings using the original encoded media

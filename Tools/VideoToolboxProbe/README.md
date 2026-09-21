@@ -38,7 +38,7 @@ eight-frame encoder window bounds work retained during compression. Decode
 timing instead uses the highest temporal layer's `sps_max_num_reorder_pics`,
 read from the emitted HEVC configuration, as its lead along the actual input
 presentation timeline. This separates encoder lookahead from decoder buffering
-and follows the relay's PTS-based FFmpeg reconstruction. A reordering-depth
+and follows FFmpeg's PTS-based timestamp reconstruction. A reordering-depth
 change requires a fresh encoder/timeline, as capture recovery already provides.
 The recording video track uses a 90 kHz timescale to avoid rounding this timing
 and the shared A/V epoch to AVAssetWriter's default 600 Hz. PTS and encoded payload are unchanged;
