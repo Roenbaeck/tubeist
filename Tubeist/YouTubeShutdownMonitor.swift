@@ -1,13 +1,16 @@
 import Foundation
 
-/// Read-only observation owned by Stop, independent of the live-view health task.
-/// Neither noData nor inactive proves that YouTube has processed the last frame.
+/// Observation owned by Stop, independent of the live-view health task.
+/// Two inactive polls after ENDLIST are a completion heuristic, not proof that
+/// YouTube has processed the last frame.
 @MainActor
 final class YouTubeShutdownMonitor {
     typealias FetchBroadcast = @MainActor (YouTubeHealthTarget) async throws -> String?
     static let pollingInterval: Duration = .seconds(5)
 
     private(set) var observedCompletion = false
+    private(set) var consecutiveInactivePolls = 0
+    var canCompleteEarly: Bool { observedCompletion || consecutiveInactivePolls >= 2 }
     private let stoppedAt: ContinuousClock.Instant
     private var endListAcknowledgedAt: ContinuousClock.Instant?
     private let now: () -> ContinuousClock.Instant
@@ -22,8 +25,10 @@ final class YouTubeShutdownMonitor {
     }
 
     func endListAcknowledged() {
+        guard endListAcknowledgedAt == nil else { return }
         endListAcknowledgedAt = now()
-        event("ENDLIST acknowledged; waiting 120 seconds before considering a completion request", level: .info)
+        consecutiveInactivePolls = 0
+        event("ENDLIST acknowledged; waiting for two consecutive inactive polls, or 120 seconds, before requesting completion", level: .info)
     }
 
     func event(_ message: String, level: LogLevel = .debug) {
@@ -51,6 +56,9 @@ final class YouTubeShutdownMonitor {
                  fetchHealth: YouTubeStreamHealthMonitor.Fetch,
                  fetchBroadcast: FetchBroadcast) async {
         guard !Task.isCancelled else { return }
+        // A request begun before ENDLIST may return stale inactivity after its
+        // acknowledgement. Only post-acknowledgement requests count.
+        let isPostEndListPoll = endListAcknowledgedAt != nil
         do {
             let report = try await fetchHealth(target)
             try Task.checkCancellation()
@@ -58,8 +66,16 @@ final class YouTubeShutdownMonitor {
             let issues = report.healthStatus?.configurationIssues ?? []
             event("stream=\(report.streamStatus ?? "unknown"); health=\(report.healthStatus?.status ?? "unknown"); updated=\(updated); issues=\(issues.count)")
             for issue in issues { event("issue: \(issue.diagnostic)") }
+            if isPostEndListPoll {
+                consecutiveInactivePolls = report.streamStatus == "inactive"
+                    ? consecutiveInactivePolls + 1 : 0
+                if consecutiveInactivePolls == 2 {
+                    event("Two consecutive inactive polls after ENDLIST; ready to request broadcast completion", level: .info)
+                }
+            }
         } catch {
             guard !Task.isCancelled, !YouTubeDiagnostics.isCancellation(error) else { return }
+            consecutiveInactivePolls = 0
             event("Health lookup unavailable (\(YouTubeDiagnostics.failure(error)))", level: .warning)
         }
         // A health lookup failure must not hide an independently available

@@ -114,25 +114,33 @@ enum CaptureTailAlignment {
 }
 
 enum YouTubeCompletionGrace {
-    // Shutdown experiment: observe YouTube's natural end before intervening.
+    // Fallback when YouTube never reports sustained inactivity after ENDLIST.
     static let duration: Duration = .seconds(120)
     static let requestTimeout: Duration = .seconds(8)
 
-    /// Call only after ENDLIST is acknowledged. Never shorten the grace to fit
-    /// the shutdown budget: leave completion to YouTube's auto-stop instead.
+    /// Call only after ENDLIST is acknowledged. An early completion signal may
+    /// shorten the wait; an expiring shutdown budget must not do so.
     static func wait(
         deadline: ContinuousClock.Instant,
         now: @Sendable () -> ContinuousClock.Instant = { .now },
+        canCompleteEarly: @Sendable () async -> Bool = { false },
         sleep: @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
     ) async throws -> ContinuousClock.Instant {
         try Task.checkCancellation()
         let readyAt = now().advanced(by: duration)
-        guard readyAt < deadline else { throw URLError(.timedOut) }
-        try await sleep(duration)
-        try Task.checkCancellation()
-        let resumedAt = now()
-        guard resumedAt < deadline else { throw URLError(.timedOut) }
-        return min(deadline, resumedAt.advanced(by: requestTimeout))
+        while true {
+            try Task.checkCancellation()
+            guard now() < deadline else { throw URLError(.timedOut) }
+            let ready = await canCompleteEarly()
+            try Task.checkCancellation()
+            let instant = now()
+            guard instant < deadline else { throw URLError(.timedOut) }
+            if ready || instant >= readyAt {
+                return min(deadline, instant.advanced(by: requestTimeout))
+            }
+            let nextCheck = min(readyAt, deadline, instant.advanced(by: .seconds(1)))
+            try await sleep(instant.duration(to: nextCheck))
+        }
     }
 }
 
@@ -373,6 +381,17 @@ final class Streamer: Sendable {
     func stopSessions() async {
         await CaptureDirector.shared.stopSessions()
     }
+    func suspendPreviewInBackground() async {
+        try? await commandQueue.run { [self] in
+            guard await MainActor.run(body: { UIApplication.shared.applicationState == .background }),
+                  await !streamingActor.isStreaming() else { return }
+            await CaptureDirector.shared.stopOutput()
+            await FrameGrabber.shared.terminateGrabbing()
+            await SoundGrabber.shared.terminateGrabbing()
+            await CaptureDirector.shared.suspendSessionsInBackground()
+            LOG("Background capture and preview suspended", level: .debug)
+        }
+    }
     func startStream(streamID: String) async throws {
         try await commandQueue.run { [self] in
             try await performStart(streamID: streamID)
@@ -432,6 +451,11 @@ final class Streamer: Sendable {
     func handleMediaServicesReset() async {
         let resetError = CaptureSetupError.configuration("Camera media services were reset")
         await handleRuntimeFailure(resetError)
+        guard await MainActor.run(body: { UIApplication.shared.applicationState != .background }) else {
+            // Release an invalid graph now; foreground startup will rebuild it.
+            await stopSessions()
+            return
+        }
         do {
             try await cycleSessions()
             await streamingActor.presentAlert(
@@ -594,6 +618,9 @@ final class Streamer: Sendable {
             await FrameGrabber.shared.terminateGrabbing()
         }
         await SoundGrabber.shared.terminateGrabbing()
+        // Capture is no longer needed while uploads/YouTube completion drain.
+        // The check is serialized with foreground session resumption.
+        await CaptureDirector.shared.suspendSessionsInBackground()
         var packagingReport = ContentPackagingShutdownReport.notRequested
         do {
             packagingReport = try await ContentPackager.shared.endPackaging(deadline: deadline)
@@ -626,12 +653,17 @@ final class Streamer: Sendable {
         if endListAcknowledged,
            let target = await streamingActor.activeYouTubeCompletionTarget() {
             do {
-                let completionDeadline = try await YouTubeCompletionGrace.wait(deadline: shutdownDeadline)
+                let completionDeadline = try await YouTubeCompletionGrace.wait(
+                    deadline: shutdownDeadline,
+                    canCompleteEarly: { await shutdownMonitor.canCompleteEarly }
+                )
                 observationTask?.cancel()
                 if await shutdownMonitor.observedCompletion {
                     await shutdownMonitor.event("Observation finished; broadcast already complete; no completion request needed", level: .info)
                 } else {
-                    await shutdownMonitor.event("120-second observation finished; requesting broadcast completion", level: .info)
+                    let reason = await shutdownMonitor.consecutiveInactivePolls >= 2
+                        ? "Two consecutive inactive polls after ENDLIST" : "120-second observation finished"
+                    await shutdownMonitor.event("\(reason); requesting broadcast completion", level: .info)
                     let service = await YouTubeService()
                     try await service.completeBroadcastAfterUpload(
                         target, deadline: completionDeadline
@@ -658,7 +690,8 @@ final class Streamer: Sendable {
             throw shutdownError
         }
         await streamingActor.completeStop()
-        if resumeOutputPreview {
+        if resumeOutputPreview,
+           await MainActor.run(body: { UIApplication.shared.applicationState != .background }) {
             do {
                 try await CaptureDirector.shared.startOutput()
             } catch {
@@ -694,6 +727,7 @@ final class Streamer: Sendable {
     }
 
     private func performMonitorChange(_ monitor: Monitor) async {
+        guard await MainActor.run(body: { UIApplication.shared.applicationState != .background }) else { return }
         LOG("Setting monitor to \(monitor)", level: .debug)
         let savingBattery = await streamingActor.isBatterySavingOn()
         if monitor == .output, !savingBattery, await !isStreaming() {

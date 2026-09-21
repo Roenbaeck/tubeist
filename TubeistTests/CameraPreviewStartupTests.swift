@@ -146,6 +146,31 @@ private actor InterruptedCaptureSession: CaptureSessionDriving {
 }
 
 struct CaptureSessionRecoveryTests {
+    @Test func backgroundSuspensionReleasesCaptureAndReusesConfigurationOnReturn() async throws {
+        let driver = InterruptedCaptureSession()
+        let controller = SessionController(driver: driver)
+        try await controller.startSessions()
+        for _ in 0..<3 {
+            await controller.suspendSessions()
+            #expect(await !driver.isRunning)
+            #expect(await driver.hasInputs)
+            try await controller.startSessions()
+            #expect(await driver.isRunning)
+        }
+        #expect(await driver.stops == 3)
+        #expect(await driver.configurations == 1)
+        #expect(await driver.detachments == 0)
+    }
+
+    @Test func obsoleteBackgroundCleanupCannotStopForegroundCapture() async throws {
+        let driver = InterruptedCaptureSession()
+        let controller = SessionController(driver: driver)
+        try await controller.startSessions()
+        await controller.suspendSessions(if: { false })
+        #expect(await driver.isRunning)
+        #expect(await driver.stops == 0)
+    }
+
     @Test func unlockingResumesTheExistingInputsWithoutAddingThemAgain() async throws {
         let driver = InterruptedCaptureSession()
         let controller = SessionController(driver: driver)

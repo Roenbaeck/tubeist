@@ -215,6 +215,7 @@ struct TubeistApp: App {
     }
 
     private func handleScenePhase(_ oldValue: ScenePhase, _ newValue: ScenePhase) {
+            UIApplication.shared.isIdleTimerDisabled = newValue == .active
             switch (oldValue, newValue) {
             case (.inactive, .background), (.active, .background):
                 if !appState.soonGoingToBackground, !appState.isAppInitialization {
@@ -236,7 +237,10 @@ struct TubeistApp: App {
                         case .preparing, .live: true
                         case .idle, .stopping, .failed: false
                         }
-                        guard canCommitStop else { return }
+                        guard canCommitStop else {
+                            await Streamer.shared.suspendPreviewInBackground()
+                            return
+                        }
                         let shouldStop = await MainActor.run {
                             guard appState.soonGoingToBackground,
                                   UIApplication.shared.applicationState == .background else {
@@ -261,11 +265,13 @@ struct TubeistApp: App {
                                 appState.activeAlert = "Stream finalization failed in the background: \(error.localizedDescription)"
                             }
                         }
+                        await Streamer.shared.suspendPreviewInBackground()
                     }
                 }
             case (.background, .inactive), (.background, .active):
                 if !appState.justCameFromBackground, !appState.isAppInitialization {
                     let stopWasCommitted = appState.isBackgroundStopCommitted
+                    let graceWasPending = backgroundExecutionLease.isActive
                     if !stopWasCommitted {
                         backgroundExecutionLease.cancel()
                     } else {
@@ -280,8 +286,10 @@ struct TubeistApp: App {
                     appState.isBatterySavingOn = false
                     if stopWasCommitted {
                         LOG("App returned after background stream finalization began", level: .debug)
-                    } else {
+                    } else if graceWasPending {
                         LOG("App returned within the background stop grace period", level: .info)
+                    } else {
+                        LOG("App returned from background; resuming camera preview", level: .debug)
                     }
                     if appState.activeMonitor == .output {
                         appState.refreshOutputView()

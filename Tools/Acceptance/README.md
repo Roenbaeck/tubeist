@@ -114,8 +114,8 @@ The capture proves upload behavior, not when YouTube finished processing it.
 
 Turn the test off and Save afterward. The next normal signed-in Start restores
 auto-stop; normal Stop waits ten seconds from the final media acknowledgement,
-sends ENDLIST, observes YouTube for 120 seconds after its acknowledgement, and attempts
-API completion. Changing the setting cannot end an
+sends ENDLIST, and attempts API completion after two consecutive post-ENDLIST
+inactive polls or a 120-second fallback. Changing the setting cannot end an
 already-open diagnostic broadcast: complete that broadcast in Studio first.
 
 ### Capture contents
@@ -191,24 +191,26 @@ the smaller playlist still preserves playback under recovery conditions.
 
 Shutdown now waits until ten seconds after the final media acknowledgement before
 sending ENDLIST. After ENDLIST is acknowledged, the normal signed-in Stop path
-waits another 120 seconds before requesting completion of the broadcast captured
-at Start, when the same YouTube authorization is still available. This API step
-has an eight-second budget starting after the second wait, bounded by the overall
-shutdown deadline. If the full second wait cannot fit, explicit completion is
-skipped; the wait is never shortened to force an earlier transition. Cancellation
-also prevents that request. Failure leaves auto-stop and status polling in place.
+waits for two consecutive `inactive` stream statuses before requesting completion
+of the broadcast captured at Start, when the same authorization is still available.
+Only health requests begun after ENDLIST acknowledgement count. Any other stream
+status or failed health lookup resets the count; `noData` alone does not qualify.
+If inactivity is not observed twice, 120 seconds after ENDLIST is the fallback.
+The API step has an eight-second budget bounded by the overall shutdown deadline.
+An expiring deadline never substitutes for the inactivity signal or the full
+fallback wait. Cancellation prevents that request. Failure leaves auto-stop and
+status polling in place.
 The foreground shutdown budget is 260 seconds, with media draining still capped
 at 120 seconds. A shorter explicit deadline (such as background shutdown) keeps
-its original bound and cannot cause an early completion request.
+its original bound; it can complete early only with the same inactivity signal.
 Completion is shown only after API confirmation. The upload journal records the
 last media response and the ENDLIST request/response separately.
 
-During this experiment, Stop owns a separate read-only observer that polls the
-session's stream health and broadcast status every five seconds, even after
-YouTube completes the broadcast automatically. A natural completion is logged
-and avoids a redundant completion request at the end of the observation period.
-`noData` and `inactive` are logged as observations, not interpreted as drained
-buffers or errors. Lookup failures do not cancel uploads or shorten the wait.
+Stop owns a separate observer that polls the session's stream health and broadcast
+status every five seconds. A natural completion is logged and ends the wait
+without a redundant completion request. Inactivity is a pragmatic completion
+heuristic, not proof that YouTube's processing or playback buffers have drained.
+Lookup failures do not cancel uploads.
 Debug log lines include elapsed time from Stop and ENDLIST acknowledgement so
 repeated reports remain distinct in the copied log. Info entries mark Stop,
 ENDLIST, natural completion, and any explicit completion request and response.

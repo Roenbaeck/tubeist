@@ -34,10 +34,12 @@ outstanding segments.
 ENDLIST now waits until ten seconds after the last successful media upload.
 Unit tests use an injected monotonic clock to check the acknowledgement-based
 deadline and cancellation; this socket runner skips sleeping while checking the
-same request order. After ENDLIST succeeds, the app now observes health and
-broadcast status for 120 seconds before requesting completion of the broadcast
-selected at Start. If YouTube has already completed it automatically, the app
-does not send a redundant transition. This is a shutdown timing experiment;
-neither `noData` nor `inactive` proves that the final media was processed.
+same request order. After ENDLIST succeeds, the app observes health and broadcast
+status every five seconds. Two consecutive post-ENDLIST `inactive` responses
+allow completion of the broadcast selected at Start; 120 seconds is the fallback.
+Other stream statuses or failed health lookups reset the consecutive count.
+If YouTube has already completed it automatically, the app skips the transition.
+This is a shutdown timing heuristic; inactivity does not prove that the final
+media was processed.
 This socket check verifies delivery to the mock; compare a finished YouTube replay
 with the local recording and acceptance report to assess missing footage.

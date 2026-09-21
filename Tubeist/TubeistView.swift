@@ -333,7 +333,7 @@ struct TubeistView: View {
 #endif
         youtubePollingTask?.cancel()
         youtubePollingTask = nil
-        guard youtubeService.isSignedIn,
+        guard !appState.soonGoingToBackground, youtubeService.isSignedIn,
               let streamKey = Settings.streamKey,
               !streamKey.isEmpty else {
             return
@@ -445,13 +445,14 @@ struct TubeistView: View {
                             }
                         }
                     
-                    ForEach(overlayManager.overlays) { overlay in
-                        if let url = URL(string: overlay.url) {
-                            OverlayView(url: url, scale: overlay.scale)
-                                .opacity(appState.areOverlaysHidden ? 0 : 1)
-                                .onDisappear {
-                                    OverlayBundler.shared.removeOverlay(url: url)
-                                }
+                    // Unmount background pages so their JavaScript, media,
+                    // retry loops and bitmap snapshots cannot keep working.
+                    if !appState.soonGoingToBackground {
+                        ForEach(overlayManager.overlays) { overlay in
+                            if let url = URL(string: overlay.url) {
+                                OverlayView(url: url, scale: overlay.scale)
+                                    .opacity(appState.areOverlaysHidden ? 0 : 1)
+                            }
                         }
                     }
                     

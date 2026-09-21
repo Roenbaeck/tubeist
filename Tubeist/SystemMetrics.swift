@@ -56,6 +56,7 @@ struct SystemCPUSampler: Sendable {
 
 struct SystemMetricsView: View {
     @Environment(AppState.self) var appState
+    @Environment(\.scenePhase) private var scenePhase
     var onBandwidthWarning: () -> Void = {}
     private let processInfo = ProcessInfo()
     @State private var cpuUsage: Float = 0
@@ -66,7 +67,6 @@ struct SystemMetricsView: View {
     @State private var fragmentBufferCount: Int = 0
     @State private var videoBitrate: Int?
     @State private var belowQualityFloor = false
-    @State private var updateSystemMetricsTask: Task<Void, Never>?
     private let cpuSampler = SystemCPUSampler()
 
     private var batteryPercentage: String? {
@@ -90,16 +90,13 @@ struct SystemMetricsView: View {
             (appState.isBatterySavingOn ? "" : "CPU \(String(format: "%.1f", cpuUsage)) percent, ")
             + "battery \(batteryPercentage.map { "\($0) percent" } ?? "unavailable"), temperature \(thermalLevel), network \(networkMbps) megabits per second at \(networkUtilization) percent utilization, \(fragmentBufferCount) fragments buffered"
         )
-        .onAppear {
-            updateSystemMetricsTask = Task(priority: .utility) {
-                while !Task.isCancelled {
-                    await updateSystemMetrics()
-                    try? await Task.sleep(for: .seconds(3))
-                }
+        .task(id: scenePhase == .active, priority: .utility) {
+            guard scenePhase == .active else { return }
+            while !Task.isCancelled {
+                await updateSystemMetrics()
+                do { try await Task.sleep(for: .seconds(3)) }
+                catch { return }
             }
-        }
-        .onDisappear {
-            updateSystemMetricsTask?.cancel()
         }
     }
 

@@ -6,8 +6,8 @@ import Testing
 struct YouTubeShutdownMonitorTests {
     private let target = YouTubeHealthTarget(streamID: "stream", broadcastID: "broadcast", authorizationScope: "account")
 
-    private func health(_ status: String = "noData") -> YouTubeIngestStatus {
-        .init(streamStatus: "inactive", healthStatus: .init(status: status,
+    private func health(_ status: String = "noData", streamStatus: String? = "inactive") -> YouTubeIngestStatus {
+        .init(streamStatus: streamStatus, healthStatus: .init(status: status,
             lastUpdateTimeSeconds: nil, configurationIssues: []))
     }
 
@@ -21,9 +21,53 @@ struct YouTubeShutdownMonitorTests {
         clock.advance(5)
         await monitor.refresh(target: target, fetchHealth: { _ in health() }, fetchBroadcast: { _ in "live" })
         #expect(!monitor.observedCompletion)
+        #expect(!monitor.canCompleteEarly)
         #expect(logs.contains { $0.0.contains("Stop +15.0s; ENDLIST +5.0s") && $0.0.contains("health=noData") })
         #expect(logs.contains { $0.0.contains("broadcast=live") })
         #expect(!logs.contains { $0.1 == .warning || $0.1 == .error })
+    }
+
+    @Test func onlyTwoConsecutivePostEndListInactivePollsPermitEarlyCompletion() async {
+        let monitor = YouTubeShutdownMonitor(stoppedAt: .now, log: { _, _ in })
+        for _ in 0..<3 {
+            await monitor.refresh(target: target, fetchHealth: { _ in health() }, fetchBroadcast: { _ in "live" })
+        }
+        #expect(!monitor.canCompleteEarly)
+        monitor.endListAcknowledged()
+        for expected in [false, true] {
+            // Stream inactivity is the signal; health metadata can be absent
+            // or lag independently of streamStatus.
+            await monitor.refresh(target: target, fetchHealth: { _ in health("good") }, fetchBroadcast: { _ in "live" })
+            #expect(monitor.canCompleteEarly == expected)
+            #expect(!monitor.observedCompletion)
+        }
+    }
+
+    @Test(arguments: ["active", "unknown", "error", "lookupFailure"])
+    func activityUnknownStatusOrFailureBreaksConsecutiveInactivity(interruption: String) async {
+        let monitor = YouTubeShutdownMonitor(stoppedAt: .now, log: { _, _ in })
+        monitor.endListAcknowledged()
+        await monitor.refresh(target: target, fetchHealth: { _ in health() }, fetchBroadcast: { _ in "live" })
+        await monitor.refresh(target: target, fetchHealth: { _ in
+            if interruption == "lookupFailure" { throw URLError(.timedOut) }
+            return health(streamStatus: interruption == "unknown" ? nil : interruption)
+        }, fetchBroadcast: { _ in "live" })
+        #expect(monitor.consecutiveInactivePolls == 0)
+        await monitor.refresh(target: target, fetchHealth: { _ in health() }, fetchBroadcast: { _ in "live" })
+        #expect(!monitor.canCompleteEarly)
+        await monitor.refresh(target: target, fetchHealth: { _ in health() }, fetchBroadcast: { _ in "live" })
+        #expect(monitor.canCompleteEarly)
+    }
+
+    @Test func pollStartedBeforeEndListDoesNotCountEvenIfItReturnsAfterwards() async {
+        let monitor = YouTubeShutdownMonitor(stoppedAt: .now, log: { _, _ in })
+        await monitor.refresh(target: target, fetchHealth: { _ in
+            monitor.endListAcknowledged()
+            return health()
+        }, fetchBroadcast: { _ in "live" })
+        #expect(monitor.consecutiveInactivePolls == 0)
+        await monitor.refresh(target: target, fetchHealth: { _ in health() }, fetchBroadcast: { _ in "live" })
+        #expect(!monitor.canCompleteEarly)
     }
 
     @Test func keepsPollingAfterNaturalCompletionAndPreservesEachObservation() async {

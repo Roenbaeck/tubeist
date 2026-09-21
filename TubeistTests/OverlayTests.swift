@@ -9,6 +9,20 @@ import CoreImage
 @testable import Tubeist
 
 struct OverlayTests {
+    @Test @MainActor func oldOverlayRemovalCannotRemoveItsForegroundReplacement() async throws {
+        let bundle = OverlayBundleActor()
+        let bundler = OverlayBundler()
+        let url = try #require(URL(string: "https://example.com/score"))
+        let old = Overlay(url: url, bundler: bundler)
+        let replacement = Overlay(url: url, bundler: bundler)
+        await bundle.addOverlay(url: url, overlay: old)
+        await bundle.addOverlay(url: url, overlay: replacement)
+        await bundle.removeOverlay(url: url, matching: old)
+        #expect(await bundle.getOverlays(in: [url]) == [replacement])
+        await bundle.removeOverlay(url: url, matching: replacement)
+        #expect(await bundle.getOverlays(in: [url]).isEmpty)
+    }
+
     @Test func existingSavedOverlaysDefaultToFullSizeAndNewScalesRoundTrip() throws {
         let old = Data(#"[{"url":"https://example.com/score"}]"#.utf8)
         var overlays = try JSONDecoder().decode([OverlaySetting].self, from: old)

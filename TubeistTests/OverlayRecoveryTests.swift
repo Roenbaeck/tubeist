@@ -9,6 +9,28 @@ import WebKit
 struct OverlayRecoveryTests {
     private let retryPolicy = OverlayRetryPolicy(initialDelay: 0.05, maximumDelay: 0.1, requestTimeout: 10)
 
+    @Test func unmountingStopsHighRateCaptureAndReleasesThePage() async throws {
+        let server = try OverlayHTTPTestServer(replies: [.html("Background cleanup")])
+        try await server.start()
+        defer { server.stop() }
+        let overlay = Overlay(url: server.url, bundler: OverlayBundler(), retryPolicy: retryPolicy,
+                              refreshRate: { .thirty })
+        let webView = overlay.createWebView(width: 320, height: 180)
+        let window = display(webView)
+        defer { window.isHidden = true; overlay.prepareForRemoval() }
+        try await waitUntil { overlay.getOverlayImage() != nil }
+        _ = try await webView.evaluateJavaScript("document.querySelector('div').animate([{opacity: 0.2}, {opacity: 1}], {duration: 200, iterations: Infinity}); true")
+        OverlayView.dismantleUIView(webView, coordinator: overlay)
+        #expect(overlay.getWebView() == nil)
+        #expect(webView.navigationDelegate == nil)
+        // A pending WebKit callback cannot restart the worker or restore its
+        // image after SwiftUI unmounts the view on backgrounding.
+        overlay.captureWebViewImageOrSchedule()
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(overlay.getOverlayImage() == nil)
+        #expect(server.requests.count == 1)
+    }
+
     @Test(arguments: ["width=device-width,initial-scale=1", "width=640,initial-scale=1", ""])
     func scaleChangesLiveContentAndSnapshotWithoutReloadingAndSurvivesReload(viewport: String) async throws {
         let fixture = Self.scaleFixture.replacingOccurrences(of: "width=device-width,initial-scale=1", with: viewport)

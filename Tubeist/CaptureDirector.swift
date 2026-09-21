@@ -693,7 +693,7 @@ private class DeviceActor {
 protocol CaptureSessionDriving: Sendable {
     var isRunning: Bool { get async }
     func configure() async throws
-    func startRunning() async
+    func startRunning() async throws
     func stopRunning() async
     func detach() async
 }
@@ -705,13 +705,19 @@ private final class CaptureSessionDriver: CaptureSessionDriving {
     init(session: AVCaptureSession) { self.session = session }
     var isRunning: Bool { session.isRunning }
     func configure() async throws { try await CaptureDirector.shared.attachAll() }
-    func startRunning() {
+    func startRunning() throws {
+        try AVAudioSession.sharedInstance().setActive(true)
         session.startRunning()
         AudioInputRouter.shared.activate()
     }
     func stopRunning() {
         AudioInputRouter.shared.suspend()
         session.stopRunning()
+        do {
+            try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        } catch {
+            LOG("Could not release the audio session: \(error.localizedDescription)", level: .warning)
+        }
     }
     func detach() async { await CaptureDirector.shared.detachAll() }
 }
@@ -738,7 +744,7 @@ actor SessionController {
                 try await driver.configure()
                 isConfigured = true
             }
-            await driver.startRunning()
+            try await driver.startRunning()
             guard await driver.isRunning else {
                 throw CaptureSetupError.sessionDidNotStart
             }
@@ -752,6 +758,14 @@ actor SessionController {
 
     func stopSessions() async {
         try? await commands.run { [self] in await stop() }
+    }
+
+    func suspendSessions(if shouldSuspend: @escaping @Sendable () async -> Bool = { true }) async {
+        try? await commands.run { [self] in
+            guard await shouldSuspend() else { return }
+            // Release the hardware but retain its configuration for unlock.
+            await driver.stopRunning()
+        }
     }
 
     private func stop() async {
@@ -874,6 +888,11 @@ final class CaptureDirector: NSObject, Sendable {
     }
     func stopSessions() async {
         await sessionController.stopSessions()
+    }
+    func suspendSessionsInBackground() async {
+        await sessionController.suspendSessions {
+            await MainActor.run { UIApplication.shared.applicationState == .background }
+        }
     }
     func cycleSessions() async throws {
         try await CaptureAuthorization.ensureAccess()

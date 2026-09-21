@@ -100,6 +100,7 @@ struct OverlayRetryPolicy: Sendable {
 @MainActor
 final class Overlay: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     private let url: URL
+    var sourceURL: URL { url }
     private let bundler: OverlayBundler
     private var webView: WKWebView?
     private var mimeType: String?
@@ -139,6 +140,7 @@ final class Overlay: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
 
         self.webView?.navigationDelegate = nil
         self.webView?.configuration.userContentController.removeScriptMessageHandler(forName: "domChanged")
+        self.webView?.pauseAllMediaPlayback(completionHandler: nil)
         self.webView?.stopLoading()
         self.webView = nil
     }
@@ -509,7 +511,10 @@ actor OverlayBundleActor {
     func addOverlay(url: URL, overlay: Overlay) {
         url2overlay[url] = overlay
     }
-    func removeOverlay(url: URL) async {
+    func removeOverlay(url: URL, matching expected: Overlay? = nil) async {
+        // Returning to the foreground can register a replacement before the
+        // old view's asynchronous removal reaches this actor.
+        if let expected, url2overlay[url] !== expected { return }
         guard let overlay = url2overlay.removeValue(forKey: url) else { return }
         await overlay.prepareForRemoval()
     }
@@ -545,9 +550,9 @@ actor OverlayBundler {
         await overlayBundle.addOverlay(url: url, overlay: overlay)
     }
 
-    nonisolated func removeOverlay(url: URL) {
+    nonisolated func removeOverlay(url: URL, matching overlay: Overlay? = nil) {
         Task {
-            await overlayBundle.removeOverlay(url: url)
+            await overlayBundle.removeOverlay(url: url, matching: overlay)
             await combineOverlayImages() // Update the combined image after removing
         }
     }
@@ -675,5 +680,10 @@ struct OverlayView: UIViewRepresentable {
 
     func updateUIView(_ webView: WKWebView, context: Context) {
         context.coordinator.setScale(scale)
+    }
+
+    static func dismantleUIView(_ webView: WKWebView, coordinator: Overlay) {
+        coordinator.prepareForRemoval()
+        OverlayBundler.shared.removeOverlay(url: coordinator.sourceURL, matching: coordinator)
     }
 }

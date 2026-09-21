@@ -107,9 +107,33 @@ struct YouTubeHLSUploaderTests {
             try await YouTubeCompletionGrace.wait(
                 deadline: clock.now().advanced(by: .seconds(secondsRemaining)),
                 now: { clock.now() },
-                sleep: { _ in Issue.record("Insufficient time must leave completion to auto-stop") }
+                sleep: { clock.advance($0) }
             )
         }
+    }
+
+    @Test func completionGraceAcceptsEarlySignalWithoutWaitingForFallback() async throws {
+        let clock = HLSGraceTestClock()
+        let start = clock.now()
+        let ready = start.advanced(by: .seconds(17))
+        let deadline = try await YouTubeCompletionGrace.wait(
+            deadline: start.advanced(by: .seconds(140)), now: { clock.now() },
+            canCompleteEarly: { clock.now() >= ready }, sleep: { clock.advance($0) }
+        )
+        #expect(clock.now() == ready)
+        #expect(deadline == ready.advanced(by: .seconds(8)))
+    }
+
+    @Test func earlySignalCanCompleteWithinAShortBackgroundBudget() async throws {
+        let clock = HLSGraceTestClock()
+        let start = clock.now()
+        let deadline = try await YouTubeCompletionGrace.wait(
+            deadline: start.advanced(by: .seconds(18)), now: { clock.now() },
+            canCompleteEarly: { clock.now() >= start.advanced(by: .seconds(12)) },
+            sleep: { clock.advance($0) }
+        )
+        #expect(clock.now() == start.advanced(by: .seconds(12)))
+        #expect(deadline == start.advanced(by: .seconds(18)))
     }
 
     @Test(arguments: [122, 140])
