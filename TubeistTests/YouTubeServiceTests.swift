@@ -8,6 +8,25 @@ import Testing
 @testable import Tubeist
 
 struct YouTubeServiceTests {
+    @Test(arguments: ["42", "\"42\"", "null", "\"invalid\"", "-1"]) @MainActor
+    func viewerCountsAreOptionalAndPinnedToTheSession(value: String) async throws {
+        let body = "{\"items\":[{\"id\":\"session-broadcast\",\"liveStreamingDetails\":{\"concurrentViewers\":\(value)}}]}"
+        let transport = MockYouTubeAPITransport(responses: [.init(data: Data(body.utf8), statusCode: 200)])
+        let store = validMemoryTokenStore()
+        let service = YouTubeService(transport: transport, tokenStore: store, discoveryCache: YouTubeDiscoveryCache())
+        let target = YouTubeHealthTarget(streamID: "session-stream", broadcastID: "session-broadcast",
+            authorizationScope: YouTubeDiscoveryCache.scope(refreshToken: "refresh-token"))
+        let count = try await service.fetchConcurrentViewers(target: target)
+        #expect(count == (value.contains("42") ? 42 : nil))
+        let requests = await transport.requests
+        #expect(requests.count == 1)
+        #expect(requests[0].url?.path == "/youtube/v3/videos")
+        #expect(queryItems(in: requests[0]).contains(URLQueryItem(name: "id", value: target.broadcastID)))
+        store.refreshToken = "other-account"
+        await #expect(throws: YouTubeError.notSignedIn) { try await service.fetchConcurrentViewers(target: target) }
+        #expect(await transport.requests.count == 1)
+    }
+
     @Test @MainActor func shutdownObservesOnlyTheOriginalBroadcastAndAccount() async throws {
         let transport = MockYouTubeAPITransport(responses: [.init(
             data: Data(#"{"items":[{"id":"session-broadcast","status":{"lifeCycleStatus":"complete"}}]}"#.utf8), statusCode: 200)])

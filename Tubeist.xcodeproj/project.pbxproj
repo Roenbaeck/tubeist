@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		460ED2DA2D3CEC46003F2989 /* StoreKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 460ED2D92D3CEC46003F2989 /* StoreKit.framework */; };
+		8822074406C299A7C0FD47BE /* TubeistLiveActivity.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 1AA84CEB68D63A34245DB37C /* TubeistLiveActivity.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -25,6 +26,13 @@
 			remoteGlobalIDString = 46B97E622CE1120B00E802FC;
 			remoteInfo = Tubeist;
 		};
+		AF7751CA493854856469E55E /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 46B97E5B2CE1120B00E802FC /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = BA69BACC4872A3DBE3F50DE0;
+			remoteInfo = TubeistLiveActivity;
+		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -38,9 +46,21 @@
 			name = "Embed Frameworks";
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		8BBD54E025BDCC44F39FB462 /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				8822074406C299A7C0FD47BE /* TubeistLiveActivity.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		1AA84CEB68D63A34245DB37C /* TubeistLiveActivity.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = TubeistLiveActivity.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		460ED2D92D3CEC46003F2989 /* StoreKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = StoreKit.framework; path = System/Library/Frameworks/StoreKit.framework; sourceTree = SDKROOT; };
 		46B97E632CE1120B00E802FC /* Tubeist.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Tubeist.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		46B97E752CE1120D00E802FC /* TubeistTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = TubeistTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -54,6 +74,13 @@
 				Info.plist,
 			);
 			target = 46B97E622CE1120B00E802FC /* Tubeist */;
+		};
+		D2B70D51BC8B8CF1A90393E4 /* Exceptions for "TubeistLiveActivity" folder in "TubeistLiveActivity" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = BA69BACC4872A3DBE3F50DE0 /* TubeistLiveActivity */;
 		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
@@ -76,9 +103,29 @@
 			path = TubeistUITests;
 			sourceTree = "<group>";
 		};
+		C993D073C5D52D47BB708C23 /* Shared */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = Shared;
+			sourceTree = "<group>";
+		};
+		F2E38D624234958EA59ED8B7 /* TubeistLiveActivity */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				D2B70D51BC8B8CF1A90393E4 /* Exceptions for "TubeistLiveActivity" folder in "TubeistLiveActivity" target */,
+			);
+			path = TubeistLiveActivity;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
+		11CC0CDC380777B47716B735 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		46B97E602CE1120B00E802FC /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -118,6 +165,8 @@
 				46B97E652CE1120B00E802FC /* Tubeist */,
 				46B97E782CE1120D00E802FC /* TubeistTests */,
 				46B97E822CE1120D00E802FC /* TubeistUITests */,
+				C993D073C5D52D47BB708C23 /* Shared */,
+				F2E38D624234958EA59ED8B7 /* TubeistLiveActivity */,
 				460ED2D82D3CEC46003F2989 /* Frameworks */,
 				46B97E642CE1120B00E802FC /* Products */,
 			);
@@ -129,6 +178,7 @@
 				46B97E632CE1120B00E802FC /* Tubeist.app */,
 				46B97E752CE1120D00E802FC /* TubeistTests.xctest */,
 				46B97E7F2CE1120D00E802FC /* TubeistUITests.xctest */,
+				1AA84CEB68D63A34245DB37C /* TubeistLiveActivity.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -144,17 +194,18 @@
 				46B97E602CE1120B00E802FC /* Frameworks */,
 				46B97E612CE1120B00E802FC /* Resources */,
 				46D33B052CE7A4910071745C /* Embed Frameworks */,
+				8BBD54E025BDCC44F39FB462 /* Embed Foundation Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				8B5DDA75201E3D91D2F552D4 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				46B97E652CE1120B00E802FC /* Tubeist */,
+				C993D073C5D52D47BB708C23 /* Shared */,
 			);
 			name = Tubeist;
-			packageProductDependencies = (
-			);
 			productName = Tubeist;
 			productReference = 46B97E632CE1120B00E802FC /* Tubeist.app */;
 			productType = "com.apple.product-type.application";
@@ -176,8 +227,6 @@
 				46B97E782CE1120D00E802FC /* TubeistTests */,
 			);
 			name = TubeistTests;
-			packageProductDependencies = (
-			);
 			productName = TubeistTests;
 			productReference = 46B97E752CE1120D00E802FC /* TubeistTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
@@ -199,11 +248,30 @@
 				46B97E822CE1120D00E802FC /* TubeistUITests */,
 			);
 			name = TubeistUITests;
-			packageProductDependencies = (
-			);
 			productName = TubeistUITests;
 			productReference = 46B97E7F2CE1120D00E802FC /* TubeistUITests.xctest */;
 			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+		BA69BACC4872A3DBE3F50DE0 /* TubeistLiveActivity */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 7534730CB432F8D68E00D0B3 /* Build configuration list for PBXNativeTarget "TubeistLiveActivity" */;
+			buildPhases = (
+				8DED863D51638C7D89811086 /* Sources */,
+				11CC0CDC380777B47716B735 /* Frameworks */,
+				EB48ECBD52CDA4C3EB2A9599 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				C993D073C5D52D47BB708C23 /* Shared */,
+				F2E38D624234958EA59ED8B7 /* TubeistLiveActivity */,
+			);
+			name = TubeistLiveActivity;
+			productName = TubeistLiveActivity;
+			productReference = 1AA84CEB68D63A34245DB37C /* TubeistLiveActivity.appex */;
+			productType = "com.apple.product-type.app-extension";
 		};
 /* End PBXNativeTarget section */
 
@@ -226,6 +294,9 @@
 						CreatedOnToolsVersion = 16.1;
 						TestTargetID = 46B97E622CE1120B00E802FC;
 					};
+					BA69BACC4872A3DBE3F50DE0 = {
+						CreatedOnToolsVersion = 27.0;
+					};
 				};
 			};
 			buildConfigurationList = 46B97E5E2CE1120B00E802FC /* Build configuration list for PBXProject "Tubeist" */;
@@ -237,8 +308,6 @@
 			);
 			mainGroup = 46B97E5A2CE1120B00E802FC;
 			minimizedProjectReferenceProxies = 1;
-			packageReferences = (
-			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 46B97E642CE1120B00E802FC /* Products */;
 			projectDirPath = "";
@@ -247,6 +316,7 @@
 				46B97E622CE1120B00E802FC /* Tubeist */,
 				46B97E742CE1120D00E802FC /* TubeistTests */,
 				46B97E7E2CE1120D00E802FC /* TubeistUITests */,
+				BA69BACC4872A3DBE3F50DE0 /* TubeistLiveActivity */,
 			);
 		};
 /* End PBXProject section */
@@ -267,6 +337,13 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		46B97E7D2CE1120D00E802FC /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		EB48ECBD52CDA4C3EB2A9599 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -297,6 +374,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		8DED863D51638C7D89811086 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -309,6 +393,12 @@
 			isa = PBXTargetDependency;
 			target = 46B97E622CE1120B00E802FC /* Tubeist */;
 			targetProxy = 46B97E802CE1120D00E802FC /* PBXContainerItemProxy */;
+		};
+		8B5DDA75201E3D91D2F552D4 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			name = TubeistLiveActivity;
+			target = BA69BACC4872A3DBE3F50DE0 /* TubeistLiveActivity */;
+			targetProxy = AF7751CA493854856469E55E /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -347,6 +437,7 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 42;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				DEVELOPMENT_TEAM = D77T8B2FR2;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
@@ -368,6 +459,7 @@
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.1;
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MARKETING_VERSION = 2.1.7;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
@@ -412,6 +504,7 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 42;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				DEVELOPMENT_TEAM = D77T8B2FR2;
 				ENABLE_NS_ASSERTIONS = NO;
@@ -428,6 +521,7 @@
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.1;
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MARKETING_VERSION = 2.1.7;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				SDKROOT = iphoneos;
@@ -444,7 +538,6 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = Tubeist/Tubeist.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 42;
 				DEVELOPMENT_ASSET_PATHS = "\"Tubeist/Preview Content\"";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -455,6 +548,7 @@
 				INFOPLIST_KEY_NSCameraUsageDescription = "The app needs to access the camera in order to stream.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "The app needs to access the microphone in order to stream.";
 				INFOPLIST_KEY_NSMotionUsageDescription = "Tubeist uses the phone’s tilt to display the optional horizon level.";
+				INFOPLIST_KEY_NSSupportsLiveActivities = YES;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -464,7 +558,6 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 2.1.7;
 				PRODUCT_BUNDLE_IDENTIFIER = com.subside.Tubeist;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
@@ -484,7 +577,6 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = Tubeist/Tubeist.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 42;
 				DEVELOPMENT_ASSET_PATHS = "\"Tubeist/Preview Content\"";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -495,6 +587,7 @@
 				INFOPLIST_KEY_NSCameraUsageDescription = "The app needs to access the camera in order to stream.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "The app needs to access the microphone in order to stream.";
 				INFOPLIST_KEY_NSMotionUsageDescription = "Tubeist uses the phone’s tilt to display the optional horizon level.";
+				INFOPLIST_KEY_NSSupportsLiveActivities = YES;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -504,7 +597,6 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 2.1.7;
 				PRODUCT_BUNDLE_IDENTIFIER = com.subside.Tubeist;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
@@ -589,6 +681,67 @@
 			};
 			name = Release;
 		};
+		D95E06CABEF08497F82ECF18 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = TubeistLiveActivity/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = TubeistLiveActivity;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.subside.Tubeist.LiveActivity;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+		EB7804D6CF539822F8C21275 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = TubeistLiveActivity/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = TubeistLiveActivity;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.subside.Tubeist.LiveActivity;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = 1;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -624,6 +777,15 @@
 			buildConfigurations = (
 				46B97E902CE1120D00E802FC /* Debug */,
 				46B97E912CE1120D00E802FC /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		7534730CB432F8D68E00D0B3 /* Build configuration list for PBXNativeTarget "TubeistLiveActivity" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				EB7804D6CF539822F8C21275 /* Release */,
+				D95E06CABEF08497F82ECF18 /* Debug */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

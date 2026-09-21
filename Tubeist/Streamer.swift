@@ -185,8 +185,10 @@ actor StreamingActor {
         await transition(to: .live)
     }
 
-    func setOutputPlan(_ outputPlan: StreamOutputPlan) {
+    func setOutputPlan(_ outputPlan: StreamOutputPlan) async {
         self.outputPlan = outputPlan
+        let appState = self.appState
+        await MainActor.run { appState?.activitySession?.streamsToYouTube = outputPlan.streamsToYouTube }
     }
 
     func setYouTubeBroadcast(

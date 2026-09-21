@@ -248,6 +248,7 @@ private struct AppliedSettingsSnapshot {
     let youtubeThumbnailData: Data?
     let overlays: [OverlaySetting]
     let overlayRefreshRate: OverlayRefreshRate
+    let activityPreferences: StreamActivityPreferences
 #if DEBUG
     let captureRemuxFixtures: Bool
     let recordHLSAcceptance: Bool
@@ -276,6 +277,7 @@ private struct AppliedSettingsSnapshot {
             youtubeThumbnailData: try Settings.loadYouTubeThumbnailData(),
             overlays: overlays,
             overlayRefreshRate: Settings.overlayRefreshRate,
+            activityPreferences: .saved,
             captureRemuxFixtures: Settings.captureRemuxFixtures,
             recordHLSAcceptance: Settings.recordHLSAcceptance,
             manualHLSEndingTest: Settings.manualHLSEndingTest
@@ -300,7 +302,8 @@ private struct AppliedSettingsSnapshot {
             youtubeBroadcastPreferences: Settings.youtubeBroadcastPreferences,
             youtubeThumbnailData: try Settings.loadYouTubeThumbnailData(),
             overlays: overlays,
-            overlayRefreshRate: Settings.overlayRefreshRate
+            overlayRefreshRate: Settings.overlayRefreshRate,
+            activityPreferences: .saved
         )
 #endif
     }
@@ -325,6 +328,9 @@ private struct AppliedSettingsSnapshot {
         try Settings.setYouTubeThumbnailData(youtubeThumbnailData)
         manager.replaceOverlays(with: overlays)
         Settings.overlayRefreshRate = overlayRefreshRate
+        Settings.liveActivityDetail = activityPreferences.detail
+        Settings.liveActivityAlerts = activityPreferences.alerts
+        Settings.liveActivityRecoveryAlerts = activityPreferences.recoveryAlerts
 #if DEBUG
         Settings.captureRemuxFixtures = captureRemuxFixtures
         Settings.recordHLSAcceptance = recordHLSAcceptance
@@ -356,6 +362,9 @@ struct SettingsView: View {
     @State private var journalError: Bool = Settings.journalError
     @State private var journalWarning: Bool = Settings.journalWarning
     @State private var journalInfo: Bool = Settings.journalInfo
+    @State private var activityPreferences = StreamActivityPreferences.saved
+    @State private var activityPermissionDenied = false
+    @State private var isRequestingActivityPermission = false
     @State private var journalDebug: Bool = Settings.journalDebug
 #if DEBUG
     @State private var captureRemuxFixtures: Bool = Settings.captureRemuxFixtures
@@ -842,6 +851,37 @@ struct SettingsView: View {
                     }
                 }
 
+                Section {
+                    Picker("Live Activity", selection: $activityPreferences.detail) {
+                        ForEach(LiveActivityDetail.allCases, id: \.self) { detail in
+                            Text(detail.label).tag(detail)
+                        }
+                    }
+                    Toggle("Alert on stream problems", isOn: $activityPreferences.alerts)
+                        .disabled(activityPreferences.detail == .off || isRequestingActivityPermission)
+                        .onChange(of: activityPreferences.alerts) { _, enabled in
+                            guard enabled else { return }
+                            isRequestingActivityPermission = true
+                            Task {
+                                let allowed = await StreamActivityNotifications.requestPermission()
+                                isRequestingActivityPermission = false
+                                activityPermissionDenied = !allowed
+                                if !allowed { activityPreferences.alerts = false }
+                            }
+                        }
+                    Toggle("Alert when recovered", isOn: $activityPreferences.recoveryAlerts)
+                        .disabled(!activityPreferences.alerts || activityPreferences.detail == .off)
+                    if activityPermissionDenied {
+                        Text("Allow Tubeist notifications in iPhone Settings to enable alerts.")
+                            .foregroundStyle(.secondary)
+                        Link("Open notification settings", destination: URL(string: UIApplication.openSettingsURLString)!)
+                    }
+                } header: {
+                    Text("Apple Watch and Live Activity")
+                } footer: {
+                    Text("Show session status and elapsed time on your iPhone and the Smart Stack on Apple Watch with watchOS 11 or later. Full adds viewers, bitrate, upload quality, temperature and battery. Alerts are optional; delivery depends on your device and notification settings.")
+                }
+
                 Section(header: Text("Journal"), footer: Text("Configure which types of messages to record in the journal")) {
                     HStack {
                         Toggle("Error", isOn: $journalError).labelsHidden()
@@ -951,6 +991,7 @@ struct SettingsView: View {
                         await Settings.configureJournal()
                         youtubeService.errorMessage = nil
                         saveErrorMessage = nil
+                        appState.activityPreferences = .saved
                         presentationMode.wrappedValue.dismiss()
                     } catch {
                         var failureMessage = error.localizedDescription
@@ -969,7 +1010,7 @@ struct SettingsView: View {
                     }
                 }
             }
-            .disabled(isSaving || isSettingUpYouTubeStream || youtubeDraft.thumbnail.isLoading)
+            .disabled(isSaving || isSettingUpYouTubeStream || youtubeDraft.thumbnail.isLoading || isRequestingActivityPermission)
             .buttonStyle(.borderedProminent))
             .interactiveDismissDisabled(isSaving || isSettingUpYouTubeStream)
             .onAppear {
@@ -1355,6 +1396,9 @@ struct SettingsView: View {
         Settings.journalDebug = journalDebug
         overlayManager.replaceOverlays(with: Array(overlayDraft.reversed()))
         Settings.overlayRefreshRate = overlayRefreshRate
+        Settings.liveActivityDetail = activityPreferences.detail
+        Settings.liveActivityAlerts = activityPreferences.alerts
+        Settings.liveActivityRecoveryAlerts = activityPreferences.recoveryAlerts
 #if DEBUG
         Settings.captureRemuxFixtures = captureRemuxFixtures
         Settings.recordHLSAcceptance = recordHLSAcceptance
@@ -1567,6 +1611,18 @@ final class Settings: Sendable {
     static var journalInfo: Bool {
         get { bool(forKey: "JournalInfo", default: true) }
         set { UserDefaults.standard.set(newValue, forKey: "JournalInfo") }
+    }
+    static var liveActivityDetail: LiveActivityDetail {
+        get { UserDefaults.standard.string(forKey: "LiveActivityDetail").flatMap(LiveActivityDetail.init(rawValue:)) ?? .standard }
+        set { UserDefaults.standard.set(newValue.rawValue, forKey: "LiveActivityDetail") }
+    }
+    static var liveActivityAlerts: Bool {
+        get { bool(forKey: "LiveActivityAlerts", default: false) }
+        set { UserDefaults.standard.set(newValue, forKey: "LiveActivityAlerts") }
+    }
+    static var liveActivityRecoveryAlerts: Bool {
+        get { bool(forKey: "LiveActivityRecoveryAlerts", default: false) }
+        set { UserDefaults.standard.set(newValue, forKey: "LiveActivityRecoveryAlerts") }
     }
     static var journalDebug: Bool {
         get { bool(forKey: "JournalDebug", default: false) }

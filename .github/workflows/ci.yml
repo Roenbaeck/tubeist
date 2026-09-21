@@ -24,9 +24,11 @@ jobs:
       - name: Enforce YouTube-only production sources
         run: Tools/check_youtube_only.sh
       - name: Validate property lists
-        run: plutil -lint Tubeist/Info.plist Tubeist/PrivacyInfo.xcprivacy
+        run: plutil -lint Tubeist/Info.plist Tubeist/PrivacyInfo.xcprivacy TubeistLiveActivity/Info.plist
       - name: Parse all Swift sources
-        run: xcrun swiftc -frontend -parse Tubeist/*.swift TubeistTests/*.swift TubeistUITests/*.swift
+        run: |
+          xcrun swiftc -frontend -parse Tubeist/*.swift Shared/*.swift TubeistTests/*.swift TubeistUITests/*.swift
+          xcrun swiftc -frontend -parse Shared/*.swift TubeistLiveActivity/*.swift
       - name: Test device acceptance tools
         run: python3 -m unittest discover -s Tools/Acceptance -p 'test_*.py'
 

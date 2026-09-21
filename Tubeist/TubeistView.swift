@@ -65,6 +65,7 @@ struct TubeistView: View {
     @State private var youtubePollingTask: Task<Void, Never>? = nil
     @State private var youtubeStatusGeneration = UUID()
     @State private var youtubeService = YouTubeService(diagnostics: YouTubeDiagnostics().forStatusMonitoring())
+    @State private var streamActivityCoordinator = StreamActivityCoordinator()
     @State private var isCameraReady = false
     @State private var showSplashScreen = true
     @State private var splashOpacity: Double = 1.0
@@ -1055,6 +1056,15 @@ struct TubeistView: View {
             // still be unavailable. Wait for .active before resuming capture.
             guard canPrepareCamera else { return }
             await prepareCamera()
+        }
+        .task(id: StreamActivityRunKey(sessionID: appState.activitySession?.id, preferences: appState.activityPreferences)) {
+            guard !isUITesting else { return }
+            let preferences = appState.activityPreferences
+            await streamActivityCoordinator.run(preferences: preferences, read: {
+                appState.activitySnapshot(preferences: preferences)
+            }, fetchViewers: youtubeService.fetchConcurrentViewers, bitrate: {
+                await EncodedOutputRouter.shared.metrics().videoBitrate
+            })
         }
         .task(id: youtubeHealthPollingTarget) {
             guard let target = youtubeHealthPollingTarget else { return }

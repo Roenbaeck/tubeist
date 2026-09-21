@@ -132,7 +132,8 @@ final class YouTubeStreamHealthMonitor {
     private(set) var target: YouTubeHealthTarget?
     private(set) var report: YouTubeIngestStatus?
     private var startedAt = Date()
-    private var receivedAt: Date?
+    private(set) var receivedAt: Date?
+    var lastRefreshSucceeded: Bool { receivedAt != nil && lastFailure == nil }
     private var requestID: UUID?
     private var lastAssessment: YouTubeHealthAssessment?
     private var lastIssues: Set<String> = []

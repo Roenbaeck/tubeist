@@ -1245,6 +1245,27 @@ final class YouTubeService {
         return status.sanitized(secrets: [token, tokenStore.accessToken ?? "", tokenStore.refreshToken ?? "", Settings.streamKey ?? ""])
     }
 
+    /// Optional display-only query, pinned to the active broadcast and account.
+    func fetchConcurrentViewers(target: YouTubeHealthTarget) async throws -> Int? {
+        try Task.checkCancellation()
+        try checkAuthorization(target.authorizationScope)
+        let token = try await getValidAccessToken()
+        try checkAuthorization(target.authorizationScope)
+        let url = try resourceURL("videos", query: [
+            .init(name: "part", value: "liveStreamingDetails"), .init(name: "id", value: target.broadcastID)
+        ])
+        guard let requestURL = URL(string: url) else { throw YouTubeError.invalidResponse }
+        var request = URLRequest(url: requestURL)
+        request.timeoutInterval = 15
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        let data = try await authenticatedData(for: request, fallbackToken: token, operation: .videoLiveDetails)
+        let response = try requestExecutor.decode(YouTubeListResponse<YouTubeViewerResource>.self,
+            from: data, operation: .videoLiveDetails)
+        try Task.checkCancellation()
+        try checkAuthorization(target.authorizationScope)
+        return response.items.first(where: { $0.id == target.broadcastID })?.liveStreamingDetails?.concurrentViewers
+    }
+
     func fetchBroadcastStatus(broadcastId: String) async throws -> String? {
         let token = try await getValidAccessToken()
         let url = "\(YOUTUBE_API_BASE)/liveBroadcasts?part=status&id=\(broadcastId)"

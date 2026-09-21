@@ -101,6 +101,9 @@ final class AppState {
     var isBatterySavingOn = false
     var streamSessionState: StreamSessionState = .idle
     var isStreamActive: Bool { streamSessionState.isLive }
+    var activitySession: StreamActivitySession?
+    var activityPreferences = StreamActivityPreferences.saved
+    var localUploadHealth: StreamHealth { localStreamHealth }
     var isStreamSessionRunning: Bool { streamSessionState.ownsMediaPipeline }
     var isAudioLevelRunning = true
     var isStabilizationOn = true
@@ -131,6 +134,16 @@ final class AppState {
 
     var activeMonitor: Monitor = DEFAULT_MONITOR
     func setStreamSessionState(_ state: StreamSessionState) {
+        let now = Date()
+        if state == .preparing, streamSessionState != .preparing {
+            activitySession = .init(id: UUID(), requestedAt: now, streamsToYouTube: Settings.stream)
+        }
+        if state == .live, activitySession?.startedAt == nil { activitySession?.startedAt = now }
+        switch state {
+        case .stopping, .idle, .failed:
+            if activitySession?.stoppedAt == nil { activitySession?.stoppedAt = now }
+        case .preparing, .live: break
+        }
         streamSessionState = state
         if !state.isLive { youtubeHealth.configure(nil) }
         switch state {
@@ -167,7 +180,9 @@ struct TubeistApp: App {
     var body: some Scene {
         WindowGroup {
 #if DEBUG
-            if HEVC422Probe.isRequested {
+            if StreamActivityDemoView.isRequested {
+                StreamActivityDemoView()
+            } else if HEVC422Probe.isRequested {
                 HEVC422ProbeView()
             } else if HLSUploadReplay.isRequested {
                 HLSUploadReplayView()
@@ -180,7 +195,7 @@ struct TubeistApp: App {
         }
         .onChange(of: scenePhase) { oldValue, newValue in
 #if DEBUG
-            guard !HLSUploadReplay.isRequested, !HEVC422Probe.isRequested else { return }
+            guard !HLSUploadReplay.isRequested, !HEVC422Probe.isRequested, !StreamActivityDemoView.isRequested else { return }
 #endif
             handleScenePhase(oldValue, newValue)
         }
