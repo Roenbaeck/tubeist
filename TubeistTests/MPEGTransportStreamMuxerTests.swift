@@ -384,9 +384,10 @@ struct MPEGTransportStreamMuxerTests {
             initialization: initialization
         )
         let startCode: [UInt8] = [0, 0, 0, 1]
-        let expectedKeyframe = startCode + [0x46, 0x01, 0x50] +
-            startCode + [0x40, 0x01] + startCode + [0x42, 0x01] + startCode + [0x44, 0x01] +
-            startCode + ambientViewing + startCode + userData + startCode + [0x28, 0x01]
+        let expectedKeyframe = annexBNALUnits([
+            [0x46, 0x01, 0x50], [0x40, 0x01], [0x42, 0x01], [0x44, 0x01],
+            ambientViewing, userData, [0x28, 0x01],
+        ])
         #expect(contains(expectedKeyframe, in: output.data))
         #expect(occurrences(of: startCode + ambientViewing, in: output.data) == 1)
         #expect(occurrences(of: startCode + userData, in: output.data) == 2)
@@ -400,12 +401,13 @@ struct MPEGTransportStreamMuxerTests {
         let startCode: [UInt8] = [0, 0, 0, 1]
         let inBandSets = lengthPrefixedNAL([0x40, 0x01]) + lengthPrefixedNAL([0x42, 0x01]) +
             lengthPrefixedNAL([0x44, 0x01])
-        for (accessUnit, expected) in [
+        let cases: [(accessUnit: Data, expected: [UInt8])] = [
             (inBandSets + lengthPrefixedNAL([0x28, 0x01]),
-             startCode + [0x44, 0x01] + startCode + ambientViewing + startCode + [0x28, 0x01]),
+             annexBNALUnits([[0x44, 0x01], ambientViewing, [0x28, 0x01]])),
             (inBandSets + lengthPrefixedNAL(ambientViewing) + lengthPrefixedNAL([0x28, 0x01]),
-             startCode + ambientViewing + startCode + [0x28, 0x01]),
-        ] {
+             annexBNALUnits([ambientViewing, [0x28, 0x01]])),
+        ]
+        for (accessUnit, expected) in cases {
             let keyframe = sample(trackID: 1, kind: .video, decodeTime: 0, presentationTime: 0,
                 duration: 3_000, randomAccess: true, data: accessUnit)
             var muxer = MPEGTransportStreamMuxer()
@@ -499,6 +501,15 @@ private func defaultAudioSample(decodeTime: UInt64 = 0) -> ISOBMFFSample {
         randomAccess: true,
         data: Data([0xaa, 0xbb, 0xcc])
     )
+}
+
+private func annexBNALUnits(_ units: [[UInt8]]) -> [UInt8] {
+    var bytes: [UInt8] = []
+    for unit in units {
+        bytes.append(contentsOf: [0, 0, 0, 1])
+        bytes.append(contentsOf: unit)
+    }
+    return bytes
 }
 
 private func lengthPrefixedNAL(_ bytes: [UInt8], lengthSize: Int = 4) -> Data {
