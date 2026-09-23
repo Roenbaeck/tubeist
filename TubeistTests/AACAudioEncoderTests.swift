@@ -39,7 +39,9 @@ struct AACAudioEncoderTests {
             for _ in 0..<Int(input.rate / 1024) {
                 let start = time
                 let sample = try AACTestAudio.pcm(format, frames: 1024, pts: start) { _, frame in
-                    Float(0.2 * sin(2 * .pi * 1000 * (start + Double(frame) / input.rate)))
+                    let sampleTime: Double = start + Double(frame) / input.rate
+                    let phase: Double = 2.0 * Double.pi * 1000.0 * sampleTime
+                    return Float(0.2 * sin(phase))
                 }
                 packets += try encoder.encode(sample, basePTS: .zero)
                 time += 1024 / input.rate
