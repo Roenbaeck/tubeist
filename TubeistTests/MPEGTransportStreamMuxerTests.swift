@@ -364,6 +364,74 @@ struct MPEGTransportStreamMuxerTests {
         #expect(occurrences(of: [0, 0, 0, 1, 0x44, 0x01], in: output.data) == 1)
     }
 
+    @Test func repeatsConfiguredPrefixSEIBeforeEveryRandomAccessPicture() throws {
+        // Annex B has no hvcC, so the ambient viewing environment SEI that
+        // VideoToolbox keeps there must travel with each IRAP, as with FFmpeg.
+        let ambientViewing: [UInt8] = [0x4e, 0x01, 0x94, 0x08, 0x00, 0x2f, 0xe9, 0xa0, 0x3d, 0x13, 0x40, 0x42, 0x80]
+        let userData: [UInt8] = [0x4e, 0x01, 0x05, 0x01, 0xaa, 0x80]
+        let initialization = try ISOBMFFReader().parseInitializationSegment(
+            FMP4Fixture.initialization(prefixSEI: ambientViewing)
+        )
+        let keyframe = sample(trackID: 1, kind: .video, decodeTime: 0, presentationTime: 0,
+            duration: 3_000, randomAccess: true,
+            data: lengthPrefixedNAL(userData) + lengthPrefixedNAL([0x28, 0x01]))
+        let picture = sample(trackID: 1, kind: .video, decodeTime: 3_000, presentationTime: 3_000,
+            duration: 3_000, randomAccess: false,
+            data: lengthPrefixedNAL(userData) + lengthPrefixedNAL([0x02, 0x01]))
+        var muxer = MPEGTransportStreamMuxer()
+        let output = try muxer.mux(
+            ISOBMFFMediaSegment(sequenceNumber: 1, samples: [keyframe, picture, defaultAudioSample()]),
+            initialization: initialization
+        )
+        let startCode: [UInt8] = [0, 0, 0, 1]
+        let expectedKeyframe = startCode + [0x46, 0x01, 0x50] +
+            startCode + [0x40, 0x01] + startCode + [0x42, 0x01] + startCode + [0x44, 0x01] +
+            startCode + ambientViewing + startCode + userData + startCode + [0x28, 0x01]
+        #expect(contains(expectedKeyframe, in: output.data))
+        #expect(occurrences(of: startCode + ambientViewing, in: output.data) == 1)
+        #expect(occurrences(of: startCode + userData, in: output.data) == 2)
+    }
+
+    @Test func placesConfiguredSEIAfterInBandParameterSetsWithoutDuplicates() throws {
+        let ambientViewing: [UInt8] = [0x4e, 0x01, 0x94, 0x08, 0x00, 0x2f, 0xe9, 0xa0, 0x3d, 0x13, 0x40, 0x42, 0x80]
+        let initialization = try ISOBMFFReader().parseInitializationSegment(
+            FMP4Fixture.initialization(prefixSEI: ambientViewing)
+        )
+        let startCode: [UInt8] = [0, 0, 0, 1]
+        let inBandSets = lengthPrefixedNAL([0x40, 0x01]) + lengthPrefixedNAL([0x42, 0x01]) +
+            lengthPrefixedNAL([0x44, 0x01])
+        for (accessUnit, expected) in [
+            (inBandSets + lengthPrefixedNAL([0x28, 0x01]),
+             startCode + [0x44, 0x01] + startCode + ambientViewing + startCode + [0x28, 0x01]),
+            (inBandSets + lengthPrefixedNAL(ambientViewing) + lengthPrefixedNAL([0x28, 0x01]),
+             startCode + ambientViewing + startCode + [0x28, 0x01]),
+        ] {
+            let keyframe = sample(trackID: 1, kind: .video, decodeTime: 0, presentationTime: 0,
+                duration: 3_000, randomAccess: true, data: accessUnit)
+            var muxer = MPEGTransportStreamMuxer()
+            let output = try muxer.mux(
+                ISOBMFFMediaSegment(sequenceNumber: 1, samples: [keyframe, defaultAudioSample()]),
+                initialization: initialization
+            )
+            #expect(contains(expected, in: output.data))
+            #expect(occurrences(of: startCode + ambientViewing, in: output.data) == 1)
+            #expect(occurrences(of: startCode + [0x44, 0x01], in: output.data) == 1)
+        }
+    }
+
+    @Test func toleratesSEIOnlyConfigurationChanges() {
+        let base = HEVCDecoderConfiguration(nalUnitLengthSize: 4, videoParameterSets: [Data([0x40, 1])],
+            sequenceParameterSets: [Data([0x42, 1])], pictureParameterSets: [Data([0x44, 1])])
+        let withSEI = HEVCDecoderConfiguration(nalUnitLengthSize: 4, videoParameterSets: [Data([0x40, 1])],
+            sequenceParameterSets: [Data([0x42, 1])], pictureParameterSets: [Data([0x44, 1])],
+            prefixSEIUnits: [Data([0x4e, 0x01, 0x94])])
+        let newSPS = HEVCDecoderConfiguration(nalUnitLengthSize: 4, videoParameterSets: [Data([0x40, 1])],
+            sequenceParameterSets: [Data([0x42, 2])], pictureParameterSets: [Data([0x44, 1])])
+        #expect(base != withSEI)
+        #expect(base.hasSameParameterSets(as: withSEI))
+        #expect(!base.hasSameParameterSets(as: newSPS))
+    }
+
     @Test func derivesADTSFromMonoStereoAndExplicitAACConfiguration() throws {
         let configurations: [(Data, [UInt8])] = [
             (Data([0x12, 0x08]), [0xff, 0xf1, 0x50, 0x40]), // 44.1 kHz mono

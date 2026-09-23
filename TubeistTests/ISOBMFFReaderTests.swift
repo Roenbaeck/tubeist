@@ -19,6 +19,7 @@ struct ISOBMFFReaderTests {
         #expect(video.hevc?.videoParameterSets == [Data([0x40, 0x01])])
         #expect(video.hevc?.sequenceParameterSets == [Data([0x42, 0x01])])
         #expect(video.hevc?.pictureParameterSets == [Data([0x44, 0x01])])
+        #expect(video.hevc?.prefixSEIUnits == [])
 
         let audio = try #require(initialization.audioTrack)
         #expect(audio.id == 2)
@@ -28,6 +29,17 @@ struct ISOBMFFReaderTests {
         #expect(audio.aac?.samplingFrequencyIndex == 3)
         #expect(audio.aac?.sampleRate == 48_000)
         #expect(audio.aac?.channelConfiguration == 2)
+    }
+
+    @Test func keepsPrefixSEIFromHEVCConfiguration() throws {
+        // VideoToolbox's HLG ambient viewing environment SEI (payload 148).
+        let ambientViewing: [UInt8] = [0x4e, 0x01, 0x94, 0x08, 0x00, 0x2f, 0xe9, 0xa0, 0x3d, 0x13, 0x40, 0x42, 0x80]
+        let initialization = try ISOBMFFReader().parseInitializationSegment(
+            FMP4Fixture.initialization(prefixSEI: ambientViewing)
+        )
+        let hevc = try #require(initialization.videoTrack?.hevc)
+        #expect(hevc.prefixSEIUnits == [Data(ambientViewing)])
+        #expect(hevc.videoParameterSets == [Data([0x40, 0x01])])
     }
 
     @Test func resolvesFragmentDefaultsOffsetsAndSignedCompositionTime() throws {
@@ -184,13 +196,14 @@ struct ISOBMFFReaderTests {
 enum FMP4Fixture {
     static func initialization(
         audioSpecificConfig: Data = Data([0x11, 0x90]),
-        nalUnitLengthSize: Int = 4
+        nalUnitLengthSize: Int = 4,
+        prefixSEI: [UInt8]? = nil
     ) -> Data {
         let videoTrack = track(
             id: 1,
             timescale: 90_000,
             handler: "vide",
-            sampleEntry: hevcSampleEntry(nalUnitLengthSize: nalUnitLengthSize)
+            sampleEntry: hevcSampleEntry(nalUnitLengthSize: nalUnitLengthSize, prefixSEI: prefixSEI)
         )
         let audioTrack = track(
             id: 2,
@@ -321,15 +334,16 @@ enum FMP4Fixture {
             box("mdia", mediaHeader + handlerBox + box("minf", sampleTable)))
     }
 
-    private static func hevcSampleEntry(nalUnitLengthSize: Int) -> Data {
+    private static func hevcSampleEntry(nalUnitLengthSize: Int, prefixSEI: [UInt8]? = nil) -> Data {
         precondition((1...4).contains(nalUnitLengthSize))
         var configuration = Data(repeating: 0, count: 23)
         configuration[0] = 1
         configuration[21] = UInt8(nalUnitLengthSize - 1)
-        configuration[22] = 3
+        configuration[22] = prefixSEI == nil ? 3 : 4
         configuration += nalArray(type: 32, bytes: [0x40, 0x01])
         configuration += nalArray(type: 33, bytes: [0x42, 0x01])
         configuration += nalArray(type: 34, bytes: [0x44, 0x01])
+        if let prefixSEI { configuration += nalArray(type: 39, bytes: prefixSEI) }
         return box("hvc1", Data(repeating: 0, count: 78) + box("hvcC", configuration))
     }
 

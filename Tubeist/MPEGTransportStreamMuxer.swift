@@ -323,6 +323,11 @@ private extension MPEGTransportStreamMuxer {
         }
         var output = Data([0, 0, 0, 1])
         output.append(delimiters.first?.data ?? Data([0x46, 0x01, 0x50]))
+        func appendUnit(_ unit: Data) {
+            output.append(contentsOf: [0, 0, 0, 1])
+            output.append(unit)
+        }
+        var pendingSEI: [Data] = []
         if prependParameterSets {
             let inBandTypes = Set(units.map(\.type))
             let configuredSets: [(UInt8, [Data])] = [
@@ -331,16 +336,22 @@ private extension MPEGTransportStreamMuxer {
                 (34, configuration.pictureParameterSets),
             ]
             for (type, parameterSets) in configuredSets where !inBandTypes.contains(type) {
-                for unit in parameterSets {
-                    output.append(contentsOf: [0, 0, 0, 1])
-                    output.append(unit)
-                }
+                parameterSets.forEach(appendUnit)
             }
+            // Every sample already carries its own prefix SEI (Apple user
+            // data), so match configured SEI by content rather than NAL type.
+            let inBandUnits = Set(units.map(\.data))
+            pendingSEI = configuration.prefixSEIUnits.filter { !inBandUnits.contains($0) }
         }
         for unit in units where unit.type != 35 {
-            output.append(contentsOf: [0, 0, 0, 1])
-            output.append(unit.data)
+            // Keep configured SEI after any in-band parameter sets.
+            if !pendingSEI.isEmpty, !(32...34).contains(unit.type) {
+                pendingSEI.forEach(appendUnit)
+                pendingSEI.removeAll()
+            }
+            appendUnit(unit.data)
         }
+        pendingSEI.forEach(appendUnit)
         return output
     }
 

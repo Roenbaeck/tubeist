@@ -32,6 +32,26 @@ struct HEVCDecoderConfiguration: Sendable, Equatable {
     let videoParameterSets: [Data]
     let sequenceParameterSets: [Data]
     let pictureParameterSets: [Data]
+    // VideoToolbox stores HLG's ambient viewing environment (payload 148)
+    // only here, not in the samples. Annex B carries no hvcC, so these must
+    // accompany every IRAP just as FFmpeg's hevc_mp4toannexb repeats them.
+    let prefixSEIUnits: [Data]
+
+    init(nalUnitLengthSize: Int, videoParameterSets: [Data], sequenceParameterSets: [Data],
+         pictureParameterSets: [Data], prefixSEIUnits: [Data] = []) {
+        self.nalUnitLengthSize = nalUnitLengthSize
+        self.videoParameterSets = videoParameterSets
+        self.sequenceParameterSets = sequenceParameterSets
+        self.pictureParameterSets = pictureParameterSets
+        self.prefixSEIUnits = prefixSEIUnits
+    }
+
+    func hasSameParameterSets(as other: HEVCDecoderConfiguration) -> Bool {
+        nalUnitLengthSize == other.nalUnitLengthSize &&
+            videoParameterSets == other.videoParameterSets &&
+            sequenceParameterSets == other.sequenceParameterSets &&
+            pictureParameterSets == other.pictureParameterSets
+    }
 }
 
 struct AACDecoderConfiguration: Sendable, Equatable {
@@ -491,6 +511,7 @@ private func parseHEVCConfiguration(_ box: ISOBox, data: Data) throws -> HEVCDec
     var vps: [Data] = []
     var sps: [Data] = []
     var pps: [Data] = []
+    var prefixSEI: [Data] = []
 
     for _ in 0..<arrayCount {
         try reader.require(3, at: cursor, context: "hvcC NAL array")
@@ -508,6 +529,7 @@ private func parseHEVCConfiguration(_ box: ISOBox, data: Data) throws -> HEVCDec
             case 32: vps.append(unit)
             case 33: sps.append(unit)
             case 34: pps.append(unit)
+            case 39: prefixSEI.append(unit)
             default: break
             }
         }
@@ -520,7 +542,8 @@ private func parseHEVCConfiguration(_ box: ISOBox, data: Data) throws -> HEVCDec
         nalUnitLengthSize: nalLengthSize,
         videoParameterSets: vps,
         sequenceParameterSets: sps,
-        pictureParameterSets: pps
+        pictureParameterSets: pps,
+        prefixSEIUnits: prefixSEI
     )
 }
 
