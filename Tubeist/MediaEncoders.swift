@@ -70,23 +70,30 @@ enum BufferedAudioSample {
 /// drains them in callback order; one unstructured Task per frame could reorder
 /// packets and race encoder shutdown.
 private final class VideoEncoderOutput: @unchecked Sendable {
+    enum Event {
+        case encoded(frame: Int, CMSampleBuffer)
+        case dropped(frame: Int)
+    }
+
     private let lock = NSLock()
-    private var samples: [CMSampleBuffer] = []
+    private var events: [Event] = []
     private var failure: MediaEncodingError?
 
-    func receive(status: OSStatus, flags: VTEncodeInfoFlags, sample: CMSampleBuffer?) {
+    func receive(status: OSStatus, flags: VTEncodeInfoFlags, frame: Int, sample: CMSampleBuffer?) {
         lock.withLock {
             if status != noErr { failure = .operation("HEVC encoding", status) }
-            else if flags.contains(.frameDropped) { failure = .invalid("The HEVC encoder dropped a frame") }
-            else if let sample { samples.append(sample) }
+            // Real-time encoding may drop a frame under load or thermal pressure,
+            // delivering no sample. Its timing is retired; the stream continues.
+            else if flags.contains(.frameDropped) || sample == nil { events.append(.dropped(frame: frame)) }
+            else if let sample { events.append(.encoded(frame: frame, sample)) }
         }
     }
 
-    func take() throws -> [CMSampleBuffer] {
+    func take() throws -> [Event] {
         try lock.withLock {
             if let failure { throw failure }
-            let result = samples
-            samples.removeAll(keepingCapacity: true)
+            let result = events
+            events.removeAll(keepingCapacity: true)
             return result
         }
     }
@@ -145,6 +152,19 @@ struct VideoDecodeTimeline {
         pendingOutputs -= 1
         lastDTS = dts
         return dts
+    }
+
+    /// A dropped frame is never emitted, so later decode times must follow the
+    /// remaining submitted timestamps. A drop reported after its timestamp was
+    /// already used as a decode time retires the next unused one instead; the
+    /// interim decode times were earlier, never later, than the aligned ones.
+    mutating func dropped(presentationTime pts: CMTime) throws {
+        guard pendingOutputs > 0, !inputPTS.isEmpty else {
+            throw MediaEncodingError.invalid("The HEVC encoder dropped a frame that was not pending")
+        }
+        if let index = inputPTS.firstIndex(of: pts) { inputPTS.remove(at: index) }
+        else { inputPTS.removeFirst() }
+        pendingOutputs -= 1
     }
 }
 
@@ -260,6 +280,10 @@ final class HEVCVideoEncoder {
     private var timingFormat: CMFormatDescription?
     private var submittedFrames = 0
     private var emittedFrames = 0
+    private(set) var droppedFrames = 0
+    /// Keyed by the frame number passed through VideoToolbox's frame refcon,
+    /// which identifies a dropped frame that has no output sample.
+    private var pendingPTS: [Int: CMTime] = [:]
     private var lastSubmittedPTS: CMTime?
     let frameDuration: CMTime
     private(set) var bitrate: Int
@@ -281,10 +305,10 @@ final class HEVCVideoEncoder {
                 kCVPixelBufferIOSurfacePropertiesKey: [:]
             ] as CFDictionary,
             compressedDataAllocator: nil,
-            outputCallback: { refcon, _, status, flags, sample in
+            outputCallback: { refcon, frameRefcon, status, flags, sample in
                 guard let refcon else { return }
                 Unmanaged<VideoEncoderOutput>.fromOpaque(refcon).takeUnretainedValue()
-                    .receive(status: status, flags: flags, sample: sample)
+                    .receive(status: status, flags: flags, frame: Int(bitPattern: frameRefcon), sample: sample)
             },
             refcon: Unmanaged.passUnretained(output).toOpaque(), compressionSessionOut: &created
         )
@@ -323,18 +347,33 @@ final class HEVCVideoEncoder {
         }
         // Submit the pipeline's original HLG pixel buffer; no RGB intermediate.
         let properties = forceKeyframe ? [kVTEncodeFrameOptionKey_ForceKeyFrame: true] as CFDictionary : nil
+        let frame = submittedFrames + 1 // nonzero, so the refcon is never nil
         try checkMediaStatus(VTCompressionSessionEncodeFrame(
             session, imageBuffer: pixels, presentationTimeStamp: presentationTime, duration: frameDuration,
-            frameProperties: properties, sourceFrameRefcon: nil, infoFlagsOut: nil
+            frameProperties: properties, sourceFrameRefcon: UnsafeMutableRawPointer(bitPattern: frame), infoFlagsOut: nil
         ), "Submitting HEVC frame")
         decodeTimeline.submitted(presentationTime)
+        pendingPTS[frame] = presentationTime
         submittedFrames += 1
         lastSubmittedPTS = presentationTime
     }
 
     func takeOutput() throws -> [CMSampleBuffer] {
-        let samples = try output.take().map(normalizeDecodeTime)
-        emittedFrames += samples.count
+        var samples: [CMSampleBuffer] = []
+        for event in try output.take() {
+            switch event {
+            case .encoded(let frame, let sample):
+                pendingPTS[frame] = nil
+                samples.append(try normalizeDecodeTime(sample))
+                emittedFrames += 1
+            case .dropped(let frame):
+                guard let pts = pendingPTS.removeValue(forKey: frame) else {
+                    throw MediaEncodingError.invalid("The HEVC encoder dropped an unknown frame")
+                }
+                try decodeTimeline.dropped(presentationTime: pts)
+                droppedFrames += 1
+            }
+        }
         return samples
     }
 
@@ -344,7 +383,7 @@ final class HEVCVideoEncoder {
         try checkMediaStatus(VTCompressionSessionCompleteFrames(session, untilPresentationTimeStamp: .invalid),
                              "Draining HEVC encoder")
         let samples = try takeOutput()
-        guard emittedFrames == submittedFrames else {
+        guard emittedFrames + droppedFrames == submittedFrames else {
             throw MediaEncodingError.invalid("The HEVC encoder did not return every submitted frame")
         }
         return samples
@@ -399,7 +438,8 @@ enum EncodedSampleAdapter {
             throw MediaEncodingError.invalid("Incomplete HEVC parameter sets")
         }
         return HEVCDecoderConfiguration(nalUnitLengthSize: Int(length), videoParameterSets: vps,
-                                        sequenceParameterSets: sps, pictureParameterSets: pps)
+                                        sequenceParameterSets: sps, pictureParameterSets: pps,
+                                        prefixSEIUnits: sets[39] ?? [])
     }
 
     static func sample(_ buffer: CMSampleBuffer, kind: ISOBMFFTrackKind, fallbackDuration: CMTime? = nil) throws -> EncodedMediaSample {
@@ -439,17 +479,20 @@ final class AACAudioEncoder {
     private let bitratePerChannel: Int
     private let sampleRate: Double
     private var converter: AVAudioConverter?
-    private var inputFormat: AVAudioFormat?
+    private(set) var inputFormat: AVAudioFormat?
     private var timeline: AudioSampleTimeline?
     private var repair: AudioCaptureRepair?
     private(set) var acceptedInput = false
     var inputEndPTS: CMTime? { repair?.expectedPTS }
     private var outputFrames: Int64 = 0
+    private var outputEnd: CMTime?
     private var formatDescription: CMAudioFormatDescription?
     private(set) var configuration: AACDecoderConfiguration?
+    /// AAC priming is counted in output frames, whatever the input rate; the
+    /// converter compensates for its own resampling delay.
     var primingDuration: Double {
-        guard let converter, let inputFormat else { return 0 }
-        return Double(converter.primeInfo.leadingFrames) / inputFormat.sampleRate
+        guard let converter else { return 0 }
+        return Double(converter.primeInfo.leadingFrames) / sampleRate
     }
 
     init(channels: Int, bitratePerChannel: Int, sampleRate: Double = 44_100) {
@@ -495,15 +538,14 @@ final class AACAudioEncoder {
             throw MediaEncodingError.invalid("Audio has no format description")
         }
         let format = AVAudioFormat(cmAudioFormatDescription: description)
-        if converter == nil { try configure(format) }
-        guard let inputFormat, inputFormat == format else {
-            throw MediaEncodingError.invalid("Microphone format changed during encoding")
-        }
         let pts = CMTimeSubtract(CMSampleBufferGetPresentationTimeStamp(sample), basePTS)
         let count = CMSampleBufferGetNumSamples(sample)
         guard count > 0, Double(count) <= format.sampleRate else { throw CaptureContinuityError.invalidTiming }
-        guard let plan = try repair?.plan(pts: pts, frames: count) else { return [] }
-        var result = try silence(frames: plan.silenceFrames, at: plan.silencePTS)
+        var result: [CMSampleBuffer] = []
+        if converter == nil { try configure(format) }
+        else if inputFormat != format { result = try restartConverter(for: format) }
+        guard let plan = try repair?.plan(pts: pts, frames: count) else { return result }
+        result += try silence(frames: plan.silenceFrames, at: plan.silencePTS)
         let remaining = count - plan.trimFrames
         try timeline?.append(presentationTime: plan.inputPTS, frames: remaining)
         guard let pcm = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(remaining)) else {
@@ -554,6 +596,25 @@ final class AACAudioEncoder {
         return try convert(nil, finishing: true)
     }
 
+    /// A route change (USB microphone, AirPods switching to HFP, another sample
+    /// rate) changes only the PCM input. The AAC output, its AudioSpecificConfig
+    /// and format description stay the same: drain the previous converter, then
+    /// continue the same timeline with a new one.
+    private func restartConverter(for input: AVAudioFormat) throws -> [CMSampleBuffer] {
+        let inputEnd = repair?.expectedPTS
+        let tail = try finish()
+        try configure(input)
+        // The new converter primes again before its first input sample. Resume
+        // input only after the drained tail plus that priming, since packet
+        // timestamps must not overlap or step back. This skips a few dozen
+        // milliseconds of new input rather than shifting audio against video.
+        if let end = [outputEnd, inputEnd].compactMap({ $0 }).max() {
+            let resume = CMTimeAdd(end, CMTime(seconds: primingDuration, preferredTimescale: 90_000))
+            repair?.accepted(pts: resume, frames: 0) // earlier input is then late and trimmed
+        }
+        return tail
+    }
+
     private func configure(_ input: AVAudioFormat) throws {
         guard channels == 1 || channels == 2,
               let output = AVAudioFormat(settings: [AVFormatIDKey: kAudioFormatMPEG4AAC,
@@ -562,6 +623,9 @@ final class AACAudioEncoder {
               let converter = AVAudioConverter(from: input, to: output) else {
             throw MediaEncodingError.invalid("Could not configure AAC encoder")
         }
+        // Without downmix, a mono preset keeps only the first (left) channel of
+        // stereo capture. Mono input is already duplicated for stereo output.
+        converter.downmix = input.channelCount > AVAudioChannelCount(channels)
         converter.bitRate = bitratePerChannel * channels
         converter.bitRateStrategy = AVAudioBitRateStrategy_LongTermAverage
         converter.primeMethod = .normal
@@ -569,6 +633,7 @@ final class AACAudioEncoder {
         inputFormat = input
         timeline = AudioSampleTimeline(sourceSampleRate: input.sampleRate)
         repair = AudioCaptureRepair(sampleRate: input.sampleRate)
+        outputFrames = 0
         let rates: [Double] = [96_000, 88_200, 64_000, 48_000, 44_100, 32_000, 24_000, 22_050, 16_000, 12_000, 11_025, 8_000, 7_350]
         guard let frequencyIndex = rates.firstIndex(of: sampleRate) else {
             throw MediaEncodingError.invalid("Unsupported AAC sample rate")
@@ -598,13 +663,14 @@ final class AACAudioEncoder {
                 for index in 0..<Int(output.packetCount) {
                     let packet = packets[index]
                     let frames = packet.mVariableFramesInPacket == 0 ? 1024 : Int64(packet.mVariableFramesInPacket)
+                    // Priming precedes the first input sample in output frames.
                     guard let pts = timeline?.presentationTime(
-                        outputFrame: outputFrames, outputSampleRate: sampleRate,
-                        leadingInputFrames: Int64(converter.primeInfo.leadingFrames)
+                        outputFrame: outputFrames - Int64(converter.primeInfo.leadingFrames), outputSampleRate: sampleRate
                     ) else { throw MediaEncodingError.invalid("AAC output has no source timing") }
                     let bytes = Data(bytes: output.data.advanced(by: Int(packet.mStartOffset)), count: Int(packet.mDataByteSize))
                     result.append(try makePacket(bytes, format: description, pts: pts, frames: frames))
                     outputFrames += frames
+                    outputEnd = CMTimeAdd(pts, CMTime(value: frames, timescale: Int32(sampleRate)))
                 }
             }
             if status == .inputRanDry || status == .endOfStream { return result }

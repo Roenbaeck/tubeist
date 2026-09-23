@@ -43,8 +43,9 @@ change requires a fresh encoder/timeline, as capture recovery already provides.
 The recording video track uses a 90 kHz timescale to avoid rounding this timing
 and the shared A/V epoch to AVAssetWriter's default 600 Hz. PTS and encoded payload are unchanged;
 video is never presented late merely to remove negative composition offsets.
-AAC priming is represented on the same timeline, in the converter's input
-sample units. Recent microphone timestamp anchors keep the encoded audio
+AAC priming is represented on the same timeline, in AAC output frames (2112
+at every input rate; the converter compensates for its own resampling delay).
+Recent microphone timestamp anchors keep the encoded audio
 aligned to the capture clock rather than accumulating drift over a long event.
 Playlist durations follow video segment boundaries rather than overlapping
 AAC packet extents.

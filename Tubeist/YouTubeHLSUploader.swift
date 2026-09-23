@@ -175,13 +175,31 @@ enum YouTubeHLSUploadError: LocalizedError, Equatable, CustomStringConvertible {
         case .invalidEndpoint: "The YouTube HLS ingestion endpoint is invalid"
         case .invalidFilename: "The HLS filename contains unsupported characters"
         case .invalidResponse: "YouTube returned a non-HTTP response"
-        case .rejected(let statusCode): "YouTube rejected the HLS upload (HTTP \(statusCode))"
+        case .rejected(let statusCode):
+            if let meaning = Self.rejectionMeaning(statusCode) {
+                "YouTube rejected the stream (HTTP \(statusCode) — \(meaning))"
+            } else {
+                "YouTube rejected the stream (HTTP \(statusCode))"
+            }
         case .retriesExhausted: "The YouTube HLS upload retry limit was reached"
         case .stopped: "The YouTube HLS uploader has stopped"
         }
     }
 
     var errorDescription: String? { description }
+
+    /// 400, 401 and 405 follow YouTube's HLS ingestion guide; it does not
+    /// document 403 or 404, which carry their general HTTP meaning.
+    private static func rejectionMeaning(_ statusCode: Int) -> String? {
+        switch statusCode {
+        case 400: "malformed request or playlist"
+        case 401: "stream key invalid or expired"
+        case 403: "ingestion not permitted"
+        case 404: "ingestion URL not found"
+        case 405: "unsupported request method"
+        default: nil
+        }
+    }
 }
 
 struct YouTubeHLSUploadReceipt: Sendable, Equatable {

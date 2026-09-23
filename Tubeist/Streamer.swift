@@ -152,6 +152,8 @@ actor StreamingActor {
     private var outputPlan: StreamOutputPlan?
     private var youTubeCompletionTarget: YouTubeBroadcastCompletionTarget?
     private var youTubeHealthTarget: YouTubeHealthTarget?
+    private var youTubeUploadFailure: String?
+    private var sessionID: UUID?
 
     func setAppState(_ appState: AppState) {
         self.appState = appState
@@ -164,13 +166,15 @@ actor StreamingActor {
         }
     }
 
-    func beginPreparing() async throws {
+    func beginPreparing(sessionID: UUID = UUID()) async throws {
         switch state {
         case .idle, .failed:
+            self.sessionID = sessionID
             mediaIntakeActive = false
             outputPlan = nil
             youTubeCompletionTarget = nil
             youTubeHealthTarget = nil
+            youTubeUploadFailure = nil
             await transition(to: .preparing)
         case .preparing, .live, .stopping:
             throw StreamSessionError.sessionBusy(state)
@@ -218,6 +222,21 @@ actor StreamingActor {
         youTubeHealthTarget
     }
 
+    /// Records the first permanent upload failure of a running session and
+    /// returns its output plan, or nil if it was already reported or the
+    /// session is stopping, when Stop reports it instead.
+    func noteYouTubeUploadFailure(_ message: String, sessionID: UUID) -> StreamOutputPlan? {
+        guard self.sessionID == sessionID,
+              youTubeUploadFailure == nil, state == .preparing || state == .live,
+              let outputPlan, outputPlan.streamsToYouTube else { return nil }
+        youTubeUploadFailure = message
+        return outputPlan
+    }
+
+    func reportedYouTubeUploadFailure() -> String? {
+        youTubeUploadFailure
+    }
+
     func confirmYouTubeCompletion(_ target: YouTubeBroadcastCompletionTarget) async {
         guard state == .stopping, youTubeCompletionTarget == target else { return }
         let appState = self.appState
@@ -242,20 +261,24 @@ actor StreamingActor {
     }
 
     func completeStop() async {
+        sessionID = nil
         mediaIntakeActive = false
         isHandlingRuntimeFailure = false
         outputPlan = nil
         youTubeCompletionTarget = nil
         youTubeHealthTarget = nil
+        youTubeUploadFailure = nil
         await transition(to: .idle)
     }
 
     func fail(_ error: Error) async {
+        sessionID = nil
         mediaIntakeActive = false
         isHandlingRuntimeFailure = false
         outputPlan = nil
         youTubeCompletionTarget = nil
         youTubeHealthTarget = nil
+        youTubeUploadFailure = nil
         await transition(to: .failed(error.localizedDescription))
     }
 
@@ -428,6 +451,27 @@ final class Streamer: Sendable {
         }
     }
 
+    /// YouTube permanently stopped accepting this session's uploads, e.g. by
+    /// rejecting its stream key, so no later segment can reach the broadcast.
+    /// Report it once. A simultaneous local recording continues until Stop,
+    /// which does not report it again; a stream-only session ends now.
+    func handleYouTubeUploadFailure(_ error: Error, sessionID: UUID) async {
+        // Validate and act inside the Start/Stop queue. A callback may have
+        // waited behind Stop and a new Start before reaching this point.
+        try? await commandQueue.run { [self] in
+            let message = error.localizedDescription
+            guard let plan = await streamingActor.noteYouTubeUploadFailure(message, sessionID: sessionID) else { return }
+            await streamingActor.setStreamHealth(.unusable)
+            if plan.recordsLocally {
+                await streamingActor.presentAlert("\(message)\n\nThe local recording continues until you stop it.")
+            } else {
+                LOG("Streaming pipeline failed: \(message)", level: .error)
+                _ = try? await performStop(resumePreviewAfterStop: true, shutdownTimeout: 260)
+                await streamingActor.fail(error)
+            }
+        }
+    }
+
     func handleCaptureSessionInterruption() async {
         let state = await streamingActor.sessionState()
         switch state {
@@ -471,7 +515,8 @@ final class Streamer: Sendable {
     }
 
     private func performStart(streamID: String) async throws {
-        try await streamingActor.beginPreparing()
+        let sessionID = UUID()
+        try await streamingActor.beginPreparing(sessionID: sessionID)
         var packagingStarted = false
         var soundStarted = false
         var videoStarted = false
@@ -486,7 +531,7 @@ final class Streamer: Sendable {
                 record: Settings.record
             )
             await streamingActor.setOutputPlan(outputPlan)
-            try await prepareEncodedOutput(streamID: streamID, plan: outputPlan)
+            try await prepareEncodedOutput(streamID: streamID, sessionID: sessionID, plan: outputPlan)
             try await ContentPackager.shared.beginPackaging(
                 stream: outputPlan.routesEncodedFragments,
                 record: outputPlan.recordsLocally
@@ -649,8 +694,14 @@ final class Streamer: Sendable {
                 await shutdownMonitor.endListAcknowledged()
             }
         } catch {
-            youTubeStatus = .failed(error.localizedDescription)
-            LOG("Encoded output shutdown failed: \(error.localizedDescription)", level: .error)
+            if let reported = await streamingActor.reportedYouTubeUploadFailure() {
+                // Surfaced when uploads stopped; closing the already stopped
+                // uploader is not a second failure. Local outputs still count.
+                LOG("YouTube uploads had already stopped: \(reported)", level: .debug)
+            } else {
+                youTubeStatus = .failed(error.localizedDescription)
+                LOG("Encoded output shutdown failed: \(error.localizedDescription)", level: .error)
+            }
         }
         if endListAcknowledged,
            let target = await streamingActor.activeYouTubeCompletionTarget() {
@@ -749,7 +800,7 @@ final class Streamer: Sendable {
         }
     }
 
-    private func prepareEncodedOutput(streamID: String, plan: StreamOutputPlan) async throws {
+    private func prepareEncodedOutput(streamID: String, sessionID: UUID, plan: StreamOutputPlan) async throws {
         guard plan.streamsToYouTube else {
             await EncodedOutputRouter.shared.prepareForRecordingOnly()
             return
@@ -764,7 +815,8 @@ final class Streamer: Sendable {
             let model = await MainActor.run { UIDevice.current.model.replacingOccurrences(of: " ", with: "_") }
             try await EncodedOutputRouter.shared.prepareYouTube(
                 endpoint: endpoint, sessionIdentifier: streamID,
-                userAgent: "Apple / \(model) / Tubeist-\(Bundle.main.appVersion ?? "unknown")"
+                userAgent: "Apple / \(model) / Tubeist-\(Bundle.main.appVersion ?? "unknown")",
+                reportUploadsStopped: { [self] in await handleYouTubeUploadFailure($0, sessionID: sessionID) }
             )
             return
         }
@@ -809,7 +861,8 @@ final class Streamer: Sendable {
             endpoint: endpoint,
             sessionIdentifier: streamID,
             userAgent: userAgent,
-            endingPolicy: endingPolicy
+            endingPolicy: endingPolicy,
+            reportUploadsStopped: { [self] in await handleYouTubeUploadFailure($0, sessionID: sessionID) }
         )
         if endingPolicy == .manualDiagnostic {
             LOG("YouTube ending test: auto-stop disabled; no ENDLIST or automatic completion. End this broadcast manually in YouTube Studio.", level: .info)

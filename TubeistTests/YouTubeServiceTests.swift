@@ -1214,6 +1214,96 @@ struct YouTubeServiceTests {
     }
 
     @Test @MainActor
+    func rejectedThumbnailAndDeletedPlaylistDoNotBlockStart() async throws {
+        let captured = CapturedYouTubeDiagnostics()
+        let transport = MockYouTubeAPITransport(responses: [
+            emptyYouTubePage(), broadcastPageResponse(status: "ready", bound: true), matchingStreamPage(),
+            .init(data: Data(#"{"error":{"message":"Custom thumbnails are not allowed"}}"#.utf8), statusCode: 403),
+            .init(data: Data(#"{"error":{"message":"Playlist not found"}}"#.utf8), statusCode: 404),
+        ])
+        let service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore(),
+                                     discoveryCache: YouTubeDiscoveryCache(), diagnostics: captured.diagnostics)
+        var preferences = setupPreferences()
+        preferences.playlistId = "deleted-playlist"
+        let preparation = try await service.prepareForStreaming(
+            streamKey: "test-key", preferences: preferences, thumbnailData: Data([0xFF, 0xD8, 0xFF, 0xD9])
+        )
+        #expect(preparation.broadcast.id == "new-event")
+        #expect(!service.isLoading)
+        let requests = await transport.requests
+        #expect(requests.count == 5)
+        #expect(requests[3].url?.path.hasSuffix("/thumbnails/set") == true)
+        #expect(requests[4].url?.path.hasSuffix("/playlistItems") == true)
+        let warnings = captured.entries.filter { $0.1 == .warning }.map(\.0)
+        #expect(warnings.contains("YouTube thumbnail could not be set (HTTP 403); starting without it"))
+        #expect(warnings.contains("YouTube broadcast could not be added to the saved playlist (HTTP 404); starting without it"))
+        #expect(!captured.entries.contains { $0.1 == .error })
+    }
+
+    @Test @MainActor
+    func accountChangeDuringAnOptionalStartStepStillStopsStart() async throws {
+        let transport = DeferredYouTubeChannelTransport()
+        let store = validMemoryTokenStore()
+        let service = YouTubeService(transport: transport, tokenStore: store, discoveryCache: YouTubeDiscoveryCache())
+        let start = Task {
+            try await service.prepareForStreaming(
+                streamKey: "test-key", preferences: setupPreferences(), thumbnailData: Data([0xFF, 0xD8, 0xFF, 0xD9])
+            )
+        }
+        for response in [emptyYouTubePage(), broadcastPageResponse(status: "ready", bound: true), matchingStreamPage()] {
+            await transport.waitUntilStarted()
+            await transport.complete(with: response)
+        }
+        await transport.waitUntilStarted()
+        store.refreshToken = "other-account"
+        await transport.complete(with: .init(data: Data(), statusCode: 500))
+        await #expect(throws: YouTubeError.notSignedIn) { _ = try await start.value }
+        #expect(!service.isLoading)
+    }
+
+    @Test @MainActor
+    func aReusedBroadcastReceivesEachThumbnailOnlyOnce() async throws {
+        let cache = YouTubeDiscoveryCache()
+        let transport = MockYouTubeAPITransport(responses: [
+            emptyYouTubePage(), broadcastPageResponse(status: "ready", bound: true), matchingStreamPage(),
+            .init(data: Data(), statusCode: 200),
+            matchingStreamPage(), emptyYouTubePage(), broadcastPageResponse(status: "ready", bound: true),
+            matchingStreamPage(), emptyYouTubePage(), broadcastPageResponse(status: "ready", bound: true),
+            .init(data: Data(), statusCode: 200),
+        ])
+        let first = Data([0xFF, 0xD8, 0x01, 0xFF, 0xD9])
+        let second = Data([0xFF, 0xD8, 0x02, 0xFF, 0xD9])
+        for thumbnail in [first, first, second] {
+            // Every Start uses a new service; only the shared cache remembers.
+            let service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore(), discoveryCache: cache)
+            _ = try await service.prepareForStreaming(
+                streamKey: "test-key", preferences: setupPreferences(), thumbnailData: thumbnail
+            )
+        }
+        let uploads = await transport.requests.filter { $0.url?.path.hasSuffix("/thumbnails/set") == true }
+        #expect(uploads.map(\.httpBody) == [first, second])
+        #expect(await transport.requestCount == 11)
+    }
+
+    @Test @MainActor
+    func startAppliesTheSavedEmbeddingChoiceToAnExistingBroadcast() async throws {
+        let transport = MockYouTubeAPITransport(responses: [
+            emptyYouTubePage(), broadcastPageResponse(status: "ready", bound: true), matchingStreamPage(),
+            broadcastResourceResponse(status: "ready", bound: true),
+        ])
+        let service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore(), discoveryCache: YouTubeDiscoveryCache())
+        var preferences = setupPreferences()
+        preferences.enableEmbed = true
+        let preparation = try await service.prepareForStreaming(streamKey: "test-key", preferences: preferences)
+        #expect(preparation.broadcast.enableEmbed)
+        let requests = await transport.requests
+        #expect(requests.map(\.httpMethod) == ["GET", "GET", "GET", "PUT"])
+        let body = try #require(JSONSerialization.jsonObject(with: requests[3].httpBody!) as? [String: Any])
+        let details = try #require(body["contentDetails"] as? [String: Any])
+        #expect(details["enableEmbed"] as? Bool == true)
+    }
+
+    @Test @MainActor
     func repeatedPaginationTokenIsRejected() async throws {
         let transport = MockYouTubeAPITransport(responses: [
             YouTubeAPIResponse(
@@ -1311,6 +1401,23 @@ struct YouTubeServiceTests {
         #expect(!service.isLoading)
     }
 
+    @Test(arguments: [YouTubeAPIOperation.thumbnail, .playlistItems, .insertPlaylistItem])
+    func optionalOperationsLogWarningsForHTTPNetworkAndDecodingFailures(_ operation: YouTubeAPIOperation) async throws {
+        let captured = CapturedYouTubeDiagnostics()
+        let request = URLRequest(url: URL(string: "https://example.invalid/optional")!)
+        let http = YouTubeAPIRequestExecutor(transport: MockYouTubeAPITransport(responses: [
+            .init(data: Data(#"{"error":{"message":"Unavailable"}}"#.utf8), statusCode: 503)
+        ]), diagnostics: captured.diagnostics)
+        await #expect(throws: YouTubeError.self) { _ = try await http.data(for: request, operation: operation) }
+        let network = YouTubeAPIRequestExecutor(transport: FailingYouTubeAPITransport(), diagnostics: captured.diagnostics)
+        await #expect(throws: URLError.self) { _ = try await network.data(for: request, operation: operation) }
+        #expect(throws: YouTubeError.self) {
+            _ = try http.decode(YouTubeIdentifierResource.self, from: Data("invalid".utf8), operation: operation)
+        }
+        #expect(captured.entries.filter { $0.1 == .warning }.count == 3)
+        #expect(!captured.entries.contains { $0.1 == .error })
+    }
+
     @Test func requestDiagnosticsReportGoogleReasonsWithoutCredentials() async throws {
         let captured = CapturedYouTubeDiagnostics()
         let secret = "access-canary-123"
@@ -1389,6 +1496,128 @@ struct YouTubeServiceTests {
     }
 
     @Test @MainActor
+    func channelNameLoadsWithoutAStreamKeyAndFollowsTheAuthorizedAccount() async throws {
+        let transport = MockYouTubeAPITransport(responses: [
+            settingsDiagnosticResponses()[0],
+            .init(data: Data(#"{"items":[{"id":"UC-other","snippet":{"title":"Other brand channel"}}]}"#.utf8), statusCode: 200),
+        ])
+        let store = validMemoryTokenStore()
+        let service = YouTubeService(transport: transport, tokenStore: store, discoveryCache: YouTubeDiscoveryCache())
+        try await service.loadAuthorizedChannel()
+        #expect(service.authorizedChannelName == "Brand channel")
+        #expect(!service.isLoading)
+
+        store.refreshToken = "other-account"
+        store.accessToken = "other-access"
+        try await service.loadAuthorizedChannel()
+        #expect(service.authorizedChannelName == "Other brand channel")
+        let requests = await transport.requests
+        #expect(requests.count == 2)
+        #expect(requests.allSatisfy { $0.url?.path == "/youtube/v3/channels" })
+        #expect(requests.allSatisfy { queryItems(in: $0).contains(URLQueryItem(name: "mine", value: "true")) })
+        #expect(requests.last?.value(forHTTPHeaderField: "Authorization") == "Bearer other-access")
+        #expect(service.signOut())
+        #expect(service.authorizedChannelName == nil)
+    }
+
+    @Test(arguments: [
+        #"{"items":[]}"#,
+        #"{"items":[{"id":"UC-test-channel"}]}"#,
+        #"{"items":[{"id":"UC-test-channel","snippet":{"title":"  "}}]}"#,
+        #"{"items":[{"id":"UC-one","snippet":{"title":"First"}},{"id":"UC-two","snippet":{"title":"Second"}}]}"#,
+        #"{"items":[{"id":"UC-test-channel","snippet":{"title":"Brand channel"}}],"nextPageToken":"more"}"#,
+    ]) @MainActor
+    func channelNameDoesNotGuessWhenYouTubeCannotIdentifyOneChannel(body: String) async throws {
+        let transport = MockYouTubeAPITransport(responses: [.init(data: Data(body.utf8), statusCode: 200)])
+        let service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore(), discoveryCache: YouTubeDiscoveryCache())
+        try await service.loadAuthorizedChannel()
+        #expect(service.authorizedChannelName == nil)
+        #expect(service.isSignedIn)
+        #expect(service.errorMessage == nil)
+    }
+
+    @Test @MainActor
+    func failedChannelRefreshDoesNotDisplayAnUnverifiedPreviousName() async throws {
+        let transport = MockYouTubeAPITransport(responses: [
+            settingsDiagnosticResponses()[0],
+            .init(data: Data(#"{"error":{"message":"Unavailable"}}"#.utf8), statusCode: 503),
+        ])
+        let service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore(), discoveryCache: YouTubeDiscoveryCache())
+        try await service.loadAuthorizedChannel()
+        #expect(service.authorizedChannelName == "Brand channel")
+        try await service.loadAuthorizedChannel()
+        #expect(service.authorizedChannelName == nil)
+        #expect(service.isSignedIn)
+        #expect(service.errorMessage == nil)
+        #expect(!service.isLoading)
+    }
+
+    @Test @MainActor
+    func refreshKeepsTheNameForTheSameAccountButHidesItForAnotherAccount() async throws {
+        let transport = DeferredYouTubeChannelTransport()
+        let store = validMemoryTokenStore()
+        let service = YouTubeService(transport: transport, tokenStore: store, discoveryCache: YouTubeDiscoveryCache())
+        let first = Task { try await service.loadAuthorizedChannel() }
+        await transport.waitUntilStarted()
+        await transport.complete(with: settingsDiagnosticResponses()[0])
+        try await first.value
+        #expect(service.authorizedChannelName == "Brand channel")
+
+        // Refreshing the same authorization must not flicker to "Loading…".
+        let refresh = Task { try await service.loadAuthorizedChannel() }
+        await transport.waitUntilStarted()
+        #expect(service.authorizedChannelName == "Brand channel")
+        await transport.complete(with: settingsDiagnosticResponses()[0])
+        try await refresh.value
+        #expect(service.authorizedChannelName == "Brand channel")
+
+        store.refreshToken = "other-account"
+        let other = Task { try await service.loadAuthorizedChannel() }
+        await transport.waitUntilStarted()
+        #expect(service.authorizedChannelName == nil)
+        await transport.complete(with: .init(
+            data: Data(#"{"items":[{"id":"UC-other","snippet":{"title":"Other brand channel"}}]}"#.utf8), statusCode: 200
+        ))
+        try await other.value
+        #expect(service.authorizedChannelName == "Other brand channel")
+    }
+
+    @Test @MainActor
+    func accountChangeDuringASameAccountRefreshHidesThePreviousName() async throws {
+        let transport = DeferredYouTubeChannelTransport()
+        let store = validMemoryTokenStore()
+        let service = YouTubeService(transport: transport, tokenStore: store, discoveryCache: YouTubeDiscoveryCache())
+        let first = Task { try await service.loadAuthorizedChannel() }
+        await transport.waitUntilStarted()
+        await transport.complete(with: settingsDiagnosticResponses()[0])
+        try await first.value
+        let refresh = Task { try await service.loadAuthorizedChannel() }
+        await transport.waitUntilStarted()
+        store.refreshToken = "other-account"
+        await transport.complete(with: settingsDiagnosticResponses()[0])
+        await #expect(throws: YouTubeError.notSignedIn) { try await refresh.value }
+        #expect(service.authorizedChannelName == nil)
+    }
+
+    @Test(arguments: [false, true]) @MainActor
+    func lateChannelResponseCannotRestoreThePreviousAccount(signOut: Bool) async throws {
+        let transport = DeferredYouTubeChannelTransport()
+        let store = validMemoryTokenStore()
+        let service = YouTubeService(transport: transport, tokenStore: store, discoveryCache: YouTubeDiscoveryCache())
+        let lookup = Task { try await service.loadAuthorizedChannel() }
+        await transport.waitUntilStarted()
+        if signOut {
+            #expect(service.signOut())
+        } else {
+            store.refreshToken = "other-account"
+        }
+        await transport.complete(with: settingsDiagnosticResponses()[0])
+        await #expect(throws: YouTubeError.notSignedIn) { try await lookup.value }
+        #expect(service.authorizedChannelName == nil)
+        #expect(!service.isLoading)
+    }
+
+    @Test @MainActor
     func settingsDiagnosticsIdentifyAuthorizedChannelAndSuccessfulDiscovery() async throws {
         let captured = CapturedYouTubeDiagnostics()
         let transport = MockYouTubeAPITransport(responses: settingsDiagnosticResponses())
@@ -1396,6 +1625,7 @@ struct YouTubeServiceTests {
         let settings = try await service.loadSettingsConfiguration(forStreamKey: "test-key")
         #expect(settings.broadcast.id == "ready")
         #expect(settings.playlists.isEmpty)
+        #expect(service.authorizedChannelName == "Brand channel")
         let infoEntries = captured.entries.filter { $0.1 == .info }
         #expect(infoEntries.map(\.0) == ["YouTube Settings: configuration loaded; broadcast=Ready; 0 playlists"])
         #expect(captured.entries.filter { $0.1 != .info }.allSatisfy { $0.1 == .debug })
@@ -1426,6 +1656,7 @@ struct YouTubeServiceTests {
         #expect(captured.entries.contains { $0.1 == .error })
         #expect(!captured.entries.contains { $0.1 == .info })
         #expect(captured.text.contains("authorized channel: Brand channel"))
+        #expect(service.authorizedChannelName == "Brand channel")
         #expect(await transport.requestCount == stage + 1)
         #expect(!service.isLoading)
     }
@@ -1626,6 +1857,23 @@ private actor SuspendingYouTubeAPITransport: YouTubeAPITransport {
         while !started {
             await Task.yield()
         }
+    }
+}
+
+private actor DeferredYouTubeChannelTransport: YouTubeAPITransport {
+    private var continuation: CheckedContinuation<YouTubeAPIResponse, Never>?
+
+    func response(for request: URLRequest) async throws -> YouTubeAPIResponse {
+        await withCheckedContinuation { continuation = $0 }
+    }
+
+    func waitUntilStarted() async {
+        while continuation == nil { await Task.yield() }
+    }
+
+    func complete(with response: YouTubeAPIResponse) {
+        continuation?.resume(returning: response)
+        continuation = nil
     }
 }
 

@@ -4,6 +4,7 @@
 //
 
 import Foundation
+import AVFoundation
 import Testing
 @testable import Tubeist
 
@@ -13,7 +14,7 @@ enum InjectedRecordingIOError: Error, Equatable {
     case close
 }
 
-private final class InjectedRecordingFile: RecordingFileWriting, @unchecked Sendable {
+final class InjectedRecordingFile: RecordingFileWriting, @unchecked Sendable {
     private let lock = NSLock()
     let writeDelay: TimeInterval
     let failure: InjectedRecordingIOError?
@@ -57,7 +58,7 @@ private final class InjectedRecordingFile: RecordingFileWriting, @unchecked Send
     }
 }
 
-private struct InjectedRecordingFileFactory: RecordingFileCreating {
+struct InjectedRecordingFileFactory: RecordingFileCreating {
     let file: InjectedRecordingFile
 
     func createFile(at url: URL) throws -> any RecordingFileWriting {
@@ -66,6 +67,48 @@ private struct InjectedRecordingFileFactory: RecordingFileCreating {
 }
 
 struct RecordingActorTests {
+    @Test @PipelineActor
+    func diskWriteFailureStopsTheMP4WriterBeforeItAcceptsMoreMedia() async throws {
+        let delegate = RecordingTestDelegate()
+        let writer = try RecordingAssetWriter(delegate: delegate, finalizationFlag: AssetWriterFinalizationFlag())
+        let file = InjectedRecordingFile(failure: .write)
+        let recording = RecordingActor(recordingFolder: FileManager.default.temporaryDirectory,
+                                       fileFactory: InjectedRecordingFileFactory(file: file))
+        await recording.prepareForNewSession(fileFailure: writer.fileFailure)
+        await recording.enqueueFragment(Fragment(sequence: 0, segment: Data("init".utf8), duration: 0, type: .initialization))
+        #expect(file.closeCount == 1, "Release the failed file immediately, without waiting for Stop")
+        let format = try #require(AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 2))
+        let sample = try AACTestAudio.pcm(format, frames: 1024, pts: 0) { _, _ in 0 }
+        do {
+            try writer.append(sample, kind: .audio)
+            Issue.record("A failed file must stop MP4 packaging")
+        } catch {
+            #expect(error.localizedDescription.contains("Could not write recording fragment 0"))
+        }
+        await writer.finishAfterFailure(deadline: ContinuousClock().now.advanced(by: .seconds(1)))
+        await #expect(throws: RecordingError.self) { try await recording.finish() }
+        #expect(file.closeCount == 1)
+        withExtendedLifetime(delegate) {}
+    }
+
+    @Test func aNewRecordingDoesNotInheritThePreviousFileFailure() async throws {
+        let file = InjectedRecordingFile()
+        let recording = RecordingActor(recordingFolder: FileManager.default.temporaryDirectory,
+                                       fileFactory: InjectedRecordingFileFactory(file: file))
+        let old = RecordingFileFailure()
+        await recording.prepareForNewSession(fileFailure: old)
+        // Missing init simulates a failing recording callback.
+        await recording.enqueueFragment(Fragment(sequence: 1, segment: Data(), duration: 2, type: .separable))
+        #expect(throws: MediaEncodingError.self) { try old.check() }
+        let current = RecordingFileFailure()
+        await recording.prepareForNewSession(fileFailure: current)
+        old.report("delayed failure")
+        await recording.enqueueFragment(Fragment(sequence: 0, segment: Data("init".utf8), duration: 0, type: .initialization))
+        try current.check()
+        try await recording.finish()
+        #expect(file.data == Data("init".utf8))
+    }
+
     @Test func obsoleteRecordingCallbacksCannotEnterANewSession() {
         let firstWriter = NSObject()
         let nextWriter = NSObject()
@@ -279,3 +322,5 @@ struct RecordingActorTests {
         #expect(file.closeCount == 1)
     }
 }
+
+private final class RecordingTestDelegate: NSObject, AVAssetWriterDelegate {}

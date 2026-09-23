@@ -8,6 +8,18 @@ struct ImprintArguments {
     var widthRatio: UInt32 = 1
     var heightRatio: UInt32 = 1
     var videoRange: UInt32 = 0
+    // Y'CbCr packing (Kr, Kb). HLG camera frames normally use BT.2020, but
+    // iPhone 12 on iOS 18 declares BT.709; VideoToolbox converts on encode.
+    var matrixKr: Float = 0.2627
+    var matrixKb: Float = 0.0593
+
+    mutating func setYCbCrMatrix(_ matrix: String?) {
+        if matrix == kCVImageBufferYCbCrMatrix_ITU_R_709_2 as String {
+            (matrixKr, matrixKb) = (0.2126, 0.0722)
+        } else {
+            (matrixKr, matrixKb) = (0.2627, 0.0593)
+        }
+    }
 
     mutating func setPixelFormat(_ pixelFormat: OSType) {
         switch pixelFormat {

@@ -481,10 +481,19 @@ kernel void pixelate(constant KernelArguments &args [[buffer(0)]],
     // Ensure the sample coordinate is within the texture bounds.
     if (sampleCoord.x < width && sampleCoord.y < height) {
         float4 sampledY = yTexture.read(sampleCoord);
-        float4 sampledCbCr = cbcrTexture.read(sampleCoord);
-
         yTexture.write(sampledY, gid);
-        cbcrTexture.write(sampledCbCr, gid);
+    }
+
+    // One writer per subsampled chroma pixel, in chroma coordinates. Sample
+    // the first chroma pixel inside the block: its own writer copies it
+    // unchanged, so no thread reads a pixel that another thread rewrites.
+    if (gid.x % args.widthRatio != 0 || gid.y % args.heightRatio != 0) { return; }
+    uint2 ratio = uint2(args.widthRatio, args.heightRatio);
+    uint2 cbcrSize = uint2(cbcrTexture.get_width(), cbcrTexture.get_height());
+    uint2 cbcrGid = gid / ratio;
+    uint2 cbcrSample = min((sampleCoord + ratio - 1) / ratio, cbcrSize - 1);
+    if (cbcrGid.x < cbcrSize.x && cbcrGid.y < cbcrSize.y) {
+        cbcrTexture.write(cbcrTexture.read(cbcrSample), cbcrGid);
     }
 }
 
@@ -791,6 +800,8 @@ struct ImprintArguments {
     uint widthRatio;
     uint heightRatio;
     uint videoRange;
+    float matrixKr;
+    float matrixKb;
 };
 
 float quantizeImprintSample(float value) {
@@ -878,6 +889,13 @@ kernel void imprint(constant ImprintArguments &args [[buffer(0)]],
     float lumaOffset = args.videoRange ? (64.0 * 64.0 / 65535.0) : 0.0;
     float chromaScale = (args.videoRange ? 896.0 : 1022.0) * (64.0 / 65535.0);
     float chromaCenter = 512.0 * 64.0 / 65535.0;
+    // Pack with the frame's declared matrix; the OOTF above keeps BT.2020
+    // luminance weights because the primaries are BT.2020 either way.
+    float kr = args.matrixKr;
+    float kb = args.matrixKb;
+    float kg = 1.0 - kr - kb;
+    float crToR = 2.0 * (1.0 - kr);
+    float cbToB = 2.0 * (1.0 - kb);
     uint2 cbcrPos = origin / ratio;
     float2 originalChroma = cbcrTexture.read(cbcrPos).rg;
     float2 chroma = (originalChroma - chromaCenter) / chromaScale;
@@ -896,18 +914,18 @@ kernel void imprint(constant ImprintArguments &args [[buffer(0)]],
             float3 result = overlay.rgb;
             if (alpha < 1) {
                 float y = (yTexture.read(pos).r - lumaOffset) / lumaScale;
-                float r = y + 1.4746 * chroma.y;
-                float b = y + 1.8814 * chroma.x;
-                float g = (y - 0.2627 * r - 0.0593 * b) / 0.6780;
+                float r = y + crToR * chroma.y;
+                float b = y + cbToB * chroma.x;
+                float g = (y - kr * r - kb * b) / kg;
                 // Unpremultiply before color conversion. Apply alpha once in
                 // the web compositing space; alpha has no gamma adjustment.
                 float3 foreground = imprintHLGToWebRGB(overlay.rgb / alpha);
                 float3 background = imprintHLGToWebRGB(float3(r, g, b));
                 result = imprintWebRGBToHLG(alpha * foreground + (1.0 - alpha) * background);
             }
-            float resultY = dot(result, imprintLumaWeights);
+            float resultY = dot(result, float3(kr, kg, kb));
             yTexture.write(quantizeImprintSample(resultY * lumaScale + lumaOffset), pos);
-            float2 resultChroma = float2((result.b - resultY) / 1.8814, (result.r - resultY) / 1.4746);
+            float2 resultChroma = float2((result.b - resultY) / cbToB, (result.r - resultY) / crToR);
             chromaDelta += resultChroma - chroma;
             changed = true;
         }

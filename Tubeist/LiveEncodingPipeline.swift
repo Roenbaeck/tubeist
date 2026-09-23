@@ -6,6 +6,12 @@ final class LiveEncodingPipeline {
     private var encoderSelection = HEVCEncoderSelection()
     private var audioEncoder: AACAudioEncoder?
     private var recording: RecordingAssetWriter?
+    private var recordsLocally = false
+    private var recordingSalvage: Task<Void, Never>?
+    /// Set when the local recording stopped during the session; Stop reports it.
+    private(set) var recordingFailure: String?
+    private var videoDrops = 0
+    private var encoderDropsSeen = 0
     private var streams = false
     private var basePTS: CMTime?
     private var startupAudio: [CMSampleBuffer] = []
@@ -39,9 +45,10 @@ final class LiveEncodingPipeline {
     private let now: @Sendable () -> TimeInterval
     private let automaticWatchdog: Bool
     private let publish: @Sendable (Fragment) async -> Void
+    private let streamStopped: @Sendable () async -> Bool
     private let reportFailure: @Sendable (any Error) async -> Void
     private(set) var isActive = false
-    var isRecording: Bool { recording != nil }
+    var isRecording: Bool { recordsLocally }
     var captureState: CaptureLiveness.State? {
         guard isActive, !finalizing else { return nil }
         return failed ? .failed : recovering ? .recovering : liveness.state(at: now())
@@ -50,10 +57,12 @@ final class LiveEncodingPipeline {
     init(now: @escaping @Sendable () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
          automaticWatchdog: Bool = true,
          publish: @escaping @Sendable (Fragment) async -> Void = { EncodedOutputRouter.shared.route($0) },
+         streamStopped: @escaping @Sendable () async -> Bool = { await EncodedOutputRouter.shared.hasStoppedAcceptingSegments() },
          reportFailure: @escaping @Sendable (any Error) async -> Void = { await Streamer.shared.handleRuntimeFailure($0) }) {
         self.now = now
         self.automaticWatchdog = automaticWatchdog
         self.publish = publish
+        self.streamStopped = streamStopped
         self.reportFailure = reportFailure
     }
 
@@ -74,6 +83,10 @@ final class LiveEncodingPipeline {
         audioEncoder = AACAudioEncoder(channels: preset.audioChannels, bitratePerChannel: preset.audioBitrate,
                                         sampleRate: AUDIO_SAMPLE_RATE)
         self.recording = recording
+        recordsLocally = recording != nil
+        recordingSalvage = nil
+        recordingFailure = nil
+        videoDrops = 0
         streams = stream
         basePTS = nil
         startupAudio.removeAll()
@@ -127,10 +140,18 @@ final class LiveEncodingPipeline {
         let pts = CMTimeSubtract(sourcePTS, basePTS)
         if let videoEncoder, pts.seconds >= nextBoundary - videoEncoder.frameDuration.seconds * 0.5 {
             let activeGeneration = generation
+            if streams, await streamStopped() {
+                guard generation == activeGeneration, isActive, !recovering else { return }
+                try stopStreaming()
+            }
             if streams, let target = await EncodedOutputRouter.shared.recommendedVideoBitrate(), target != videoEncoder.bitrate {
                 guard generation == activeGeneration, isActive, !recovering else { return }
                 try videoEncoder.setBitrate(target)
                 LOG("Adjusted HEVC target to \(target) bps at a segment boundary", level: .info)
+            } else if !streams, let preset, videoEncoder.bitrate != preset.videoBitrate {
+                // A recording that outlives its stream returns to the selected bitrate.
+                guard generation == activeGeneration, isActive, !recovering else { return }
+                try videoEncoder.setBitrate(preset.videoBitrate)
             }
             guard generation == activeGeneration, isActive, !recovering else { return }
         }
@@ -164,6 +185,7 @@ final class LiveEncodingPipeline {
                 bitrate: preset.videoBitrate, keyframeInterval: preset.keyframeInterval, chroma: chroma)
         }
         repair = VideoCaptureRepair(frameDuration: videoEncoder!.frameDuration)
+        encoderDropsSeen = 0
         if firstSetup, let chroma = encoderSelection.chroma {
             LOG("HEVC hardware encoding: 10-bit \(chroma.rawValue) HLG", level: .info)
             if let reason = encoderSelection.fallbackReason {
@@ -232,7 +254,11 @@ final class LiveEncodingPipeline {
             // offset, which also works for our independently owned history.
             input = try BufferedAudioSample.copy(sample, skippingFrames: skip)
         }
+        let previousFormat = audioEncoder.inputFormat
         try consumeAudio(audioEncoder.encode(input, basePTS: basePTS))
+        if let previousFormat, let format = audioEncoder.inputFormat, previousFormat != format {
+            LOG("Microphone format changed from \(Self.describe(previousFormat)) to \(Self.describe(format)); AAC output continues unchanged", level: .info)
+        }
         if audioEncoder.acceptedInput {
             lastRealAudioEndPTS = audioEncoder.inputEndPTS
             liveness.receivedAudio(at: now())
@@ -240,15 +266,18 @@ final class LiveEncodingPipeline {
     }
 
     private func consumeVideo(_ samples: [CMSampleBuffer]) throws {
+        reportVideoDrops()
         for sample in samples {
             trackOutputEnd(sample)
-            try recording?.append(sample, kind: .video)
+            try record(sample, kind: .video)
             if streams {
                 guard let format = CMSampleBufferGetFormatDescription(sample) else {
                     throw MediaEncodingError.invalid("HEVC output has no format")
                 }
                 let config = try EncodedSampleAdapter.hevcConfiguration(format)
-                if let previous = assembler.hevc, previous != config {
+                // Only parameter-set changes break the stream; carry the
+                // latest SEI (HDR metadata) forward to the next IRAP.
+                if let previous = assembler.hevc, !previous.hasSameParameterSets(as: config) {
                     throw MediaEncodingError.invalid("HEVC configuration changed during streaming")
                 }
                 assembler.hevc = config
@@ -262,9 +291,55 @@ final class LiveEncodingPipeline {
         assembler.aac = audioEncoder?.configuration
         for sample in samples {
             trackOutputEnd(sample)
-            try recording?.append(sample, kind: .audio)
+            try record(sample, kind: .audio)
             if streams { try assembler.append(EncodedSampleAdapter.sample(sample, kind: .audio)) }
         }
+    }
+
+    /// The recording and the live stream are independent outputs: a writer or
+    /// storage failure ends only the recording. Fragments it already produced
+    /// remain in the file, and Stop reports the failure as the recording's.
+    private func record(_ sample: CMSampleBuffer, kind: ISOBMFFTrackKind) throws {
+        guard let recording else { return }
+        do { try recording.append(sample, kind: kind) }
+        catch {
+            self.recording = nil
+            recordingFailure = error.localizedDescription
+            recordingSalvage = Task { @PipelineActor in
+                await recording.finishAfterFailure(deadline: ContinuousClock().now.advanced(by: .seconds(10)))
+            }
+            // Without a live stream, the session has no output left.
+            guard streams else { throw error }
+            LOG("Local recording stopped: \(error.localizedDescription). The live stream continues.", level: .error)
+        }
+    }
+
+    /// YouTube permanently stopped accepting this session's uploads, and
+    /// Streamer has reported why. Stop packaging segments that can never be
+    /// delivered; a simultaneous recording continues at the selected bitrate.
+    private func stopStreaming() throws {
+        streams = false
+        assembler = EncodedSegmentAssembler(segmentDuration: FRAGMENT_DURATION)
+        LOG("Stopped packaging live segments because YouTube no longer accepts this stream", level: .info)
+        if recordsLocally, recording == nil {
+            throw MediaEncodingError.invalid("YouTube stopped accepting the stream after the local recording had stopped")
+        }
+    }
+
+    /// VideoToolbox may drop a frame under real-time load or thermal pressure.
+    /// The encoder already retired its timing; report the first drop and every 30th.
+    private func reportVideoDrops() {
+        guard let dropped = videoEncoder?.droppedFrames, dropped > encoderDropsSeen else { return }
+        let previous = videoDrops
+        videoDrops += dropped - encoderDropsSeen
+        encoderDropsSeen = dropped
+        if previous == 0 || previous / 30 != videoDrops / 30 {
+            LOG("The HEVC encoder has dropped \(videoDrops) frame\(videoDrops == 1 ? "" : "s") under real-time load; encoding continues", level: .warning)
+        }
+    }
+
+    private static func describe(_ format: AVAudioFormat) -> String {
+        "\(Int(format.sampleRate)) Hz \(format.channelCount == 1 ? "mono" : "\(format.channelCount)-channel")"
     }
 
     private func trackOutputEnd(_ sample: CMSampleBuffer) {
@@ -454,9 +529,14 @@ final class LiveEncodingPipeline {
         lifecycleGeneration &+= 1
         failed = true
         defer {
+            if videoDrops > 0 {
+                LOG("The HEVC encoder dropped \(videoDrops) of this session's frames under real-time load", level: .info)
+            }
             videoEncoder = nil
             audioEncoder = nil
             recording = nil
+            recordsLocally = false
+            recordingSalvage = nil
             startupAudio.removeAll()
             lastPixels = nil
             clearCandidates()
@@ -479,9 +559,11 @@ final class LiveEncodingPipeline {
             }
             // The recording already has the compressed samples. A transport
             // packaging failure must not cancel its otherwise valid ending.
+            await recordingSalvage?.value
             try await recording?.finish(deadline: deadline)
         } catch {
             recording?.cancel()
+            await recordingSalvage?.value
             throw error
         }
         if let packagingFailure { throw packagingFailure }

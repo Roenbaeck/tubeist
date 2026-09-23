@@ -70,6 +70,73 @@ struct StreamerTests {
         #expect(appState.streamSessionState == .idle)
     }
 
+    @Test @MainActor
+    func stoppedYouTubeUploadsAreReportedOnceAndNotAgainByStop() async throws {
+        let actor = StreamingActor()
+        let sessionID = UUID()
+        await actor.setAppState(AppState())
+        let plan = StreamOutputPlan(streamsToYouTube: true, recordsLocally: true)
+        #expect(await actor.noteYouTubeUploadFailure("rejected", sessionID: sessionID) == nil) // no session
+        try await actor.beginPreparing(sessionID: sessionID)
+        await actor.setOutputPlan(plan)
+        try await actor.markLive()
+        #expect(await actor.noteYouTubeUploadFailure("rejected", sessionID: sessionID) == plan)
+        #expect(await actor.noteYouTubeUploadFailure("rejected again", sessionID: sessionID) == nil)
+        #expect(await actor.beginStopping())
+        // Stop sees that the failure was already surfaced.
+        #expect(await actor.reportedYouTubeUploadFailure() == "rejected")
+        await actor.closeMediaIntake()
+        await actor.completeStop()
+        #expect(await actor.reportedYouTubeUploadFailure() == nil)
+
+        // A rejection first seen while stopping is left for Stop to report.
+        try await actor.beginPreparing(sessionID: sessionID)
+        await actor.setOutputPlan(StreamOutputPlan(streamsToYouTube: true, recordsLocally: false))
+        try await actor.markLive()
+        #expect(await actor.beginStopping())
+        #expect(await actor.noteYouTubeUploadFailure("rejected during stop", sessionID: sessionID) == nil)
+        #expect(await actor.reportedYouTubeUploadFailure() == nil)
+        await actor.completeStop()
+
+        // Recording-only sessions have no YouTube uploads to report.
+        try await actor.beginPreparing(sessionID: sessionID)
+        await actor.setOutputPlan(StreamOutputPlan(streamsToYouTube: false, recordsLocally: true))
+        try await actor.markLive()
+        #expect(await actor.noteYouTubeUploadFailure("stale", sessionID: sessionID) == nil)
+    }
+
+    @Test @MainActor
+    func idleSessionIgnoresAStaleYouTubeUploadFailure() async {
+        let appState = AppState()
+        let streamer = Streamer()
+        await streamer.setAppState(appState)
+        await streamer.handleYouTubeUploadFailure(YouTubeHLSUploadError.rejected(statusCode: 401), sessionID: UUID())
+        #expect(appState.activeAlert == nil)
+        #expect(appState.streamSessionState == .idle)
+    }
+
+    @Test func delayedUploadFailureCannotStopTheNextSession() async throws {
+        let actor = StreamingActor()
+        let oldSession = UUID()
+        let newSession = UUID()
+        let plan = StreamOutputPlan(streamsToYouTube: true, recordsLocally: false)
+        try await actor.beginPreparing(sessionID: oldSession)
+        await actor.setOutputPlan(plan)
+        try await actor.markLive()
+        #expect(await actor.beginStopping())
+        await actor.completeStop()
+        try await actor.beginPreparing(sessionID: newSession)
+        await actor.setOutputPlan(plan)
+        // Deliver the old callback after the next Start, both before and
+        // after it goes live. It must neither stop nor poison the new session.
+        #expect(await actor.noteYouTubeUploadFailure("old rejection", sessionID: oldSession) == nil)
+        try await actor.markLive()
+        #expect(await actor.noteYouTubeUploadFailure("old rejection", sessionID: oldSession) == nil)
+        #expect(await actor.reportedYouTubeUploadFailure() == nil)
+        #expect(await actor.sessionState() == .live)
+        #expect(await actor.noteYouTubeUploadFailure("new rejection", sessionID: newSession) == plan)
+    }
+
     @Test func stabilizedVideoMustReachTheStopTimestamp() {
         let stop = CMTime(value: 900_000, timescale: 90_000)
 

@@ -501,6 +501,15 @@ struct SettingsView: View {
                                 }
                             }
                         } else {
+                            LabeledContent("YouTube channel") {
+                                Text(youtubeService.authorizedChannelName
+                                     ?? (youtubeService.isLoading ? "Loading…" : "Channel name unavailable"))
+                                    .multilineTextAlignment(.trailing)
+                                    .foregroundStyle(.secondary)
+                                    .textSelection(.enabled)
+                            }
+                            .accessibilityIdentifier("YouTube channel")
+
                             if youtubeService.isLoading || isSettingUpYouTubeStream {
                                 HStack {
                                     ProgressView()
@@ -557,6 +566,7 @@ struct SettingsView: View {
 
                                 Toggle("Made for kids", isOn: $youtubeDraft.madeForKids)
                                 Toggle("DVR (viewers can rewind)", isOn: $youtubeDraft.enableDvr)
+                                Toggle("Allow embedding", isOn: $youtubeDraft.enableEmbed)
                                 Picker("Latency", selection: $youtubeDraft.latencyPreference) {
                                     Text("Normal").tag("normal")
                                     Text("Low").tag("low")
@@ -912,6 +922,8 @@ struct SettingsView: View {
                             do {
                                 try Settings.setStreamKey(nil)
                                 streamKeyManager.updateKey("")
+                                // The saved key is gone even if sign-out fails.
+                                clearAppliedYouTubeStatus()
                                 clearYouTubeAccountState()
                                 if let errorMessage = youtubeService.errorMessage {
                                     appState.activeAlert = errorMessage
@@ -949,7 +961,7 @@ struct SettingsView: View {
                 guard !isSettingUpYouTubeStream, context != lastYouTubeLoadContext else { return }
                 updateYouTubeDraftContext()
                 youtubeLoadGeneration = UUID()
-                guard context.streamingEnabled, context.isSignedIn, !context.streamKey.isEmpty else {
+                guard context.streamingEnabled, context.isSignedIn else {
                     lastYouTubeLoadContext = context
                     return
                 }
@@ -992,6 +1004,7 @@ struct SettingsView: View {
                         youtubeService.errorMessage = nil
                         saveErrorMessage = nil
                         appState.activityPreferences = .saved
+                        applySavedYouTubeStatus(previousStreamKey: previousSettings?.streamKey)
                         presentationMode.wrappedValue.dismiss()
                     } catch {
                         var failureMessage = error.localizedDescription
@@ -1172,6 +1185,7 @@ struct SettingsView: View {
     private func clearYouTubeAccountState() {
         guard youtubeService.signOut() else { return }
         resetLoadedYouTubeBroadcast()
+        clearAppliedYouTubeStatus()
         appState.isYouTubeSignedIn = false
     }
 
@@ -1245,8 +1259,24 @@ struct SettingsView: View {
         selectedPhotoItem = nil
         youtubeConfigLoaded = false
         youtubeService.errorMessage = nil
+    }
+
+    private func clearAppliedYouTubeStatus() {
         appState.youtubeBroadcastId = nil
         appState.youtubeStatus = nil
+    }
+
+    /// The main screen reflects only the saved key. A newly saved key uses the
+    /// broadcast loaded for it here, or is looked up again after dismissal.
+    private func applySavedYouTubeStatus(previousStreamKey: String?) {
+        let savedKey = Settings.streamKey
+        guard savedKey != previousStreamKey else { return }
+        if youtubeService.isSignedIn, youtubeDraft.broadcast != nil, youtubeDraft.streamKey == savedKey {
+            appState.youtubeBroadcastId = broadcastId
+            appState.youtubeStatus = broadcastId == nil ? nil : broadcastLifeCycleStatus
+        } else {
+            clearAppliedYouTubeStatus()
+        }
     }
 
     private func updateYouTubeDraftContext() {
@@ -1275,16 +1305,20 @@ struct SettingsView: View {
 
     func loadYouTubeBroadcast(forStreamKey requestedStreamKey: String? = nil) async {
         let streamKey = requestedStreamKey ?? streamKeyManager.currentKey
-        guard !streamKey.isEmpty else {
-            resetLoadedYouTubeBroadcast()
-            return
-        }
         updateYouTubeDraftContext()
         youtubeLoadGeneration = UUID()
         youtubeService.errorMessage = nil
         let generation = youtubeLoadGeneration
         let context = youtubeLoadContext
         do {
+            if streamKey.isEmpty {
+                try await youtubeService.loadAuthorizedChannel()
+                guard generation == youtubeLoadGeneration, context == youtubeLoadContext,
+                      !Task.isCancelled else { return }
+                youtubeConfigLoaded = true
+                lastYouTubeLoadContext = context
+                return
+            }
             let configuration = try await youtubeService.loadSettingsConfiguration(forStreamKey: streamKey)
             let broadcast = configuration.broadcast
             let loadedPlaylists = configuration.playlists
@@ -1300,8 +1334,11 @@ struct SettingsView: View {
                 savedThumbnail: try? Settings.loadYouTubeThumbnailData()
             )
             if previousStreamId != broadcast.boundStreamId { selectedPhotoItem = nil }
-            appState.youtubeBroadcastId = broadcastId
-            appState.youtubeStatus = broadcastId == nil ? nil : broadcast.lifeCycleStatus
+            // The main screen follows the saved key; a draft key applies on Save.
+            if streamKey == Settings.streamKey {
+                appState.youtubeBroadcastId = broadcastId
+                appState.youtubeStatus = broadcastId == nil ? nil : broadcast.lifeCycleStatus
+            }
             youtubeConfigLoaded = true
             lastYouTubeLoadContext = context
             youtubeService.errorMessage = nil
@@ -1323,27 +1360,13 @@ struct SettingsView: View {
 
     func saveYouTubePreferences() throws {
         guard youtubeDraft.streamKey == streamKeyManager.currentKey,
-              let currentBroadcast = youtubeDraft.broadcast else { return }
-        guard let streamId = currentBroadcast.boundStreamId else {
+              youtubeDraft.broadcast != nil else { return }
+        guard let preferences = youtubeDraft.preferences() else {
             throw YouTubeError.invalidResponse
         }
+        let streamId = preferences.streamId
         let previousPreferences = Settings.youtubeBroadcastPreferences
-        Settings.youtubeBroadcastPreferences = YouTubeBroadcastPreferences(
-            streamId: streamId,
-            title: youtubeDraft.title,
-            privacyStatus: youtubeDraft.visibility,
-            enableDvr: youtubeDraft.enableDvr,
-            latencyPreference: youtubeDraft.latencyPreference,
-            enableMonitorStream: currentBroadcast.enableMonitorStream,
-            broadcastStreamDelayMs: currentBroadcast.broadcastStreamDelayMs,
-            enableEmbed: currentBroadcast.enableEmbed,
-            recordFromStart: currentBroadcast.recordFromStart,
-            enableAutoStart: currentBroadcast.enableAutoStart,
-            // YouTube owns completion after Tubeist closes HLS ingestion.
-            enableAutoStop: true,
-            playlistId: youtubeDraft.playlistId,
-            selfDeclaredMadeForKids: youtubeDraft.madeForKids
-        )
+        Settings.youtubeBroadcastPreferences = preferences
 
         if youtubeDraft.thumbnail.hasNewSelection,
            let thumbnailImage = youtubeDraft.thumbnail.image,

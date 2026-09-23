@@ -426,6 +426,18 @@ private actor FrameTinkerer {
             
             measureTextures = false
         }
+        // The matrix is a frame attachment, independent of the pixel format.
+        let matrix = CVBufferCopyAttachment(pixelBuffer, kCVImageBufferYCbCrMatrixKey, nil) as? String
+        var matrixArguments = imprintArguments
+        matrixArguments.setYCbCrMatrix(matrix)
+        if (matrixArguments.matrixKr, matrixArguments.matrixKb) != (imprintArguments.matrixKr, imprintArguments.matrixKb) {
+            imprintArguments = matrixArguments
+            for (args, _, _) in boundingBoxData {
+                let argsPointer = args.contents().bindMemory(to: ImprintArguments.self, capacity: 1)
+                argsPointer.pointee.matrixKr = imprintArguments.matrixKr
+                argsPointer.pointee.matrixKb = imprintArguments.matrixKb
+            }
+        }
         var newLumaTexture: CVMetalTexture?
         let lumaStatus = CVMetalTextureCacheCreateTextureFromImage(
             kCFAllocatorDefault,

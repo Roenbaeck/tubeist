@@ -11,6 +11,8 @@ enum YouTubeHLSPackagingError: LocalizedError, CustomStringConvertible {
     case segmentDurationMismatch(reported: Double, parsed: Double)
     case packagingFailed
     case shutdownTimedOut
+    /// Uploads stopped permanently during the session, e.g. rejected ingestion.
+    case uploadsStopped(reason: String)
 
     var description: String {
         switch self {
@@ -20,6 +22,7 @@ enum YouTubeHLSPackagingError: LocalizedError, CustomStringConvertible {
             "Fragment duration mismatch (writer \(reported)s, parsed \(parsed)s)"
         case .packagingFailed: "YouTube HLS packaging failed before shutdown completed"
         case .shutdownTimedOut: "YouTube HLS output did not drain before its shutdown deadline"
+        case .uploadsStopped(let reason): reason
         }
     }
 
@@ -82,6 +85,7 @@ actor YouTubeHLSStreamSink {
     private var uploadWatchdog: Task<Void, Never>?
     private var needsLiveCatchup = false
     private var uploadNow: @Sendable () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
+    private var reportUploadsStopped: @Sendable (any Error) async -> Void = { _ in }
 #if DEBUG
     private var acceptanceSessionIdentifier = ""
     private var dropReportingTask: Task<Void, Never>?
@@ -96,7 +100,8 @@ actor YouTubeHLSStreamSink {
         bitrateController: AdaptiveBitrateController? = nil,
         retryPolicy: YouTubeHLSRetryPolicy = .default,
         sleeper: @escaping YouTubeHLSUploader.Sleeper = { try await Task.sleep(for: $0) },
-        uploadNow: @escaping @Sendable () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
+        uploadNow: @escaping @Sendable () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
+        reportUploadsStopped: @escaping @Sendable (any Error) async -> Void = { _ in }
     ) async throws {
         sessionGeneration &+= 1
         let generation = sessionGeneration
@@ -105,6 +110,7 @@ actor YouTubeHLSStreamSink {
         uploadWatchdog?.cancel()
         uploadWatchdog = nil
         self.uploadNow = uploadNow
+        self.reportUploadsStopped = reportUploadsStopped
         processingTask = nil
         uploader = nil
         isPrepared = false
@@ -159,9 +165,16 @@ actor YouTubeHLSStreamSink {
         LOG("YouTube HLS output is prepared", level: .debug)
     }
 
+    /// Uploads cannot resume after a failure; the pipeline stops producing
+    /// segments at its next boundary while any local recording continues.
+    var hasStoppedAcceptingSegments: Bool { isPrepared && failure != nil }
+
     func enqueue(_ fragment: Fragment) async {
         guard isPrepared, failure == nil else {
-            LOG("Ignoring an encoded fragment because YouTube HLS output is unavailable", level: .warning)
+            // A permanent failure was already reported once; do not repeat it
+            // for each segment still in flight before the pipeline stops.
+            LOG("Ignoring an encoded fragment because YouTube HLS output is unavailable",
+                level: failure == nil ? .warning : .debug)
             return
         }
         if queue.count >= Self.maximumQueuedFragments ||
@@ -604,6 +617,8 @@ actor YouTubeHLSStreamSink {
         sessionGeneration generation: UInt64
     ) async {
         guard generation == sessionGeneration else { return }
+        let report = reportUploadsStopped
+        let failedUploader = uploader
         failure = String(describing: error)
         queue.removeAll(keepingCapacity: true)
         clearFinalizationBuffer()
@@ -611,10 +626,14 @@ actor YouTubeHLSStreamSink {
         await HLSAcceptanceRecorder.shared.failed(String(describing: error))
 #endif
         LOG("YouTube HLS packaging stopped: \(error)", level: .error)
-        await Streamer.shared.setStreamHealth(.unusable)
-        if let uploader {
-            await uploader.stop()
-        }
+        await failedUploader?.stop()
+        guard generation == sessionGeneration else { return }
+        // A rejection (HTTP 4xx) already explains itself to the user. Report
+        // from a separate task: ending a stream-only session waits for this
+        // sink to become idle.
+        let stopped = YouTubeHLSPackagingError.uploadsStopped(reason: error is YouTubeHLSUploadError
+            ? String(describing: error) : "YouTube uploads stopped: \(error)")
+        Task { await report(stopped) }
     }
 
     private func clearFinalizationBuffer() {
@@ -649,7 +668,8 @@ actor EncodedOutputRouter {
         endpoint: YouTubeHLSEndpoint,
         sessionIdentifier: String,
         userAgent: String,
-        endingPolicy: HLSStreamEndingPolicy = .automatic
+        endingPolicy: HLSStreamEndingPolicy = .automatic,
+        reportUploadsStopped: @escaping @Sendable (any Error) async -> Void = { _ in }
     ) async throws {
         resetOrdering()
         let generation = routingGeneration
@@ -659,7 +679,8 @@ actor EncodedOutputRouter {
             sessionIdentifier: sessionIdentifier,
             userAgent: userAgent,
             endingPolicy: endingPolicy,
-            bitrateController: Self.makeBitrateController()
+            bitrateController: Self.makeBitrateController(),
+            reportUploadsStopped: reportUploadsStopped
         )
         guard generation == routingGeneration else {
             throw YouTubeHLSPackagingError.notPrepared
@@ -676,6 +697,11 @@ actor EncodedOutputRouter {
     func recommendedVideoBitrate() async -> Int? {
         guard case .direct = mode else { return nil }
         return await YouTubeHLSStreamSink.shared.recommendedVideoBitrate()
+    }
+
+    func hasStoppedAcceptingSegments() async -> Bool {
+        guard case .direct = mode else { return false }
+        return await YouTubeHLSStreamSink.shared.hasStoppedAcceptingSegments
     }
 
     func route(_ fragment: Fragment) {

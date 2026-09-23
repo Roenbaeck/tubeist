@@ -18,6 +18,8 @@ let context = CIContext(mtlDevice: device, options: [.workingColorSpace: hlg])
 let library = try device.makeLibrary(source: String(contentsOfFile: CommandLine.arguments[1], encoding: .utf8), options: nil)
 let pipeline = try device.makeComputePipelineState(function: library.makeFunction(name: "imprint")!)
 var cache: CVMetalTextureCache?
+// iPhone 12 on iOS 18 declares BT.709 packing for HLG/BT.2020 frames.
+var probeMatrix = kCVImageBufferYCbCrMatrix_ITU_R_2020
 precondition(CVMetalTextureCacheCreate(nil, nil, device, nil, &cache) == kCVReturnSuccess)
 
 func patch(_ rgb: [Float], alpha: Float = 1) -> CIImage {
@@ -34,7 +36,7 @@ func makeBuffer(format: OSType, bounds: CGRect) -> CVPixelBuffer {
     let buffer = result!
     CVBufferSetAttachment(buffer, kCVImageBufferColorPrimariesKey, kCVImageBufferColorPrimaries_ITU_R_2020, .shouldPropagate)
     CVBufferSetAttachment(buffer, kCVImageBufferTransferFunctionKey, kCVImageBufferTransferFunction_ITU_R_2100_HLG, .shouldPropagate)
-    CVBufferSetAttachment(buffer, kCVImageBufferYCbCrMatrixKey, kCVImageBufferYCbCrMatrix_ITU_R_2020, .shouldPropagate)
+    CVBufferSetAttachment(buffer, kCVImageBufferYCbCrMatrixKey, probeMatrix, .shouldPropagate)
     return buffer
 }
 
@@ -69,6 +71,7 @@ func render(_ source: CIImage, over background: CIImage, format: OSType, regions
     args.widthRatio = UInt32(width / uvWidth)
     args.heightRatio = UInt32(height / uvHeight)
     args.setPixelFormat(format)
+    args.setYCbCrMatrix(probeMatrix as String)
     for region in regions ?? [bounds] {
         args.offsetX = UInt32(region.minX); args.offsetY = UInt32(region.minY)
         encoder.setBytes(&args, length: MemoryLayout<ImprintArguments>.size, index: 0)
@@ -104,7 +107,9 @@ func composeReference(overlay: [UInt16], into buffer: CVPixelBuffer, format: OST
     let width = CVPixelBufferGetWidth(buffer), height = CVPixelBufferGetHeight(buffer)
     let uvWidth = CVPixelBufferGetWidthOfPlane(buffer, 1), uvHeight = CVPixelBufferGetHeightOfPlane(buffer, 1)
     let rx = width / uvWidth, ry = height / uvHeight
-    var args = ImprintArguments(); args.setPixelFormat(format)
+    var args = ImprintArguments(); args.setPixelFormat(format); args.setYCbCrMatrix(probeMatrix as String)
+    let kr = Double(args.matrixKr), kb = Double(args.matrixKb), kg = 1 - kr - kb
+    let packing = [kr, kg, kb]
     let ys = args.videoRange == 1 ? 876.0 : 1023.0
     let yo = args.videoRange == 1 ? 64.0 : 0.0
     let cs = args.videoRange == 1 ? 896.0 : 1022.0
@@ -152,15 +157,15 @@ func composeReference(overlay: [UInt16], into buffer: CVPixelBuffer, format: OST
         var rgb = (0..<3).map { Double(overlay[i*4+$0]) / 65535 / alpha }
         if alpha < 1 {
             let y = (Double(originalY[i] >> 6) - yo) / ys
-            let r = y + 1.4746*cr, b = y + 1.8814*cb
-            let background = decode([r, (y-0.2627*r-0.0593*b)/0.678, b])
+            let r = y + 2*(1-kr)*cr, b = y + 2*(1-kb)*cb
+            let background = decode([r, (y-kr*r-kb*b)/kg, b])
             let foreground = decode(rgb)
             rgb = encode(zip(foreground, background).map { alpha*$0 + (1-alpha)*$1 })
         }
-        let y = zip(rgb, weights).map(*).reduce(0,+)
+        let y = zip(rgb, packing).map(*).reduce(0,+)
         resultY[i] = quantize(y*ys+yo)
-        cbDelta[i] = (rgb[2]-y)/1.8814 - cb
-        crDelta[i] = (rgb[0]-y)/1.4746 - cr
+        cbDelta[i] = (rgb[2]-y)/(2*(1-kb)) - cb
+        crDelta[i] = (rgb[0]-y)/(2*(1-kr)) - cr
     }
     CVPixelBufferLockBaseAddress(buffer, [])
     defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
@@ -195,6 +200,9 @@ cases += [("red", [1, 0, 0], 1), ("green", [0, 1, 0], 1), ("blue", [0, 0, 1], 1)
 for n in 0..<200 {
     cases.append(("color \(n)", [Float((n * 73) % 251) / 250, Float((n * 109) % 251) / 250, Float((n * 163) % 251) / 250], [Float(0), 0.25, 0.5, 0.75, 1][n % 5]))
 }
+for matrix in [kCVImageBufferYCbCrMatrix_ITU_R_2020, kCVImageBufferYCbCrMatrix_ITU_R_709_2] {
+probeMatrix = matrix
+let matrixName = matrix == kCVImageBufferYCbCrMatrix_ITU_R_2020 ? "" : " (BT.709 matrix)"
 for (name, format) in formats {
     var maxError = 0
     for (label, rgb, alpha) in cases {
@@ -217,8 +225,10 @@ for (name, format) in formats {
             }
         }
     }
-    print("PASS \(name): \(cases.count) opaque/transparent patches; maximum error \(maxError)/1023")
+    print("PASS \(name)\(matrixName): \(cases.count) opaque/transparent patches; maximum error \(maxError)/1023")
 }
+}
+probeMatrix = kCVImageBufferYCbCrMatrix_ITU_R_2020
 
 // Exercise varying luma/alpha inside shared chroma cells, transparent cells,
 // odd region edges, overlapping boxes, and deterministic in-place execution.

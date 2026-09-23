@@ -69,7 +69,13 @@ enum YouTubeAPIOperation: String, Sendable {
     var successLevel: LogLevel { .debug }
     var failureLevel: LogLevel {
         if self == .videoLiveDetails { return .debug }
-        return self == .channels || self == .streamHealth ? .warning : .error
+        switch self {
+        // These operations are optional and cannot prevent media delivery.
+        case .channels, .streamHealth, .thumbnail, .playlistItems, .insertPlaylistItem:
+            return .warning
+        default:
+            return .error
+        }
     }
 }
 

@@ -116,6 +116,7 @@ actor RecordingActor {
     private var sawInitialization = false
     private var closed = true
     private var failure: RecordingError?
+    private var fileFailure = RecordingFileFailure()
 
     init(
         recordingFolder: URL? = FileManager.default.urls(
@@ -131,7 +132,7 @@ actor RecordingActor {
         }
     }
 
-    func prepareForNewSession() {
+    func prepareForNewSession(fileFailure: RecordingFileFailure = RecordingFileFailure()) {
         try? file?.close()
         filename = nil
         fileURL = nil
@@ -140,6 +141,7 @@ actor RecordingActor {
         sawInitialization = false
         closed = false
         failure = nil
+        self.fileFailure = fileFailure
     }
 
     func enqueueFragment(_ fragment: Fragment) {
@@ -149,16 +151,24 @@ actor RecordingActor {
         do {
             try writeFragment(fragment)
         } catch let recordingError as RecordingError {
-            failure = recordingError
-            LOG(recordingError.localizedDescription, level: .error)
+            stopAfterFileFailure(recordingError)
         } catch {
             let recordingError = RecordingError.writeFailed(
                 sequence: fragment.sequence,
                 message: error.localizedDescription
             )
-            failure = recordingError
-            LOG(recordingError.localizedDescription, level: .error)
+            stopAfterFileFailure(recordingError)
         }
+    }
+
+    private func stopAfterFileFailure(_ error: RecordingError) {
+        failure = error
+        fileFailure.report(error.localizedDescription)
+        // Preserve the existing file, but release its handle immediately.
+        try? file?.close()
+        file = nil
+        closed = true
+        LOG(error.localizedDescription, level: .error)
     }
 
     func finish() throws {
@@ -343,8 +353,10 @@ final class ContentPackager: NSObject, AVAssetWriterDelegate, Sendable {
         guard await !Self.pipeline.isActive else { throw ContentPackagingError.alreadyEncoding }
         recordingCallbacks.prepare(writerID: nil)
         await fragmentDispatcher.prepare(stream: false, record: record)
-        if record { await recording.prepareForNewSession() }
         let recordingWriter = try await makeRecordingWriter(enabled: record)
+        if let recordingWriter {
+            await recording.prepareForNewSession(fileFailure: recordingWriter.fileFailure)
+        }
         try await Self.pipeline.start(preset: Settings.selectedPreset, stream: stream,
                                       recording: recordingWriter,
                                       allows422: Settings.prefers422Chroma)
@@ -399,6 +411,11 @@ final class ContentPackager: NSObject, AVAssetWriterDelegate, Sendable {
                 }
             } else {
                 recordingStatus = .failed("Recording could not finalize before the shutdown deadline")
+            }
+            // The file keeps what was written before the recording stopped
+            // mid-session; streaming continued without it.
+            if let failure = await Self.pipeline.recordingFailure {
+                recordingStatus = .failed("Stopped during the session: \(failure)")
             }
         }
         LOG("Media encoders are no longer accepting sample buffers", level: .debug)

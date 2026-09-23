@@ -86,6 +86,7 @@ actor Purchaser {
         // Update the stored purchases to match exactly what's valid
         if Self.entitlements.finishVerification(validProductIDs, id: verificationID) {
             persistEntitlements()
+            resetStylingIfUnentitled()
         }
     }
     
@@ -116,6 +117,22 @@ actor Purchaser {
     private func removePurchase(productID: String) {
         Self.entitlements.setPurchased(false, productID: productID)
         persistEntitlements()
+        resetStylingIfUnentitled()
+    }
+
+    /// After a refund or revocation the styling button is locked, so a saved
+    /// paid style or effect could otherwise never be turned off again.
+    @MainActor
+    private func resetStylingIfUnentitled() {
+        guard !isProductPurchased("tubeist_lifetime_styling"),
+              Settings.style != nil || Settings.effect != nil else { return }
+        LOG("Styling is no longer purchased; turning off the selected style and effect", level: .info)
+        Settings.style = NO_STYLE
+        Settings.effect = NO_EFFECT
+        Task {
+            await FrameGrabber.shared.refreshStyle()
+            await FrameGrabber.shared.refreshEffect()
+        }
     }
 
     @MainActor

@@ -52,6 +52,23 @@ final class AssetWriterFinalizationFlag: @unchecked Sendable {
     }
 }
 
+/// Each recording owns a fresh signal shared by its file and MP4 writers.
+/// File callbacks can fail independently of AVAssetWriter's status.
+final class RecordingFileFailure: @unchecked Sendable {
+    private let lock = NSLock()
+    private var message: String?
+
+    func report(_ message: String) {
+        lock.withLock { if self.message == nil { self.message = message } }
+    }
+
+    func check() throws {
+        if let message = lock.withLock({ message }) {
+            throw MediaEncodingError.invalid(message)
+        }
+    }
+}
+
 /// Passthrough AAC is laid out by packet duration in AVAssetWriter. Track that
 /// actual file timeline, so rounding a gap to whole packets cannot accumulate
 /// across repeated recoveries. The maximum error is half an AAC packet.
@@ -77,6 +94,7 @@ struct RecordingAudioTimeline {
 
 @PipelineActor
 final class RecordingAssetWriter {
+    nonisolated let fileFailure = RecordingFileFailure()
     private let writer: AVAssetWriter
     private var videoInput: AVAssetWriterInput?
     private var audioInput: AVAssetWriterInput?
@@ -106,6 +124,7 @@ final class RecordingAssetWriter {
     }
 
     func append(_ sample: CMSampleBuffer, kind: ISOBMFFTrackKind) throws {
+        try fileFailure.check()
         guard let format = CMSampleBufferGetFormatDescription(sample) else {
             throw MediaEncodingError.invalid("Recording sample has no format")
         }
@@ -147,7 +166,13 @@ final class RecordingAssetWriter {
     }
 
     private func drain() throws {
+        try fileFailure.check()
         guard started else { return }
+        // A failed writer stops reporting readiness instead of rejecting an
+        // append; report it now rather than as a growing backlog.
+        guard writer.status == .writing else {
+            throw MediaEncodingError.invalid(writer.error?.localizedDescription ?? "The recording writer stopped")
+        }
         var paddedPackets = 0
         while true {
             var progress = false
@@ -207,6 +232,7 @@ final class RecordingAssetWriter {
     }
 
     func finish(deadline: ContinuousClock.Instant) async throws {
+        try fileFailure.check()
         guard started else {
             writer.cancelWriting()
             throw MediaEncodingError.invalid("Recording produced no video frames")
@@ -218,6 +244,9 @@ final class RecordingAssetWriter {
             }
             try drain()
             if !video.isEmpty || !audio.isEmpty { try await Task.sleep(for: .milliseconds(5)) }
+        }
+        guard writer.status == .writing else {
+            throw MediaEncodingError.invalid(writer.error?.localizedDescription ?? "The recording writer stopped")
         }
         finalizationFlag.set(true)
         let handle = SendableAssetWriterFinishHandle(writer)
@@ -239,7 +268,21 @@ final class RecordingAssetWriter {
         guard result.0 == .completed else {
             throw MediaEncodingError.invalid(result.1 ?? "Recording failed")
         }
+        try fileFailure.check()
     }
 
     func cancel() { writer.cancelWriting() }
+
+    /// Ends the recording after a write or storage failure while the session
+    /// continues. A writer that is still healthy (storage fell behind) finishes
+    /// with the media it already accepted; a failed writer can only be cancelled.
+    /// Fragments already delivered to the recording file remain in either case.
+    func finishAfterFailure(deadline: ContinuousClock.Instant) async {
+        if started, writer.status == .writing {
+            do { try await finish(deadline: deadline); return } catch {}
+        }
+        if writer.status == .writing || writer.status == .unknown { writer.cancelWriting() }
+        video.removeAll()
+        audio.removeAll()
+    }
 }

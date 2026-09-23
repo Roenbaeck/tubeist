@@ -48,6 +48,7 @@ struct SettingsDraftTests {
         draft.title = "Unsaved title"
         draft.visibility = "unlisted"
         draft.enableDvr = false
+        draft.enableEmbed = true
         draft.madeForKids = true
         draft.latencyPreference = "low"
         draft.playlistId = "playlist-a"
@@ -65,6 +66,7 @@ struct SettingsDraftTests {
         #expect(draft.title == "Unsaved title")
         #expect(draft.visibility == "unlisted")
         #expect(!draft.enableDvr)
+        #expect(draft.enableEmbed)
         #expect(draft.madeForKids)
         #expect(draft.latencyPreference == "low")
         #expect(draft.playlistId == "playlist-a")
@@ -128,6 +130,38 @@ struct SettingsDraftTests {
         draft.apply(broadcast: other, playlists: [], savedPreferences: preferences, savedThumbnail: data)
         #expect(draft.title == other.title)
         #expect(draft.thumbnail.image == nil)
+    }
+
+    @Test func embeddingShowsTheLoadedBroadcastAndRoundTripsThroughSavedPreferences() throws {
+        // App-created drafts keep embedding off; a Studio event shows its own value.
+        let appDraft = YouTubeSettingsDraft()
+        appDraft.apply(broadcast: makeBroadcast(), playlists: [], savedPreferences: nil, savedThumbnail: nil)
+        #expect(!appDraft.enableEmbed)
+        var studioEvent = makeBroadcast()
+        studioEvent.enableEmbed = true
+        studioEvent.recordFromStart = false
+        let draft = YouTubeSettingsDraft()
+        draft.apply(broadcast: studioEvent, playlists: [], savedPreferences: nil, savedThumbnail: nil)
+        #expect(draft.enableEmbed)
+
+        draft.enableEmbed = false
+        let saved = try #require(draft.preferences())
+        #expect(saved.streamId == "stream-a")
+        #expect(!saved.enableEmbed)
+        #expect(!saved.recordFromStart)
+        #expect(saved.enableAutoStop)
+        let stored = try JSONDecoder().decode(YouTubeBroadcastPreferences.self, from: JSONEncoder().encode(saved))
+        #expect(stored == saved)
+        #expect(!stored.applying(to: studioEvent).enableEmbed)
+
+        let reopened = YouTubeSettingsDraft()
+        reopened.apply(broadcast: studioEvent, playlists: [], savedPreferences: stored, savedThumbnail: nil)
+        #expect(!reopened.enableEmbed)
+        reopened.enableEmbed = true
+        #expect(try #require(reopened.preferences()).applying(to: makeBroadcast()).enableEmbed)
+        reopened.reset()
+        #expect(!reopened.enableEmbed)
+        #expect(reopened.preferences() == nil)
     }
 
     @Test func aSlowOlderThumbnailCannotReplaceTheLatestSelection() async throws {

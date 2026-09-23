@@ -146,7 +146,8 @@ final class Overlay: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     }
         
     deinit {
-        LOG("Deinitializing Overlay for \(self.url)")
+        // Widget URLs often embed secret tokens; the journal can be copied.
+        LOG("Deinitializing Overlay for \(url.host ?? "unknown host")", level: .debug)
     }
     
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {

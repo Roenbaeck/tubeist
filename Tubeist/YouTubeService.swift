@@ -498,6 +498,19 @@ final class YouTubeService {
     var isSignedIn: Bool = false
     private(set) var isLoading: Bool = false
     var errorMessage: String?
+    private var channelName: String?
+    private var channelAuthorizationScope: String?
+    private var channelLookupGeneration = UUID()
+    // Last authorization this service read. Settings redraws compare against
+    // it instead of reading the Keychain and hashing the refresh token.
+    private var currentAuthorizationScope: String?
+
+    var authorizedChannelName: String? {
+        guard let channelAuthorizationScope,
+              channelAuthorizationScope == currentAuthorizationScope else { return nil }
+        return channelName
+    }
+
     private var loadingOperationCount = 0
     private let requestExecutor: YouTubeAPIRequestExecutor
     private let diagnostics: YouTubeDiagnostics
@@ -671,6 +684,7 @@ final class YouTubeService {
 
             diagnostics.log("YouTube OAuth: callback verified; authorization code received", .debug)
             try await exchangeCodeForTokens(code: code, codeVerifier: codeVerifier)
+            clearAuthorizedChannel()
             isSignedIn = true
             errorMessage = nil
             LOG("Signed in to YouTube successfully", level: .debug)
@@ -697,6 +711,7 @@ final class YouTubeService {
             let scope = try? authorizationScope()
             try tokenStore.clearAuthorization()
             if let scope { discoveryCache.clear(scope: scope) }
+            clearAuthorizedChannel()
             isSignedIn = false
             errorMessage = nil
             LOG("Signed out of YouTube", level: .debug)
@@ -796,16 +811,18 @@ final class YouTubeService {
 
     // MARK: - YouTube API: Streams
 
-    /// The extra channel lookup is best-effort diagnostics for Settings only.
+    /// The extra channel lookup identifies the signed-in channel in Settings.
     /// It must not prevent normal discovery or change streaming preflight.
     func loadSettingsConfiguration(forStreamKey streamKey: String) async throws
         -> (broadcast: YouTubeBroadcast, playlists: [YouTubePlaylist]) {
         beginLoading()
         defer { endLoading() }
         diagnostics.log("YouTube Settings: loading configuration; saved authorization present=\(tokenStore.refreshToken != nil)", .debug)
+        let scope = try authorizationScope()
         let token = try await getValidAccessToken()
-        try await logAuthorizedChannel(token: token, streamKey: streamKey)
-        try Task.checkCancellation()
+        try checkAuthorization(scope)
+        try await fetchAuthorizedChannel(token: token, scope: scope, streamKey: streamKey)
+        try checkAuthorization(scope)
         let selection = try await selectedBroadcast(forStreamKey: streamKey)
         let broadcast = selection.broadcast ?? .draft(for: selection.stream)
         let playlists = try await listPlaylists()
@@ -813,19 +830,51 @@ final class YouTubeService {
         return (broadcast, playlists)
     }
 
-    private func logAuthorizedChannel(token: String, streamKey: String) async throws {
+    /// Also used before the user has chosen or created a stream key.
+    func loadAuthorizedChannel() async throws {
+        beginLoading()
+        defer { endLoading() }
+        let scope = try authorizationScope()
+        let token = try await getValidAccessToken()
+        try checkAuthorization(scope)
+        try await fetchAuthorizedChannel(token: token, scope: scope, streamKey: "")
+    }
+
+    private func clearAuthorizedChannel() {
+        channelLookupGeneration = UUID()
+        channelName = nil
+        channelAuthorizationScope = nil
+    }
+
+    private func fetchAuthorizedChannel(token: String, scope: String, streamKey: String) async throws {
+        let generation = UUID()
+        channelLookupGeneration = generation
+        // Keep a verified name while the same authorization refreshes it.
+        if channelAuthorizationScope != scope {
+            channelAuthorizationScope = scope
+            channelName = nil
+        }
         do {
             let url = URL(string: "\(YOUTUBE_API_BASE)/channels?part=snippet&mine=true&maxResults=50&fields=items(id,snippet/title),nextPageToken")!
             var request = URLRequest(url: url)
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
             request.timeoutInterval = 5
             // Observe the current authorization without refreshing or retrying
-            // solely for a diagnostic request. Normal discovery owns recovery.
+            // solely for this optional lookup. Normal discovery owns recovery.
             let channels = try await requestExecutor.decode(
                 YouTubeListResponse<YouTubeChannelResource>.self,
                 for: request, operation: .channels
             )
-            try Task.checkCancellation()
+            try checkAuthorization(scope)
+            guard generation == channelLookupGeneration else { throw CancellationError() }
+            // Do not guess which channel is selected if a response is ambiguous.
+            if channels.items.count == 1, channels.nextPageToken == nil,
+               let title = channels.items.first?.snippet?.title?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !title.isEmpty {
+                channelName = title
+            } else {
+                channelName = nil
+            }
             let secrets = [streamKey, tokenStore.accessToken ?? "", tokenStore.refreshToken ?? ""]
             diagnostics.log("YouTube authorized channel lookup: \(channels.items.count) returned; more pages=\(channels.nextPageToken != nil)", .debug)
             for channel in channels.items.prefix(50) {
@@ -837,7 +886,10 @@ final class YouTubeService {
                 diagnostics.log("YouTube: no channel returned for this authorization; check the channel selected in Google sign-in", .warning)
             }
         } catch {
+            try checkAuthorization(scope)
+            guard generation == channelLookupGeneration else { throw CancellationError() }
             if YouTubeDiagnostics.failure(error) == "cancelled" { throw error }
+            channelName = nil
             diagnostics.log("YouTube authorized channel check unavailable (\(YouTubeDiagnostics.failure(error))); continuing normal stream discovery", .warning)
         }
     }
@@ -948,11 +1000,33 @@ final class YouTubeService {
             broadcast = preparedBroadcast
         }
         if let preferences = applicablePreferences {
+            // Optional extras must not block Start, e.g. a channel without
+            // custom thumbnails or a saved playlist deleted in YouTube.
             if let thumbnailData {
-                try await uploadThumbnail(videoId: broadcast.id, imageData: thumbnailData)
+                let key = YouTubeDiscoveryCache.key(scope: scope, streamKey: streamKey)
+                let digest = SHA256.hash(data: thumbnailData).map { String(format: "%02x", $0) }.joined()
+                let applied = broadcast.id + "/" + digest
+                // A reused ready event already has this image from an earlier Start.
+                if discoveryCache.id("thumbnail", for: key) != applied {
+                    do {
+                        try await uploadThumbnail(videoId: broadcast.id, imageData: thumbnailData)
+                        try checkAuthorization(scope)
+                        discoveryCache.setID(applied, kind: "thumbnail", for: key)
+                    } catch {
+                        try checkAuthorization(scope)
+                        if YouTubeDiagnostics.failure(error) == "cancelled" { throw error }
+                        diagnostics.log("YouTube thumbnail could not be set (\(YouTubeDiagnostics.failure(error))); starting without it", .warning)
+                    }
+                }
             }
             if let playlistId = preferences.playlistId {
-                try await addToPlaylist(playlistId: playlistId, videoId: broadcast.id)
+                do {
+                    try await addToPlaylist(playlistId: playlistId, videoId: broadcast.id)
+                } catch {
+                    try checkAuthorization(scope)
+                    if YouTubeDiagnostics.failure(error) == "cancelled" { throw error }
+                    diagnostics.log("YouTube broadcast could not be added to the saved playlist (\(YouTubeDiagnostics.failure(error))); starting without it", .warning)
+                }
             }
         }
         try checkAuthorization(scope)
@@ -967,8 +1041,11 @@ final class YouTubeService {
     }
 
     private func authorizationScope() throws -> String {
-        guard let refreshToken = tokenStore.refreshToken else { throw YouTubeError.notSignedIn }
-        return YouTubeDiscoveryCache.scope(refreshToken: refreshToken)
+        let scope = tokenStore.refreshToken.map(YouTubeDiscoveryCache.scope(refreshToken:))
+        // Assign only on change so unchanged checks do not redraw observers.
+        if currentAuthorizationScope != scope { currentAuthorizationScope = scope }
+        guard let scope else { throw YouTubeError.notSignedIn }
+        return scope
     }
 
     private func checkAuthorization(_ scope: String) throws {

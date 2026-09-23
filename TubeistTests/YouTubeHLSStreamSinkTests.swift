@@ -545,6 +545,35 @@ struct YouTubeHLSStreamSinkTests {
         }
     }
 
+    @Test func rejectedIngestionIsReportedOnceAndStopsAcceptingSegments() async throws {
+        let transport = RejectingSinkTransport(statusCode: 401)
+        let reports = UploadStopReports()
+        let sink = YouTubeHLSStreamSink()
+        try await sink.prepare(endpoint: .manualPrimary(streamKey: "test"),
+                               sessionIdentifier: "rejected_session", userAgent: "Tubeist/Test",
+                               transport: transport, sleeper: { _ in },
+                               reportUploadsStopped: { await reports.append($0) })
+        #expect(!(await sink.hasStoppedAcceptingSegments))
+        await sink.enqueue(Fragment(sequence: 0, segment: directSentinel(0), duration: 2, container: .mpegTransportStream))
+        try await reports.waitForFirst()
+        #expect(await sink.hasStoppedAcceptingSegments)
+        // Segments still in flight before the pipeline stops are not uploaded.
+        for sequence in 1...5 {
+            await sink.enqueue(Fragment(sequence: sequence, segment: directSentinel(UInt8(sequence)),
+                                        duration: 2, container: .mpegTransportStream))
+        }
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(await transport.requestCount == 1)
+        #expect(await reports.messages == ["YouTube rejected the stream (HTTP 401 — stream key invalid or expired)"])
+        let metrics = await sink.metrics()
+        #expect(metrics.queuedFragments == 0)
+        #expect(metrics.failure?.contains("HTTP 401") == true)
+        await #expect(throws: YouTubeHLSPackagingError.self) {
+            try await sink.finish(timeout: successfulSinkShutdownTimeout)
+        }
+        #expect(await reports.messages.count == 1)
+    }
+
     @Test func recoveredSixtySecondNetworkStallUploadsEverySegmentInOrder() async throws {
         let reader = ISOBMFFReader()
         let initialization = try reader.parseInitializationSegment(FMP4Fixture.initialization())
@@ -914,6 +943,34 @@ private actor RecoveringDirectSinkTransport: YouTubeHLSHTTPTransport {
     func requests() -> [DirectSinkRequest] {
         sent
     }
+}
+
+private actor RejectingSinkTransport: YouTubeHLSHTTPTransport {
+    let statusCode: Int
+    private(set) var requestCount = 0
+
+    init(statusCode: Int) {
+        self.statusCode = statusCode
+    }
+
+    func send(_ request: URLRequest, body: Data) -> YouTubeHLSHTTPResponse {
+        requestCount += 1
+        return YouTubeHLSHTTPResponse(statusCode: statusCode)
+    }
+
+    func invalidate() {}
+}
+
+private actor UploadStopReports {
+    private(set) var messages: [String] = []
+    private let reported = SinkRequestStarted()
+
+    func append(_ error: any Error) {
+        messages.append(error.localizedDescription)
+        reported.signal()
+    }
+
+    func waitForFirst() async throws { try await reported.wait() }
 }
 
 private func directSentinel(_ sequence: UInt8) -> Data {

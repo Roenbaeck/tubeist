@@ -434,6 +434,16 @@ struct YouTubeHLSUploaderTests {
         #expect(await transport.recordedRequests().count == 1)
     }
 
+    @Test func rejectionExplainsTheIngestionStatusForTheUser() {
+        #expect(YouTubeHLSUploadError.rejected(statusCode: 401).localizedDescription
+            == "YouTube rejected the stream (HTTP 401 — stream key invalid or expired)")
+        #expect(YouTubeHLSUploadError.rejected(statusCode: 400).localizedDescription
+            == "YouTube rejected the stream (HTTP 400 — malformed request or playlist)")
+        #expect(YouTubeHLSUploadError.rejected(statusCode: 403).description.contains("HTTP 403 — "))
+        #expect(YouTubeHLSUploadError.rejected(statusCode: 404).description.contains("HTTP 404 — "))
+        #expect(YouTubeHLSUploadError.rejected(statusCode: 418).description == "YouTube rejected the stream (HTTP 418)")
+    }
+
     @Test func serializesConcurrentCallersAndExhaustsRetriesDeterministically() async throws {
         let serialTransport = MockYouTubeHLSTransport(outcomes: [
             .delayedStatus(200), .status(200), .status(200), .status(200),

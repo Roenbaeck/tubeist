@@ -70,6 +70,7 @@ final class YouTubeSettingsDraft {
     var title = ""
     var visibility = "public"
     var enableDvr = true
+    var enableEmbed = false
     var madeForKids = false
     var latencyPreference = "normal"
     var playlistId: String?
@@ -89,6 +90,7 @@ final class YouTubeSettingsDraft {
         title = ""
         visibility = "public"
         enableDvr = true
+        enableEmbed = false
         madeForKids = false
         latencyPreference = "normal"
         playlistId = nil
@@ -104,6 +106,7 @@ final class YouTubeSettingsDraft {
             title = preferences?.title ?? broadcast.title
             visibility = preferences?.privacyStatus ?? broadcast.privacyStatus
             enableDvr = preferences?.enableDvr ?? broadcast.enableDvr
+            enableEmbed = preferences?.enableEmbed ?? broadcast.enableEmbed
             madeForKids = preferences?.selfDeclaredMadeForKids ?? broadcast.selfDeclaredMadeForKids ?? false
             latencyPreference = preferences?.latencyPreference ?? broadcast.latencyPreference
             playlistId = preferences?.playlistId
@@ -114,5 +117,26 @@ final class YouTubeSettingsDraft {
         if let playlistId, !playlists.contains(where: { $0.id == playlistId }) {
             self.playlistId = nil
         }
+    }
+
+    /// Options without a Settings control keep the loaded broadcast's values.
+    func preferences() -> YouTubeBroadcastPreferences? {
+        guard let broadcast, let streamId = broadcast.boundStreamId else { return nil }
+        return YouTubeBroadcastPreferences(
+            streamId: streamId,
+            title: title,
+            privacyStatus: visibility,
+            enableDvr: enableDvr,
+            latencyPreference: latencyPreference,
+            enableMonitorStream: broadcast.enableMonitorStream,
+            broadcastStreamDelayMs: broadcast.broadcastStreamDelayMs,
+            enableEmbed: enableEmbed,
+            recordFromStart: broadcast.recordFromStart,
+            enableAutoStart: broadcast.enableAutoStart,
+            // YouTube owns completion after Tubeist closes HLS ingestion.
+            enableAutoStop: true,
+            playlistId: playlistId,
+            selfDeclaredMadeForKids: madeForKids
+        )
     }
 }
