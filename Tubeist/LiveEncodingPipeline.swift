@@ -67,7 +67,7 @@ final class LiveEncodingPipeline {
     }
 
     func start(preset: Preset, stream: Bool, recording: RecordingAssetWriter?,
-               allows422: Bool = true) throws {
+               allows422: Bool = true, serviceName: String = MPEGTransportStreamMuxer.defaultServiceName) throws {
         guard !isActive else { throw ContentPackagingError.alreadyEncoding }
         try HEVCEncoderConfiguration.validate(width: preset.width, height: preset.height,
             frameRate: preset.frameRate, bitrate: preset.videoBitrate, keyframeInterval: preset.keyframeInterval)
@@ -91,7 +91,7 @@ final class LiveEncodingPipeline {
         basePTS = nil
         startupAudio.removeAll()
         assembler = EncodedSegmentAssembler(segmentDuration: FRAGMENT_DURATION)
-        muxer.reset()
+        muxer = MPEGTransportStreamMuxer(serviceName: serviceName)
         sequence = 0
         nextBoundary = 0
         repair = nil

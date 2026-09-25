@@ -531,10 +531,11 @@ final class Streamer: Sendable {
                 record: Settings.record
             )
             await streamingActor.setOutputPlan(outputPlan)
-            try await prepareEncodedOutput(streamID: streamID, sessionID: sessionID, plan: outputPlan)
+            let serviceName = try await prepareEncodedOutput(streamID: streamID, sessionID: sessionID, plan: outputPlan)
             try await ContentPackager.shared.beginPackaging(
                 stream: outputPlan.routesEncodedFragments,
-                record: outputPlan.recordsLocally
+                record: outputPlan.recordsLocally,
+                serviceName: serviceName
             )
             packagingStarted = true
             await SoundGrabber.shared.commenceGrabbing()
@@ -800,10 +801,11 @@ final class Streamer: Sendable {
         }
     }
 
-    private func prepareEncodedOutput(streamID: String, sessionID: UUID, plan: StreamOutputPlan) async throws {
+    private func prepareEncodedOutput(streamID: String, sessionID: UUID, plan: StreamOutputPlan) async throws -> String {
+        var serviceName = Settings.youtubeBroadcastPreferences?.title ?? MPEGTransportStreamMuxer.defaultServiceName
         guard plan.streamsToYouTube else {
             await EncodedOutputRouter.shared.prepareForRecordingOnly()
-            return
+            return serviceName
         }
 
 #if DEBUG
@@ -816,9 +818,10 @@ final class Streamer: Sendable {
             try await EncodedOutputRouter.shared.prepareYouTube(
                 endpoint: endpoint, sessionIdentifier: streamID,
                 userAgent: "Apple / \(model) / Tubeist-\(Bundle.main.appVersion ?? "unknown")",
+                serviceName: serviceName,
                 reportUploadsStopped: { [self] in await handleYouTubeUploadFailure($0, sessionID: sessionID) }
             )
-            return
+            return serviceName
         }
 #endif
 
@@ -845,6 +848,9 @@ final class Streamer: Sendable {
                 endingPolicy: endingPolicy
             )
             endpoint = preparation.endpoint
+            // Use the title resolved for this broadcast, including Settings
+            // preferences, rather than an unrelated channel's saved template.
+            serviceName = preparation.broadcast.title
             await streamingActor.setYouTubeBroadcast(
                 id: preparation.broadcast.id,
                 status: preparation.broadcast.lifeCycleStatus,
@@ -861,12 +867,14 @@ final class Streamer: Sendable {
             endpoint: endpoint,
             sessionIdentifier: streamID,
             userAgent: userAgent,
+            serviceName: serviceName,
             endingPolicy: endingPolicy,
             reportUploadsStopped: { [self] in await handleYouTubeUploadFailure($0, sessionID: sessionID) }
         )
         if endingPolicy == .manualDiagnostic {
             LOG("YouTube ending test: auto-stop disabled; no ENDLIST or automatic completion. End this broadcast manually in YouTube Studio.", level: .info)
         }
+        return serviceName
     }
 }
 

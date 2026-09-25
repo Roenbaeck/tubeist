@@ -42,6 +42,35 @@ def signed_delta(a, b):
     return ((a - b + (1 << 32)) % (1 << 33)) - (1 << 32)
 
 
+def validate_sdt(data, transport_id, program_id):
+    require(len(data) >= 20 and data[0] == 0x42 and data[1] & 0xf0 == 0xf0, 'invalid SDT header')
+    require(crc32_mpeg(data) == 0, 'invalid SDT CRC')
+    require(data[3:5] == transport_id and data[5] & 1 and data[6:8] == b'\0\0', 'SDT transport mismatch')
+    require(data[11:13] == program_id, 'SDT service does not match PAT program')
+    length = ((data[14] & 15) << 8) | data[15]
+    require(16 + length == len(data) - 4, 'invalid SDT service loop')
+    pos = 16
+    services = 0
+    while pos < len(data) - 4:
+        require(pos + 2 <= len(data) - 4, 'truncated SDT descriptor')
+        end = pos + 2 + data[pos+1]
+        require(end <= len(data) - 4, 'truncated SDT descriptor data')
+        if data[pos] == 0x48:
+            services += 1
+            require(end >= pos + 5, 'truncated SDT service descriptor')
+            name_length_at = pos + 4 + data[pos+3]
+            require(name_length_at < end and name_length_at + 1 + data[name_length_at] == end,
+                    'invalid SDT service name length')
+            for text in (data[pos+4:name_length_at], data[name_length_at+1:end]):
+                if text[:1] == b'\x15':
+                    try:
+                        text[1:].decode('utf-8')
+                    except UnicodeDecodeError:
+                        raise CaptureValidationError('invalid SDT UTF-8') from None
+        pos = end
+    require(services == 1, 'expected one SDT service descriptor')
+
+
 class TransportInspector:
     def __init__(self, pcr_margin_ticks=63000):
         self.pcr_margin_ticks = pcr_margin_ticks
@@ -58,6 +87,8 @@ class TransportInspector:
             self.previous_video_max = None
         streams = {}
         pmt_pid = None
+        transport_id = program_id = None
+        sdt = bytearray()
         pes = {}
         units = {'video': [], 'audio': []}
         pcrs = []
@@ -156,6 +187,7 @@ class TransportInspector:
                 pat = section(payload)
                 require(pat[0] == 0 and len(pat) == 16 and pat[8:10] != b'\0\0', 'expected a single-program PAT')
                 found = ((pat[10] & 31) << 8) | pat[11]
+                transport_id, program_id = pat[3:5], pat[8:10]
                 require(pmt_pid in (None, found), 'PMT PID changed')
                 pmt_pid = found
             elif pid == pmt_pid:
@@ -173,6 +205,22 @@ class TransportInspector:
                 require(not streams or found == streams, 'PMT changed inside a segment')
                 streams = found
                 require(found.get(((pmt[8] & 31) << 8) | pmt[9]) == 'video', 'PCR PID is not the video PID')
+            elif pid == 0x11:
+                # SDT is optional for older captures. When present, validate
+                # its complete section, including names spanning TS packets.
+                if start:
+                    require(not sdt and payload[0] == 0, 'unexpected SDT section start')
+                    payload = payload[1:]
+                else:
+                    require(bool(sdt), 'SDT continuation without start')
+                sdt.extend(payload)
+                require(len(sdt) >= 3, 'truncated SDT header')
+                length = 3 + (((sdt[1] & 15) << 8) | sdt[2])
+                require(length <= 1024, 'SDT exceeds section length limit')
+                if len(sdt) >= length:
+                    require(all(b == 255 for b in sdt[length:]), 'invalid SDT stuffing')
+                    validate_sdt(bytes(sdt[:length]), transport_id, program_id)
+                    sdt.clear()
             elif pid in streams:
                 if start:
                     if pid in pes:
@@ -182,6 +230,7 @@ class TransportInspector:
                 pes[pid].extend(payload)
             else:
                 require(pid == 0x1fff, 'unexpected PID')
+        require(not sdt, 'truncated SDT section')
         for pid in list(pes):
             finish_pes(pid)
         require(units['video'] and units['audio'] and pcrs, 'segment is missing video, audio, or PCR')

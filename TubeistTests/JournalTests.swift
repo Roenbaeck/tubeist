@@ -60,4 +60,32 @@ struct JournalTests {
         #expect(entries.contains(where: { $0.message == "second" }))
         #expect(entries.contains(where: { $0.message == "third" }))
     }
+
+    @Test func acknowledgingPreservesEntriesAndNewErrorsRestoreIndicator() async {
+        let journal = JournalActor(enabledLevels: Set(LogLevel.allCases))
+        await journal.log(message: "stream error", level: .error)
+        let original = await journal.snapshot()
+        #expect(original.hasErrors)
+
+        await journal.acknowledgeErrors()
+        let acknowledged = await journal.snapshot()
+        #expect(!acknowledged.hasErrors)
+        #expect(acknowledged.entries.map(\.id) == original.entries.map(\.id))
+        #expect(acknowledged.entries.first?.level == .error)
+
+        await journal.log(message: "recovered", level: .info)
+        await journal.log(message: "connection warning", level: .warning)
+        #expect(await journal.hasErrors == false)
+
+        // A repeated error still needs attention even though its entry is reused.
+        await journal.log(message: "stream error", level: .error)
+        let repeated = await journal.snapshot()
+        #expect(repeated.hasErrors)
+        #expect(repeated.entries.last?.id == original.entries.first?.id)
+        #expect(repeated.entries.last?.repeatCount == 2)
+
+        await journal.acknowledgeErrors()
+        await journal.log(message: "different error", level: .error)
+        #expect(await journal.hasErrors)
+    }
 }

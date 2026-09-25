@@ -6,7 +6,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from inspect_transport import TransportInspector, CaptureValidationError
+from inspect_transport import TransportInspector, CaptureValidationError, crc32_mpeg
 from check_hevc_timing import DecodeSchedule
 from validate_upload_capture import audit_requests, parse_playlist, read_capture
 
@@ -54,6 +54,35 @@ def playlist(entries, first=0, ended=False, event=False):
 
 
 class TransportTests(unittest.TestCase):
+    def test_sdt_names_spanning_packets_and_corruption(self):
+        for name in (b'Final', b'\x15' + ('Södertälje 🏐' * 12).encode()):
+            descriptor = b'\x01\x07Tubeist' + bytes([len(name)]) + name
+            loop = b'\x48' + bytes([len(descriptor)]) + descriptor
+            body = bytes.fromhex('0001c10000ff01ff0001fc') + (0x8000 | len(loop)).to_bytes(2, 'big') + loop
+            raw = b'\x42' + (0xf000 | (len(body) + 4)).to_bytes(2, 'big') + body
+
+            def with_sdt(section):
+                section += crc32_mpeg(section).to_bytes(4, 'big')
+                payload = b'\0' + section
+                packets = b''
+                for index, pos in enumerate(range(0, len(payload), 184)):
+                    flags = 0x40 if index == 0 else 0
+                    packets += bytes([0x47, flags, 0x11, 0x10 | index]) + payload[pos:pos+184].ljust(184, b'\xff')
+                media = sample_transport()
+                return media[:376] + packets + media[376:]
+
+            good = with_sdt(raw)
+            TransportInspector().inspect(good)
+            bad_crc = bytearray(good); bad_crc[390] ^= 1
+            with self.assertRaisesRegex(CaptureValidationError, 'SDT CRC'):
+                TransportInspector().inspect(bytes(bad_crc))
+            wrong_program = bytearray(raw); wrong_program[12] = 2
+            with self.assertRaisesRegex(CaptureValidationError, 'SDT service'):
+                TransportInspector().inspect(with_sdt(bytes(wrong_program)))
+            wrong_length = bytearray(raw); wrong_length[27] += 1
+            with self.assertRaisesRegex(CaptureValidationError, 'SDT service name'):
+                TransportInspector().inspect(with_sdt(bytes(wrong_length)))
+
     def test_decode_schedule_catches_eight_frame_lead_but_accepts_codec_depth(self):
         limits = {'pictureBuffers': 5, 'reorderFrames': 2}
         order = [0, 4, 2, 1, 3, 8, 6, 5, 7, 12, 10, 9, 11]

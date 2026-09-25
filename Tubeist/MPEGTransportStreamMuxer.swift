@@ -71,8 +71,10 @@ struct MPEGTransportStreamSegment: Sendable, Equatable {
 }
 
 struct MPEGTransportStreamMuxer {
+    static let defaultServiceName = "Tubeist live stream"
     static let packetSize = 188
     static let programAssociationPID: UInt16 = 0x0000
+    static let serviceDescriptionPID: UInt16 = 0x0011
     static let videoPID: UInt16 = 0x0100
     static let audioPID: UInt16 = 0x0101
     static let programMapPID: UInt16 = 0x1000
@@ -90,6 +92,12 @@ struct MPEGTransportStreamMuxer {
     private var continuityCounters: [UInt16: UInt8] = [:]
     private var timestampShift: Int64?
     private var lastDecodeTimeByTrack: [UInt32: Int64] = [:]
+    private let serviceDescription: Data
+
+    init(serviceName: String = Self.defaultServiceName) {
+        // Freeze the title for this session; construct and checksum it only once.
+        serviceDescription = Self.serviceDescriptionTable(serviceName: serviceName)
+    }
 
     mutating func reset() {
         continuityCounters.removeAll(keepingCapacity: true)
@@ -200,6 +208,9 @@ struct MPEGTransportStreamMuxer {
         var output = Data()
         output.reserveCapacity(max(Self.packetSize * 2, segment.samples.reduce(0) { $0 + $1.data.count }))
         appendProgramTables(to: &output)
+        // One SDT per segment, as in FFmpeg's HLS output. Keep PAT/PMT first
+        // as recommended by YouTube, and leave media timing/packetization alone.
+        appendServiceDescription(to: &output)
         var nextTableTimestamp = encoded[0].decodeTime + Self.tableRepeatInterval
 
         for sample in encoded {
@@ -417,7 +428,7 @@ private extension MPEGTransportStreamMuxer {
             0xf0 | UInt8((Self.programMapPID >> 8) & 0x1f),
             UInt8(Self.programMapPID & 0xff),
         ])
-        appendCRC(to: &section)
+        Self.appendCRC(to: &section)
         return section
     }
 
@@ -442,8 +453,60 @@ private extension MPEGTransportStreamMuxer {
             UInt8(Self.audioPID & 0xff),
             0xf0, 0x00,
         ])
+        Self.appendCRC(to: &section)
+        return section
+    }
+
+    static func serviceDescriptionTable(serviceName: String) -> Data {
+        let provider = Data("Tubeist".utf8)
+        // DVB strings use an encoding selector for non-ASCII text. The entire
+        // service descriptor has a one-byte length, including both names.
+        let cleaned = serviceName.unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) }
+        let title = String(String.UnicodeScalarView(cleaned)).trimmingCharacters(in: .whitespacesAndNewlines)
+        let name = title.isEmpty ? defaultServiceName : title
+        var encodedName = Data()
+        if !name.utf8.allSatisfy({ $0 < 0x80 }) { encodedName.append(0x15) } // UTF-8
+        let maximumNameBytes = 255 - 3 - provider.count
+        for character in name {
+            let bytes = String(character).utf8
+            guard encodedName.count + bytes.count <= maximumNameBytes else { break }
+            encodedName.append(contentsOf: bytes)
+        }
+        let descriptorLength = 3 + provider.count + encodedName.count
+        let descriptorsLength = 2 + descriptorLength
+        let sectionLength = 8 + 5 + descriptorsLength + 4
+        var section = Data([
+            0x42, // SDT for this transport stream
+            0xf0 | UInt8(sectionLength >> 8), UInt8(sectionLength & 0xff),
+            0x00, 0x01, // transport_stream_id, matching PAT
+            0xc1, 0x00, 0x00, // version 0, current, section 0 of 0
+            0xff, 0x01, 0xff, // original_network_id (FFmpeg default), reserved
+            0x00, 0x01, // service_id, matching PAT/PMT program_number
+            0xfc, // no EIT schedule/present-following information
+            0x80 | UInt8(descriptorsLength >> 8), UInt8(descriptorsLength & 0xff), // running, no CA
+            0x48, UInt8(descriptorLength), // service_descriptor
+            0x01, UInt8(provider.count), // digital television service
+        ])
+        section.append(provider)
+        section.append(UInt8(encodedName.count))
+        section.append(encodedName)
         appendCRC(to: &section)
         return section
+    }
+
+    mutating func appendServiceDescription(to output: inout Data) {
+        var cursor = 0
+        while cursor < serviceDescription.count {
+            let first = cursor == 0
+            var packet = transportHeader(pid: Self.serviceDescriptionPID,
+                                         payloadUnitStart: first, adaptationFieldControl: 1)
+            if first { packet.append(0) } // pointer_field only on the first packet
+            let count = min(Self.packetSize - packet.count, serviceDescription.count - cursor)
+            packet.append(serviceDescription[cursor..<(cursor + count)])
+            packet.append(Data(repeating: 0xff, count: Self.packetSize - packet.count))
+            output.append(packet)
+            cursor += count
+        }
     }
 
     mutating func psiPacket(pid: UInt16, section: Data) -> Data {
@@ -459,7 +522,7 @@ private extension MPEGTransportStreamMuxer {
         return packet
     }
 
-    func appendCRC(to section: inout Data) {
+    static func appendCRC(to section: inout Data) {
         var crc: UInt32 = 0xffff_ffff
         for byte in section {
             crc ^= UInt32(byte) << 24

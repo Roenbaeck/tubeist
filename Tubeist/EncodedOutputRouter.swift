@@ -95,6 +95,7 @@ actor YouTubeHLSStreamSink {
         endpoint: YouTubeHLSEndpoint,
         sessionIdentifier: String,
         userAgent: String,
+        serviceName: String = MPEGTransportStreamMuxer.defaultServiceName,
         endingPolicy: HLSStreamEndingPolicy = .automatic,
         transport: (any YouTubeHLSHTTPTransport)? = nil,
         bitrateController: AdaptiveBitrateController? = nil,
@@ -115,7 +116,7 @@ actor YouTubeHLSStreamSink {
         uploader = nil
         isPrepared = false
         initialization = nil
-        muxer.reset()
+        muxer = MPEGTransportStreamMuxer(serviceName: serviceName)
         queue.removeAll(keepingCapacity: true)
         isProcessing = false
         currentFragmentType = nil
@@ -668,6 +669,7 @@ actor EncodedOutputRouter {
         endpoint: YouTubeHLSEndpoint,
         sessionIdentifier: String,
         userAgent: String,
+        serviceName: String = MPEGTransportStreamMuxer.defaultServiceName,
         endingPolicy: HLSStreamEndingPolicy = .automatic,
         reportUploadsStopped: @escaping @Sendable (any Error) async -> Void = { _ in }
     ) async throws {
@@ -678,6 +680,7 @@ actor EncodedOutputRouter {
             endpoint: endpoint,
             sessionIdentifier: sessionIdentifier,
             userAgent: userAgent,
+            serviceName: serviceName,
             endingPolicy: endingPolicy,
             bitrateController: Self.makeBitrateController(),
             reportUploadsStopped: reportUploadsStopped

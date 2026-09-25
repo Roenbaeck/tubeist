@@ -275,6 +275,7 @@ struct YouTubeHLSStreamSinkTests {
             endpoint: endpoint,
             sessionIdentifier: "integration_session",
             userAgent: "Tubeist/Test",
+            serviceName: "Södertälje – Solna 🏐",
             transport: transport, sleeper: { _ in }
         )
         await sink.enqueue(Fragment(
@@ -299,6 +300,8 @@ struct YouTubeHLSStreamSinkTests {
         #expect(String(decoding: requests[2].body, as: UTF8.self).hasSuffix("#EXT-X-ENDLIST\n"))
         #expect(requests[1].body.count.isMultiple(of: MPEGTransportStreamMuxer.packetSize))
         #expect(requests[1].body.first == 0x47)
+        #expect(requests[1].body.range(of: Data("Tubeist".utf8)) != nil)
+        #expect(requests[1].body.range(of: Data([0x15]) + Data("Södertälje – Solna 🏐".utf8)) != nil)
         #expect(!requests.contains { $0.body == FMP4Fixture.initialization() })
         let metrics = await sink.metrics()
         #expect(metrics.lastAcceptedMediaSequence == 0)

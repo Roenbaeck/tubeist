@@ -8,6 +8,52 @@ import Testing
 @testable import Tubeist
 
 struct MPEGTransportStreamMuxerTests {
+    @Test(arguments: ["Sollentuna Volley TV", "Södertälje – Solna 🏐", String(repeating: "🏐", count: 100),
+                      String(repeating: "A", count: 300), " \n\t", "\u{0001}Final\n"])
+    func describesTheServiceWithValidBoundedText(title: String) throws {
+        let reader = ISOBMFFReader()
+        let initialization = try reader.parseInitializationSegment(FMP4Fixture.initialization())
+        let media = try reader.parseMediaSegment(FMP4Fixture.mediaSegment(), initialization: initialization)
+        var muxer = MPEGTransportStreamMuxer(serviceName: title)
+        let output = try muxer.mux(media, initialization: initialization)
+        let packets = transportPackets(output.data)
+        let sdt = try serviceDescriptionSection(packets)
+        #expect(pid(of: packets[0]) == 0)
+        #expect(pid(of: packets[1]) == 0x1000)
+        #expect(pid(of: packets[2]) == 0x11)
+        let loopLength = sdt.count - 20
+        let expectedHeader: [UInt8] = [0, 1, 0xc1, 0, 0, 0xff, 1, 0xff, 0, 1, 0xfc,
+                                      0x80 | UInt8(loopLength >> 8), UInt8(loopLength & 255)]
+        #expect(Array(sdt[3..<16]) == expectedHeader)
+        #expect(sdt[0] == 0x42 && sdt[1] & 0xf0 == 0xf0)
+        #expect(sdt[16] == 0x48 && sdt[18] == 1)
+        #expect(Int(sdt[17]) == sdt.count - 22)
+        #expect(sdt[19] == 7)
+        #expect(String(bytes: sdt[20..<27], encoding: .utf8) == "Tubeist")
+        let length = Int(sdt[27])
+        #expect(28 + length == sdt.count - 4)
+        let nameBytes = Array(sdt[28..<(28 + length)])
+        let utf8 = nameBytes.first == 0x15 ? Array(nameBytes.dropFirst()) : nameBytes
+        let name = try #require(String(bytes: utf8, encoding: .utf8))
+        let cleaned = title.unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) }
+        let trimmed = String(String.UnicodeScalarView(cleaned)).trimmingCharacters(in: .whitespacesAndNewlines)
+        let expected = trimmed.isEmpty ? "Tubeist live stream" : trimmed
+        #expect(expected.hasPrefix(name) && !name.isEmpty)
+        if expected.utf8.count <= 244 { #expect(name == expected) }
+        if expected.utf8.contains(where: { $0 >= 128 }) { #expect(nameBytes.first == 0x15) }
+        #expect(length <= 245)
+        #expect(packets.filter { pid(of: $0) == 0x11 }.count == (sdt.count <= 183 ? 1 : 2))
+
+        // Changing the title cannot change encoded media, timestamps, or any
+        // other transport packets. Reset also retains the session's metadata.
+        var reference = MPEGTransportStreamMuxer()
+        let baseline = try reference.mux(media, initialization: initialization)
+        #expect(packets.filter { pid(of: $0) != 0x11 } == transportPackets(baseline.data).filter { pid(of: $0) != 0x11 })
+        #expect(output.duration == baseline.duration)
+        muxer.reset()
+        #expect(try muxer.mux(media, initialization: initialization) == output)
+    }
+
     @Test(arguments: [false, true])
     func startsEveryHEVCAccessUnitWithExactlyOneDelimiter(existingDelimiter: Bool) throws {
         let initialization = try ISOBMFFReader().parseInitializationSegment(FMP4Fixture.initialization())
@@ -43,11 +89,12 @@ struct MPEGTransportStreamMuxerTests {
         #expect(occurrences(of: [0, 0, 0, 1, 0x02, 0x01], in: output.data) == 1)
     }
 
-    @Test func discontinuityPreservesElementaryPayloadAndProgramTables() throws {
+    @Test(arguments: ["Tubeist live stream", String(repeating: "🏐", count: 100)])
+    func discontinuityPreservesElementaryPayloadAndProgramTables(title: String) throws {
         let reader = ISOBMFFReader()
         let initialization = try reader.parseInitializationSegment(FMP4Fixture.initialization())
         let media = try reader.parseMediaSegment(FMP4Fixture.mediaSegment(), initialization: initialization)
-        var muxer = MPEGTransportStreamMuxer()
+        var muxer = MPEGTransportStreamMuxer(serviceName: title)
         let original = try muxer.mux(media, initialization: initialization).data
         let marked = try MPEGTransportStreamMuxer.markingDiscontinuity(original)
         let before = transportPackets(original)
@@ -56,7 +103,8 @@ struct MPEGTransportStreamMuxerTests {
         #expect(pid(of: after[1]) == MPEGTransportStreamMuxer.programMapPID)
         #expect(sectionHasValidCRC(after[0]))
         #expect(sectionHasValidCRC(after[1]))
-        for track in [MPEGTransportStreamMuxer.videoPID, MPEGTransportStreamMuxer.audioPID] {
+        for track in [MPEGTransportStreamMuxer.videoPID, MPEGTransportStreamMuxer.audioPID,
+                      MPEGTransportStreamMuxer.serviceDescriptionPID] {
             let first = try #require(after.first { pid(of: $0) == track })
             #expect(first[3] & 0x20 != 0)
             #expect(first[5] & 0x80 != 0)
@@ -66,6 +114,7 @@ struct MPEGTransportStreamMuxerTests {
             }
             #expect(payload(before) == payload(after))
         }
+        #expect(try serviceDescriptionSection(before) == serviceDescriptionSection(after))
         #expect(try MPEGTransportStreamMuxer.markingDiscontinuity(marked) == marked)
     }
 
@@ -148,6 +197,7 @@ struct MPEGTransportStreamMuxerTests {
         for packetPID in [
             MPEGTransportStreamMuxer.programAssociationPID,
             MPEGTransportStreamMuxer.programMapPID,
+            MPEGTransportStreamMuxer.serviceDescriptionPID,
             MPEGTransportStreamMuxer.videoPID,
             MPEGTransportStreamMuxer.audioPID,
         ] {
@@ -239,6 +289,7 @@ struct MPEGTransportStreamMuxerTests {
         let tablePIDs = transportPackets(output.data).map(pid(of:))
         #expect(tablePIDs.filter { $0 == MPEGTransportStreamMuxer.programAssociationPID }.count == 3)
         #expect(tablePIDs.filter { $0 == MPEGTransportStreamMuxer.programMapPID }.count == 3)
+        #expect(tablePIDs.filter { $0 == MPEGTransportStreamMuxer.serviceDescriptionPID }.count == 1)
     }
 
     @Test func wrapsThirtyThreeBitTimestampsWithoutResettingTheSessionEpoch() throws {
@@ -471,6 +522,24 @@ struct MPEGTransportStreamMuxerTests {
     }
 }
 
+private func serviceDescriptionSection(_ packets: [[UInt8]]) throws -> [UInt8] {
+    let sdtPackets = packets.filter { pid(of: $0) == 0x11 && $0[3] & 0x10 != 0 }
+    #expect(sdtPackets.filter(hasPayloadUnitStart).count == 1)
+    var bytes: [UInt8] = []
+    for packet in sdtPackets {
+        var start = payloadStart(of: packet)
+        if hasPayloadUnitStart(packet) { start += 1 + Int(packet[start]) }
+        bytes.append(contentsOf: packet[start...])
+    }
+    try #require(bytes.count >= 3)
+    let length = 3 + (Int(bytes[1] & 15) << 8) + Int(bytes[2])
+    try #require(bytes.count >= length)
+    let section = Array(bytes.prefix(length))
+    #expect(bytes.dropFirst(length).allSatisfy { $0 == 0xff })
+    #expect(hasValidCRC(section))
+    return section
+}
+
 private func sample(
     trackID: UInt32,
     kind: ISOBMFFTrackKind,
@@ -554,8 +623,12 @@ private func sectionHasValidCRC(_ packet: [UInt8]) -> Bool {
         Int(packet[sectionStart + 2])
     let sectionEnd = sectionStart + 3 + sectionLength
     guard sectionEnd <= packet.count else { return false }
+    return hasValidCRC(Array(packet[sectionStart..<sectionEnd]))
+}
+
+private func hasValidCRC(_ section: [UInt8]) -> Bool {
     var crc: UInt32 = 0xffff_ffff
-    for byte in packet[sectionStart..<sectionEnd] {
+    for byte in section {
         crc ^= UInt32(byte) << 24
         for _ in 0..<8 {
             crc = crc & 0x8000_0000 != 0

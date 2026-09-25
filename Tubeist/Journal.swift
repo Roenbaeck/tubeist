@@ -87,6 +87,9 @@ actor JournalActor {
     func snapshot() -> (entries: [LogEntry], hasErrors: Bool) {
         (getJournal(), hasErrors)
     }
+    func acknowledgeErrors() {
+        hasErrors = false
+    }
     func clearJournal() {
         journal.removeAll()
         messageOrder.removeAll()
@@ -153,6 +156,13 @@ final class Journal: Sendable {
     func clearJournal() {
         Task {
             await journal.clearJournal()
+            schedulePublication()
+        }
+    }
+
+    func acknowledgeErrors() {
+        Task {
+            await journal.acknowledgeErrors()
             schedulePublication()
         }
     }
@@ -296,6 +306,7 @@ struct JournalView: View {
                     Label(didCopy ? "Copied" : "Copy log",
                           systemImage: didCopy ? "checkmark" : "doc.on.doc")
                         .font(.subheadline.weight(.medium))
+                        .fixedSize()
                         .frame(minHeight: 44)
                         .padding(.horizontal, 12)
                 }
@@ -307,6 +318,23 @@ struct JournalView: View {
                 .accessibilityLabel(didCopy ? "Log copied" : "Copy log")
                 .accessibilityHint("Copies retained entries matching the selected severity filters as text")
                 .accessibilityIdentifier("copyLogButton")
+
+                Button {
+                    Journal.shared.acknowledgeErrors()
+                } label: {
+                    Label("Acknowledge", systemImage: "checkmark")
+                        .font(.subheadline.weight(.medium))
+                        .fixedSize()
+                        .frame(minHeight: 44)
+                        .padding(.horizontal, 12)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.white)
+                .background(.white.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
+                .disabled(!journalPublisher.hasErrors)
+                .opacity(journalPublisher.hasErrors ? 1 : 0.4)
+                .accessibilityHint("Clears the log icon's error indicator without removing log entries")
+                .accessibilityIdentifier("acknowledgeLogButton")
 
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 6) {

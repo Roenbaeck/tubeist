@@ -349,7 +349,7 @@ final class ContentPackager: NSObject, AVAssetWriterDelegate, Sendable {
         await Self.pipeline.beginFinalization()
     }
 
-    func beginPackaging(stream: Bool, record: Bool) async throws {
+    func beginPackaging(stream: Bool, record: Bool, serviceName: String) async throws {
         guard await !Self.pipeline.isActive else { throw ContentPackagingError.alreadyEncoding }
         recordingCallbacks.prepare(writerID: nil)
         await fragmentDispatcher.prepare(stream: false, record: record)
@@ -359,7 +359,7 @@ final class ContentPackager: NSObject, AVAssetWriterDelegate, Sendable {
         }
         try await Self.pipeline.start(preset: Settings.selectedPreset, stream: stream,
                                       recording: recordingWriter,
-                                      allows422: Settings.prefers422Chroma)
+                                      allows422: Settings.prefers422Chroma, serviceName: serviceName)
         LOG("VideoToolbox and AAC encoders are now accepting sample buffers", level: .debug)
     }
 
