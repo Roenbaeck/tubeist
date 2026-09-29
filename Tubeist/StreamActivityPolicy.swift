@@ -35,16 +35,21 @@ struct StreamSnapshot: Equatable, Sendable {
     var thermal: ThermalLevel
     var batteryPercent: Int?
     var warning: String?
+    var youtubeStatusLabel: String? = nil
 }
 
 enum StreamAlert: Equatable, Sendable {
     case degraded(YouTubeStreamHealth)
     case recovered
+    case highlightSaved
+    case highlightFailed(String)
 
     var title: String {
         switch self {
         case .degraded(let health): "Stream health: \(health.label)"
         case .recovered: "Stream health recovered"
+        case .highlightSaved: "Highlight saved"
+        case .highlightFailed: "Highlight not saved"
         }
     }
 
@@ -53,6 +58,8 @@ enum StreamAlert: Equatable, Sendable {
         case .degraded(.noData): "YouTube is receiving no data from your stream."
         case .degraded: "YouTube reports problems with your stream."
         case .recovered: "YouTube reports your stream is healthy again."
+        case .highlightSaved: "The moment was saved as a local clip."
+        case .highlightFailed(let message): message
         }
     }
 }
@@ -89,7 +96,7 @@ struct StreamActivityPolicy {
         self.alertOnRecovery = alertOnRecovery
     }
 
-    mutating func evaluate(_ snapshot: StreamSnapshot, now: Date) -> Decision {
+    mutating func evaluate(_ snapshot: StreamSnapshot, now: Date, forceContent: Bool = false) -> Decision {
         // Untracked health is not missing health: there is nothing to poll, so it can
         // neither go stale nor raise an alert.
         let stale = snapshot.healthTracked
@@ -108,7 +115,7 @@ struct StreamActivityPolicy {
             // The heartbeat re-arms the activity's stale date on a stream whose content
             // never changes; without it a healthy Standard activity goes stale at 90 s.
             let heartbeat = lastPushedAt.map { now.timeIntervalSince($0) >= Self.heartbeatInterval } ?? true
-            if (changed && (due || phaseChanged)) || heartbeat || alert != nil {
+            if (changed && (due || phaseChanged)) || heartbeat || alert != nil || forceContent {
                 content = candidate
                 lastPushed = candidate
                 lastPushedAt = now
@@ -132,7 +139,8 @@ struct StreamActivityPolicy {
             bitrateKbps: full ? snapshot.bitrateKbps : nil,
             link: full ? snapshot.link : nil,
             thermal: full ? snapshot.thermal : nil,
-            batteryPercent: full ? snapshot.batteryPercent : nil
+            batteryPercent: full ? snapshot.batteryPercent : nil,
+            youtubeStatusLabel: snapshot.youtubeStatusLabel
         )
     }
 

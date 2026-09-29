@@ -21,15 +21,39 @@ final class StreamActivityCoordinator {
     private static let viewerInterval: TimeInterval = 60
     private static let quotaBackoff: TimeInterval = 300
 
+    /// How long a highlight status overlay (e.g. "Saving highlight…") stays
+    /// visible before the coordinator forces a push that clears it again.
+    private static let highlightStatusDisplayDuration: TimeInterval = 10
+
+    private struct PendingHighlightEvent {
+        var status: HighlightStatus
+        var alert: StreamAlert?
+    }
+
     private let controller: any StreamActivitySink
     private var task: Task<Void, Never>?
     /// The pending teardown of the previous loop. A new loop waits for it, so a
     /// stop() that is immediately followed by a start() can never end the activity
     /// the new loop has just requested.
     private var teardown: Task<Void, Never>?
+    /// A one-off highlight event (status overlay, optionally with a loud alert)
+    /// waiting for the next tick, set via notify(status:alert:). Delivered
+    /// outside the throttled health-alert state machine in StreamActivityPolicy.
+    private var pendingHighlightEvent: PendingHighlightEvent?
+    /// When the current highlightStatus overlay should be cleared again.
+    private var highlightStatusExpiry: Date?
 
     init(controller: any StreamActivitySink = StreamActivityController()) {
         self.controller = controller
+    }
+
+    /// Queues a highlight status overlay (and, for terminal outcomes, a loud
+    /// alert) for delivery on the loop's next tick (at most Self.tick later).
+    /// The overlay auto-clears itself after highlightStatusDisplayDuration. A
+    /// no-op if the loop isn't running (e.g. nothing is live).
+    func notify(status: HighlightStatus, alert: StreamAlert? = nil) {
+        pendingHighlightEvent = PendingHighlightEvent(status: status, alert: alert)
+        highlightStatusExpiry = Date().addingTimeInterval(Self.highlightStatusDisplayDuration)
     }
 
     func start(appState: AppState, youtubeService: YouTubeService) {
@@ -41,7 +65,7 @@ final class StreamActivityCoordinator {
         guard detail != .off || alertOnBad else { return }
 
         let pendingTeardown = teardown
-        task = Task { [controller] in
+        task = Task { [weak self, controller] in
             await pendingTeardown?.value
             guard !Task.isCancelled else { return }
             // Only installs the delegate. Authorization is requested away from
@@ -105,7 +129,26 @@ final class StreamActivityCoordinator {
                     viewers: viewers,
                     bitrateKbps: bitrate.map { $0 / 1000 }
                 )
-                let decision = policy.evaluate(snapshot, now: now)
+                // A fresh event takes priority; otherwise, if the currently shown
+                // overlay has expired, force one more push that clears it back to
+                // nil rather than leaving it stuck until the next natural update.
+                var shouldUpdateHighlightStatus = false
+                var newHighlightStatus: HighlightStatus?
+                var forcedAlert: StreamAlert?
+                if let event = self?.pendingHighlightEvent {
+                    self?.pendingHighlightEvent = nil
+                    shouldUpdateHighlightStatus = true
+                    newHighlightStatus = event.status
+                    forcedAlert = event.alert
+                } else if let expiry = self?.highlightStatusExpiry, now >= expiry {
+                    self?.highlightStatusExpiry = nil
+                    shouldUpdateHighlightStatus = true
+                }
+                var decision = policy.evaluate(snapshot, now: now, forceContent: shouldUpdateHighlightStatus)
+                if shouldUpdateHighlightStatus {
+                    decision.content?.highlightStatus = newHighlightStatus
+                }
+                if let forcedAlert { decision.alert = forcedAlert }
                 await controller.apply(
                     decision,
                     streamStartedAt: appState.streamStartedAt ?? fallbackStartedAt,
@@ -155,7 +198,7 @@ final class StreamActivityCoordinator {
         case .preparing: .connecting
         case .live: .live
         case .stopping: .stopping
-        case .idle, .failed: .ended
+        case .idle, .failed: appState.isAwaitingYouTubeCompletion ? .finalizing : .ended
         }
         let (link, warning): (LinkQuality, String?) = switch appState.streamHealth {
         case .pristine: (.good, nil)
@@ -182,7 +225,8 @@ final class StreamActivityCoordinator {
             link: link,
             thermal: thermal,
             batteryPercent: batteryPercent(from: UIDevice.current.batteryLevel),
-            warning: warning
+            warning: warning,
+            youtubeStatusLabel: phase == .finalizing ? appState.youtubeStatus : nil
         )
     }
 }

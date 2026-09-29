@@ -44,9 +44,19 @@ struct StreamActivityView: View {
         switch family {
         case .small:
             VStack(alignment: .leading, spacing: 2) {
-                HealthBadge(state: state)
+                HStack {
+                    HealthBadge(state: state)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.75)
+                    if state.phase == .live {
+                        Spacer(minLength: 4)
+                        SaveHighlightButton(compact: true)
+                    }
+                }
                 Text(startedAt, style: .timer).monospacedDigit().font(.caption)
-                if let viewers = state.viewers {
+                if let status = state.highlightStatus {
+                    Text(status.label).font(.caption2).foregroundStyle(.secondary)
+                } else if let viewers = state.viewers {
                     Label("\(viewers)", systemImage: "eye").font(.caption2)
                 }
             }
@@ -58,6 +68,9 @@ struct StreamActivityView: View {
                     Text(startedAt, style: .timer).monospacedDigit()
                 }
                 StreamDetailRows(state: state)
+                if state.phase == .live {
+                    SaveHighlightButton(compact: false)
+                }
             }
         }
     }
@@ -71,6 +84,10 @@ struct StreamDetailRows: View {
             if let warning = state.warning {
                 Label(warning, systemImage: "exclamationmark.triangle.fill")
                     .foregroundStyle(.orange)
+            }
+            if let status = state.highlightStatus {
+                Label(status.label, systemImage: "bolt.badge.clock")
+                    .foregroundStyle(status == .failed ? .red : .secondary)
             }
             HStack(spacing: 12) {
                 if let viewers = state.viewers { Label("\(viewers)", systemImage: "eye") }
@@ -104,6 +121,9 @@ struct HealthBadge: View {
         switch state.phase {
         case .connecting: "Connecting"
         case .stopping: "Stopping"
+        // Local capture is done; YouTube hasn't confirmed the broadcast is
+        // complete yet, so the raw status is more honest than a fixed label.
+        case .finalizing: state.youtubeStatusLabel.map { "YouTube: \($0.capitalized)" } ?? "Finalizing"
         case .ended: "Ended"
         // With no bound YouTube stream there is no health to report, so the badge
         // says only that the stream is live rather than an unanswerable "Live ?".
@@ -133,5 +153,34 @@ struct HealthDot: View {
         case .bad, .noData: return .red
         case .unknown: return .gray
         }
+    }
+}
+
+/// Runs SaveHighlightIntent, which ActivityKit runs in the app's process (not
+/// this widget extension) because it conforms to LiveActivityIntent — the
+/// same button works from the Lock Screen, Dynamic Island and the Watch
+/// Smart Stack without a separate watchOS app.
+struct SaveHighlightButton: View {
+    let compact: Bool
+
+    var body: some View {
+        Button(intent: SaveHighlightIntent()) {
+            if compact {
+                Image(systemName: "bolt.badge.clock")
+            } else {
+                Label("Highlight", systemImage: "bolt.badge.clock")
+                    .font(.caption)
+            }
+        }
+        // .bordered draws a filled capsule that IS the hit-testable region,
+        // unlike .plain (whose tap target is just the glyph/label bounds) —
+        // in the Smart Stack's tiny card that ambiguity let taps fall through
+        // to the card's own "open Live Activity" gesture instead of the button.
+        // .bordered's default padding is sized for a normal-width screen, not
+        // this card, so it swallowed the health text next to it — .mini keeps
+        // the reliable hit region but at a footprint that actually fits.
+        .buttonStyle(.bordered)
+        .controlSize(compact ? .mini : .regular)
+        .tint(.yellow)
     }
 }

@@ -252,6 +252,11 @@ actor OrderedFragmentDispatcher {
     private var isDispatching = false
     private var generation: UInt64 = 0
 
+    /// The actual Settings.record intent for the current session, independent
+    /// of whether the fragment-producing AVAssetWriter itself is running
+    /// (which now always is, so Save Highlight works with recording off).
+    var recordsLocally: Bool { records }
+
     func prepare(stream: Bool, record: Bool) {
         generation &+= 1
         isDispatching = false
@@ -270,6 +275,9 @@ actor OrderedFragmentDispatcher {
         while activeGeneration == generation,
               let next = pending.removeValue(forKey: nextExpectedSequence) {
             nextExpectedSequence += 1
+            // Highlights buffer independently of the local-recording toggle, so
+            // the save-highlight button works even with local recording off.
+            await HighlightRecorder.shared.observe(next)
             if streams {
                 await EncodedOutputRouter.shared.route(next)
             }
@@ -343,15 +351,20 @@ final class ContentPackager: NSObject, AVAssetWriterDelegate, Sendable {
         guard await !Self.pipeline.isActive else { throw ContentPackagingError.alreadyEncoding }
         recordingCallbacks.prepare(writerID: nil)
         await fragmentDispatcher.prepare(stream: false, record: record)
+        await HighlightRecorder.shared.prepareForNewSession()
         if record { await recording.prepareForNewSession() }
-        let recordingWriter = try await makeRecordingWriter(enabled: record)
+        // Always produce fragments — it's cheap passthrough re-muxing of
+        // already-encoded HEVC/AAC into fMP4 containers, no re-encode, and no
+        // disk writes unless `record` is also true (gated separately via
+        // fragmentDispatcher's `records` flag above and in endPackaging
+        // below) — so Save Highlight works regardless of the Record setting.
+        let recordingWriter = try await makeRecordingWriter()
         try await Self.pipeline.start(preset: Settings.selectedPreset, stream: stream, recording: recordingWriter)
         LOG("VideoToolbox and AAC encoders are now accepting sample buffers", level: .debug)
     }
 
     @PipelineActor
-    private func makeRecordingWriter(enabled: Bool) throws -> RecordingAssetWriter? {
-        guard enabled else { return nil }
+    private func makeRecordingWriter() throws -> RecordingAssetWriter {
         let writer = try RecordingAssetWriter(delegate: self, finalizationFlag: Self.assetWriterFinalizationFlag)
         recordingCallbacks.prepare(writerID: writer.identifier)
         return writer
@@ -362,7 +375,11 @@ final class ContentPackager: NSObject, AVAssetWriterDelegate, Sendable {
     ) async throws -> ContentPackagingShutdownReport {
         let clock = ContinuousClock()
         let deadline = requestedDeadline ?? clock.now.advanced(by: .seconds(10))
-        let shouldRecord = await Self.pipeline.isRecording
+        // Not Self.pipeline.isRecording — the writer now always runs (for
+        // Save Highlight), so that would always be true regardless of what
+        // the user actually asked for. This reflects the real Settings.record
+        // intent captured when the session started.
+        let shouldRecord = await fragmentDispatcher.recordsLocally
         let writerWasPrepared = await Self.pipeline.isActive
         var writerStatus: ShutdownComponentStatus = writerWasPrepared ? .completed : .notRequested
         var dispatchStatus: ShutdownComponentStatus = writerWasPrepared ? .completed : .notRequested
@@ -382,6 +399,9 @@ final class ContentPackager: NSObject, AVAssetWriterDelegate, Sendable {
             } else {
                 dispatchStatus = .failed("Fragment delivery did not finish before the shutdown deadline")
             }
+            // Best-effort: save whatever a still-pending highlight request has
+            // accumulated rather than silently dropping it when the stream ends.
+            await HighlightRecorder.shared.flushPending()
         } else {
             LOG("Media encoders had already stopped accepting sample buffers", level: .debug)
         }

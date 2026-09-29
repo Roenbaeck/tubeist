@@ -123,6 +123,11 @@ final class AppState {
     var youtubeStatus: String? = nil
     var youtubeBroadcastId: String? = nil
     var youtubeStreamId: String? = nil
+    /// True while stopYouTubePolling()'s wind-down loop is still waiting for
+    /// YouTube to report the broadcast as "complete". The Live Activity stays
+    /// up and reflects youtubeStatus for as long as this is true, since the
+    /// local stream can finish long before YouTube's backend has archived it.
+    var isAwaitingYouTubeCompletion = false
     var activeAlert: String?
     var availableProducts: [String: Product] = [:]
     var lastKnownBrightness: CGFloat = UIScreen.main.brightness

@@ -45,7 +45,26 @@ enum ThermalLevel: String, Codable, Sendable {
 }
 
 enum StreamPhase: String, Codable, Sendable {
-    case connecting, live, stopping, ended
+    /// Local capture/upload has finished, but YouTube's backend hasn't yet
+    /// reported the broadcast as complete — it can take minutes longer than
+    /// the local stop. See stopYouTubePolling() in TubeistView.swift.
+    case connecting, live, stopping, finalizing, ended
+}
+
+/// A transient overlay shown inline while/after a highlight save runs, so a
+/// Live Activity/Watch button press has visible feedback well before the
+/// save actually finishes. Coordinator-managed: cleared a few seconds after
+/// being set, independent of the normal stream content fields below.
+enum HighlightStatus: String, Codable, Sendable, Hashable {
+    case saving, saved, failed
+
+    var label: String {
+        switch self {
+        case .saving: "Saving highlight…"
+        case .saved: "Highlight saved"
+        case .failed: "Highlight failed"
+        }
+    }
 }
 
 struct StreamActivityAttributes: ActivityAttributes {
@@ -65,6 +84,10 @@ struct StreamActivityAttributes: ActivityAttributes {
         var link: LinkQuality?
         var thermal: ThermalLevel?
         var batteryPercent: Int?
+        var highlightStatus: HighlightStatus?
+        /// YouTube's raw broadcast lifecycle status (e.g. "live", "complete"),
+        /// shown only while phase == .finalizing.
+        var youtubeStatusLabel: String?
     }
 
     /// When the stream went live; drives the elapsed-time timer.

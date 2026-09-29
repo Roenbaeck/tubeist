@@ -373,12 +373,21 @@ struct TubeistView: View {
         youtubePollingTask = nil
         // Keychain-protected OAuth credentials may become unavailable after the
         // device locks. The explicit Stop path owns completion; status polling
-        // resumes when Tubeist becomes active again.
+        // resumes when Tubeist becomes active again. Backgrounding has its own
+        // onChange that ends the Live Activity, so this early return leaves it
+        // untouched here.
         guard !appState.soonGoingToBackground else { return }
         guard let broadcastId = appState.youtubeBroadcastId else {
             appState.youtubeStatus = nil
+            appState.isAwaitingYouTubeCompletion = false
+            streamActivityCoordinator.stop()
             return
         }
+        // The Live Activity stays up, reflecting youtubeStatus, until this
+        // wind-down concludes (YouTube reports "complete", or the 180 s cap is
+        // reached) — YouTube's backend can take minutes to notice the local
+        // stream stopped, well after Tubeist itself has finished.
+        appState.isAwaitingYouTubeCompletion = true
         youtubePollingTask = Task {
             let windDownEnd = Date().addingTimeInterval(180)
             while !Task.isCancelled, Date() < windDownEnd {
@@ -398,6 +407,8 @@ struct TubeistView: View {
                 }
             }
             await refreshCurrentYouTubeBroadcastStatus(logContext: "wind-down")
+            appState.isAwaitingYouTubeCompletion = false
+            streamActivityCoordinator.stop()
         }
     }
     
@@ -915,7 +926,25 @@ struct TubeistView: View {
                             .accessibilityLabel(appState.isStreamSessionRunning ? "Stop stream" : "Start stream")
                             .accessibilityValue(appState.streamSessionState.statusDescription)
                             .accessibilityHint(appState.isStreamSessionRunning ? "Finalizes recording and YouTube uploads" : "Starts the selected streaming and recording outputs")
-                            
+
+                            if appState.isStreamActive {
+                                Button {
+                                    Task {
+                                        await HighlightRecorder.shared.requestHighlight()
+                                    }
+                                    fade("Saving highlight…")
+                                } label: {
+                                    Image(systemName: "bolt.badge.clock")
+                                        .font(.system(size: 20))
+                                        .foregroundColor(.white)
+                                        .frame(width: 44, height: 44)
+                                }
+                                .background(Color.black.opacity(0.5))
+                                .cornerRadius(22)
+                                .accessibilityLabel("Save highlight")
+                                .accessibilityHint("Saves the last few seconds as a local clip")
+                            }
+
                         }
                         .padding()
                     }
@@ -1190,19 +1219,55 @@ struct TubeistView: View {
         }
         .onChange(of: appState.streamSessionState) { _, state in
             youtubeStatusGeneration = UUID()
-            if state.isLive {
+            switch state {
+            case .live:
                 startYouTubePolling()
                 streamActivityCoordinator.start(appState: appState, youtubeService: youtubeService)
-            }
-            else {
+            case .stopping, .preparing:
+                // Keep the Live Activity (and whatever polling is already
+                // running) alive through "Stopping" and "Preparing" — ending
+                // it here cut the activity off before local finalization even
+                // finished, or (worse, for .preparing) tore down a session
+                // that was still starting up if a broadcast id lingered from
+                // a previous run. stopYouTubePolling() below — called only
+                // once the session actually reaches idle/failed — now owns
+                // ending the coordinator, once YouTube's own wind-down
+                // concludes; startYouTubePolling() cancels any stray leftover
+                // task the moment the new session actually goes live.
+                break
+            case .idle, .failed:
                 stopYouTubePolling()
-                streamActivityCoordinator.stop()
             }
         }
         .onAppear {
             guard !isUITesting else { return }
             selectedStabilization = Settings.cameraStabilization ?? "Off"
             bootstrapYouTubeStatus()
+            // Bridges highlight-save events — however triggered (this view's
+            // button, or SaveHighlightIntent from the Live Activity/Watch) —
+            // into an inline status overlay on the Live Activity, so a button
+            // press is acknowledged immediately rather than only once the save
+            // (which waits ~5-7s for live "after" fragments) actually finishes.
+            Task {
+                await HighlightRecorder.shared.setOnEvent { event in
+                    Task { @MainActor in
+                        switch event {
+                        case .requested:
+                            streamActivityCoordinator.notify(status: .saving)
+                        case .saved:
+                            streamActivityCoordinator.notify(status: .saved, alert: .highlightSaved)
+                        case .failed(let error):
+                            streamActivityCoordinator.notify(
+                                status: .failed,
+                                alert: .highlightFailed(error.localizedDescription)
+                            )
+                        }
+                    }
+                }
+            }
+            HighlightRequestBridge.handler = {
+                Task { await HighlightRecorder.shared.requestHighlight() }
+            }
             appState.isYouTubeSignedIn = youtubeService.isSignedIn
             if appState.isStreamActive {
                 startYouTubePolling()
