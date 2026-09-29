@@ -103,6 +103,10 @@ final class AppState {
     var isStreamActive: Bool { streamSessionState.isLive }
     var activitySession: StreamActivitySession?
     var activityPreferences = StreamActivityPreferences.saved
+    var highlightsAvailable = false
+    var highlightStatus: HighlightStatus?
+    var highlightStatusExpiresAt: Date?
+    var highlightFailureMessage: String?
     var localUploadHealth: StreamHealth { localStreamHealth }
     var isStreamSessionRunning: Bool { streamSessionState.ownsMediaPipeline }
     var isAudioLevelRunning = true
@@ -137,6 +141,10 @@ final class AppState {
         let now = Date()
         if state == .preparing, streamSessionState != .preparing {
             activitySession = .init(id: UUID(), requestedAt: now, streamsToYouTube: Settings.stream)
+            highlightsAvailable = false
+            highlightStatus = nil
+            highlightStatusExpiresAt = nil
+            highlightFailureMessage = nil
         }
         if state == .live, activitySession?.startedAt == nil { activitySession?.startedAt = now }
         switch state {
@@ -167,6 +175,33 @@ final class AppState {
     var outputMonitorId = UUID()
     func refreshOutputView() {
         outputMonitorId = UUID()
+    }
+
+    func configureHighlightControls() async {
+        HighlightRequestBridge.handler = { [weak self] sessionID in
+            guard let self, self.isStreamActive, !self.soonGoingToBackground, self.highlightsAvailable,
+                  self.activitySession?.id == sessionID else { throw HighlightIntentError.unavailable }
+            try await HighlightRecorder.shared.requestHighlight(sessionID: sessionID)
+        }
+        await HighlightRecorder.shared.setOnEvent { [weak self] sessionID, event in
+            Task { @MainActor in
+                guard let self, self.activitySession?.id == sessionID else { return }
+                switch event {
+                case .ready: self.highlightsAvailable = true
+                case .unavailable: self.highlightsAvailable = false
+                case .requested:
+                    self.highlightStatus = .saving
+                    self.highlightStatusExpiresAt = nil
+                case .saved:
+                    self.highlightStatus = .saved
+                    self.highlightStatusExpiresAt = Date().addingTimeInterval(10)
+                case .failed(let error):
+                    self.highlightStatus = .failed
+                    self.highlightFailureMessage = error.localizedDescription
+                    self.highlightStatusExpiresAt = Date().addingTimeInterval(10)
+                }
+            }
+        }
     }
 }
 
@@ -212,6 +247,7 @@ struct TubeistApp: App {
                     // scenePhase triggers on app init - distinguish this from backgrounding the app
                     appState.isAppInitialization = false
                     guard !CommandLine.arguments.contains("-ui-testing") else { return }
+                    Task { await appState.configureHighlightControls() }
                     Task { [appState] in
                         let products = await Purchaser.shared.fetchProducts()
                         for product in products {

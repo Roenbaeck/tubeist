@@ -803,6 +803,26 @@ struct TubeistView: View {
                             .accessibilityLabel(appState.isStreamSessionRunning ? "Stop stream" : "Start stream")
                             .accessibilityValue(appState.streamSessionState.statusDescription)
                             .accessibilityHint(appState.isStreamSessionRunning ? "Finalizes recording and YouTube uploads" : "Starts the selected streaming and recording outputs")
+
+                            if appState.isStreamActive {
+                                Button {
+                                    guard let id = appState.activitySession?.id else { return }
+                                    Task {
+                                        do { try await HighlightRequestBridge.request(sessionID: id) }
+                                        catch { fade(error.localizedDescription) }
+                                    }
+                                } label: {
+                                    Image(systemName: "bolt.badge.clock")
+                                        .font(.system(size: 20))
+                                        .foregroundStyle(.white)
+                                        .frame(width: 44, height: 44)
+                                }
+                                .background(.black.opacity(0.5), in: Circle())
+                                .disabled(!appState.highlightsAvailable || appState.highlightStatus == .saving)
+                                .opacity(appState.highlightsAvailable ? 1 : 0.4)
+                                .accessibilityLabel("Save highlight")
+                                .accessibilityHint("Saves about 10 seconds before and 5 seconds after this moment on the iPhone")
+                            }
                             
                         }
                         .padding()
@@ -1139,6 +1159,10 @@ struct TubeistView: View {
             else {
                 stopYouTubePolling()
             }
+        }
+        .onChange(of: appState.highlightStatus) { _, status in
+            guard let status else { return }
+            fade(status == .failed ? appState.highlightFailureMessage ?? status.label : status.label)
         }
         .onAppear {
             guard !isUITesting else { return }

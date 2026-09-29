@@ -5,7 +5,7 @@ import WidgetKit
 struct StreamLiveActivity: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: StreamActivityAttributes.self) { context in
-            StreamActivityView(state: context.state, stale: context.isStale)
+            StreamActivityView(state: context.state, stale: context.isStale, highlightSessionID: context.attributes.sessionID)
                 .padding(10)
                 .activityBackgroundTint(.black)
                 .activitySystemActionForegroundColor(.white)
@@ -18,7 +18,7 @@ struct StreamLiveActivity: Widget {
                     StreamActivityTimer(state: context.state)
                 }
                 DynamicIslandExpandedRegion(.bottom) {
-                    StreamActivityView(state: context.state, stale: context.isStale)
+                    StreamActivityView(state: context.state, stale: context.isStale, highlightSessionID: context.attributes.sessionID)
                 }
             } compactLeading: {
                 Image(systemName: context.state.phase == .recording ? "record.circle" : "dot.radiowaves.left.and.right")

@@ -87,15 +87,50 @@ struct StreamActivityPolicyTests {
     }
 
     @Test func contentRoundTripsAndFormatsLowBitrates() throws {
-        let content = snapshot().content
+        var content = snapshot().content
+        content.canSaveHighlight = true
+        content.highlightStatus = .saving
         #expect(try JSONDecoder().decode(StreamActivityAttributes.ContentState.self, from: JSONEncoder().encode(content)) == content)
         #expect(StreamActivityAttributes.ContentState.bitrateLabel(kbps: 750) == "750 kbps")
         #expect(StreamActivityAttributes.ContentState.bitrateLabel(kbps: 12800) == "12.8 Mbps")
+    }
+
+    @Test func highlightFeedbackBypassesThrottleWithoutAHealthAlert() {
+        var policy = StreamActivityPolicy()
+        var live = snapshot(healthy: true)
+        live.content.canSaveHighlight = true
+        _ = policy.evaluate(live, preferences: preferences, now: start)
+        for (index, status) in [HighlightStatus.saving, .saved, .failed].enumerated() {
+            live.content.highlightStatus = status
+            let result = policy.evaluate(live, preferences: preferences, now: start.addingTimeInterval(Double(index + 1)))
+            #expect(result.content?.highlightStatus == status)
+            #expect(result.alert == nil)
+        }
     }
 }
 
 @MainActor
 struct StreamActivitySessionTests {
+    @Test func highlightControlsOnlyApplyToTheActiveForegroundSession() {
+        let app = AppState()
+        app.setStreamSessionState(.preparing)
+        app.setStreamSessionState(.live)
+        app.highlightsAvailable = true
+        app.highlightStatus = .saved
+        let now = Date()
+        app.highlightStatusExpiresAt = now.addingTimeInterval(10)
+        #expect(app.activitySnapshot(preferences: .init(), now: now)?.content.canSaveHighlight == true)
+        #expect(app.activitySnapshot(preferences: .init(), now: now.addingTimeInterval(11))?.content.highlightStatus == nil)
+        app.soonGoingToBackground = true
+        #expect(app.activitySnapshot(preferences: .init())?.content.canSaveHighlight == false)
+        app.soonGoingToBackground = false
+        app.setStreamSessionState(.stopping)
+        #expect(app.activitySnapshot(preferences: .init())?.content.canSaveHighlight == false)
+        app.setStreamSessionState(.idle)
+        app.setStreamSessionState(.preparing)
+        #expect(app.highlightsAvailable == false)
+        #expect(app.highlightStatus == nil)
+    }
     @Test func sessionIdentityAndClockSurviveFinishingAndRenewAtNextStart() async throws {
         let app = AppState()
         let actor = StreamingActor()

@@ -6,6 +6,7 @@ struct StreamActivityView: View {
     @Environment(\.isLuminanceReduced) private var dimmed
     let state: StreamActivityAttributes.ContentState
     let stale: Bool
+    var highlightSessionID: UUID? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: family == .small ? 4 : 8) {
@@ -20,6 +21,19 @@ struct StreamActivityView: View {
                 .foregroundStyle(Color.white.opacity(0.75))
                 .lineLimit(1)
                 .minimumScaleFactor(0.85)
+            if let status = state.highlightStatus, !stale {
+                Text(status.label)
+                    .foregroundStyle(status == .failed ? Color.orange : .white)
+                    .lineLimit(1)
+            }
+            if state.canSaveHighlight, !state.isDemo, !stale, let highlightSessionID {
+                Button(intent: SaveHighlightIntent(sessionID: highlightSessionID)) {
+                    Label("Save highlight", systemImage: "bolt.badge.clock")
+                }
+                .disabled(state.highlightStatus == .saving)
+                .buttonStyle(.bordered)
+                .accessibilityHint("Saves about 10 seconds before and 5 seconds after this moment on the iPhone")
+            }
             if state.fullDetail, !stale, !state.phase.isTerminal {
                 HStack {
                     if let bitrate = state.bitrateLabel {
@@ -95,4 +109,3 @@ enum StreamActivityAppearance {
         return .gray
     }
 }
-

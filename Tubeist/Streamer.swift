@@ -222,6 +222,10 @@ actor StreamingActor {
         youTubeHealthTarget
     }
 
+    func activitySessionID() async -> UUID? {
+        await appState?.activitySession?.id
+    }
+
     /// Records the first permanent upload failure of a running session and
     /// returns its output plan, or nil if it was already reported or the
     /// session is stopping, when Stop reports it instead.
@@ -535,7 +539,8 @@ final class Streamer: Sendable {
             try await ContentPackager.shared.beginPackaging(
                 stream: outputPlan.routesEncodedFragments,
                 record: outputPlan.recordsLocally,
-                serviceName: serviceName
+                serviceName: serviceName,
+                sessionID: await streamingActor.activitySessionID() ?? sessionID
             )
             packagingStarted = true
             await SoundGrabber.shared.commenceGrabbing()

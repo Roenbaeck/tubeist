@@ -262,6 +262,8 @@ actor OrderedFragmentDispatcher {
     private var isDispatching = false
     private var generation: UInt64 = 0
 
+    var recordsLocally: Bool { records }
+
     func prepare(stream: Bool, record: Bool) {
         generation &+= 1
         isDispatching = false
@@ -280,6 +282,7 @@ actor OrderedFragmentDispatcher {
         while activeGeneration == generation,
               let next = pending.removeValue(forKey: nextExpectedSequence) {
             nextExpectedSequence += 1
+            await HighlightRecorder.shared.observe(next)
             if streams {
                 await EncodedOutputRouter.shared.route(next)
             }
@@ -349,23 +352,31 @@ final class ContentPackager: NSObject, AVAssetWriterDelegate, Sendable {
         await Self.pipeline.beginFinalization()
     }
 
-    func beginPackaging(stream: Bool, record: Bool, serviceName: String) async throws {
+    func beginPackaging(stream: Bool, record: Bool, serviceName: String, sessionID: UUID = UUID()) async throws {
         guard await !Self.pipeline.isActive else { throw ContentPackagingError.alreadyEncoding }
         recordingCallbacks.prepare(writerID: nil)
         await fragmentDispatcher.prepare(stream: false, record: record)
-        let recordingWriter = try await makeRecordingWriter(enabled: record)
-        if let recordingWriter {
+        await HighlightRecorder.shared.prepareForNewSession(sessionID: sessionID)
+        let recordingWriter: RecordingAssetWriter?
+        do { recordingWriter = try await makeRecordingWriter() }
+        catch {
+            if record { throw error }
+            recordingWriter = nil
+            await HighlightRecorder.shared.stopAfterFailure()
+            LOG("Highlight buffering unavailable; streaming continues: \(error.localizedDescription)", level: .warning)
+        }
+        if record, let recordingWriter {
             await recording.prepareForNewSession(fileFailure: recordingWriter.fileFailure)
         }
         try await Self.pipeline.start(preset: Settings.selectedPreset, stream: stream,
                                       recording: recordingWriter,
+                                      recordsLocally: record,
                                       allows422: Settings.prefers422Chroma, serviceName: serviceName)
         LOG("VideoToolbox and AAC encoders are now accepting sample buffers", level: .debug)
     }
 
     @PipelineActor
-    private func makeRecordingWriter(enabled: Bool) throws -> RecordingAssetWriter? {
-        guard enabled else { return nil }
+    private func makeRecordingWriter() throws -> RecordingAssetWriter {
         let writer = try RecordingAssetWriter(delegate: self, finalizationFlag: Self.assetWriterFinalizationFlag)
         recordingCallbacks.prepare(writerID: writer.identifier)
         return writer
@@ -376,7 +387,7 @@ final class ContentPackager: NSObject, AVAssetWriterDelegate, Sendable {
     ) async throws -> ContentPackagingShutdownReport {
         let clock = ContinuousClock()
         let deadline = requestedDeadline ?? clock.now.advanced(by: .seconds(10))
-        let shouldRecord = await Self.pipeline.isRecording
+        let shouldRecord = await fragmentDispatcher.recordsLocally
         let writerWasPrepared = await Self.pipeline.isActive
         var writerStatus: ShutdownComponentStatus = writerWasPrepared ? .completed : .notRequested
         var dispatchStatus: ShutdownComponentStatus = writerWasPrepared ? .completed : .notRequested
@@ -399,6 +410,8 @@ final class ContentPackager: NSObject, AVAssetWriterDelegate, Sendable {
         } else {
             LOG("Media encoders had already stopped accepting sample buffers", level: .debug)
         }
+        // A slow highlight save must not hold up stream shutdown.
+        await HighlightRecorder.shared.flushPending(waitForWrites: false)
         if shouldRecord {
             if dispatchStatus.failedMessage == nil, clock.now < deadline {
                 do {

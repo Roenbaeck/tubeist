@@ -48,6 +48,17 @@ enum StreamActivityThermal: String, Codable, Sendable {
     var title: String { rawValue.capitalized }
 }
 
+enum HighlightStatus: String, Codable, Sendable {
+    case saving, saved, failed
+    var label: String {
+        switch self {
+        case .saving: "Saving highlight…"
+        case .saved: "Highlight saved"
+        case .failed: "Highlight failed"
+        }
+    }
+}
+
 struct StreamActivityAttributes: ActivityAttributes {
     let sessionID: UUID
 
@@ -66,6 +77,8 @@ struct StreamActivityAttributes: ActivityAttributes {
         var fullDetail: Bool
         var isDemo = false
         var healthValidUntil: Date? = nil
+        var canSaveHighlight = false
+        var highlightStatus: HighlightStatus? = nil
 
         var status: String {
             switch phase {

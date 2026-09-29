@@ -160,6 +160,10 @@ extension AppState {
             link: local, viewers: nil, bitrateKbps: nil,
             batteryPercent: full && battery >= 0 ? Int((battery * 100).rounded()) : nil,
             thermal: full ? thermal : nil, fullDetail: full)
+        content.canSaveHighlight = isStreamActive && !soonGoingToBackground && highlightsAvailable
+        if highlightStatusExpiresAt.map({ now < $0 }) ?? true {
+            content.highlightStatus = highlightStatus
+        }
         if youtubeHealth.target != nil, let receivedAt = youtubeHealth.receivedAt {
             let sourceDate = youtubeHealth.report?.healthStatus?.lastUpdateTimeSeconds.map(Date.init(timeIntervalSince1970:))
             content.healthValidUntil = min(receivedAt.addingTimeInterval(120),
