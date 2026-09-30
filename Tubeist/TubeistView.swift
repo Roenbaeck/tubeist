@@ -804,7 +804,7 @@ struct TubeistView: View {
                             .accessibilityValue(appState.streamSessionState.statusDescription)
                             .accessibilityHint(appState.isStreamSessionRunning ? "Finalizes recording and YouTube uploads" : "Starts the selected streaming and recording outputs")
 
-                            if appState.isStreamActive {
+                            if appState.isStreamActive && appState.activitySession?.highlightsEnabled == true {
                                 Button {
                                     guard let id = appState.activitySession?.id else { return }
                                     Task {

@@ -323,6 +323,41 @@ struct StreamerTests {
         }
     }
 
+    @Test func highlightsOnlyAddMP4PackagingWhenEnabled() throws {
+        for (stream, record) in [(true, false), (true, true), (false, true)] {
+            for enabled in [false, true] {
+                let plan = try StreamOutputPlan.resolve(stream: stream, record: record,
+                                                        highlightsEnabled: enabled)
+                #expect(plan.highlightsEnabled == enabled)
+                #expect(plan.producesMP4Fragments == (record || enabled))
+                #expect(plan.recordsLocally == record)
+                #expect(plan.remuxesToTransportStream == stream)
+            }
+        }
+        #expect(throws: StreamStartError.noOutputSelected) {
+            try StreamOutputPlan.resolve(stream: false, record: false, highlightsEnabled: true)
+        }
+    }
+
+    @Test @MainActor
+    func highlightChoiceIsFrozenInTheSessionOutputPlan() async throws {
+        let app = AppState()
+        let actor = StreamingActor()
+        await actor.setAppState(app)
+        try await actor.beginPreparing()
+        await actor.setOutputPlan(.init(streamsToYouTube: true, recordsLocally: false, highlightsEnabled: true))
+        try await actor.markLive()
+        #expect(app.activitySession?.highlightsEnabled == true)
+        #expect(await actor.activeOutputPlan()?.highlightsEnabled == true)
+        #expect(await actor.beginStopping())
+        await actor.completeStop()
+        try await actor.beginPreparing()
+        await actor.setOutputPlan(.init(streamsToYouTube: true, recordsLocally: false, highlightsEnabled: false))
+        try await actor.markLive()
+        #expect(app.activitySession?.highlightsEnabled == false)
+        #expect(await actor.activeOutputPlan()?.producesMP4Fragments == false)
+    }
+
     @Test func sameSecondStreamRestartsHaveDistinctSafeIdentifiers() throws {
         let date = Date(timeIntervalSince1970: 1_700_000_000)
         let firstUUID = try #require(UUID(uuidString: "11111111-1111-1111-1111-111111111111"))

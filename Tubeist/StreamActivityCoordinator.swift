@@ -160,7 +160,7 @@ extension AppState {
             link: local, viewers: nil, bitrateKbps: nil,
             batteryPercent: full && battery >= 0 ? Int((battery * 100).rounded()) : nil,
             thermal: full ? thermal : nil, fullDetail: full)
-        content.canSaveHighlight = isStreamActive && !soonGoingToBackground && highlightsAvailable
+        content.canSaveHighlight = session.highlightsEnabled && isStreamActive && !soonGoingToBackground && highlightsAvailable
         if highlightStatusExpiresAt.map({ now < $0 }) ?? true {
             content.highlightStatus = highlightStatus
         }

@@ -71,6 +71,31 @@ struct HighlightRecorderTests {
         recorder.observe(highlightFragment(0, "init", duration: 0, type: .initialization))
     }
 
+    @Test func disabledSessionIgnoresFragmentsAndClearsPreviousHistory() async throws {
+        let factory = InjectedHighlightFileFactory()
+        let recorder = makeRecorder(factory)
+        initialize(recorder)
+        recorder.observe(highlightFragment(1, "old history"))
+        let events = HighlightEvents()
+        recorder.setOnEvent { _, event in events.append(event) }
+        recorder.prepareForNewSession(enabled: false)
+        recorder.observe(highlightFragment(0, "ignored init", duration: 0, type: .initialization))
+        recorder.observe(highlightFragment(1, "ignored media"))
+        #expect(events.last == nil)
+        #expect(throws: HighlightError.unavailable) { try recorder.requestHighlight() }
+        await recorder.flushPending()
+        #expect(factory.files.isEmpty)
+
+        // Re-enabling starts empty and cannot use either previous session's footage.
+        recorder.prepareForNewSession(enabled: true)
+        #expect(throws: HighlightError.missingInitialization) { try recorder.requestHighlight() }
+        recorder.observe(highlightFragment(0, "new init", duration: 0, type: .initialization))
+        recorder.observe(highlightFragment(1, "new media"))
+        try recorder.requestHighlight()
+        await recorder.flushPending()
+        #expect(factory.files.values.first?.data == Data("new initnew media".utf8))
+    }
+
     @Test func assemblesInitializationBeforeAndAfterFragments() async throws {
         let factory = InjectedHighlightFileFactory()
         let recorder = makeRecorder(factory)

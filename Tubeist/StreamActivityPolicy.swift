@@ -23,6 +23,7 @@ struct StreamActivitySession: Equatable, Sendable {
     var startedAt: Date?
     var stoppedAt: Date?
     var streamsToYouTube: Bool
+    var highlightsEnabled = false
 }
 
 struct StreamActivitySnapshot: Equatable, Sendable {

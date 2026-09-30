@@ -80,21 +80,28 @@ extension StreamSessionState {
 struct StreamOutputPlan: Sendable, Equatable {
     let streamsToYouTube: Bool
     let recordsLocally: Bool
+    let highlightsEnabled: Bool
+
+    init(streamsToYouTube: Bool, recordsLocally: Bool, highlightsEnabled: Bool = false) {
+        self.streamsToYouTube = streamsToYouTube
+        self.recordsLocally = recordsLocally
+        self.highlightsEnabled = highlightsEnabled
+    }
 
     var routesEncodedFragments: Bool { streamsToYouTube }
     var remuxesToTransportStream: Bool { streamsToYouTube }
+    var producesMP4Fragments: Bool { recordsLocally || highlightsEnabled }
 
     static func resolve(
         stream: Bool,
-        record: Bool
+        record: Bool,
+        highlightsEnabled: Bool = false
     ) throws -> StreamOutputPlan {
         guard stream || record else {
             throw StreamStartError.noOutputSelected
         }
-        guard stream else {
-            return StreamOutputPlan(streamsToYouTube: false, recordsLocally: record)
-        }
-        return StreamOutputPlan(streamsToYouTube: true, recordsLocally: record)
+        return StreamOutputPlan(streamsToYouTube: stream, recordsLocally: record,
+                                highlightsEnabled: highlightsEnabled)
     }
 }
 
@@ -192,7 +199,10 @@ actor StreamingActor {
     func setOutputPlan(_ outputPlan: StreamOutputPlan) async {
         self.outputPlan = outputPlan
         let appState = self.appState
-        await MainActor.run { appState?.activitySession?.streamsToYouTube = outputPlan.streamsToYouTube }
+        await MainActor.run {
+            appState?.activitySession?.streamsToYouTube = outputPlan.streamsToYouTube
+            appState?.activitySession?.highlightsEnabled = outputPlan.highlightsEnabled
+        }
     }
 
     func setYouTubeBroadcast(
@@ -532,13 +542,13 @@ final class Streamer: Sendable {
             }
             let outputPlan = try StreamOutputPlan.resolve(
                 stream: Settings.stream,
-                record: Settings.record
+                record: Settings.record,
+                highlightsEnabled: Settings.highlightsEnabled
             )
             await streamingActor.setOutputPlan(outputPlan)
             let serviceName = try await prepareEncodedOutput(streamID: streamID, sessionID: sessionID, plan: outputPlan)
             try await ContentPackager.shared.beginPackaging(
-                stream: outputPlan.routesEncodedFragments,
-                record: outputPlan.recordsLocally,
+                plan: outputPlan,
                 serviceName: serviceName,
                 sessionID: await streamingActor.activitySessionID() ?? sessionID
             )

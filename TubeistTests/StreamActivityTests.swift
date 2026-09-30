@@ -116,6 +116,8 @@ struct StreamActivitySessionTests {
         app.setStreamSessionState(.preparing)
         app.setStreamSessionState(.live)
         app.highlightsAvailable = true
+        #expect(app.activitySnapshot(preferences: .init())?.content.canSaveHighlight == false)
+        app.activitySession?.highlightsEnabled = true
         app.highlightStatus = .saved
         let now = Date()
         app.highlightStatusExpiresAt = now.addingTimeInterval(10)
@@ -129,6 +131,7 @@ struct StreamActivitySessionTests {
         app.setStreamSessionState(.idle)
         app.setStreamSessionState(.preparing)
         #expect(app.highlightsAvailable == false)
+        #expect(app.activitySession?.highlightsEnabled == false)
         #expect(app.highlightStatus == nil)
     }
     @Test func sessionIdentityAndClockSurviveFinishingAndRenewAtNextStart() async throws {

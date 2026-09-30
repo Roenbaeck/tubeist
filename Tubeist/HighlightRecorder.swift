@@ -52,13 +52,13 @@ final class HighlightRecorder {
 
     func setOnEvent(_ handler: @escaping @Sendable (UUID, HighlightEvent) -> Void) { onEvent = handler }
 
-    func prepareForNewSession(sessionID: UUID = UUID()) {
+    func prepareForNewSession(sessionID: UUID = UUID(), enabled: Bool = true) {
         self.sessionID = sessionID
         generation = UUID()
         initialization = nil
         ring.removeAll(keepingCapacity: true)
         pending = nil
-        active = true
+        active = enabled
         saving = false
     }
 

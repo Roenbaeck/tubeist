@@ -180,6 +180,7 @@ final class AppState {
     func configureHighlightControls() async {
         HighlightRequestBridge.handler = { [weak self] sessionID in
             guard let self, self.isStreamActive, !self.soonGoingToBackground, self.highlightsAvailable,
+                  self.activitySession?.highlightsEnabled == true,
                   self.activitySession?.id == sessionID else { throw HighlightIntentError.unavailable }
             try await HighlightRecorder.shared.requestHighlight(sessionID: sessionID)
         }
@@ -377,6 +378,9 @@ struct TubeistApp: App {
             try? Settings.clearYouTubeAuthorization()
             Settings.stream = true
             Settings.record = false
+            if CommandLine.arguments.contains("-reset-highlights-setting") {
+                UserDefaults.standard.removeObject(forKey: "HighlightsEnabled")
+            }
             startupAlert = nil
         }
         self.startupAlert = startupAlert

@@ -10,7 +10,7 @@ Settings → Apple Watch and Live Activity offers Off, Standard and Full. Standa
 
 The timer starts when capture goes live and freezes at Stop. Finishing remains visible during drain and YouTube completion. The final Ended/Stopped state is retained briefly, with the elapsed time frozen. Starting a new session removes previous activities. Dismissing an activity suppresses it for the rest of that session. iOS may still choose when and where to present a Live Activity.
 
-The Save Highlight button saves a local clip around the requested moment using the iPhone's encoded fragments. It works in Stream Only as well as recording modes. Requests are tied to the activity's session, and the button is disabled while saving or when capture is unavailable. See [Save Highlight](Highlights.md) for clip duration, storage, resource limits and testing.
+The Save Highlight button saves a local clip around the requested moment using the iPhone's encoded fragments. Enable Highlights in Settings before starting; it is off by default. It works in Stream Only as well as recording modes. Requests are tied to the activity's session, and the button is hidden when highlights are disabled or capture is unavailable, and disabled while saving. See [Save Highlight](Highlights.md) for clip duration, storage, resource limits and testing.
 
 Alerts are off by default. Notification authorization is requested only when the user enables alerts in Settings. Remote problems require two distinct fresh health observations at least ten seconds apart. Initial noData is not treated as failed delivery. Persistent local upload failure and terminal session failures can also alert. Healthy recovery alerts are separately optional. There are no loss-of-data alerts during intentional finalization.
 

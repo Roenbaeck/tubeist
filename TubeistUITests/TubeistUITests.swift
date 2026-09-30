@@ -301,6 +301,46 @@ final class TubeistUITests: XCTestCase {
     }
 
     @MainActor
+    func testHighlightsDefaultOffAndRespectSettingsSaveAndCancel() throws {
+        let app = launchForUITesting(additionalArguments: ["-reset-highlights-setting"])
+        let settings = app.buttons["Settings"]
+        let toggle = app.switches["highlightsEnabledToggle"]
+        func openHighlights() {
+            settings.tap()
+            XCTAssertTrue(app.buttons["Cancel"].waitForExistence(timeout: 5))
+            scrollTo(toggle, in: app)
+        }
+        func changeHighlights() {
+            let control = toggle.switches.firstMatch
+            (control.exists ? control : toggle).tap()
+        }
+
+        openHighlights()
+        XCTAssertEqual(toggle.value as? String, "0")
+        changeHighlights()
+        XCTAssertEqual(toggle.value as? String, "1")
+        app.buttons["Cancel"].tap()
+        openHighlights()
+        XCTAssertEqual(toggle.value as? String, "0", "Cancel must discard the highlight draft")
+        changeHighlights()
+        let keyField = app.secureTextFields["YouTube HLS Stream Key"]
+        scrollTo(keyField, in: app, searchDirection: -1)
+        keyField.tap()
+        keyField.typeText("abcd-efgh-1234")
+        app.buttons["Save"].tap()
+        XCTAssertTrue(app.buttons["Cancel"].waitForNonExistence(timeout: 5))
+
+        openHighlights()
+        XCTAssertEqual(toggle.value as? String, "1", "Save must persist highlights")
+        changeHighlights()
+        app.buttons["Save"].tap()
+        XCTAssertTrue(app.buttons["Cancel"].waitForNonExistence(timeout: 5))
+        openHighlights()
+        XCTAssertEqual(toggle.value as? String, "0", "Highlights can be disabled again")
+        app.buttons["Cancel"].tap()
+    }
+
+    @MainActor
     func testOverlayOrderCanBeSavedAndCancelled() throws {
         let originalOrientation = XCUIDevice.shared.orientation
         XCUIDevice.shared.orientation = .landscapeRight
