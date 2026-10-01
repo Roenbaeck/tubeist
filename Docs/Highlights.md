@@ -2,7 +2,7 @@
 
 Highlights are off by default. In Settings, turn on **Highlights → Enable Highlights** and tap Save before starting a stream or recording. The choice applies to the next session and stays fixed until it ends.
 
-During an enabled session, tap the lightning/clock button in the middle of the main control column to save a short MP4 around the current moment. The same action is available in the Live Activity and Apple Watch Smart Stack when those are enabled. The control becomes available after the first encoded fragment arrives. When highlights are disabled, these buttons are hidden.
+During an enabled session, tap the lightning/clock button in the bottom-left corner of the preview to save a short MP4 around the current moment. The same action is available in the Live Activity and Apple Watch Smart Stack when those are enabled. The control becomes available after the first encoded fragment arrives. When highlights are disabled, these buttons are hidden.
 
 Tubeist keeps approximately ten seconds of completed fragments before the press and collects approximately five seconds afterward. Selection uses complete keyframe-aligned fragments, so the duration is approximate. Pressing early in a session gives a shorter lead-in. Stopping while a highlight is pending saves the available ending rather than discarding the request.
 

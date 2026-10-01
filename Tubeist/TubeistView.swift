@@ -809,32 +809,33 @@ struct TubeistView: View {
                             .accessibilityHint(appState.isStreamSessionRunning ? "Finalizes recording and YouTube uploads" : "Starts the selected streaming and recording outputs")
                         }
                         .padding()
-                        .overlay(alignment: .center) {
-                            if appState.isStreamActive && appState.activitySession?.highlightsEnabled == true {
-                                Button {
-                                    guard let id = appState.activitySession?.id else { return }
-                                    Task {
-                                        do { try await HighlightRequestBridge.request(sessionID: id) }
-                                        catch { fade(error.localizedDescription) }
-                                    }
-                                } label: {
-                                    Image(systemName: "bolt.badge.clock")
-                                        .font(.system(size: 20))
-                                        .foregroundStyle(.white)
-                                        .frame(width: 44, height: 44)
-                                }
-                                .background(.black.opacity(0.5), in: Circle())
-                                .disabled(!appState.highlightsAvailable || appState.highlightStatus == .saving)
-                                .opacity(appState.highlightsAvailable ? 1 : 0.4)
-                                .accessibilityLabel("Save highlight")
-                                .accessibilityHint("Saves about 10 seconds before and 5 seconds after this moment on the iPhone")
-                            }
-                        }
                     }
                     .opacity(1 - splashOpacity) // Invert opacity of the splash screen
                     .disabled(showSplashScreen)
                 }
                 .frame(width: width, height: height)
+                .overlay(alignment: .bottomLeading) {
+                    if appState.isStreamActive && appState.activitySession?.highlightsEnabled == true {
+                        Button {
+                            guard let id = appState.activitySession?.id else { return }
+                            Task {
+                                do { try await HighlightRequestBridge.request(sessionID: id) }
+                                catch { fade(error.localizedDescription) }
+                            }
+                        } label: {
+                            Image(systemName: "bolt.badge.clock")
+                                .font(.system(size: 20))
+                                .foregroundStyle(.white)
+                                .frame(width: 44, height: 44)
+                        }
+                        .background(.black.opacity(0.5), in: Circle())
+                        .disabled(showSplashScreen || !appState.highlightsAvailable || appState.highlightStatus == .saving)
+                        .opacity((appState.highlightsAvailable ? 1 : 0.4) * (1 - splashOpacity))
+                        .accessibilityLabel("Save highlight")
+                        .accessibilityHint("Saves about 10 seconds before and 5 seconds after this moment on the iPhone")
+                        .padding(24)
+                    }
+                }
                 
                 // Vertical Small Button Column
                 VStack {

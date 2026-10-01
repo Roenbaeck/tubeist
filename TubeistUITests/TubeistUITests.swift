@@ -171,7 +171,7 @@ final class TubeistUITests: XCTestCase {
     }
 
     @MainActor
-    func testHighlightIsCenteredWithoutMovingTheOtherControls() throws {
+    func testHighlightIsInTheBottomLeftWithoutMovingTheOtherControls() throws {
         let originalOrientation = XCUIDevice.shared.orientation
         XCUIDevice.shared.orientation = .landscapeRight
         defer { XCUIDevice.shared.orientation = originalOrientation }
@@ -188,13 +188,16 @@ final class TubeistUITests: XCTestCase {
         let highlight = app.buttons["Save highlight"]
         XCTAssertTrue(highlight.waitForExistence(timeout: 5))
         XCTAssertTrue(highlight.isHittable)
-        XCTAssertEqual(highlight.frame.midY, app.windows.firstMatch.frame.midY, accuracy: 2)
-        XCTAssertEqual(highlight.frame.midX, stop.frame.midX, accuracy: 2)
+        let window = app.windows.firstMatch.frame
+        XCTAssertTrue(window.contains(highlight.frame))
+        XCTAssertGreaterThanOrEqual(highlight.frame.minX - window.minX, 24)
+        XCTAssertLessThan(highlight.frame.midX, window.minX + window.width / 4)
+        XCTAssertEqual(window.maxY - highlight.frame.maxY, 24, accuracy: 2)
         XCTAssertEqual(stop.frame, stopWithoutHighlight)
         XCTAssertEqual(app.buttons["Settings"].frame, settingsWithoutHighlight)
         XCTAssertFalse(highlight.frame.intersects(stop.frame))
         let screenshot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
-        screenshot.name = "Centered highlight control"
+        screenshot.name = "Bottom-left highlight control"
         screenshot.lifetime = .keepAlways
         add(screenshot)
     }
