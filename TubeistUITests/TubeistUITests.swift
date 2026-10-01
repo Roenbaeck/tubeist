@@ -171,6 +171,35 @@ final class TubeistUITests: XCTestCase {
     }
 
     @MainActor
+    func testHighlightIsCenteredWithoutMovingTheOtherControls() throws {
+        let originalOrientation = XCUIDevice.shared.orientation
+        XCUIDevice.shared.orientation = .landscapeRight
+        defer { XCUIDevice.shared.orientation = originalOrientation }
+        let app = launchForUITesting(additionalArguments: ["-highlight-layout-test", "-Overlays", "[]"])
+        let stop = app.buttons["Stop stream"]
+        XCTAssertTrue(stop.waitForExistence(timeout: 5))
+        let stopWithoutHighlight = stop.frame
+        let settingsWithoutHighlight = app.buttons["Settings"].frame
+        XCTAssertFalse(app.buttons["Save highlight"].exists)
+        app.terminate()
+        app.launchArguments.append("-show-test-highlight")
+        app.launch()
+
+        let highlight = app.buttons["Save highlight"]
+        XCTAssertTrue(highlight.waitForExistence(timeout: 5))
+        XCTAssertTrue(highlight.isHittable)
+        XCTAssertEqual(highlight.frame.midY, app.windows.firstMatch.frame.midY, accuracy: 2)
+        XCTAssertEqual(highlight.frame.midX, stop.frame.midX, accuracy: 2)
+        XCTAssertEqual(stop.frame, stopWithoutHighlight)
+        XCTAssertEqual(app.buttons["Settings"].frame, settingsWithoutHighlight)
+        XCTAssertFalse(highlight.frame.intersects(stop.frame))
+        let screenshot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        screenshot.name = "Centered highlight control"
+        screenshot.lifetime = .keepAlways
+        add(screenshot)
+    }
+
+    @MainActor
     func testOutputPreviewCanBeOpenedAndRestored() throws {
         let app = launchForUITesting()
         let monitor = app.buttons["Monitor selection"]

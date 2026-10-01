@@ -381,8 +381,11 @@ actor StreamCommandQueue {
 
 final class Streamer: Sendable {
     public static let shared = Streamer()
-    private let streamingActor = StreamingActor()
+    private let streamingActor: StreamingActor
     private let commandQueue = StreamCommandQueue()
+    init(streamingActor: StreamingActor = StreamingActor()) {
+        self.streamingActor = streamingActor
+    }
     private static let streamIDFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.calendar = Calendar(identifier: .gregorian)
@@ -486,20 +489,15 @@ final class Streamer: Sendable {
         }
     }
 
-    func handleCaptureSessionInterruption() async {
+    func handleCaptureSessionInterruption(reason: Int? = nil) async {
         let state = await streamingActor.sessionState()
         switch state {
         case .preparing, .live:
-            let appIsNotActive = await MainActor.run {
-                UIApplication.shared.applicationState != .active
-            }
-            if appIsNotActive {
-                LOG("Camera session paused while Tubeist became inactive", level: .debug)
-            } else {
-                await handleRuntimeFailure(
-                    CaptureSetupError.configuration("The camera session was interrupted")
-                )
-            }
+            // A notification can reach this task after the app is active again
+            // or the interruption has already ended. Interruption isn't a
+            // runtime failure: retain capture and let delivery recovery handle
+            // the pause. Its existing timeout still catches persistent loss.
+            LOG("Camera session temporarily paused; waiting for capture to resume (reason: \(reason.map(String.init) ?? "unknown"))", level: .debug)
         case .idle, .stopping, .failed:
             // iOS normally interrupts an idle preview when the app moves to the
             // background. The session resumes on return, so this is not an

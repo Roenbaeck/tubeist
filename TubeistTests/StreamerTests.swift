@@ -71,6 +71,25 @@ struct StreamerTests {
     }
 
     @Test @MainActor
+    func temporaryCameraInterruptionsDoNotStopAPreparingOrLiveStream() async throws {
+        let app = AppState()
+        let actor = StreamingActor()
+        let streamer = Streamer(streamingActor: actor)
+        await streamer.setAppState(app)
+        try await actor.beginPreparing()
+        await streamer.handleCaptureSessionInterruption(reason: 1)
+        #expect(await actor.sessionState() == .preparing)
+        try await actor.markLive()
+        // Delivery can be delayed until the app is active again. The OS reason
+        // must still be treated as a temporary pause, never a fatal failure.
+        for reason in [1, 2, 3, 4, 5] {
+            await streamer.handleCaptureSessionInterruption(reason: reason)
+            #expect(await actor.sessionState() == .live)
+            #expect(app.activeAlert == nil)
+        }
+    }
+
+    @Test @MainActor
     func stoppedYouTubeUploadsAreReportedOnceAndNotAgainByStop() async throws {
         let actor = StreamingActor()
         let sessionID = UUID()

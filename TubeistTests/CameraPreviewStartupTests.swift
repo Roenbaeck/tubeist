@@ -106,6 +106,7 @@ struct CameraPreviewStartupTests {
 
 private actor InterruptedCaptureSession: CaptureSessionDriving {
     private(set) var isRunning = false
+    private(set) var isInterrupted = false
     private(set) var hasInputs = false
     private(set) var configurations = 0
     private(set) var starts = 0
@@ -113,6 +114,8 @@ private actor InterruptedCaptureSession: CaptureSessionDriving {
     private(set) var detachments = 0
     private var failConfiguration = false
     private var failStart = false
+    private var interruptStart = false
+    private var delayStart = false
 
     func configure() throws {
         guard !hasInputs else { throw CaptureSetupError.cannotAddVideoInput }
@@ -126,13 +129,17 @@ private actor InterruptedCaptureSession: CaptureSessionDriving {
 
     func startRunning() {
         starts += 1
-        isRunning = !failStart && hasInputs
+        isInterrupted = interruptStart
+        isRunning = !failStart && !interruptStart && !delayStart && hasInputs
         failStart = false
+        interruptStart = false
+        delayStart = false
     }
 
     func stopRunning() {
         stops += 1
         isRunning = false
+        isInterrupted = false
     }
     func detach() {
         hasInputs = false
@@ -143,9 +150,81 @@ private actor InterruptedCaptureSession: CaptureSessionDriving {
     func interrupt() { isRunning = false }
     func failNextConfiguration() { failConfiguration = true }
     func failNextStart() { failStart = true }
+    func interruptNextStart() { interruptStart = true }
+    func delayNextStart() { delayStart = true }
+    func beginTemporaryInterruption() {
+        isRunning = false
+        isInterrupted = true
+    }
+    func finishAutomaticResume() {
+        isInterrupted = false
+        isRunning = hasInputs
+    }
 }
 
 struct CaptureSessionRecoveryTests {
+    @Test func temporaryInterruptionPreservesInputsAndTheAutomaticResumeRequest() async throws {
+        let driver = InterruptedCaptureSession()
+        let controller = SessionController(driver: driver)
+        try await controller.startSessions()
+        await driver.beginTemporaryInterruption()
+        try await controller.startSessions()
+        #expect(await driver.hasInputs)
+        #expect(await driver.starts == 1)
+        #expect(await driver.stops == 0)
+        #expect(await driver.detachments == 0)
+        await driver.finishAutomaticResume()
+        try await controller.startSessions()
+        #expect(await driver.isRunning)
+        #expect(await driver.configurations == 1)
+    }
+
+    @Test func anInterruptionDuringStartDoesNotDetachTheConfiguredGraph() async throws {
+        let driver = InterruptedCaptureSession()
+        let controller = SessionController(driver: driver)
+        await driver.interruptNextStart()
+        try await controller.startSessions()
+        #expect(await driver.isInterrupted)
+        #expect(await driver.hasInputs)
+        #expect(await driver.stops == 0)
+        #expect(await driver.detachments == 0)
+        await driver.finishAutomaticResume()
+        try await controller.startSessions()
+        #expect(await driver.isRunning)
+        #expect(await driver.configurations == 1)
+    }
+
+    @Test func aSuspendedSessionNeedsANewStartRequestEvenDuringAnInterruption() async throws {
+        let driver = InterruptedCaptureSession()
+        let controller = SessionController(driver: driver)
+        try await controller.startSessions()
+        await controller.suspendSessions()
+        await driver.beginTemporaryInterruption()
+        try await controller.startSessions()
+        #expect(await driver.starts == 2)
+        #expect(await driver.isRunning)
+        #expect(await driver.configurations == 1)
+    }
+
+    @Test func delayedForegroundResumeDoesNotBecomeAStartupFailure() async throws {
+        let driver = InterruptedCaptureSession()
+        let controller = SessionController(driver: driver)
+        try await controller.startSessions()
+        await driver.interrupt()
+        await driver.delayNextStart()
+        let resume = Task { try await controller.startSessions() }
+        let deadline = ContinuousClock.now.advanced(by: .seconds(1))
+        while await driver.starts < 2, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(2))
+        }
+        #expect(await driver.starts == 2)
+        await driver.finishAutomaticResume()
+        try await resume.value
+        #expect(await driver.isRunning)
+        #expect(await driver.stops == 0)
+        #expect(await driver.detachments == 0)
+    }
+
     @Test func backgroundSuspensionReleasesCaptureAndReusesConfigurationOnReturn() async throws {
         let driver = InterruptedCaptureSession()
         let controller = SessionController(driver: driver)

@@ -560,8 +560,16 @@ struct SettingsView: View {
                                     .buttonStyle(.bordered)
                                 }
 
-                                TextField("Stream Title", text: $youtubeDraft.title)
-                                    .autocapitalization(.sentences)
+                                VStack(alignment: .leading, spacing: 8) {
+                                    Text("Stream title")
+                                        .font(.subheadline)
+                                        .foregroundStyle(.secondary)
+                                    TextField("Enter a stream title", text: $youtubeDraft.title)
+                                        .textFieldStyle(.roundedBorder)
+                                        .autocapitalization(.sentences)
+                                        .accessibilityLabel("Stream title")
+                                        .accessibilityIdentifier("youtubeStreamTitle")
+                                }
 
                                 Picker("Visibility", selection: $youtubeDraft.visibility) {
                                     Text("Public").tag("public")

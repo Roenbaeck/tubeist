@@ -91,8 +91,49 @@ final class BackgroundExecutionLease {
     }
 }
 
-private enum BackgroundStreamPolicy {
+struct BackgroundStreamPolicy {
+    private var screenshotAt: ContinuousClock.Instant?
+    private var backgroundStartedAt: ContinuousClock.Instant?
+    private var graceDeadline: ContinuousClock.Instant?
+    private var streamRunningInBackground = false
     static let stopGracePeriod: Duration = .seconds(3)
+    static let screenshotGracePeriod: Duration = .seconds(10)
+
+    mutating func didTakeScreenshot(at time: ContinuousClock.Instant = .now) {
+        if streamRunningInBackground, let backgroundStartedAt,
+           backgroundStartedAt <= time, backgroundStartedAt.duration(to: time) <= Self.stopGracePeriod {
+            // UIKit can deliver the screenshot notification after scenePhase.
+            // Extend this pending window, never beyond ten seconds from entry.
+            graceDeadline = backgroundStartedAt.advanced(by: Self.screenshotGracePeriod)
+            return
+        }
+        screenshotAt = time
+    }
+
+    @discardableResult
+    mutating func beginBackground(streamRunning: Bool, at time: ContinuousClock.Instant = .now) -> Duration {
+        defer { screenshotAt = nil }
+        backgroundStartedAt = time
+        streamRunningInBackground = streamRunning
+        let recentScreenshot = screenshotAt.map { $0 <= time && $0.duration(to: time) <= Self.stopGracePeriod } ?? false
+        let grace = streamRunning && recentScreenshot ? Self.screenshotGracePeriod : Self.stopGracePeriod
+        graceDeadline = time.advanced(by: grace)
+        // Reserve time for bounded shutdown if the editor is left open.
+        // This exception is consumed once and cannot extend later app switches.
+        return grace
+    }
+
+    func remainingGracePeriod(at time: ContinuousClock.Instant = .now) -> Duration {
+        guard let graceDeadline else { return .zero }
+        return max(.zero, time.duration(to: graceDeadline))
+    }
+
+    mutating func endBackground() {
+        screenshotAt = nil
+        backgroundStartedAt = nil
+        graceDeadline = nil
+        streamRunningInBackground = false
+    }
 }
 
 // these are my shared variables
@@ -210,6 +251,7 @@ final class AppState {
 struct TubeistApp: App {
     @State private var appState = AppState()
     @State private var backgroundExecutionLease = BackgroundExecutionLease()
+    @State private var backgroundStreamPolicy = BackgroundStreamPolicy()
     @Environment(\.scenePhase) private var scenePhase
     private let startupAlert: String?
     
@@ -239,6 +281,9 @@ struct TubeistApp: App {
 
     private var applicationView: some View {
             TubeistView().environment(appState)
+                .onReceive(NotificationCenter.default.publisher(for: UIApplication.userDidTakeScreenshotNotification)) { _ in
+                    backgroundStreamPolicy.didTakeScreenshot()
+                }
                 .onAppear {
                     UIApplication.shared.isIdleTimerDisabled = true
                     // State is installed here. Accessing it in App.init can
@@ -275,11 +320,19 @@ struct TubeistApp: App {
                     appState.justCameFromBackground = false
                     appState.isBackgroundStopCommitted = false
                     LOG("App is entering background", level: .debug)
+                    let gracePeriod = backgroundStreamPolicy.beginBackground(streamRunning: appState.isStreamSessionRunning)
+                    if gracePeriod == BackgroundStreamPolicy.screenshotGracePeriod {
+                        LOG("Allowing 10 seconds to return from the screenshot editor", level: .debug)
+                    }
                     OutputMonitorView.stop()
                     CameraMonitorView.deletePreviewLayer()
                     backgroundExecutionLease.run(name: "Finalize Tubeist stream") {
                         do {
-                            try await Task.sleep(for: BackgroundStreamPolicy.stopGracePeriod)
+                            while true {
+                                let remaining = await MainActor.run { backgroundStreamPolicy.remainingGracePeriod() }
+                                guard remaining > .zero else { break }
+                                try await Task.sleep(for: remaining)
+                            }
                         } catch {
                             LOG("Cancelled pending background stream stop", level: .info)
                             return
@@ -321,6 +374,7 @@ struct TubeistApp: App {
                     }
                 }
             case (.background, .inactive), (.background, .active):
+                backgroundStreamPolicy.endBackground()
                 if !appState.justCameFromBackground, !appState.isAppInitialization {
                     let stopWasCommitted = appState.isBackgroundStopCommitted
                     let graceWasPending = backgroundExecutionLease.isActive
