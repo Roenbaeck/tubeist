@@ -67,6 +67,7 @@ final class LiveEncodingPipeline {
     }
 
     func start(preset: Preset, stream: Bool, recording: RecordingAssetWriter?,
+               recordsLocally: Bool? = nil,
                allows422: Bool = true, serviceName: String = MPEGTransportStreamMuxer.defaultServiceName) throws {
         guard !isActive else { throw ContentPackagingError.alreadyEncoding }
         try HEVCEncoderConfiguration.validate(width: preset.width, height: preset.height,
@@ -83,7 +84,7 @@ final class LiveEncodingPipeline {
         audioEncoder = AACAudioEncoder(channels: preset.audioChannels, bitratePerChannel: preset.audioBitrate,
                                         sampleRate: AUDIO_SAMPLE_RATE)
         self.recording = recording
-        recordsLocally = recording != nil
+        self.recordsLocally = recordsLocally ?? (recording != nil)
         recordingSalvage = nil
         recordingFailure = nil
         videoDrops = 0
@@ -304,13 +305,18 @@ final class LiveEncodingPipeline {
         do { try recording.append(sample, kind: kind) }
         catch {
             self.recording = nil
-            recordingFailure = error.localizedDescription
+            if recordsLocally { recordingFailure = error.localizedDescription }
+            HighlightRecorder.shared.stopAfterFailure()
             recordingSalvage = Task { @PipelineActor in
                 await recording.finishAfterFailure(deadline: ContinuousClock().now.advanced(by: .seconds(10)))
             }
             // Without a live stream, the session has no output left.
             guard streams else { throw error }
-            LOG("Local recording stopped: \(error.localizedDescription). The live stream continues.", level: .error)
+            if recordsLocally {
+                LOG("Local recording stopped: \(error.localizedDescription). The live stream continues.", level: .error)
+            } else {
+                LOG("Highlight buffering stopped: \(error.localizedDescription). The live stream continues.", level: .warning)
+            }
         }
     }
 
@@ -560,7 +566,13 @@ final class LiveEncodingPipeline {
             // The recording already has the compressed samples. A transport
             // packaging failure must not cancel its otherwise valid ending.
             await recordingSalvage?.value
-            try await recording?.finish(deadline: deadline)
+            do { try await recording?.finish(deadline: deadline) }
+            catch {
+                if recordsLocally { throw error }
+                recording?.cancel()
+                HighlightRecorder.shared.stopAfterFailure()
+                LOG("Highlight buffering could not finalize: \(error.localizedDescription)", level: .warning)
+            }
         } catch {
             recording?.cancel()
             await recordingSalvage?.value

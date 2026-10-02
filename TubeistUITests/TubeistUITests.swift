@@ -171,6 +171,38 @@ final class TubeistUITests: XCTestCase {
     }
 
     @MainActor
+    func testHighlightIsInTheBottomLeftWithoutMovingTheOtherControls() throws {
+        let originalOrientation = XCUIDevice.shared.orientation
+        XCUIDevice.shared.orientation = .landscapeRight
+        defer { XCUIDevice.shared.orientation = originalOrientation }
+        let app = launchForUITesting(additionalArguments: ["-highlight-layout-test", "-Overlays", "[]"])
+        let stop = app.buttons["Stop stream"]
+        XCTAssertTrue(stop.waitForExistence(timeout: 5))
+        let stopWithoutHighlight = stop.frame
+        let settingsWithoutHighlight = app.buttons["Settings"].frame
+        XCTAssertFalse(app.buttons["Save highlight"].exists)
+        app.terminate()
+        app.launchArguments.append("-show-test-highlight")
+        app.launch()
+
+        let highlight = app.buttons["Save highlight"]
+        XCTAssertTrue(highlight.waitForExistence(timeout: 5))
+        XCTAssertTrue(highlight.isHittable)
+        let window = app.windows.firstMatch.frame
+        XCTAssertTrue(window.contains(highlight.frame))
+        XCTAssertGreaterThanOrEqual(highlight.frame.minX - window.minX, 24)
+        XCTAssertLessThan(highlight.frame.midX, window.minX + window.width / 4)
+        XCTAssertEqual(window.maxY - highlight.frame.maxY, 24, accuracy: 2)
+        XCTAssertEqual(stop.frame, stopWithoutHighlight)
+        XCTAssertEqual(app.buttons["Settings"].frame, settingsWithoutHighlight)
+        XCTAssertFalse(highlight.frame.intersects(stop.frame))
+        let screenshot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        screenshot.name = "Bottom-left highlight control"
+        screenshot.lifetime = .keepAlways
+        add(screenshot)
+    }
+
+    @MainActor
     func testOutputPreviewCanBeOpenedAndRestored() throws {
         let app = launchForUITesting()
         let monitor = app.buttons["Monitor selection"]
@@ -298,6 +330,46 @@ final class TubeistUITests: XCTestCase {
         let persistedField = app.secureTextFields["YouTube HLS Stream Key"]
         XCTAssertTrue(persistedField.waitForExistence(timeout: 3))
         XCTAssertNotEqual(persistedField.value as? String, "YouTube HLS Stream Key")
+    }
+
+    @MainActor
+    func testHighlightsDefaultOffAndRespectSettingsSaveAndCancel() throws {
+        let app = launchForUITesting(additionalArguments: ["-reset-highlights-setting"])
+        let settings = app.buttons["Settings"]
+        let toggle = app.switches["highlightsEnabledToggle"]
+        func openHighlights() {
+            settings.tap()
+            XCTAssertTrue(app.buttons["Cancel"].waitForExistence(timeout: 5))
+            scrollTo(toggle, in: app)
+        }
+        func changeHighlights() {
+            let control = toggle.switches.firstMatch
+            (control.exists ? control : toggle).tap()
+        }
+
+        openHighlights()
+        XCTAssertEqual(toggle.value as? String, "0")
+        changeHighlights()
+        XCTAssertEqual(toggle.value as? String, "1")
+        app.buttons["Cancel"].tap()
+        openHighlights()
+        XCTAssertEqual(toggle.value as? String, "0", "Cancel must discard the highlight draft")
+        changeHighlights()
+        let keyField = app.secureTextFields["YouTube HLS Stream Key"]
+        scrollTo(keyField, in: app, searchDirection: -1)
+        keyField.tap()
+        keyField.typeText("abcd-efgh-1234")
+        app.buttons["Save"].tap()
+        XCTAssertTrue(app.buttons["Cancel"].waitForNonExistence(timeout: 5))
+
+        openHighlights()
+        XCTAssertEqual(toggle.value as? String, "1", "Save must persist highlights")
+        changeHighlights()
+        app.buttons["Save"].tap()
+        XCTAssertTrue(app.buttons["Cancel"].waitForNonExistence(timeout: 5))
+        openHighlights()
+        XCTAssertEqual(toggle.value as? String, "0", "Highlights can be disabled again")
+        app.buttons["Cancel"].tap()
     }
 
     @MainActor

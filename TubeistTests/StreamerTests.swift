@@ -71,6 +71,25 @@ struct StreamerTests {
     }
 
     @Test @MainActor
+    func temporaryCameraInterruptionsDoNotStopAPreparingOrLiveStream() async throws {
+        let app = AppState()
+        let actor = StreamingActor()
+        let streamer = Streamer(streamingActor: actor)
+        await streamer.setAppState(app)
+        try await actor.beginPreparing()
+        await streamer.handleCaptureSessionInterruption(reason: 1)
+        #expect(await actor.sessionState() == .preparing)
+        try await actor.markLive()
+        // Delivery can be delayed until the app is active again. The OS reason
+        // must still be treated as a temporary pause, never a fatal failure.
+        for reason in [1, 2, 3, 4, 5] {
+            await streamer.handleCaptureSessionInterruption(reason: reason)
+            #expect(await actor.sessionState() == .live)
+            #expect(app.activeAlert == nil)
+        }
+    }
+
+    @Test @MainActor
     func stoppedYouTubeUploadsAreReportedOnceAndNotAgainByStop() async throws {
         let actor = StreamingActor()
         let sessionID = UUID()
@@ -321,6 +340,41 @@ struct StreamerTests {
         } catch {
             Issue.record("Unexpected output-plan error: \(error)")
         }
+    }
+
+    @Test func highlightsOnlyAddMP4PackagingWhenEnabled() throws {
+        for (stream, record) in [(true, false), (true, true), (false, true)] {
+            for enabled in [false, true] {
+                let plan = try StreamOutputPlan.resolve(stream: stream, record: record,
+                                                        highlightsEnabled: enabled)
+                #expect(plan.highlightsEnabled == enabled)
+                #expect(plan.producesMP4Fragments == (record || enabled))
+                #expect(plan.recordsLocally == record)
+                #expect(plan.remuxesToTransportStream == stream)
+            }
+        }
+        #expect(throws: StreamStartError.noOutputSelected) {
+            try StreamOutputPlan.resolve(stream: false, record: false, highlightsEnabled: true)
+        }
+    }
+
+    @Test @MainActor
+    func highlightChoiceIsFrozenInTheSessionOutputPlan() async throws {
+        let app = AppState()
+        let actor = StreamingActor()
+        await actor.setAppState(app)
+        try await actor.beginPreparing()
+        await actor.setOutputPlan(.init(streamsToYouTube: true, recordsLocally: false, highlightsEnabled: true))
+        try await actor.markLive()
+        #expect(app.activitySession?.highlightsEnabled == true)
+        #expect(await actor.activeOutputPlan()?.highlightsEnabled == true)
+        #expect(await actor.beginStopping())
+        await actor.completeStop()
+        try await actor.beginPreparing()
+        await actor.setOutputPlan(.init(streamsToYouTube: true, recordsLocally: false, highlightsEnabled: false))
+        try await actor.markLive()
+        #expect(app.activitySession?.highlightsEnabled == false)
+        #expect(await actor.activeOutputPlan()?.producesMP4Fragments == false)
     }
 
     @Test func sameSecondStreamRestartsHaveDistinctSafeIdentifiers() throws {

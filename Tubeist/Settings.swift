@@ -232,6 +232,7 @@ private struct AppliedSettingsSnapshot {
     let streamKey: String?
     let stream: Bool
     let record: Bool
+    let highlightsEnabled: Bool
     let inputSyncsWithOutput: Bool
     let prefers422Chroma: Bool
     let areSystemMetricsAtTop: Bool
@@ -261,6 +262,7 @@ private struct AppliedSettingsSnapshot {
             streamKey: try Settings.loadStreamKey(),
             stream: Settings.stream,
             record: Settings.record,
+            highlightsEnabled: Settings.highlightsEnabled,
             inputSyncsWithOutput: Settings.isInputSyncedWithOutput,
             prefers422Chroma: Settings.prefers422Chroma,
             areSystemMetricsAtTop: Settings.areSystemMetricsAtTop,
@@ -287,6 +289,7 @@ private struct AppliedSettingsSnapshot {
             streamKey: try Settings.loadStreamKey(),
             stream: Settings.stream,
             record: Settings.record,
+            highlightsEnabled: Settings.highlightsEnabled,
             inputSyncsWithOutput: Settings.isInputSyncedWithOutput,
             prefers422Chroma: Settings.prefers422Chroma,
             areSystemMetricsAtTop: Settings.areSystemMetricsAtTop,
@@ -312,6 +315,7 @@ private struct AppliedSettingsSnapshot {
         try Settings.setStreamKey(streamKey)
         Settings.stream = stream
         Settings.record = record
+        Settings.highlightsEnabled = highlightsEnabled
         Settings.isInputSyncedWithOutput = inputSyncsWithOutput
         Settings.prefers422Chroma = prefers422Chroma
         Settings.areSystemMetricsAtTop = areSystemMetricsAtTop
@@ -352,6 +356,7 @@ struct SettingsView: View {
     @Environment(\.presentationMode) private var presentationMode
     @State private var stream: Bool = Settings.stream
     @State private var record: Bool = Settings.record
+    @State private var highlightsEnabled = Settings.highlightsEnabled
     @State private var inputSyncsWithOutput: Bool = Settings.isInputSyncedWithOutput
     @State private var prefers422Chroma: Bool = Settings.prefers422Chroma
     @State private var areSystemMetricsAtTop = Settings.areSystemMetricsAtTop
@@ -555,8 +560,16 @@ struct SettingsView: View {
                                     .buttonStyle(.bordered)
                                 }
 
-                                TextField("Stream Title", text: $youtubeDraft.title)
-                                    .autocapitalization(.sentences)
+                                VStack(alignment: .leading, spacing: 8) {
+                                    Text("Stream title")
+                                        .font(.subheadline)
+                                        .foregroundStyle(.secondary)
+                                    TextField("Enter a stream title", text: $youtubeDraft.title)
+                                        .textFieldStyle(.roundedBorder)
+                                        .autocapitalization(.sentences)
+                                        .accessibilityLabel("Stream title")
+                                        .accessibilityIdentifier("youtubeStreamTitle")
+                                }
 
                                 Picker("Visibility", selection: $youtubeDraft.visibility) {
                                     Text("Public").tag("public")
@@ -637,6 +650,14 @@ struct SettingsView: View {
                             .buttonStyle(.bordered)
                         }
                     }
+                }
+
+                Section(
+                    header: Text("Highlights"),
+                    footer: Text("Save a short clip with about 10 seconds before and 5 seconds after your tap, from the iPhone or Apple Watch. Highlights use additional memory and processing. Changes apply to the next stream or recording.")
+                ) {
+                    Toggle("Enable Highlights", isOn: $highlightsEnabled)
+                        .accessibilityIdentifier("highlightsEnabledToggle")
                 }
 
 #if DEBUG
@@ -1406,6 +1427,7 @@ struct SettingsView: View {
         try streamKeyManager.commit()
         Settings.stream = stream
         Settings.record = record
+        Settings.highlightsEnabled = highlightsEnabled
         Settings.isInputSyncedWithOutput = inputSyncsWithOutput
         Settings.prefers422Chroma = prefers422Chroma
         Settings.areSystemMetricsAtTop = areSystemMetricsAtTop
@@ -1573,6 +1595,11 @@ final class Settings: Sendable {
         youtubeTokenExpiry = nil
     }
     
+    static var highlightsEnabled: Bool {
+        get { bool(forKey: "HighlightsEnabled", default: false) }
+        set { UserDefaults.standard.set(newValue, forKey: "HighlightsEnabled") }
+    }
+
     // YouTube's HDR HLS guide documents a 10-bit 4:2:0 requirement. Tubeist
     // negotiates 4:2:2 because a live trial succeeded, so keep an opt-out for
     // accounts or players where that turns out not to hold.

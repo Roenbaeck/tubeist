@@ -58,7 +58,7 @@ Open the log and use the **Debug**, **Info**, **Warning**, and **Error** filters
 
 Debug builds offer an opt-in [manual stream-ending experiment](Tools/Acceptance/README.md#manual-stream-ending-experiment-debug-only) for investigating missing final seconds. It disables ENDLIST and automatic completion and requires ending the broadcast manually in YouTube Studio.
 
-If Tubeist is accidentally sent to the background while live, returning within three seconds resumes the same capture session instead of ending the YouTube event. Remaining in the background beyond that grace period commits the stream to a normal, fully drained Stop.
+If Tubeist is accidentally sent to the background while live, returning within three seconds resumes the same capture session instead of ending the YouTube event. Opening the screenshot editor immediately after taking a screenshot allows up to ten seconds to return. iOS pauses the camera while Tubeist is in the background. Remaining there beyond the grace period commits the stream to a normal, fully drained Stop; returning afterward restores camera monitoring.
 
 See YouTube's official [HLS ingestion guide](https://developers.google.com/youtube/v3/live/guides/hls-ingestion) for help creating a compatible stream.
 

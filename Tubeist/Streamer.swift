@@ -80,21 +80,28 @@ extension StreamSessionState {
 struct StreamOutputPlan: Sendable, Equatable {
     let streamsToYouTube: Bool
     let recordsLocally: Bool
+    let highlightsEnabled: Bool
+
+    init(streamsToYouTube: Bool, recordsLocally: Bool, highlightsEnabled: Bool = false) {
+        self.streamsToYouTube = streamsToYouTube
+        self.recordsLocally = recordsLocally
+        self.highlightsEnabled = highlightsEnabled
+    }
 
     var routesEncodedFragments: Bool { streamsToYouTube }
     var remuxesToTransportStream: Bool { streamsToYouTube }
+    var producesMP4Fragments: Bool { recordsLocally || highlightsEnabled }
 
     static func resolve(
         stream: Bool,
-        record: Bool
+        record: Bool,
+        highlightsEnabled: Bool = false
     ) throws -> StreamOutputPlan {
         guard stream || record else {
             throw StreamStartError.noOutputSelected
         }
-        guard stream else {
-            return StreamOutputPlan(streamsToYouTube: false, recordsLocally: record)
-        }
-        return StreamOutputPlan(streamsToYouTube: true, recordsLocally: record)
+        return StreamOutputPlan(streamsToYouTube: stream, recordsLocally: record,
+                                highlightsEnabled: highlightsEnabled)
     }
 }
 
@@ -192,7 +199,10 @@ actor StreamingActor {
     func setOutputPlan(_ outputPlan: StreamOutputPlan) async {
         self.outputPlan = outputPlan
         let appState = self.appState
-        await MainActor.run { appState?.activitySession?.streamsToYouTube = outputPlan.streamsToYouTube }
+        await MainActor.run {
+            appState?.activitySession?.streamsToYouTube = outputPlan.streamsToYouTube
+            appState?.activitySession?.highlightsEnabled = outputPlan.highlightsEnabled
+        }
     }
 
     func setYouTubeBroadcast(
@@ -220,6 +230,10 @@ actor StreamingActor {
 
     func activeYouTubeHealthTarget() -> YouTubeHealthTarget? {
         youTubeHealthTarget
+    }
+
+    func activitySessionID() async -> UUID? {
+        await appState?.activitySession?.id
     }
 
     /// Records the first permanent upload failure of a running session and
@@ -367,8 +381,11 @@ actor StreamCommandQueue {
 
 final class Streamer: Sendable {
     public static let shared = Streamer()
-    private let streamingActor = StreamingActor()
+    private let streamingActor: StreamingActor
     private let commandQueue = StreamCommandQueue()
+    init(streamingActor: StreamingActor = StreamingActor()) {
+        self.streamingActor = streamingActor
+    }
     private static let streamIDFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.calendar = Calendar(identifier: .gregorian)
@@ -472,20 +489,15 @@ final class Streamer: Sendable {
         }
     }
 
-    func handleCaptureSessionInterruption() async {
+    func handleCaptureSessionInterruption(reason: Int? = nil) async {
         let state = await streamingActor.sessionState()
         switch state {
         case .preparing, .live:
-            let appIsNotActive = await MainActor.run {
-                UIApplication.shared.applicationState != .active
-            }
-            if appIsNotActive {
-                LOG("Camera session paused while Tubeist became inactive", level: .debug)
-            } else {
-                await handleRuntimeFailure(
-                    CaptureSetupError.configuration("The camera session was interrupted")
-                )
-            }
+            // A notification can reach this task after the app is active again
+            // or the interruption has already ended. Interruption isn't a
+            // runtime failure: retain capture and let delivery recovery handle
+            // the pause. Its existing timeout still catches persistent loss.
+            LOG("Camera session temporarily paused; waiting for capture to resume (reason: \(reason.map(String.init) ?? "unknown"))", level: .debug)
         case .idle, .stopping, .failed:
             // iOS normally interrupts an idle preview when the app moves to the
             // background. The session resumes on return, so this is not an
@@ -528,14 +540,15 @@ final class Streamer: Sendable {
             }
             let outputPlan = try StreamOutputPlan.resolve(
                 stream: Settings.stream,
-                record: Settings.record
+                record: Settings.record,
+                highlightsEnabled: Settings.highlightsEnabled
             )
             await streamingActor.setOutputPlan(outputPlan)
             let serviceName = try await prepareEncodedOutput(streamID: streamID, sessionID: sessionID, plan: outputPlan)
             try await ContentPackager.shared.beginPackaging(
-                stream: outputPlan.routesEncodedFragments,
-                record: outputPlan.recordsLocally,
-                serviceName: serviceName
+                plan: outputPlan,
+                serviceName: serviceName,
+                sessionID: await streamingActor.activitySessionID() ?? sessionID
             )
             packagingStarted = true
             await SoundGrabber.shared.commenceGrabbing()

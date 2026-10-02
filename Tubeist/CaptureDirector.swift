@@ -692,6 +692,7 @@ private class DeviceActor {
 /// interruption/recovery to be tested without a physical camera.
 protocol CaptureSessionDriving: Sendable {
     var isRunning: Bool { get async }
+    var isInterrupted: Bool { get async }
     func configure() async throws
     func startRunning() async throws
     func stopRunning() async
@@ -704,6 +705,7 @@ private final class CaptureSessionDriver: CaptureSessionDriving {
 
     init(session: AVCaptureSession) { self.session = session }
     var isRunning: Bool { session.isRunning }
+    var isInterrupted: Bool { session.isInterrupted }
     func configure() async throws { try await CaptureDirector.shared.attachAll() }
     func startRunning() throws {
         try AVAudioSession.sharedInstance().setActive(true)
@@ -726,6 +728,7 @@ actor SessionController {
     private let commands = StreamCommandQueue()
     private let driver: any CaptureSessionDriving
     private var isConfigured = false
+    private var hasStartRequest = false
 
     init(driver: any CaptureSessionDriving) {
         self.driver = driver
@@ -737,6 +740,9 @@ actor SessionController {
 
     private func start() async throws {
         guard await !driver.isRunning else { return }
+        // AVCaptureSession preserves its start request through an interruption.
+        // Calling stop/detach here would prevent the system from resuming it.
+        if hasStartRequest, await driver.isInterrupted { return }
         do {
             // Locking the phone can stop capture without removing its inputs,
             // outputs, or sample delegates. Resume that same configuration.
@@ -745,13 +751,23 @@ actor SessionController {
                 isConfigured = true
             }
             try await driver.startRunning()
-            guard await driver.isRunning else {
-                throw CaptureSetupError.sessionDidNotStart
+            hasStartRequest = true
+            // On foreground return the ended notification can precede the
+            // running state. Give automatic resumption a short time to settle.
+            let deadline = ContinuousClock.now.advanced(by: .seconds(1))
+            while await !driver.isRunning {
+                if await driver.isInterrupted { return }
+                guard ContinuousClock.now < deadline else { throw CaptureSetupError.sessionDidNotStart }
+                try await Task.sleep(for: .milliseconds(50))
             }
         } catch {
+            // The OS can interrupt between the checks and startRunning().
+            // Preserve an already-configured graph in that race too.
+            if isConfigured, await driver.isInterrupted { return }
             await driver.stopRunning()
             await driver.detach()
             isConfigured = false
+            hasStartRequest = false
             throw error
         }
     }
@@ -763,9 +779,14 @@ actor SessionController {
     func suspendSessions(if shouldSuspend: @escaping @Sendable () async -> Bool = { true }) async {
         try? await commands.run { [self] in
             guard await shouldSuspend() else { return }
-            // Release the hardware but retain its configuration for unlock.
-            await driver.stopRunning()
+            await suspend()
         }
+    }
+
+    private func suspend() async {
+        // Release the hardware but retain its configuration for unlock.
+        await driver.stopRunning()
+        hasStartRequest = false
     }
 
     private func stop() async {
@@ -775,6 +796,7 @@ actor SessionController {
         // An interrupted/stopped session may still own all its inputs.
         await driver.detach()
         isConfigured = false
+        hasStartRequest = false
     }
 
     func cycleSessions() async throws {
@@ -1034,7 +1056,7 @@ private final class CaptureEventMonitor: @unchecked Sendable {
             let reason = (notification.userInfo?[AVCaptureSessionInterruptionReasonKey] as? NSNumber)?.intValue
             LOG("Camera session interrupted: \(Self.interruptionDescription(reason))", level: .warning)
             Task {
-                await Streamer.shared.handleCaptureSessionInterruption()
+                await Streamer.shared.handleCaptureSessionInterruption(reason: reason)
             }
         })
         newObservers.append(center.addObserver(

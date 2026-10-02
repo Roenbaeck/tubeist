@@ -5,6 +5,7 @@
 
 import Testing
 import UIKit
+import Foundation
 @testable import Tubeist
 
 enum BackgroundFinalizationStage: String, CaseIterable, Sendable {
@@ -77,6 +78,39 @@ private final class BackgroundOperationLatch {
 }
 
 struct BackgroundExecutionLeaseTests {
+    @Test func aRecentScreenshotGetsOneBoundedReturnWindow() {
+        let now = ContinuousClock.now
+        var policy = BackgroundStreamPolicy()
+        #expect(policy.beginBackground(streamRunning: true, at: now) == .seconds(3))
+        policy.endBackground()
+        policy.didTakeScreenshot(at: now)
+        #expect(policy.beginBackground(streamRunning: true, at: now.advanced(by: .seconds(1))) == .seconds(10))
+        policy.endBackground()
+        #expect(policy.beginBackground(streamRunning: true, at: now.advanced(by: .seconds(2))) == .seconds(3))
+        policy.endBackground()
+        policy.didTakeScreenshot(at: now)
+        #expect(policy.beginBackground(streamRunning: true, at: now.advanced(by: .seconds(4))) == .seconds(3))
+        policy.endBackground()
+        policy.didTakeScreenshot(at: now)
+        #expect(policy.beginBackground(streamRunning: false, at: now) == .seconds(3))
+    }
+
+    @Test func aLateScreenshotNotificationExtendsOnlyThePendingWindow() {
+        let now = ContinuousClock.now
+        var policy = BackgroundStreamPolicy()
+        policy.beginBackground(streamRunning: true, at: now)
+        policy.didTakeScreenshot(at: now.advanced(by: .seconds(1)))
+        #expect(policy.remainingGracePeriod(at: now.advanced(by: .seconds(3))) == .seconds(7))
+        policy.didTakeScreenshot(at: now.advanced(by: .seconds(2)))
+        #expect(policy.remainingGracePeriod(at: now.advanced(by: .seconds(10))) == .zero)
+        policy.endBackground()
+        #expect(policy.beginBackground(streamRunning: true, at: now.advanced(by: .seconds(2))) == .seconds(3))
+        policy.endBackground()
+        policy.beginBackground(streamRunning: false, at: now)
+        policy.didTakeScreenshot(at: now.advanced(by: .seconds(1)))
+        #expect(policy.remainingGracePeriod(at: now.advanced(by: .seconds(3))) == .zero)
+    }
+
     @Test @MainActor
     func oldCompletionCannotEndANewerBackgroundLease() async throws {
         let manager = FakeBackgroundTaskManager()

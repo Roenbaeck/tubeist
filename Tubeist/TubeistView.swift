@@ -189,7 +189,11 @@ struct TubeistView: View {
             return
         }
         do {
-            try await Streamer.shared.startSessions()
+            // An active stream still owns its capture graph. Brief system UI
+            // interruptions resume automatically; don't restart it on return.
+            if !appState.isStreamSessionRunning {
+                try await Streamer.shared.startSessions()
+            }
             try Task.checkCancellation()
             await CameraMonitorView.createPreviewLayer()
             try Task.checkCancellation()
@@ -803,7 +807,6 @@ struct TubeistView: View {
                             .accessibilityLabel(appState.isStreamSessionRunning ? "Stop stream" : "Start stream")
                             .accessibilityValue(appState.streamSessionState.statusDescription)
                             .accessibilityHint(appState.isStreamSessionRunning ? "Finalizes recording and YouTube uploads" : "Starts the selected streaming and recording outputs")
-                            
                         }
                         .padding()
                     }
@@ -811,6 +814,28 @@ struct TubeistView: View {
                     .disabled(showSplashScreen)
                 }
                 .frame(width: width, height: height)
+                .overlay(alignment: .bottomLeading) {
+                    if appState.isStreamActive && appState.activitySession?.highlightsEnabled == true {
+                        Button {
+                            guard let id = appState.activitySession?.id else { return }
+                            Task {
+                                do { try await HighlightRequestBridge.request(sessionID: id) }
+                                catch { fade(error.localizedDescription) }
+                            }
+                        } label: {
+                            Image(systemName: "bolt.badge.clock")
+                                .font(.system(size: 20))
+                                .foregroundStyle(.white)
+                                .frame(width: 44, height: 44)
+                        }
+                        .background(.black.opacity(0.5), in: Circle())
+                        .disabled(showSplashScreen || !appState.highlightsAvailable || appState.highlightStatus == .saving)
+                        .opacity((appState.highlightsAvailable ? 1 : 0.4) * (1 - splashOpacity))
+                        .accessibilityLabel("Save highlight")
+                        .accessibilityHint("Saves about 10 seconds before and 5 seconds after this moment on the iPhone")
+                        .padding(24)
+                    }
+                }
                 
                 // Vertical Small Button Column
                 VStack {
@@ -1054,7 +1079,7 @@ struct TubeistView: View {
         .task(id: canPrepareCamera) {
             // Unlock first passes through .inactive, where camera access may
             // still be unavailable. Wait for .active before resuming capture.
-            guard canPrepareCamera else { return }
+            guard canPrepareCamera, !isCameraReady else { return }
             await prepareCamera()
         }
         .task(id: StreamActivityRunKey(sessionID: appState.activitySession?.id, preferences: appState.activityPreferences)) {
@@ -1082,6 +1107,11 @@ struct TubeistView: View {
         .onChange(of: overlayManager.overlays) {
             // Reordering existing views does not take a new WebKit snapshot.
             Task { await OverlayBundler.shared.combineOverlayImages() }
+        }
+        .onChange(of: showSettings) { _, isPresented in
+            // Save can rebuild the camera graph. Refresh it when Settings
+            // closes, while transient inactive states retain the ready graph.
+            if isPresented { isCameraReady = false }
         }
         .onChange(of: appState.isBatterySavingOn) { oldValue, newValue in
             appState.isAudioLevelRunning = !appState.isBatterySavingOn
@@ -1140,7 +1170,22 @@ struct TubeistView: View {
                 stopYouTubePolling()
             }
         }
+        .onChange(of: appState.highlightStatus) { _, status in
+            guard let status else { return }
+            fade(status == .failed ? appState.highlightFailureMessage ?? status.label : status.label)
+        }
         .onAppear {
+            if isUITesting, CommandLine.arguments.contains("-highlight-layout-test") {
+                // Install the layout fixture after SwiftUI owns its State,
+                // independently of simulator foreground/camera startup timing.
+                appState.setStreamSessionState(.preparing)
+                appState.activitySession?.highlightsEnabled = CommandLine.arguments.contains("-show-test-highlight")
+                appState.setStreamSessionState(.live)
+                appState.highlightsAvailable = true
+                isCameraReady = true
+                showSplashScreen = false
+                splashOpacity = 0
+            }
             guard !isUITesting else { return }
             selectedStabilization = Settings.cameraStabilization ?? "Off"
             bootstrapYouTubeStatus()

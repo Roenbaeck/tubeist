@@ -23,6 +23,7 @@ struct StreamActivitySession: Equatable, Sendable {
     var startedAt: Date?
     var stoppedAt: Date?
     var streamsToYouTube: Bool
+    var highlightsEnabled = false
 }
 
 struct StreamActivitySnapshot: Equatable, Sendable {
@@ -90,6 +91,8 @@ struct StreamActivityPolicy {
             activeAlert = false
         }
         let phaseChanged = content.phase != lastContent?.phase
+        let highlightChanged = content.highlightStatus != lastContent?.highlightStatus ||
+            content.canSaveHighlight != lastContent?.canSaveHighlight
         let due = lastPush.map { now.timeIntervalSince($0) >= 5 } ?? true
         let heartbeat = lastPush.map { now.timeIntervalSince($0) >= 60 } ?? true
         // A fresh but identical poll needn't synchronize a new payload. The next
@@ -98,7 +101,7 @@ struct StreamActivityPolicy {
         visibleContent.healthValidUntil = lastContent?.healthValidUntil
         let changed = visibleContent != lastContent
         guard preferences.detail != .off,
-              (changed && (due || phaseChanged)) || heartbeat || alert != nil else {
+              (changed && (due || phaseChanged || highlightChanged)) || heartbeat || alert != nil else {
             return .init(content: nil, alert: nil)
         }
         lastContent = content

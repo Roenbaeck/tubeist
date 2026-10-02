@@ -10,6 +10,8 @@ Settings → Apple Watch and Live Activity offers Off, Standard and Full. Standa
 
 The timer starts when capture goes live and freezes at Stop. Finishing remains visible during drain and YouTube completion. The final Ended/Stopped state is retained briefly, with the elapsed time frozen. Starting a new session removes previous activities. Dismissing an activity suppresses it for the rest of that session. iOS may still choose when and where to present a Live Activity.
 
+The Save Highlight button saves a local clip around the requested moment using the iPhone's encoded fragments. Enable Highlights in Settings before starting; it is off by default. It works in Stream Only as well as recording modes. Requests are tied to the activity's session, and the button is hidden when highlights are disabled or capture is unavailable, and disabled while saving. See [Save Highlight](Highlights.md) for clip duration, storage, resource limits and testing.
+
 Alerts are off by default. Notification authorization is requested only when the user enables alerts in Settings. Remote problems require two distinct fresh health observations at least ten seconds apart. Initial noData is not treated as failed delivery. Persistent local upload failure and terminal session failures can also alert. Healthy recovery alerts are separately optional. There are no loss-of-data alerts during intentional finalization.
 
 Ordinary notification fallback respects notification settings and Focus. While iPhone is unlocked, that fallback normally appears on iPhone. Actual Live Activity alert delivery and Watch haptics must be verified on paired hardware.
@@ -40,6 +42,7 @@ Validation on 2026-09-21: the full run passed 392 unit tests and 17 existing UI 
 6. Dismiss during a stream: status updates must not recreate it. A new stream may create a new activity.
 7. Test record-only, no YouTube authorization/manual key, background/foreground within the grace period, longer backgrounding, force quit/relaunch, and a temporary connection loss. Stale data must never look freshly healthy.
 8. Test Off: no Live Activity or additional viewer queries. Compare normal and Battery Saving Mode during a longer stream.
+9. During an active session, request Save Highlight from the Watch. Confirm Saving then Saved, and play the MP4 from the iPhone's Tubeist folder. Repeat in Stream Only and Stream and Record, and request a clip shortly before Stop. Check that an old or stale activity cannot capture a new session.
 
 ## Signing and versions
 
