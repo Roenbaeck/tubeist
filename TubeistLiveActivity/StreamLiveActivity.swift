@@ -5,8 +5,7 @@ import WidgetKit
 struct StreamLiveActivity: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: StreamActivityAttributes.self) { context in
-            StreamActivityView(state: context.state, stale: context.isStale, highlightSessionID: context.attributes.sessionID)
-                .padding(10)
+            StreamActivityCard(state: context.state, stale: context.isStale, highlightSessionID: context.attributes.sessionID)
                 .activityBackgroundTint(.black)
                 .activitySystemActionForegroundColor(.white)
         } dynamicIsland: { context in
@@ -58,8 +57,19 @@ extension StreamActivityAttributes {
 }
 
 #Preview("Watch: stale status") {
-    StreamActivityView(state: StreamActivityAttributes.previewState(), stale: true)
+    StreamActivityCard(state: StreamActivityAttributes.previewState(), stale: true)
         .environment(\.activityFamily, .small)
-        .padding(10).frame(width: 170, height: 140).background(.black)
+        .frame(width: 152, height: 69.5).background(.black)
+}
+
+#Preview("Watch: highlights, smallest card") {
+    let state = {
+        var state = StreamActivityAttributes.previewState()
+        state.canSaveHighlight = true
+        return state
+    }()
+    StreamActivityCard(state: state, stale: false, highlightSessionID: UUID())
+        .environment(\.activityFamily, .small)
+        .frame(width: 152, height: 69.5).background(.black)
 }
 #endif

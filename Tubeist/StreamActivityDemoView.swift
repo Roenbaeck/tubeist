@@ -13,6 +13,10 @@ struct StreamActivityDemoView: View {
     @State private var ready = false
     @State private var busy = false
     @State private var stale = false
+    @State private var previewHighlights = false
+    @State private var previewHighlightStatus: HighlightStatus?
+    @State private var previewSessionID = UUID()
+    @State private var smallWatch = false
     @State private var message = "No stream or recording is created."
     @State private var state = StreamActivityAttributes.ContentState(
         phase: .streaming, startedAt: Date().addingTimeInterval(-83), stoppedAt: nil,
@@ -39,6 +43,21 @@ struct StreamActivityDemoView: View {
                 .toggleStyle(.button)
                 .buttonStyle(.bordered)
                 .frame(maxWidth: 430)
+                if CommandLine.arguments.contains("-highlight-layout-preview") {
+                    HStack {
+                        Toggle("Highlights", isOn: $previewHighlights)
+                        Toggle("Small Watch", isOn: $smallWatch)
+                    }
+                    .toggleStyle(.button)
+                    .buttonStyle(.bordered)
+                    HStack {
+                        Button("Ready") { previewHighlightStatus = nil }
+                        Button("Saving") { previewHighlightStatus = .saving }
+                        Button("Saved") { previewHighlightStatus = .saved }
+                        Button("Failed") { previewHighlightStatus = .failed }
+                    }
+                    .buttonStyle(.bordered)
+                }
                 HStack {
                     Button("New session") {
                         busy = true
@@ -70,10 +89,12 @@ struct StreamActivityDemoView: View {
             }
             VStack {
                 Text("Apple Watch layout").font(.caption)
-                StreamActivityView(state: state, stale: stale)
+                StreamActivityCard(state: watchPreviewState, stale: stale, highlightSessionID: previewSessionID)
                     .environment(\.activityFamily, .small)
-                    .padding(10).frame(width: 160, height: 140)
+                    .frame(width: smallWatch ? 152 : 191, height: smallWatch ? 69.5 : 81.5)
                     .background(.black, in: RoundedRectangle(cornerRadius: 18))
+                    .accessibilityElement(children: .contain)
+                    .accessibilityIdentifier("watch-activity-preview")
             }
         }
         .padding(20)
@@ -88,6 +109,19 @@ struct StreamActivityDemoView: View {
             activityStatus = Activity<StreamActivityAttributes>.activities.first.map { String(describing: $0.activityState) } ?? "unavailable"
             ready = true
         }
+    }
+
+    // Only the on-screen fixture offers an action; the published demo activity
+    // remains marked isDemo and cannot send a highlight request.
+    private var watchPreviewState: StreamActivityAttributes.ContentState {
+        guard CommandLine.arguments.contains("-highlight-layout-preview") else { return state }
+        var preview = state
+        preview.isDemo = false
+        preview.canSaveHighlight = previewHighlights && (state.phase == .streaming || state.phase == .recording)
+        preview.highlightStatus = previewHighlightStatus
+        // Exercise a longer elapsed time without waiting for a real session.
+        preview.startedAt = state.startedAt?.addingTimeInterval(-3600)
+        return preview
     }
 
     private func change(phase: StreamActivityPhase, problem: Bool) {

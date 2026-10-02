@@ -1,6 +1,21 @@
 import SwiftUI
 import WidgetKit
 
+/// The Watch Smart Stack has much less vertical space than the iPhone activity.
+struct StreamActivityCard: View {
+    @Environment(\.activityFamily) private var family
+    let state: StreamActivityAttributes.ContentState
+    let stale: Bool
+    var highlightSessionID: UUID? = nil
+
+    var body: some View {
+        StreamActivityView(state: state, stale: stale, highlightSessionID: highlightSessionID)
+            .padding(.horizontal, family == .small ? 6 : 10)
+            .padding(.vertical, family == .small ? 4 : 10)
+            .frame(maxWidth: .infinity, maxHeight: family == .small ? .infinity : nil, alignment: .topLeading)
+    }
+}
+
 struct StreamActivityView: View {
     @Environment(\.activityFamily) private var family
     @Environment(\.isLuminanceReduced) private var dimmed
@@ -9,35 +24,51 @@ struct StreamActivityView: View {
     var highlightSessionID: UUID? = nil
 
     var body: some View {
-        VStack(alignment: .leading, spacing: family == .small ? 4 : 8) {
-            HStack {
-                StreamActivityBadge(state: state, stale: stale)
-                Spacer(minLength: 4)
-                StreamActivityTimer(state: state)
-            }
-            .font(family == .small ? .caption : .headline)
-            Text(stale && !state.phase.isTerminal ? "Status unavailable" : state.status)
-                .font(.caption2)
-                .foregroundStyle(Color.white.opacity(0.75))
-                .lineLimit(1)
-                .minimumScaleFactor(0.85)
-            if let status = state.highlightStatus, !stale {
-                Text(status.label)
-                    .foregroundStyle(status == .failed ? Color.orange : .white)
-                    .lineLimit(1)
-            }
-            if state.canSaveHighlight, !state.isDemo, !stale, let highlightSessionID {
-                Button(intent: SaveHighlightIntent(sessionID: highlightSessionID)) {
-                    Label("Save highlight", systemImage: "bolt.badge.clock")
+        VStack(alignment: .leading, spacing: rowSpacing) {
+            VStack(alignment: .leading, spacing: rowSpacing) {
+                HStack(spacing: 4) {
+                    StreamActivityBadge(state: state, stale: stale)
+                        .accessibilityIdentifier("activity-phase")
+                    if family != .small { Spacer(minLength: 4) }
+                    StreamActivityTimer(state: state)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                        .frame(maxWidth: family == .small ? 54 : nil, alignment: .leading)
+                        .accessibilityIdentifier("activity-timer")
+                    if family == .small { Spacer(minLength: 0) }
                 }
-                .disabled(state.highlightStatus == .saving)
-                .buttonStyle(.bordered)
-                .accessibilityHint("Saves about 10 seconds before and 5 seconds after this moment on the iPhone")
+                .font(family == .small ? .caption : .headline)
+                Text(stale && !state.phase.isTerminal ? "Status unavailable" : state.status)
+                    .font(.caption2)
+                    .foregroundStyle(Color.white.opacity(0.75))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.85)
+                    .accessibilityIdentifier("activity-health")
+            }
+            .padding(.trailing, showsHighlight || showsHighlightFeedback ? highlightSize + 6 : 0)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .overlay(alignment: .topTrailing) {
+                if showsHighlight, let highlightSessionID {
+                    Button(intent: SaveHighlightIntent(sessionID: highlightSessionID)) {
+                        highlightIndicator
+                    }
+                    .disabled(state.highlightStatus == .saving)
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Save highlight")
+                    .accessibilityValue(state.highlightStatus?.label ?? "Ready")
+                    .accessibilityHint("Saves about 10 seconds before and 5 seconds after this moment on the iPhone")
+                    .accessibilityIdentifier("activity-save-highlight")
+                } else if showsHighlightFeedback {
+                    highlightIndicator
+                        .accessibilityLabel(state.highlightStatus?.label ?? "")
+                        .accessibilityIdentifier("activity-highlight-feedback")
+                }
             }
             if state.fullDetail, !stale, !state.phase.isTerminal {
                 HStack {
                     if let bitrate = state.bitrateLabel {
                         Label(bitrate, systemImage: "arrow.up")
+                            .accessibilityIdentifier("activity-bitrate")
                     }
                     Spacer(minLength: 4)
                     if let viewers = state.viewers { Label(viewers.formatted(), systemImage: "eye") }
@@ -46,11 +77,13 @@ struct StreamActivityView: View {
                     if let battery = state.batteryPercent {
                         Label("\(battery)%", systemImage: "battery.75percent")
                             .foregroundStyle(battery <= 20 ? Color.orange : Color.white.opacity(0.8))
+                            .accessibilityIdentifier("activity-battery")
                     }
                     Spacer(minLength: 2)
                     if let thermal = state.thermal {
                         Label(thermal.title, systemImage: "thermometer.medium")
                             .foregroundStyle(thermal == .hot || thermal == .critical ? Color.orange : Color.white.opacity(0.8))
+                            .accessibilityIdentifier("activity-thermal")
                     }
                     if state.phase == .streaming {
                         Image(systemName: state.link == .failed ? "wifi.exclamationmark" : "wifi")
@@ -65,6 +98,38 @@ struct StreamActivityView: View {
         .font(.caption2)
         .foregroundStyle(.white)
         .opacity(dimmed ? 0.65 : 1)
+    }
+
+    private var rowSpacing: CGFloat { family == .small ? 2 : 8 }
+    private var highlightSize: CGFloat { family == .small ? 28 : 32 }
+    private var showsHighlight: Bool {
+        state.canSaveHighlight && !state.phase.isTerminal && !state.isDemo && !stale && highlightSessionID != nil
+    }
+    private var showsHighlightFeedback: Bool {
+        state.highlightStatus != nil && !state.isDemo && !stale
+    }
+    private var highlightIndicator: some View {
+        Image(systemName: highlightSymbol)
+            .font(.system(size: family == .small ? 14 : 17, weight: .semibold))
+            .foregroundStyle(highlightColor)
+            .frame(width: highlightSize, height: highlightSize)
+            .background(highlightColor.opacity(0.2), in: Circle())
+            .contentShape(Circle())
+    }
+    private var highlightSymbol: String {
+        switch state.highlightStatus {
+        case .saving: "hourglass"
+        case .saved: "checkmark"
+        case .failed: "exclamationmark"
+        case nil: "bolt.badge.clock"
+        }
+    }
+    private var highlightColor: Color {
+        switch state.highlightStatus {
+        case .saved: .green
+        case .failed: .orange
+        default: .white
+        }
     }
 }
 
