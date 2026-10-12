@@ -107,6 +107,14 @@ iOS does not permit indefinite camera capture in the background. If Tubeist move
 
 Battery-saving mode can reduce display power use during long sessions while leaving the capture pipeline active.
 
+Settings is available only while idle. Opening it suspends camera and microphone
+capture, removes overlay web pages and the output preview, and stops the hidden
+audio meters and system-metrics updates. Normal screen auto-lock is allowed while
+the form is open. Save validates the selected capture settings and releases the
+hardware again until dismissal; Cancel and swipe-to-dismiss also restore the
+preview and reload the applied overlays. Watch Start is unavailable until Settings
+closes. Returning from the background with Settings still open keeps capture paused.
+
 ## Privacy and credentials
 
 Stream keys and authentication credentials are stored using iOS-provided secure storage. Tubeist redacts stream keys, complete ingestion URLs, and OAuth tokens from its diagnostic output. Never include those credentials—or private recordings—in an issue or bug report.

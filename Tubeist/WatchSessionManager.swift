@@ -102,7 +102,8 @@ final class WatchSessionManager: NSObject, WCSessionDelegate {
     func currentSnapshot(appState: AppState) -> WatchStateSnapshot {
         var snapshot = WatchStateSnapshot.idle
         snapshot.generatedAt = Date()
-        snapshot.isAppActive = isAppActive() && !appState.soonGoingToBackground && !appState.isAppInitialization
+        snapshot.isAppActive = isAppActive() && !appState.soonGoingToBackground
+            && !appState.isAppInitialization && !appState.isSettingsPresented
         snapshot.externalStatusConfigured = ExternalStatusClient.endpoint(Settings.externalStatusURL) != nil
         if let activity = appState.activitySnapshot(preferences: appState.activityPreferences) {
             let content = activity.content
@@ -214,6 +215,9 @@ final class WatchSessionManager: NSObject, WCSessionDelegate {
     /// Watch learns the real outcome from the periodic WatchStateSnapshot
     /// push (phase) instead of the message reply.
     private func handleStart(appState: AppState) async -> WatchCommandReply {
+        guard !appState.isSettingsPresented else {
+            return .failure("Close Settings on your iPhone before starting")
+        }
         if appState.youtubeStatus == "live" || appState.youtubeStatus == "testing" {
             return .failure("YouTube is still finishing the previous stream")
         }
@@ -222,7 +226,7 @@ final class WatchSessionManager: NSObject, WCSessionDelegate {
         }
         let streamID = Streamer.makeStreamID()
         Task {
-            guard isAppActive(), !appState.soonGoingToBackground else { return }
+            guard isAppActive(), !appState.soonGoingToBackground, !appState.isSettingsPresented else { return }
             do {
                 try await Streamer.shared.startStream(streamID: streamID)
             } catch {

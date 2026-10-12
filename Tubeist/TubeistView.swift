@@ -39,7 +39,6 @@ struct TubeistView: View {
     @State private var showHorizonLevel = Settings.showHorizonLevel
     @State private var areSystemMetricsAtTop = Settings.areSystemMetricsAtTop
     @State private var overlayManager = OverlaySettingsManager()
-    @State private var showSettings = false
     @State private var showStabilizationConfirmation = false
     @State private var showBatterySavingConfirmation = false
     @State private var showFocusAndExposureArea = false
@@ -48,7 +47,6 @@ struct TubeistView: View {
     @State private var showStabilizationPicker = false
     @State private var showJournal = false
     @State private var enableFocusAndExposureTap = false
-    @State private var isSettingsPresented = false
     @State private var cameraZoom = CameraZoomState()
     @State private var exposureBias: Float = 0.0
     @State private var lensPosition: Float = 1.0
@@ -87,6 +85,12 @@ struct TubeistView: View {
 
     private var canPrepareCamera: Bool {
         scenePhase == .active && !appState.soonGoingToBackground && !showSettings
+    }
+
+    private var showSettings: Bool { appState.isSettingsPresented }
+
+    private var settingsPresentation: Binding<Bool> {
+        Binding(get: { appState.isSettingsPresented }, set: { appState.isSettingsPresented = $0 })
     }
 
     private var isUITesting: Bool {
@@ -398,7 +402,7 @@ struct TubeistView: View {
         // Keychain-protected OAuth credentials may become unavailable after the
         // device locks. The explicit Stop path owns completion; status polling
         // resumes when Tubeist becomes active again.
-        guard !appState.soonGoingToBackground else { return }
+        guard !appState.soonGoingToBackground, !showSettings else { return }
         guard let broadcastId = appState.youtubeBroadcastId else {
             appState.youtubeStatus = nil
             return
@@ -440,7 +444,7 @@ struct TubeistView: View {
                 // 16:9 Content Area
                 ZStack {
                     CameraMonitorView(isPreviewEnabled: appState.activeMonitor == .camera
-                        && !appState.isBatterySavingOn && !appState.soonGoingToBackground)
+                        && !showSettings && !appState.isBatterySavingOn && !appState.soonGoingToBackground)
                         .id(appState.cameraMonitorId)
                         .gesture(magnification)
                         .frame(width: width, height: height)
@@ -450,9 +454,9 @@ struct TubeistView: View {
                             }
                         }
                     
-                    // Unmount background pages so their JavaScript, media,
+                    // Unmount covered pages so their JavaScript, media,
                     // retry loops and bitmap snapshots cannot keep working.
-                    if !appState.soonGoingToBackground {
+                    if !appState.soonGoingToBackground, !showSettings {
                         ForEach(overlayManager.overlays) { overlay in
                             if let url = URL(string: overlay.url) {
                                 OverlayView(url: url, scale: overlay.scale)
@@ -484,7 +488,7 @@ struct TubeistView: View {
                     }
                     
                     if appState.activeMonitor == .output, !appState.isBatterySavingOn,
-                       !appState.soonGoingToBackground {
+                       !appState.soonGoingToBackground, !showSettings {
                         OutputMonitorView()
                             .id(appState.outputMonitorId)
                             .gesture(magnification)
@@ -513,13 +517,13 @@ struct TubeistView: View {
                         HorizonLevelView(width: min(320, width * 0.45))
                     }
                     
-                    if showJournal, !appState.isBatterySavingOn {
+                    if showJournal, !appState.isBatterySavingOn, !showSettings {
                         JournalView()
                             .frame(width: width, height: height)
                             .fixedSize()
                     }
                     
-                    if !appState.isBatterySavingOn {
+                    if !appState.isBatterySavingOn, !showSettings {
                         VStack {
                             if areSystemMetricsAtTop {
                                 AudioMonitorView(width: width, height: AUDIO_METER_HEIGHT)
@@ -650,7 +654,7 @@ struct TubeistView: View {
                             
                             Button(action: {
                                 if !appState.isStreamSessionRunning {
-                                    showSettings = true
+                                    appState.isSettingsPresented = true
                                 }
                             }) {
                                 Image(systemName: "gear")
@@ -662,15 +666,11 @@ struct TubeistView: View {
                             .cornerRadius(25)
                             .accessibilityLabel("Settings")
                             .accessibilityHint("Opens streaming, recording, camera, and overlay settings")
-                            .sheet(isPresented: $showSettings, onDismiss: {
+                            .sheet(isPresented: settingsPresentation, onDismiss: {
                                 youtubeStatusGeneration = UUID()
                                 areSystemMetricsAtTop = Settings.areSystemMetricsAtTop
-                                // Save, Cancel, and swipe-to-dismiss all reload
-                                // the applied URLs; unsaved drafts stay unused.
-                                let overlayURLs = overlayManager.overlays.compactMap { URL(string: $0.url) }
-                                Task {
-                                    await OverlayBundler.shared.reloadOverlays(in: overlayURLs)
-                                }
+                                // Overlay views remount using the applied URLs
+                                // on Save, Cancel, and swipe-to-dismiss.
                                 youtubeService = YouTubeService(diagnostics: YouTubeDiagnostics().forStatusMonitoring())
                                 appState.isYouTubeSignedIn = youtubeService.isSignedIn
                                 if youtubeService.isSignedIn {
@@ -1077,6 +1077,10 @@ struct TubeistView: View {
         .edgesIgnoringSafeArea(.all)
         .persistentSystemOverlays(.hidden)
         .task(id: canPrepareCamera) {
+            if showSettings {
+                await Streamer.shared.suspendPreviewForSettings()
+                return
+            }
             // Unlock first passes through .inactive, where camera access may
             // still be unavailable. Wait for .active before resuming capture.
             guard canPrepareCamera, !isCameraReady else { return }
@@ -1098,7 +1102,7 @@ struct TubeistView: View {
             }
         }
         .task(id: appState.cameraMonitorId) {
-            guard isCameraReady, !isUITesting, !appState.soonGoingToBackground else { return }
+            guard isCameraReady, !isUITesting, !appState.soonGoingToBackground, !showSettings else { return }
             await updateCameraProperties()
         }
         .onDisappear {
@@ -1111,12 +1115,22 @@ struct TubeistView: View {
         .onChange(of: showSettings) { _, isPresented in
             // Save can rebuild the camera graph. Refresh it when Settings
             // closes, while transient inactive states retain the ready graph.
-            if isPresented { isCameraReady = false }
+            UIApplication.shared.isIdleTimerDisabled = scenePhase == .active && !isPresented
+            if isPresented {
+                isCameraReady = false
+                CameraMonitorView.setPreviewEnabled(false)
+                OutputMonitorView.stop()
+                youtubeStatusGeneration = UUID()
+                youtubePollingTask?.cancel()
+                youtubePollingTask = nil
+                fadeTask?.cancel()
+                fadeMessage = nil
+            }
         }
         .onChange(of: appState.isBatterySavingOn) { oldValue, newValue in
             appState.isAudioLevelRunning = !appState.isBatterySavingOn
             CameraMonitorView.setPreviewEnabled(!newValue && appState.activeMonitor == .camera
-                && !appState.soonGoingToBackground)
+                && !appState.soonGoingToBackground && !showSettings)
             fadeTask?.cancel()
             fadeMessage = nil
             if newValue {

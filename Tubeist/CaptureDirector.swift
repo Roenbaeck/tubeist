@@ -799,10 +799,11 @@ actor SessionController {
         hasStartRequest = false
     }
 
-    func cycleSessions() async throws {
+    func cycleSessions(suspendAfterStartIf shouldSuspend: @escaping @Sendable () async -> Bool = { false }) async throws {
         try await commands.run { [self] in
             await stop()
             try await start()
+            if await shouldSuspend() { await suspend() }
         }
     }
 }
@@ -916,11 +917,14 @@ final class CaptureDirector: NSObject, Sendable {
             await MainActor.run { UIApplication.shared.applicationState == .background }
         }
     }
-    func cycleSessions() async throws {
+    func suspendSessions() async {
+        await sessionController.suspendSessions()
+    }
+    func cycleSessions(suspendAfterStartIf shouldSuspend: @escaping @Sendable () async -> Bool = { false }) async throws {
         try await CaptureAuthorization.ensureAccess()
         try Task.checkCancellation()
         await eventMonitor.startMonitoring(session: CaptureDirector.session)
-        try await sessionController.cycleSessions()
+        try await sessionController.cycleSessions(suspendAfterStartIf: shouldSuspend)
     }
     func startOutput() async throws {
         guard await CaptureDirector.session.isRunning else {

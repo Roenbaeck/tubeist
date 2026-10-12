@@ -14,6 +14,21 @@ private func decode(_ reply: WatchCommandReply) -> (success: Bool, message: Stri
 @Suite(.serialized)
 struct WatchSessionManagerTests {
     @Test @MainActor
+    func settingsDisablesWatchStartUntilDismissal() async {
+        let manager = WatchSessionManager(isAppActive: { true })
+        let app = AppState()
+        app.isAppInitialization = false
+        app.isSettingsPresented = true
+        manager.appState = app
+        #expect(!manager.currentSnapshot(appState: app).isAppActive)
+        let reply = await manager.handle(rawCommand: WatchCommand.start.rawValue)
+        #expect(decode(reply) == (false, "Close Settings on your iPhone before starting"))
+        #expect(app.streamSessionState == .idle)
+        app.isSettingsPresented = false
+        #expect(manager.currentSnapshot(appState: app).isAppActive)
+    }
+
+    @Test @MainActor
     func startIsRejectedWhenPhoneIsInactive() async {
         let manager = WatchSessionManager(isAppActive: { false })
         let appState = AppState()

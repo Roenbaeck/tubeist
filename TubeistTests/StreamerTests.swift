@@ -18,6 +18,29 @@ private actor CommandOrderRecorder {
 
 struct StreamerTests {
     @Test @MainActor
+    func settingsRejectsQueuedStartBeforePreparingAnyMedia() async throws {
+        let app = AppState()
+        let actor = StreamingActor()
+        let streamer = Streamer(streamingActor: actor)
+        await streamer.setAppState(app)
+        app.isSettingsPresented = true
+        await #expect(throws: StreamStartError.settingsPresented) {
+            try await streamer.startStream(streamID: "settings-test")
+        }
+        await #expect(throws: StreamStartError.settingsPresented) {
+            try await actor.beginPreparing()
+        }
+        await #expect(throws: CancellationError.self) {
+            try await streamer.startSessions()
+        }
+        #expect(await actor.sessionState() == .idle)
+        #expect(app.activitySession == nil)
+        app.isSettingsPresented = false
+        try await actor.beginPreparing()
+        #expect(app.isStreamSessionRunning)
+    }
+
+    @Test @MainActor
     func completionUpdatesOnlyTheStoppingSessionAndClearsItsTarget() async throws {
         let appState = AppState()
         let actor = StreamingActor()

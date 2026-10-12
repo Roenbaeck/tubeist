@@ -14,6 +14,41 @@ final class TubeistUITests: XCTestCase {
     }
 
     @MainActor
+    func testSettingsReturnsToOutputPreviewAfterCancelSaveAndBackground() throws {
+        let app = launchForUITesting(additionalArguments: ["-Overlays", "[]"])
+        let monitor = app.buttons["Monitor selection"]
+        let preview = app.otherElements["metal-output-preview"]
+        let unavailable = app.staticTexts["Output preview is unavailable.\nTap Monitor to return to input."]
+        monitor.tap()
+        XCTAssertEqual(monitor.value as? String, "Output")
+        XCTAssertTrue(preview.waitForExistence(timeout: 5) || unavailable.exists)
+
+        for action in ["Cancel", "Save"] {
+            app.buttons["Settings"].tap()
+            XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 5))
+            XCTAssertFalse(preview.exists)
+            if action == "Save" {
+                XCUIDevice.shared.press(.home)
+                app.activate()
+                XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 5))
+                XCTAssertFalse(preview.exists)
+                app.navigationBars["Settings"].buttons["Save"].tap()
+                let saveError = app.alerts["Could Not Save Settings"]
+                XCTAssertTrue(saveError.waitForExistence(timeout: 3))
+                saveError.buttons["OK"].tap()
+                XCTAssertFalse(preview.exists)
+                let keyField = app.secureTextFields["YouTube HLS Stream Key"]
+                keyField.tap()
+                keyField.typeText("abcd-efgh-1234")
+            }
+            app.navigationBars["Settings"].buttons[action].tap()
+            XCTAssertTrue(app.navigationBars["Settings"].waitForNonExistence(timeout: 5))
+            XCTAssertEqual(monitor.value as? String, "Output")
+            XCTAssertTrue(preview.waitForExistence(timeout: 5) || unavailable.exists)
+        }
+    }
+
+    @MainActor
     func testHorizonLevelTogglePersistsAndFollowsPreviewVisibility() throws {
         let app = launchForUITesting(additionalArguments: [
             "-horizon-test-angle", "6", "-Overlays", "[]"
