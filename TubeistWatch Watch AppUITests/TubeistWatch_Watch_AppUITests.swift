@@ -6,23 +6,25 @@ final class WatchPagesUITests: XCTestCase {
         let app = launch()
         XCTAssertTrue(app.buttons["Stop"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["Highlight"].isHittable)
-        capture(app, name: "Controls on 40mm Watch")
-        app.swipeLeft()
-        let text = app.staticTexts["external-status-text"]
-        XCTAssertTrue(text.waitForExistence(timeout: 5))
-        XCTAssertEqual(text.label, "<b>Stage 2</b>\n**Hello**")
-        XCTAssertTrue(text.isHittable)
-        capture(app, name: "Separate external status page")
-        XCTAssertFalse(app.buttons["Stop"].isHittable)
-        app.swipeRight()
-        XCTAssertTrue(app.buttons["Stop"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.buttons["Stop"].isHittable)
+        capture(app, name: "Watch controls")
+        for _ in 0..<3 {
+            swipePage(app, left: true)
+            let text = app.staticTexts["external-status-text"]
+            XCTAssertTrue(text.waitForExistence(timeout: 5))
+            XCTAssertEqual(text.label, "<b>Stage 2</b>\n**Hello**")
+            XCTAssertTrue(text.isHittable)
+            capture(app, name: "Separate external status page")
+            XCTAssertFalse(app.buttons["Stop"].isHittable)
+            swipePage(app, left: false)
+            XCTAssertTrue(app.buttons["Stop"].waitForExistence(timeout: 5))
+            XCTAssertTrue(app.buttons["Stop"].isHittable)
+        }
     }
 
     @MainActor
     func testDisabledStatusDoesNotAddAPage() {
         let app = launch(["-watch-ui-disabled"])
-        app.swipeLeft()
+        swipePage(app, left: true)
         XCTAssertFalse(app.staticTexts["external-status-text"].exists)
         XCTAssertTrue(app.buttons["Stop"].isHittable)
     }
@@ -30,8 +32,17 @@ final class WatchPagesUITests: XCTestCase {
     @MainActor
     func testStaleTextIsMarkedOutOfDate() {
         let app = launch(["-watch-ui-stale"])
-        app.swipeLeft()
+        swipePage(app, left: true)
         XCTAssertTrue(app.staticTexts["Out of date"].waitForExistence(timeout: 5))
+    }
+
+    @MainActor
+    private func swipePage(_ app: XCUIApplication, left: Bool) {
+        // Keep the gesture inside the page. XCTest's default app swipe starts
+        // 5 points from the screen edge and can miss paging on hosted Watches.
+        let start = app.coordinate(withNormalizedOffset: CGVector(dx: left ? 0.85 : 0.15, dy: 0.5))
+        let end = app.coordinate(withNormalizedOffset: CGVector(dx: left ? 0.15 : 0.85, dy: 0.5))
+        start.press(forDuration: 0.05, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 0.05)
     }
 
     @MainActor
