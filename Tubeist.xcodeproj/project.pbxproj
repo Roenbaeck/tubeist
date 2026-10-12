@@ -7,11 +7,33 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		3D8F89F6307241330000EC54 /* TubeistWatch Watch App.app in Embed Watch Content */ = {isa = PBXBuildFile; fileRef = 3D8F89D8307241310000EC54 /* TubeistWatch Watch App.app */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		460ED2DA2D3CEC46003F2989 /* StoreKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 460ED2D92D3CEC46003F2989 /* StoreKit.framework */; };
 		8822074406C299A7C0FD47BE /* TubeistLiveActivity.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 1AA84CEB68D63A34245DB37C /* TubeistLiveActivity.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
+		3D8F89E5307241320000EC54 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 46B97E5B2CE1120B00E802FC /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 3D8F89D7307241310000EC54;
+			remoteInfo = "TubeistWatch Watch App";
+		};
+		3D8F89EF307241320000EC54 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 46B97E5B2CE1120B00E802FC /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 3D8F89D7307241310000EC54;
+			remoteInfo = "TubeistWatch Watch App";
+		};
+		3D8F89F4307241330000EC54 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 46B97E5B2CE1120B00E802FC /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 3D8F89D7307241310000EC54;
+			remoteInfo = "TubeistWatch Watch App";
+		};
 		46B97E762CE1120D00E802FC /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = 46B97E5B2CE1120B00E802FC /* Project object */;
@@ -36,6 +58,17 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXCopyFilesBuildPhase section */
+		3D8F89FA307241330000EC54 /* Embed Watch Content */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "$(CONTENTS_FOLDER_PATH)/Watch";
+			dstSubfolderSpec = 16;
+			files = (
+				3D8F89F6307241330000EC54 /* TubeistWatch Watch App.app in Embed Watch Content */,
+			);
+			name = "Embed Watch Content";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		46D33B052CE7A4910071745C /* Embed Frameworks */ = {
 			isa = PBXCopyFilesBuildPhase;
 			buildActionMask = 2147483647;
@@ -61,6 +94,9 @@
 
 /* Begin PBXFileReference section */
 		1AA84CEB68D63A34245DB37C /* TubeistLiveActivity.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = TubeistLiveActivity.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		3D8F89D8307241310000EC54 /* TubeistWatch Watch App.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "TubeistWatch Watch App.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		3D8F89E4307241320000EC54 /* TubeistWatch Watch AppTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "TubeistWatch Watch AppTests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
+		3D8F89EE307241320000EC54 /* TubeistWatch Watch AppUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "TubeistWatch Watch AppUITests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
 		460ED2D92D3CEC46003F2989 /* StoreKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = StoreKit.framework; path = System/Library/Frameworks/StoreKit.framework; sourceTree = SDKROOT; };
 		46B97E632CE1120B00E802FC /* Tubeist.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Tubeist.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		46B97E752CE1120D00E802FC /* TubeistTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = TubeistTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -68,10 +104,27 @@
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		3D8F89D33071A86F0000EC54 /* Exceptions for "Tubeist" folder in "TubeistTests" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				TubeistTests/WatchSessionManagerTests.swift,
+			);
+			target = 46B97E742CE1120D00E802FC /* TubeistTests */;
+		};
+		3D8F8A0D307243E00000EC54 /* Exceptions for "Shared" folder in "TubeistWatch Watch App" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				SaveHighlightIntent.swift,
+				StreamActivityAttributes.swift,
+				StreamActivityViews.swift,
+			);
+			target = 3D8F89D7307241310000EC54 /* TubeistWatch Watch App */;
+		};
 		46D33BB12CED16420071745C /* Exceptions for "Tubeist" folder in "Tubeist" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Info.plist,
+				TubeistTests/WatchSessionManagerTests.swift,
 			);
 			target = 46B97E622CE1120B00E802FC /* Tubeist */;
 		};
@@ -85,10 +138,41 @@
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
+		3D8F899230719CF90000EC54 /* TubeistWatch Watch App */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = "TubeistWatch Watch App";
+			sourceTree = "<group>";
+		};
+		3D8F89A030719CFA0000EC54 /* TubeistWatch Watch AppTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = "TubeistWatch Watch AppTests";
+			sourceTree = "<group>";
+		};
+		3D8F89AA30719CFA0000EC54 /* TubeistWatch Watch AppUITests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = "TubeistWatch Watch AppUITests";
+			sourceTree = "<group>";
+		};
+		3D8F89D9307241310000EC54 /* TubeistWatch Watch App */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = "TubeistWatch Watch App";
+			sourceTree = "<group>";
+		};
+		3D8F89E7307241320000EC54 /* TubeistWatch Watch AppTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = "TubeistWatch Watch AppTests";
+			sourceTree = "<group>";
+		};
+		3D8F89F1307241320000EC54 /* TubeistWatch Watch AppUITests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = "TubeistWatch Watch AppUITests";
+			sourceTree = "<group>";
+		};
 		46B97E652CE1120B00E802FC /* Tubeist */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
 				46D33BB12CED16420071745C /* Exceptions for "Tubeist" folder in "Tubeist" target */,
+				3D8F89D33071A86F0000EC54 /* Exceptions for "Tubeist" folder in "TubeistTests" target */,
 			);
 			path = Tubeist;
 			sourceTree = "<group>";
@@ -105,6 +189,9 @@
 		};
 		C993D073C5D52D47BB708C23 /* Shared */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				3D8F8A0D307243E00000EC54 /* Exceptions for "Shared" folder in "TubeistWatch Watch App" target */,
+			);
 			path = Shared;
 			sourceTree = "<group>";
 		};
@@ -120,6 +207,27 @@
 
 /* Begin PBXFrameworksBuildPhase section */
 		11CC0CDC380777B47716B735 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		3D8F89D5307241310000EC54 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		3D8F89E1307241320000EC54 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		3D8F89EB307241320000EC54 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -167,6 +275,12 @@
 				46B97E822CE1120D00E802FC /* TubeistUITests */,
 				C993D073C5D52D47BB708C23 /* Shared */,
 				F2E38D624234958EA59ED8B7 /* TubeistLiveActivity */,
+				3D8F899230719CF90000EC54 /* TubeistWatch Watch App */,
+				3D8F89A030719CFA0000EC54 /* TubeistWatch Watch AppTests */,
+				3D8F89AA30719CFA0000EC54 /* TubeistWatch Watch AppUITests */,
+				3D8F89D9307241310000EC54 /* TubeistWatch Watch App */,
+				3D8F89E7307241320000EC54 /* TubeistWatch Watch AppTests */,
+				3D8F89F1307241320000EC54 /* TubeistWatch Watch AppUITests */,
 				460ED2D82D3CEC46003F2989 /* Frameworks */,
 				46B97E642CE1120B00E802FC /* Products */,
 			);
@@ -179,6 +293,9 @@
 				46B97E752CE1120D00E802FC /* TubeistTests.xctest */,
 				46B97E7F2CE1120D00E802FC /* TubeistUITests.xctest */,
 				1AA84CEB68D63A34245DB37C /* TubeistLiveActivity.appex */,
+				3D8F89D8307241310000EC54 /* TubeistWatch Watch App.app */,
+				3D8F89E4307241320000EC54 /* TubeistWatch Watch AppTests.xctest */,
+				3D8F89EE307241320000EC54 /* TubeistWatch Watch AppUITests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -186,6 +303,75 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		3D8F89D7307241310000EC54 /* TubeistWatch Watch App */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 3D8F89F7307241330000EC54 /* Build configuration list for PBXNativeTarget "TubeistWatch Watch App" */;
+			buildPhases = (
+				3D8F89D4307241310000EC54 /* Sources */,
+				3D8F89D5307241310000EC54 /* Frameworks */,
+				3D8F89D6307241310000EC54 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				3D8F89D9307241310000EC54 /* TubeistWatch Watch App */,
+				C993D073C5D52D47BB708C23 /* Shared */,
+			);
+			name = "TubeistWatch Watch App";
+			packageProductDependencies = (
+			);
+			productName = "TubeistWatch Watch App";
+			productReference = 3D8F89D8307241310000EC54 /* TubeistWatch Watch App.app */;
+			productType = "com.apple.product-type.application";
+		};
+		3D8F89E3307241320000EC54 /* TubeistWatch Watch AppTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 3D8F89FB307241330000EC54 /* Build configuration list for PBXNativeTarget "TubeistWatch Watch AppTests" */;
+			buildPhases = (
+				3D8F89E0307241320000EC54 /* Sources */,
+				3D8F89E1307241320000EC54 /* Frameworks */,
+				3D8F89E2307241320000EC54 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				3D8F89E6307241320000EC54 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				3D8F89E7307241320000EC54 /* TubeistWatch Watch AppTests */,
+			);
+			name = "TubeistWatch Watch AppTests";
+			packageProductDependencies = (
+			);
+			productName = "TubeistWatch Watch AppTests";
+			productReference = 3D8F89E4307241320000EC54 /* TubeistWatch Watch AppTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		3D8F89ED307241320000EC54 /* TubeistWatch Watch AppUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 3D8F89FE307241330000EC54 /* Build configuration list for PBXNativeTarget "TubeistWatch Watch AppUITests" */;
+			buildPhases = (
+				3D8F89EA307241320000EC54 /* Sources */,
+				3D8F89EB307241320000EC54 /* Frameworks */,
+				3D8F89EC307241320000EC54 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				3D8F89F0307241320000EC54 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				3D8F89F1307241320000EC54 /* TubeistWatch Watch AppUITests */,
+			);
+			name = "TubeistWatch Watch AppUITests";
+			packageProductDependencies = (
+			);
+			productName = "TubeistWatch Watch AppUITests";
+			productReference = 3D8F89EE307241320000EC54 /* TubeistWatch Watch AppUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
 		46B97E622CE1120B00E802FC /* Tubeist */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = 46B97E892CE1120D00E802FC /* Build configuration list for PBXNativeTarget "Tubeist" */;
@@ -195,11 +381,13 @@
 				46B97E612CE1120B00E802FC /* Resources */,
 				46D33B052CE7A4910071745C /* Embed Frameworks */,
 				8BBD54E025BDCC44F39FB462 /* Embed Foundation Extensions */,
+				3D8F89FA307241330000EC54 /* Embed Watch Content */,
 			);
 			buildRules = (
 			);
 			dependencies = (
 				8B5DDA75201E3D91D2F552D4 /* PBXTargetDependency */,
+				3D8F89F5307241330000EC54 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				46B97E652CE1120B00E802FC /* Tubeist */,
@@ -280,9 +468,20 @@
 			isa = PBXProject;
 			attributes = {
 				BuildIndependentTargetsInParallel = 1;
-				LastSwiftUpdateCheck = 1610;
+				LastSwiftUpdateCheck = 2700;
 				LastUpgradeCheck = 2640;
 				TargetAttributes = {
+					3D8F89D7307241310000EC54 = {
+						CreatedOnToolsVersion = 27.0;
+					};
+					3D8F89E3307241320000EC54 = {
+						CreatedOnToolsVersion = 27.0;
+						TestTargetID = 3D8F89D7307241310000EC54;
+					};
+					3D8F89ED307241320000EC54 = {
+						CreatedOnToolsVersion = 27.0;
+						TestTargetID = 3D8F89D7307241310000EC54;
+					};
 					46B97E622CE1120B00E802FC = {
 						CreatedOnToolsVersion = 16.1;
 					};
@@ -317,11 +516,35 @@
 				46B97E742CE1120D00E802FC /* TubeistTests */,
 				46B97E7E2CE1120D00E802FC /* TubeistUITests */,
 				BA69BACC4872A3DBE3F50DE0 /* TubeistLiveActivity */,
+				3D8F89D7307241310000EC54 /* TubeistWatch Watch App */,
+				3D8F89E3307241320000EC54 /* TubeistWatch Watch AppTests */,
+				3D8F89ED307241320000EC54 /* TubeistWatch Watch AppUITests */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
+		3D8F89D6307241310000EC54 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		3D8F89E2307241320000EC54 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		3D8F89EC307241320000EC54 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		46B97E612CE1120B00E802FC /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -353,6 +576,27 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		3D8F89D4307241310000EC54 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		3D8F89E0307241320000EC54 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		3D8F89EA307241320000EC54 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		46B97E5F2CE1120B00E802FC /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -384,6 +628,21 @@
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
+		3D8F89E6307241320000EC54 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 3D8F89D7307241310000EC54 /* TubeistWatch Watch App */;
+			targetProxy = 3D8F89E5307241320000EC54 /* PBXContainerItemProxy */;
+		};
+		3D8F89F0307241320000EC54 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 3D8F89D7307241310000EC54 /* TubeistWatch Watch App */;
+			targetProxy = 3D8F89EF307241320000EC54 /* PBXContainerItemProxy */;
+		};
+		3D8F89F5307241330000EC54 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 3D8F89D7307241310000EC54 /* TubeistWatch Watch App */;
+			targetProxy = 3D8F89F4307241330000EC54 /* PBXContainerItemProxy */;
+		};
 		46B97E772CE1120D00E802FC /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			target = 46B97E622CE1120B00E802FC /* Tubeist */;
@@ -403,6 +662,166 @@
 /* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
+		3D8F89F8307241330000EC54 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = D77T8B2FR2;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = TubeistWatch;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
+				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = com.subside.Tubeist;
+				INFOPLIST_KEY_WKSupportsLiveActivityLaunchAttributeTypes = StreamActivityAttributes;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.subside.Tubeist.watchkitapp;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = watchos;
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 4;
+				WATCHOS_DEPLOYMENT_TARGET = 27.0;
+			};
+			name = Debug;
+		};
+		3D8F89F9307241330000EC54 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = D77T8B2FR2;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = TubeistWatch;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
+				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = com.subside.Tubeist;
+				INFOPLIST_KEY_WKSupportsLiveActivityLaunchAttributeTypes = StreamActivityAttributes;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.subside.Tubeist.watchkitapp;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = watchos;
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 4;
+				WATCHOS_DEPLOYMENT_TARGET = 27.0;
+			};
+			name = Release;
+		};
+		3D8F89FC307241330000EC54 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = D77T8B2FR2;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.subside.TubeistWatch-Watch-AppTests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = watchos;
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 4;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/TubeistWatch Watch App.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/TubeistWatch Watch App";
+				WATCHOS_DEPLOYMENT_TARGET = 27.0;
+			};
+			name = Debug;
+		};
+		3D8F89FD307241330000EC54 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = D77T8B2FR2;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.subside.TubeistWatch-Watch-AppTests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = watchos;
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 4;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/TubeistWatch Watch App.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/TubeistWatch Watch App";
+				WATCHOS_DEPLOYMENT_TARGET = 27.0;
+			};
+			name = Release;
+		};
+		3D8F89FF307241330000EC54 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = D77T8B2FR2;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.subside.TubeistWatch-Watch-AppUITests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = watchos;
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 4;
+				TEST_TARGET_NAME = "TubeistWatch Watch App";
+				WATCHOS_DEPLOYMENT_TARGET = 27.0;
+			};
+			name = Debug;
+		};
+		3D8F8A00307241330000EC54 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = D77T8B2FR2;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.subside.TubeistWatch-Watch-AppUITests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = watchos;
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 4;
+				TEST_TARGET_NAME = "TubeistWatch Watch App";
+				WATCHOS_DEPLOYMENT_TARGET = 27.0;
+			};
+			name = Release;
+		};
 		46B97E872CE1120D00E802FC /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -755,6 +1174,33 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		3D8F89F7307241330000EC54 /* Build configuration list for PBXNativeTarget "TubeistWatch Watch App" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				3D8F89F8307241330000EC54 /* Debug */,
+				3D8F89F9307241330000EC54 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		3D8F89FB307241330000EC54 /* Build configuration list for PBXNativeTarget "TubeistWatch Watch AppTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				3D8F89FC307241330000EC54 /* Debug */,
+				3D8F89FD307241330000EC54 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		3D8F89FE307241330000EC54 /* Build configuration list for PBXNativeTarget "TubeistWatch Watch AppUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				3D8F89FF307241330000EC54 /* Debug */,
+				3D8F8A00307241330000EC54 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 		46B97E5E2CE1120B00E802FC /* Build configuration list for PBXProject "Tubeist" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (

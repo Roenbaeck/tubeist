@@ -294,6 +294,7 @@ struct TubeistApp: App {
                     appState.isAppInitialization = false
                     guard !CommandLine.arguments.contains("-ui-testing") else { return }
                     Task { await appState.configureHighlightControls() }
+                    WatchSessionManager.shared.start(appState: appState)
                     Task { [appState] in
                         let products = await Purchaser.shared.fetchProducts()
                         for product in products {

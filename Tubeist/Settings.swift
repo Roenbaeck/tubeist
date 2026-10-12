@@ -250,6 +250,7 @@ private struct AppliedSettingsSnapshot {
     let overlays: [OverlaySetting]
     let overlayRefreshRate: OverlayRefreshRate
     let activityPreferences: StreamActivityPreferences
+    let scoreboardAPIURL: String
 #if DEBUG
     let captureRemuxFixtures: Bool
     let recordHLSAcceptance: Bool
@@ -280,6 +281,7 @@ private struct AppliedSettingsSnapshot {
             overlays: overlays,
             overlayRefreshRate: Settings.overlayRefreshRate,
             activityPreferences: .saved,
+            scoreboardAPIURL: Settings.scoreboardAPIURL,
             captureRemuxFixtures: Settings.captureRemuxFixtures,
             recordHLSAcceptance: Settings.recordHLSAcceptance,
             manualHLSEndingTest: Settings.manualHLSEndingTest
@@ -306,7 +308,8 @@ private struct AppliedSettingsSnapshot {
             youtubeThumbnailData: try Settings.loadYouTubeThumbnailData(),
             overlays: overlays,
             overlayRefreshRate: Settings.overlayRefreshRate,
-            activityPreferences: .saved
+            activityPreferences: .saved,
+            scoreboardAPIURL: Settings.scoreboardAPIURL
         )
 #endif
     }
@@ -335,6 +338,7 @@ private struct AppliedSettingsSnapshot {
         Settings.liveActivityDetail = activityPreferences.detail
         Settings.liveActivityAlerts = activityPreferences.alerts
         Settings.liveActivityRecoveryAlerts = activityPreferences.recoveryAlerts
+        Settings.scoreboardAPIURL = scoreboardAPIURL
 #if DEBUG
         Settings.captureRemuxFixtures = captureRemuxFixtures
         Settings.recordHLSAcceptance = recordHLSAcceptance
@@ -370,6 +374,7 @@ struct SettingsView: View {
     @State private var activityPreferences = StreamActivityPreferences.saved
     @State private var activityPermissionDenied = false
     @State private var isRequestingActivityPermission = false
+    @State private var scoreboardAPIURL: String = Settings.scoreboardAPIURL
     @State private var journalDebug: Bool = Settings.journalDebug
 #if DEBUG
     @State private var captureRemuxFixtures: Bool = Settings.captureRemuxFixtures
@@ -907,10 +912,15 @@ struct SettingsView: View {
                             .foregroundStyle(.secondary)
                         Link("Open notification settings", destination: URL(string: UIApplication.openSettingsURLString)!)
                     }
+                    TextField("Score API (e.g. https://host/username)", text: $scoreboardAPIURL)
+                        .keyboardType(.URL)
+                        .autocapitalization(.none)
+                        .disableAutocorrection(true)
+                        .accessibilityIdentifier("scoreboardAPIURL")
                 } header: {
                     Text("Apple Watch and Live Activity")
                 } footer: {
-                    Text("Show session status and elapsed time on your iPhone and the Smart Stack on Apple Watch with watchOS 11 or later. Full adds viewers, bitrate, upload quality, temperature and battery. Alerts are optional; delivery depends on your device and notification settings.")
+                    Text("Show session status and elapsed time on your iPhone and the Smart Stack on Apple Watch with watchOS 11 or later. Full adds viewers, bitrate, upload quality, temperature and battery. Alerts are optional; delivery depends on your device and notification settings. Score API shows the live score from a self-hosted scoreboard server (github.com/Lindhardsen/scoreboard) on the Watch app while streaming. Leave blank to turn this off.")
                 }
 
                 Section(header: Text("Journal"), footer: Text("Configure which types of messages to record in the journal")) {
@@ -975,6 +985,16 @@ struct SettingsView: View {
                 
             }
             .disabled(isSaving)
+            .toolbar {
+                // Text fields otherwise have no way to dismiss the keyboard,
+                // which in landscape covers roughly half the form.
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("Done") {
+                        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+                    }
+                }
+            }
             // Form sections are recreated while scrolling. Keep discovery on
             // the screen itself, and retain the draft for an unchanged context.
             .task(id: youtubeLoadContext) {
@@ -1113,6 +1133,14 @@ struct SettingsView: View {
                     }
                     .navigationTitle("Edit Overlay")
                     .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItemGroup(placement: .keyboard) {
+                            Spacer()
+                            Button("Done") {
+                                UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+                            }
+                        }
+                    }
                     .onAppear {
                         // Initialize from the presented item. A sheet's first
                         // render can otherwise use stale values from its parent.
@@ -1444,6 +1472,7 @@ struct SettingsView: View {
         Settings.liveActivityDetail = activityPreferences.detail
         Settings.liveActivityAlerts = activityPreferences.alerts
         Settings.liveActivityRecoveryAlerts = activityPreferences.recoveryAlerts
+        Settings.scoreboardAPIURL = scoreboardAPIURL.trimmingCharacters(in: .whitespacesAndNewlines)
 #if DEBUG
         Settings.captureRemuxFixtures = captureRemuxFixtures
         Settings.recordHLSAcceptance = recordHLSAcceptance
@@ -1649,6 +1678,14 @@ final class Settings: Sendable {
     static var cameraPosition: String {
         get { UserDefaults.standard.string(forKey: "CameraPosition") ?? "stationary" }
         set { UserDefaults.standard.set(newValue, forKey: "CameraPosition") }
+    }
+    /// Base URL of a self-hosted scoreboard server's user page (github.com/Lindhardsen/scoreboard
+    /// or upstream github.com/Roenbaeck/scoreboard), e.g. "https://host/username".
+    /// WatchSessionManager appends "/api/score" to this to poll the live score.
+    /// Empty means the Watch score feature is off; nothing is fetched.
+    static var scoreboardAPIURL: String {
+        get { UserDefaults.standard.string(forKey: "ScoreboardAPIURL") ?? "" }
+        set { UserDefaults.standard.set(newValue, forKey: "ScoreboardAPIURL") }
     }
     static var journalError: Bool {
         get { bool(forKey: "JournalError", default: true) }
