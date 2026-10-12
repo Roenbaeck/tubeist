@@ -24,6 +24,7 @@ final class WatchConnectivityClient: NSObject, WCSessionDelegate {
     private static let unreachableDebounce: Duration = .seconds(3)
 
     private(set) var snapshot: WatchStateSnapshot = .idle
+    private(set) var formattedExternalStatus = AttributedString()
     private(set) var isReachable = false
     private var started = false
     private var unreachableTask: Task<Void, Never>?
@@ -36,13 +37,16 @@ final class WatchConnectivityClient: NSObject, WCSessionDelegate {
 #if DEBUG
         if ProcessInfo.processInfo.arguments.contains("-watch-ui-fixture") {
             let now = Date()
-            snapshot = WatchStateSnapshot(generatedAt: now, phase: .streaming,
+            updateSnapshot(WatchStateSnapshot(generatedAt: now, phase: .streaming,
                 startedAt: now.addingTimeInterval(-120), health: .good, healthTracked: true,
                 healthValidUntil: now.addingTimeInterval(120), link: .good,
                 canSaveHighlight: true, isAppActive: true,
                 externalStatusConfigured: !ProcessInfo.processInfo.arguments.contains("-watch-ui-disabled"),
-                externalStatus: try? ExternalStatusSnapshot(text: "<b>Stage 2</b>\n**Hello**",
-                    receivedAt: now.addingTimeInterval(ProcessInfo.processInfo.arguments.contains("-watch-ui-stale") ? -60 : 0)))
+                externalStatus: try? ExternalStatusSnapshot(text:
+                    ProcessInfo.processInfo.arguments.contains("-watch-ui-markdown")
+                        ? "**Stage 2**\n*Next speaker*\n`12:30`\n[Details](https://example.com)"
+                        : "**Lund – Hylte**\nSets: 1–2\n**Points: 23–21**",
+                    receivedAt: now.addingTimeInterval(ProcessInfo.processInfo.arguments.contains("-watch-ui-stale") ? -60 : 0))))
             isReachable = true
             return
         }
@@ -150,7 +154,16 @@ final class WatchConnectivityClient: NSObject, WCSessionDelegate {
         guard let data,
               let decoded = try? PropertyListDecoder().decode(WatchStateSnapshot.self, from: data),
               decoded.generatedAt >= snapshot.generatedAt else { return }
-        snapshot = decoded
+        updateSnapshot(decoded)
+    }
+
+    private func updateSnapshot(_ updated: WatchStateSnapshot) {
+        // Heartbeats and the view's one-second clock must not reparse Markdown.
+        if updated.externalStatus?.text != snapshot.externalStatus?.text {
+            formattedExternalStatus = updated.externalStatus.map { WatchStatusMarkdown.render($0.text) }
+                ?? AttributedString()
+        }
+        snapshot = updated
     }
 }
 

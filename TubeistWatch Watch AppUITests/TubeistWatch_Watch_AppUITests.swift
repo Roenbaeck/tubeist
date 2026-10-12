@@ -2,7 +2,7 @@ import XCTest
 
 final class WatchPagesUITests: XCTestCase {
     @MainActor
-    func testExternalTextHasItsOwnPageAndIsRenderedLiterally() {
+    func testFormattedStatusHasItsOwnPage() {
         let app = launch()
         XCTAssertTrue(app.buttons["Stop"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["Highlight"].isHittable)
@@ -11,7 +11,7 @@ final class WatchPagesUITests: XCTestCase {
             swipePage(app, left: true)
             let text = app.staticTexts["external-status-text"]
             XCTAssertTrue(text.waitForExistence(timeout: 5))
-            XCTAssertEqual(text.label, "<b>Stage 2</b>\n**Hello**")
+            XCTAssertEqual(text.label, "Lund – Hylte\nSets: 1–2\nPoints: 23–21")
             XCTAssertTrue(text.isHittable)
             capture(app, name: "Separate external status page")
             XCTAssertFalse(app.buttons["Stop"].isHittable)
@@ -19,6 +19,17 @@ final class WatchPagesUITests: XCTestCase {
             XCTAssertTrue(app.buttons["Stop"].waitForExistence(timeout: 5))
             XCTAssertTrue(app.buttons["Stop"].isHittable)
         }
+    }
+
+    @MainActor
+    func testGenericMarkdownPreservesLinesWithoutLinkActions() {
+        let app = launch(["-watch-ui-markdown"])
+        swipePage(app, left: true)
+        let text = app.staticTexts["external-status-text"]
+        XCTAssertTrue(text.waitForExistence(timeout: 5))
+        XCTAssertEqual(text.label, "Stage 2\nNext speaker\n12:30\nDetails")
+        XCTAssertEqual(app.links.count, 0)
+        capture(app, name: "Generic Markdown status")
     }
 
     @MainActor
@@ -34,6 +45,7 @@ final class WatchPagesUITests: XCTestCase {
         let app = launch(["-watch-ui-stale"])
         swipePage(app, left: true)
         XCTAssertTrue(app.staticTexts["Out of date"].waitForExistence(timeout: 5))
+        capture(app, name: "Stale status footer")
     }
 
     @MainActor

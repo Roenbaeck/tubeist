@@ -20,6 +20,9 @@ Tubeist is designed for events, sports, education, performances, and other long-
 - Live bandwidth, buffer, CPU, battery, and thermal information
 - Gradual bitrate reduction for sustained congestion, with a quality floor and prompt recovery
 - Web overlays for graphics and live information
+- Apple Watch stream controls and an optional separate, centered status page
+  with bold, italic, and monospaced Markdown from any compatible HTTP/HTTPS
+  service; see [external status setup and formatting](Docs/ExternalStatus.md)
 - Built-in image styles and effects
 - Optional Google sign-in for YouTube broadcast discovery and management
 
