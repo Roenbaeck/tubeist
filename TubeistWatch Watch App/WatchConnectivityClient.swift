@@ -25,14 +25,32 @@ final class WatchConnectivityClient: NSObject, WCSessionDelegate {
 
     private(set) var snapshot: WatchStateSnapshot = .idle
     private(set) var isReachable = false
+    private var started = false
     private var unreachableTask: Task<Void, Never>?
     /// Set on a failed command; the view clears it after showing an alert.
     var lastErrorMessage: String?
 
     func start() {
+        guard !started else { return }
+        started = true
+#if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("-watch-ui-fixture") {
+            let now = Date()
+            snapshot = WatchStateSnapshot(generatedAt: now, phase: .streaming,
+                startedAt: now.addingTimeInterval(-120), health: .good, healthTracked: true,
+                healthValidUntil: now.addingTimeInterval(120), link: .good,
+                canSaveHighlight: true, isAppActive: true,
+                externalStatusConfigured: !ProcessInfo.processInfo.arguments.contains("-watch-ui-disabled"),
+                externalStatus: try? ExternalStatusSnapshot(text: "<b>Stage 2</b>\n**Hello**",
+                    receivedAt: now.addingTimeInterval(ProcessInfo.processInfo.arguments.contains("-watch-ui-stale") ? -60 : 0)))
+            isReachable = true
+            return
+        }
+#endif
         guard WCSession.isSupported() else { return }
         let session = WCSession.default
         session.delegate = self
+        receive(data: session.receivedApplicationContext[Self.payloadKey] as? Data)
         session.activate()
     }
 
@@ -62,6 +80,9 @@ final class WatchConnectivityClient: NSObject, WCSessionDelegate {
     }
 
     private func send(_ command: WatchCommand) {
+#if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("-watch-ui-fixture") { return }
+#endif
         guard WCSession.default.isReachable else {
             lastErrorMessage = "iPhone not reachable"
             return
@@ -69,10 +90,12 @@ final class WatchConnectivityClient: NSObject, WCSessionDelegate {
         // WatchCommand has no associated data, so it travels as a plain
         // string under its own key — PropertyListEncoder refuses to encode
         // a bare top-level enum, since a plist's root must be a container.
-        let message = [WatchCommand.key: command.rawValue]
+        var message = [WatchCommand.key: command.rawValue]
+        if let id = snapshot.sessionID { message[WatchCommand.sessionIDKey] = id.uuidString }
         WCSession.default.sendMessage(message, replyHandler: { [weak self] reply in
+            let data = reply[Self.payloadKey] as? Data
             Task { @MainActor in
-                self?.handle(reply: reply)
+                self?.handle(replyData: data)
             }
         }, errorHandler: { [weak self] error in
             Task { @MainActor in
@@ -81,8 +104,8 @@ final class WatchConnectivityClient: NSObject, WCSessionDelegate {
         })
     }
 
-    private func handle(reply: [String: Any]) {
-        guard let data = reply[Self.payloadKey] as? Data,
+    private func handle(replyData: Data?) {
+        guard let data = replyData,
               let decoded = try? PropertyListDecoder().decode(WatchCommandReply.self, from: data) else {
             lastErrorMessage = "Unexpected reply from iPhone"
             return
@@ -104,26 +127,30 @@ final class WatchConnectivityClient: NSObject, WCSessionDelegate {
             LOG("Watch session activation failed: \(error.localizedDescription)")
         }
         let reachable = session.isReachable
+        let data = session.receivedApplicationContext[Self.payloadKey] as? Data
         Task { @MainActor in
-            WatchConnectivityClient.shared.handleReachabilityChange(reachable)
+            self.receive(data: data)
+            self.handleReachabilityChange(reachable)
         }
     }
 
     nonisolated func sessionReachabilityDidChange(_ session: WCSession) {
         let reachable = session.isReachable
         Task { @MainActor in
-            WatchConnectivityClient.shared.handleReachabilityChange(reachable)
+            self.handleReachabilityChange(reachable)
         }
     }
 
     nonisolated func session(_ session: WCSession, didReceiveApplicationContext applicationContext: [String: Any]) {
-        guard let data = applicationContext[Self.payloadKey] as? Data,
-              let decoded = try? PropertyListDecoder().decode(WatchStateSnapshot.self, from: data) else {
-            return
-        }
-        Task { @MainActor in
-            WatchConnectivityClient.shared.snapshot = decoded
-        }
+        let data = applicationContext[Self.payloadKey] as? Data
+        Task { @MainActor in self.receive(data: data) }
+    }
+
+    private func receive(data: Data?) {
+        guard let data,
+              let decoded = try? PropertyListDecoder().decode(WatchStateSnapshot.self, from: data),
+              decoded.generatedAt >= snapshot.generatedAt else { return }
+        snapshot = decoded
     }
 }
 

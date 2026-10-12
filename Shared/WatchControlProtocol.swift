@@ -21,6 +21,7 @@ enum WatchCommand: String, Codable, Sendable {
     case saveHighlight
 
     static let key = "command"
+    static let sessionIDKey = "sessionID"
 }
 
 struct WatchCommandReply: Codable, Sendable {
@@ -33,54 +34,59 @@ struct WatchCommandReply: Codable, Sendable {
     }
 }
 
-/// Pushed iPhone -> Watch via WCSession.updateApplicationContext, mirroring
-/// the same state StreamActivityCoordinator already turns into the Live
-/// Activity's ContentState.
+/// Latest phone state, replaced atomically by WatchConnectivity application context.
+/// External text is display data only; it never enters the command vocabulary.
 struct WatchStateSnapshot: Codable, Sendable, Equatable {
-    var phase: StreamActivityPhase
+    var generatedAt: Date = .distantPast
+    var sessionID: UUID?
+    var phase: StreamActivityPhase = .ended
     var startedAt: Date?
-    var health: StreamActivityHealth
-    var healthTracked: Bool
+    var stoppedAt: Date?
+    var health: StreamActivityHealth = .unknown
+    var healthTracked = false
+    var healthValidUntil: Date?
+    var link: StreamActivityLink = .unknown
     var batteryPercent: Int?
-    var canSaveHighlight: Bool
+    var canSaveHighlight = false
     var highlightStatus: HighlightStatus?
-    /// Whether the iPhone app is currently in the foreground. Starting a
-    /// stream needs the app active (camera/mic setup, YouTube broadcast
-    /// creation aren't things a backgrounded app should kick off from a
-    /// Watch tap), so the Watch uses this — not WCSession.isReachable, which
-    /// can stay true for a backgrounded-but-not-terminated app — to decide
-    /// whether to show Start at all.
-    var isAppActive: Bool
-    /// Whether a Score API URL is set in Settings at all — independent of
-    /// `scoreboard` below, so the Watch can hide the whole score section
-    /// rather than show a placeholder when the feature is simply unused.
-    var scoreboardConfigured: Bool
-    /// nil while a Score API is configured but not actively streaming
-    /// (WatchSessionManager only polls it then), or before the first poll
-    /// completes.
-    var scoreboard: WatchScoreSnapshot?
+    var isAppActive = false
+    var externalStatusConfigured = false
+    var externalStatus: ExternalStatusSnapshot?
+    var externalStatusRefreshFailed = false
 
-    static let idle = WatchStateSnapshot(
-        phase: .ended,
-        startedAt: nil,
-        health: .unknown,
-        healthTracked: false,
-        batteryPercent: nil,
-        canSaveHighlight: false,
-        highlightStatus: nil,
-        isAppActive: false,
-        scoreboardConfigured: false,
-        scoreboard: nil
-    )
+    static let idle = WatchStateSnapshot()
+
+    func isFresh(at now: Date) -> Bool {
+        generatedAt <= now.addingTimeInterval(5) && now.timeIntervalSince(generatedAt) < 90
+    }
+
+    func hasSameContent(as other: Self) -> Bool {
+        var copy = self
+        copy.generatedAt = other.generatedAt
+        return copy == other
+    }
+
+    /// Match the Live Activity's priorities: an upload failure must not be
+    /// hidden by a good but delayed YouTube health sample.
+    func healthIndicator(at now: Date) -> WatchHealthIndicator {
+        guard isFresh(at: now) else { return .unknown }
+        if phase == .failed { return .problem }
+        guard phase == .streaming || phase == .recording else { return .unknown }
+        if link == .failed { return .problem }
+        let freshHealth = healthValidUntil.map { now < $0 } ?? false
+        if healthTracked && freshHealth && health == .error { return .problem }
+        if link == .degraded { return .warning }
+        guard healthTracked else { return .untracked }
+        guard freshHealth else { return .unknown }
+        switch health {
+        case .good: return link == .good ? .healthy : .unknown
+        case .warning: return .warning
+        case .error: return .problem
+        case .waiting, .unknown: return .unknown
+        }
+    }
 }
 
-/// Live score, sourced from a self-hosted scoreboard server
-/// (github.com/Lindhardsen/scoreboard) via WatchSessionManager's polling.
-struct WatchScoreSnapshot: Codable, Sendable, Equatable {
-    var teamA: String
-    var teamB: String
-    var setsA: Int
-    var setsB: Int
-    var pointsA: Int
-    var pointsB: Int
+enum WatchHealthIndicator: Sendable {
+    case unknown, untracked, healthy, warning, problem
 }

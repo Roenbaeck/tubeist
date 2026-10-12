@@ -8,37 +8,22 @@ import SwiftUI
 struct WatchRootView: View {
     @State private var client = WatchConnectivityClient.shared
     @State private var showStopConfirmation = false
+    @State private var selectedPage = 0
 
     private var snapshot: WatchStateSnapshot { client.snapshot }
 
     var body: some View {
-        ScrollView {
-            VStack(spacing: 10) {
-                WatchHealthBadge(snapshot: snapshot)
-                if let startedAt = snapshot.startedAt {
-                    Text(startedAt, style: .timer)
-                        .monospacedDigit()
-                        .font(.caption)
-                }
-                if snapshot.scoreboardConfigured {
-                    WatchScoreView(score: snapshot.scoreboard)
-                }
-                startStopButton
-                if snapshot.canSaveHighlight {
-                    WatchHighlightButton(status: snapshot.highlightStatus) {
-                        client.sendHighlight()
-                    }
-                }
-                // While idle, startStopButton already shows "App not ready" in
-                // place of the Start button, so this stays only for the case
-                // where reachability drops mid-stream.
-                if !client.isReachable, snapshot.phase != .ended, snapshot.phase != .failed {
-                    Label("iPhone not reachable", systemImage: "iphone.slash")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+        TimelineView(.periodic(from: .now, by: 1)) { timeline in
+            TabView(selection: $selectedPage) {
+                controls(at: timeline.date).tag(0)
+                if snapshot.externalStatusConfigured {
+                    WatchExternalStatusView(snapshot: snapshot, now: timeline.date).tag(1)
                 }
             }
-            .padding(.horizontal, 4)
+            .tabViewStyle(.page)
+        }
+        .onChange(of: snapshot.externalStatusConfigured) { _, configured in
+            if !configured { selectedPage = 0 }
         }
         .onAppear { client.start() }
         .alert(
@@ -62,14 +47,45 @@ struct WatchRootView: View {
         }
     }
 
+    private func controls(at now: Date) -> some View {
+        ScrollView {
+            VStack(spacing: 6) {
+                WatchHealthBadge(snapshot: snapshot, now: now)
+                if let startedAt = snapshot.startedAt {
+                    if let stoppedAt = snapshot.stoppedAt {
+                        Text(Duration.seconds(max(0, stoppedAt.timeIntervalSince(startedAt))),
+                             format: .time(pattern: .hourMinuteSecond))
+                            .monospacedDigit().font(.caption)
+                    } else {
+                        Text(startedAt, style: .timer).monospacedDigit().font(.caption)
+                    }
+                }
+                startStopButton(at: now)
+                if snapshot.canSaveHighlight {
+                    WatchHighlightButton(status: snapshot.highlightStatus) { client.sendHighlight() }
+                        .disabled(!client.isReachable || !snapshot.isFresh(at: now))
+                }
+                if !snapshot.isFresh(at: now) {
+                    Text("Waiting for current iPhone status")
+                        .font(.caption2).foregroundStyle(.secondary)
+                } else if !client.isReachable, snapshot.phase != .ended, snapshot.phase != .failed {
+                    Label("iPhone not reachable", systemImage: "iphone.slash")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+            .padding(.horizontal, 4)
+            .padding(.bottom, 12) // Keep the page indicator clear of the last button.
+        }
+    }
+
     @ViewBuilder
-    private var startStopButton: some View {
+    private func startStopButton(at now: Date) -> some View {
         switch snapshot.phase {
         case .ended, .failed:
             // isReachable alone isn't enough: it can stay true for a
             // backgrounded-but-not-terminated phone app, but starting a
             // stream should require the app actually be in the foreground.
-            if client.isReachable && snapshot.isAppActive {
+            if client.isReachable && snapshot.isAppActive && snapshot.isFresh(at: now) {
                 Button {
                     client.sendStart()
                 } label: {
@@ -91,12 +107,14 @@ struct WatchRootView: View {
                 Label("Stop", systemImage: "stop.fill")
                     .frame(maxWidth: .infinity)
             }
+            .disabled(!client.isReachable || !snapshot.isFresh(at: now))
         }
     }
 }
 
 private struct WatchHealthBadge: View {
     let snapshot: WatchStateSnapshot
+    let now: Date
 
     var body: some View {
         HStack(spacing: 6) {
@@ -106,13 +124,12 @@ private struct WatchHealthBadge: View {
     }
 
     private var color: Color {
-        guard snapshot.phase == .streaming || snapshot.phase == .recording else { return .gray }
-        guard snapshot.healthTracked else { return .blue }
-        switch snapshot.health {
-        case .good: return .green
-        case .warning: return .yellow
-        case .error: return .red
-        case .waiting, .unknown: return .gray
+        switch snapshot.healthIndicator(at: now) {
+        case .unknown: .gray
+        case .untracked: .blue
+        case .healthy: .green
+        case .warning: .yellow
+        case .problem: .red
         }
     }
 }
@@ -136,21 +153,39 @@ private struct WatchHighlightButton: View {
     }
 }
 
-private struct WatchScoreView: View {
-    let score: WatchScoreSnapshot?
+struct WatchExternalStatusView: View {
+    let snapshot: WatchStateSnapshot
+    let now: Date
 
     var body: some View {
-        if let score {
-            VStack(spacing: 2) {
-                Text("\(score.teamA) \(score.setsA) – \(score.setsB) \(score.teamB)")
-                    .font(.caption)
-                Text("\(score.pointsA) – \(score.pointsB)")
-                    .font(.title3).monospacedDigit()
+        ScrollView {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("External status").font(.headline)
+                if let status = snapshot.externalStatus {
+                    let current = status.isFresh(at: now) && snapshot.isFresh(at: now)
+                    // Remote content is never parsed as Markdown, HTML, links,
+                    // format strings, or commands.
+                    Text(verbatim: status.text)
+                        .font(.body)
+                        .foregroundStyle(current ? .primary : .secondary)
+                        .accessibilityIdentifier("external-status-text")
+                    if !current {
+                        Label("Out of date", systemImage: "clock.badge.exclamationmark")
+                            .foregroundStyle(.yellow)
+                    } else if snapshot.externalStatusRefreshFailed {
+                        Text("Refresh failed; retrying…").foregroundStyle(.secondary)
+                    }
+                    Text("Received \(status.receivedAt, style: .relative) ago")
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text(snapshot.externalStatusRefreshFailed
+                         ? "Status unavailable; retrying…" : "Waiting for external status…")
+                        .foregroundStyle(.secondary)
+                }
             }
-        } else {
-            Text("Waiting for score…")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
+            .font(.caption2)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 4)
         }
     }
 }

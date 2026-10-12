@@ -13,42 +13,26 @@ import Foundation
 import UIKit
 import WatchConnectivity
 
-/// Decodes the scoreboard server's GET /<username>/api/score response
-/// (github.com/Lindhardsen/scoreboard). Kept private to this file since it's
-/// purely a wire-format detail of talking to that server — WatchScoreSnapshot
-/// in Shared/WatchControlProtocol.swift is the stable iPhone<->Watch shape.
-private struct ScoreboardServerResponse: Decodable {
-    struct Team: Decodable {
-        var name: String
-        var sets: Int
-        var points: Int
-    }
-    var home: Team
-    var away: Team
-    var matchEnded: Bool
-
-    var snapshot: WatchScoreSnapshot {
-        WatchScoreSnapshot(
-            teamA: home.name, teamB: away.name,
-            setsA: home.sets, setsB: away.sets,
-            pointsA: home.points, pointsB: away.points
-        )
-    }
-}
-
 @MainActor
 final class WatchSessionManager: NSObject, WCSessionDelegate {
     static let shared = WatchSessionManager()
 
     private nonisolated static let payloadKey = "payload"
     private static let pushInterval: Duration = .seconds(2)
-    private static let scoreboardPollInterval: Duration = .seconds(5)
 
     var appState: AppState?
     private var pushTask: Task<Void, Never>?
     private var lastPushedSnapshot: WatchStateSnapshot?
-    private var scoreboardPollTask: Task<Void, Never>?
-    private var latestScoreboard: WatchScoreSnapshot?
+    private let relay = ExternalStatusRelay()
+    private let isAppActive: @MainActor () -> Bool
+    private var lifecycleObservers: [NSObjectProtocol] = []
+
+    init(isAppActive: @escaping @MainActor () -> Bool = {
+        UIApplication.shared.applicationState == .active
+    }) {
+        self.isAppActive = isAppActive
+        super.init()
+    }
 
     func start(appState: AppState) {
         self.appState = appState
@@ -57,7 +41,6 @@ final class WatchSessionManager: NSObject, WCSessionDelegate {
         session.delegate = self
         session.activate()
         startPushLoop()
-        startScoreboardPollLoop()
         observeAppLifecycle()
     }
 
@@ -66,13 +49,15 @@ final class WatchSessionManager: NSObject, WCSessionDelegate {
     /// gates on isAppActive and backgrounding can happen right before the
     /// app gets suspended (and the loop with it).
     private func observeAppLifecycle() {
+        guard lifecycleObservers.isEmpty else { return }
         let center = NotificationCenter.default
-        for name: Notification.Name in [UIApplication.didBecomeActiveNotification, UIApplication.didEnterBackgroundNotification] {
-            center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+        for name: Notification.Name in [UIApplication.didBecomeActiveNotification, UIApplication.willResignActiveNotification, UIApplication.didEnterBackgroundNotification] {
+            let observer = center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
                 Task { @MainActor in
                     self?.pushStateIfNeeded()
                 }
             }
+            lifecycleObservers.append(observer)
         }
     }
 
@@ -86,85 +71,61 @@ final class WatchSessionManager: NSObject, WCSessionDelegate {
         }
     }
 
-    /// Separate from the push loop above since this does real network I/O
-    /// with its own cadence and failure handling, unlike the local-state-only
-    /// snapshot push. Deliberately limited to while actively streaming and
-    /// in the foreground — per-user request, and it also matches what iOS
-    /// would allow by default anyway: ordinary background execution gets
-    /// suspended within seconds, so an indefinite background poll loop
-    /// wouldn't actually keep running without extra entitlements this
-    /// feature doesn't need.
-    private func startScoreboardPollLoop() {
-        scoreboardPollTask?.cancel()
-        scoreboardPollTask = Task { [weak self] in
-            while !Task.isCancelled {
-                await self?.pollScoreboardIfNeeded()
-                try? await Task.sleep(for: Self.scoreboardPollInterval)
-            }
-        }
-    }
-
-    private func pollScoreboardIfNeeded() async {
-        guard let appState, appState.isStreamActive,
-              UIApplication.shared.applicationState == .active,
-              let url = Self.scoreboardScoreURL() else {
-            latestScoreboard = nil
-            return
-        }
-        do {
-            let (data, _) = try await URLSession.shared.data(from: url)
-            latestScoreboard = try JSONDecoder().decode(ScoreboardServerResponse.self, from: data).snapshot
-        } catch {
-            // Keep showing the last known score rather than flicker it away
-            // on one transient failure (the scraper itself may be between
-            // polls, or the network hiccuped).
-            LOG("Could not fetch scoreboard score: \(error.localizedDescription)", level: .debug)
-        }
-    }
-
-    private static func scoreboardScoreURL() -> URL? {
-        let base = Settings.scoreboardAPIURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !base.isEmpty else { return nil }
-        let trimmedBase = base.hasSuffix("/") ? String(base.dropLast()) : base
-        return URL(string: "\(trimmedBase)/api/score")
-    }
-
     private func pushStateIfNeeded() {
-        guard let appState, WCSession.default.activationState == .activated else { return }
+        guard let appState else { return }
+        let session = WCSession.default
+        let endpoint = ExternalStatusClient.endpoint(Settings.externalStatusURL)
+        let context: ExternalStatusRelay.Context?
+        if session.isPaired, session.isWatchAppInstalled,
+           isAppActive(), !appState.soonGoingToBackground, appState.isStreamActive,
+           let id = appState.activitySession?.id, let endpoint {
+            context = .init(url: endpoint, sessionID: id)
+        } else {
+            context = nil
+        }
+        relay.update(context: context)
+        guard session.activationState == .activated, session.isPaired, session.isWatchAppInstalled else { return }
         let snapshot = currentSnapshot(appState: appState)
-        guard snapshot != lastPushedSnapshot else { return }
+        // A heartbeat lets the Watch expire state even if the phone stops
+        // delivering updates while all other fields remain unchanged.
+        if let last = lastPushedSnapshot, snapshot.hasSameContent(as: last),
+           snapshot.generatedAt.timeIntervalSince(last.generatedAt) < 15 { return }
         do {
             let data = try PropertyListEncoder().encode(snapshot)
-            try WCSession.default.updateApplicationContext([Self.payloadKey: data])
+            try session.updateApplicationContext([Self.payloadKey: data])
             lastPushedSnapshot = snapshot
         } catch {
             LOG("Could not push Watch state: \(error.localizedDescription)", level: .debug)
         }
     }
 
-    private func currentSnapshot(appState: AppState) -> WatchStateSnapshot {
-        guard let activity = appState.activitySnapshot(preferences: appState.activityPreferences) else {
-            // .idle's isAppActive/scoreboardConfigured are placeholders;
-            // those two are meaningful even with no activity session yet
-            // (e.g. app open but nothing started), so fill in the real values.
-            var idle = WatchStateSnapshot.idle
-            idle.isAppActive = UIApplication.shared.applicationState == .active
-            idle.scoreboardConfigured = Self.scoreboardScoreURL() != nil
-            return idle
+    func currentSnapshot(appState: AppState) -> WatchStateSnapshot {
+        var snapshot = WatchStateSnapshot.idle
+        snapshot.generatedAt = Date()
+        snapshot.isAppActive = isAppActive() && !appState.soonGoingToBackground && !appState.isAppInitialization
+        snapshot.externalStatusConfigured = ExternalStatusClient.endpoint(Settings.externalStatusURL) != nil
+        if let activity = appState.activitySnapshot(preferences: appState.activityPreferences) {
+            let content = activity.content
+            snapshot.sessionID = appState.activitySession?.id
+            snapshot.phase = content.phase
+            snapshot.startedAt = content.startedAt
+            snapshot.stoppedAt = content.stoppedAt
+            snapshot.health = content.health
+            snapshot.healthTracked = content.healthTracked
+            snapshot.healthValidUntil = content.healthValidUntil
+            snapshot.link = content.link
+            snapshot.batteryPercent = content.batteryPercent
+            snapshot.canSaveHighlight = content.canSaveHighlight
+            snapshot.highlightStatus = content.highlightStatus
         }
-        let content = activity.content
-        return WatchStateSnapshot(
-            phase: content.phase,
-            startedAt: content.startedAt,
-            health: content.health,
-            healthTracked: content.healthTracked,
-            batteryPercent: content.batteryPercent,
-            canSaveHighlight: content.canSaveHighlight,
-            highlightStatus: content.highlightStatus,
-            isAppActive: UIApplication.shared.applicationState == .active,
-            scoreboardConfigured: Self.scoreboardScoreURL() != nil,
-            scoreboard: latestScoreboard
-        )
+        snapshot.externalStatus = relay.latest
+        snapshot.externalStatusRefreshFailed = relay.refreshFailed
+        return snapshot
+    }
+
+    private func refreshConnection() {
+        lastPushedSnapshot = nil
+        pushStateIfNeeded()
     }
 
     // MARK: - WCSessionDelegate
@@ -176,9 +137,18 @@ final class WatchSessionManager: NSObject, WCSessionDelegate {
         activationDidCompleteWith activationState: WCSessionActivationState,
         error: Error?
     ) {
+        Task { @MainActor in self.refreshConnection() }
         if let error {
             LOG("Watch session activation failed: \(error.localizedDescription)", level: .warning)
         }
+    }
+
+    nonisolated func sessionWatchStateDidChange(_ session: WCSession) {
+        Task { @MainActor in self.refreshConnection() }
+    }
+
+    nonisolated func sessionReachabilityDidChange(_ session: WCSession) {
+        Task { @MainActor in self.refreshConnection() }
     }
 
     nonisolated func sessionDidBecomeInactive(_ session: WCSession) {}
@@ -205,19 +175,24 @@ final class WatchSessionManager: NSObject, WCSessionDelegate {
         // string under its own key — PropertyListEncoder refuses to encode
         // a bare top-level enum, since a plist's root must be a container.
         let rawCommand = message[WatchCommand.key] as? String
+        let sessionID = (message[WatchCommand.sessionIDKey] as? String).flatMap(UUID.init(uuidString:))
         let boxedReply = SendableReplyHandler(handler: replyHandler)
         Task { @MainActor in
-            let reply = await self.handle(rawCommand: rawCommand)
+            let reply = await self.handle(rawCommand: rawCommand, sessionID: sessionID)
             let data = (try? PropertyListEncoder().encode(reply)) ?? Data()
             boxedReply.handler([Self.payloadKey: data])
         }
     }
 
-    func handle(rawCommand: String?) async -> WatchCommandReply {
+    func handle(rawCommand: String?, sessionID: UUID? = nil) async -> WatchCommandReply {
         guard let rawCommand, let command = WatchCommand(rawValue: rawCommand) else {
             return .failure("Unrecognized command")
         }
         guard let appState else { return .failure("Tubeist is not ready") }
+        if command != .start {
+            guard let currentID = appState.activitySession?.id else { return .failure("No active session") }
+            guard sessionID == currentID else { return .failure("Session changed; wait for the Watch to update") }
+        }
         switch command {
         case .start: return await handleStart(appState: appState)
         case .stop: return await handleStop(appState: appState)
@@ -237,13 +212,17 @@ final class WatchSessionManager: NSObject, WCSessionDelegate {
     /// which produces WCError.messageReplyTimedOut if awaited here. The
     /// phone's own UI button follows the same fire-and-forget shape; the
     /// Watch learns the real outcome from the periodic WatchStateSnapshot
-    /// push (phase/activeAlert) instead of the message reply.
+    /// push (phase) instead of the message reply.
     private func handleStart(appState: AppState) async -> WatchCommandReply {
         if appState.youtubeStatus == "live" || appState.youtubeStatus == "testing" {
             return .failure("YouTube is still finishing the previous stream")
         }
+        guard isAppActive(), !appState.soonGoingToBackground, !appState.isAppInitialization else {
+            return .failure("Open Tubeist on your iPhone before starting")
+        }
         let streamID = Streamer.makeStreamID()
         Task {
+            guard isAppActive(), !appState.soonGoingToBackground else { return }
             do {
                 try await Streamer.shared.startStream(streamID: streamID)
             } catch {
@@ -254,7 +233,9 @@ final class WatchSessionManager: NSObject, WCSessionDelegate {
     }
 
     private func handleStop(appState: AppState) async -> WatchCommandReply {
+        let sessionID = appState.activitySession?.id
         Task {
+            guard appState.activitySession?.id == sessionID else { return }
             do {
                 _ = try await Streamer.shared.endStream()
             } catch {

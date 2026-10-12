@@ -24,11 +24,12 @@ jobs:
       - name: Enforce YouTube-only production sources
         run: Tools/check_youtube_only.sh
       - name: Validate property lists
-        run: plutil -lint Tubeist/Info.plist Tubeist/PrivacyInfo.xcprivacy TubeistLiveActivity/Info.plist
+        run: plutil -lint Tubeist/Info.plist Tubeist/PrivacyInfo.xcprivacy TubeistLiveActivity/Info.plist "TubeistWatch Watch App/Info.plist"
       - name: Parse all Swift sources
         run: |
           xcrun swiftc -frontend -parse Tubeist/*.swift Shared/*.swift TubeistTests/*.swift TubeistUITests/*.swift
           xcrun swiftc -frontend -parse Shared/*.swift TubeistLiveActivity/*.swift
+          xcrun swiftc -frontend -parse "TubeistWatch Watch App/"*.swift "TubeistWatch Watch AppTests/"*.swift "TubeistWatch Watch AppUITests/"*.swift
       - name: Test device acceptance tools
         run: python3 -m unittest discover -s Tools/Acceptance -p 'test_*.py'
 
@@ -137,3 +138,40 @@ jobs:
         run: Tools/Acceptance/validate_media_comparison.sh
       - name: Validate uploader against local HTTPS mock
         run: Tools/YouTubeHLSMock/validate_uploader_socket.sh
+
+  watch-tests:
+    runs-on: macos-15
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v5
+      - name: Prepare Watch simulator
+        id: watch
+        shell: bash
+        run: |
+          xcodebuild -downloadPlatform watchOS -buildVersion 26.2
+          watch_id="$(xcrun simctl create Tubeist-Watch-CI com.apple.CoreSimulator.SimDeviceType.Apple-Watch-Series-9-41mm com.apple.CoreSimulator.SimRuntime.watchOS-26-2)"
+          echo "udid=$watch_id" >> "$GITHUB_OUTPUT"
+          xcrun simctl boot "$watch_id"
+          xcrun simctl bootstatus "$watch_id" -b
+      - name: Watch unit and page navigation tests
+        run: >-
+          xcodebuild test
+          -project Tubeist.xcodeproj
+          -scheme 'TubeistWatch Watch App'
+          -destination 'platform=watchOS Simulator,id=${{ steps.watch.outputs.udid }}'
+          -derivedDataPath '${{ runner.temp }}/TubeistWatchDerivedData'
+          -parallel-testing-enabled NO
+          CODE_SIGNING_ALLOWED=NO
+      - name: Upload Watch test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tubeist-watch-test-results
+          path: ${{ runner.temp }}/TubeistWatchDerivedData/Logs/Test/*.xcresult
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Remove Watch simulator
+        if: always() && steps.watch.outputs.udid != ''
+        env:
+          WATCH_SIMULATOR_ID: ${{ steps.watch.outputs.udid }}
+        run: xcrun simctl delete "$WATCH_SIMULATOR_ID"

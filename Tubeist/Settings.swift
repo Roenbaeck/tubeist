@@ -250,7 +250,7 @@ private struct AppliedSettingsSnapshot {
     let overlays: [OverlaySetting]
     let overlayRefreshRate: OverlayRefreshRate
     let activityPreferences: StreamActivityPreferences
-    let scoreboardAPIURL: String
+    let externalStatusURL: String
 #if DEBUG
     let captureRemuxFixtures: Bool
     let recordHLSAcceptance: Bool
@@ -281,7 +281,7 @@ private struct AppliedSettingsSnapshot {
             overlays: overlays,
             overlayRefreshRate: Settings.overlayRefreshRate,
             activityPreferences: .saved,
-            scoreboardAPIURL: Settings.scoreboardAPIURL,
+            externalStatusURL: Settings.externalStatusURL,
             captureRemuxFixtures: Settings.captureRemuxFixtures,
             recordHLSAcceptance: Settings.recordHLSAcceptance,
             manualHLSEndingTest: Settings.manualHLSEndingTest
@@ -309,7 +309,7 @@ private struct AppliedSettingsSnapshot {
             overlays: overlays,
             overlayRefreshRate: Settings.overlayRefreshRate,
             activityPreferences: .saved,
-            scoreboardAPIURL: Settings.scoreboardAPIURL
+            externalStatusURL: Settings.externalStatusURL
         )
 #endif
     }
@@ -338,7 +338,7 @@ private struct AppliedSettingsSnapshot {
         Settings.liveActivityDetail = activityPreferences.detail
         Settings.liveActivityAlerts = activityPreferences.alerts
         Settings.liveActivityRecoveryAlerts = activityPreferences.recoveryAlerts
-        Settings.scoreboardAPIURL = scoreboardAPIURL
+        Settings.externalStatusURL = externalStatusURL
 #if DEBUG
         Settings.captureRemuxFixtures = captureRemuxFixtures
         Settings.recordHLSAcceptance = recordHLSAcceptance
@@ -374,7 +374,7 @@ struct SettingsView: View {
     @State private var activityPreferences = StreamActivityPreferences.saved
     @State private var activityPermissionDenied = false
     @State private var isRequestingActivityPermission = false
-    @State private var scoreboardAPIURL: String = Settings.scoreboardAPIURL
+    @State private var externalStatusURL: String = Settings.externalStatusURL
     @State private var journalDebug: Bool = Settings.journalDebug
 #if DEBUG
     @State private var captureRemuxFixtures: Bool = Settings.captureRemuxFixtures
@@ -887,41 +887,7 @@ struct SettingsView: View {
                     }
                 }
 
-                Section {
-                    Picker("Live Activity", selection: $activityPreferences.detail) {
-                        ForEach(LiveActivityDetail.allCases, id: \.self) { detail in
-                            Text(detail.label).tag(detail)
-                        }
-                    }
-                    Toggle("Alert on stream problems", isOn: $activityPreferences.alerts)
-                        .disabled(activityPreferences.detail == .off || isRequestingActivityPermission)
-                        .onChange(of: activityPreferences.alerts) { _, enabled in
-                            guard enabled else { return }
-                            isRequestingActivityPermission = true
-                            Task {
-                                let allowed = await StreamActivityNotifications.requestPermission()
-                                isRequestingActivityPermission = false
-                                activityPermissionDenied = !allowed
-                                if !allowed { activityPreferences.alerts = false }
-                            }
-                        }
-                    Toggle("Alert when recovered", isOn: $activityPreferences.recoveryAlerts)
-                        .disabled(!activityPreferences.alerts || activityPreferences.detail == .off)
-                    if activityPermissionDenied {
-                        Text("Allow Tubeist notifications in iPhone Settings to enable alerts.")
-                            .foregroundStyle(.secondary)
-                        Link("Open notification settings", destination: URL(string: UIApplication.openSettingsURLString)!)
-                    }
-                    TextField("Score API (e.g. https://host/username)", text: $scoreboardAPIURL)
-                        .keyboardType(.URL)
-                        .autocapitalization(.none)
-                        .disableAutocorrection(true)
-                        .accessibilityIdentifier("scoreboardAPIURL")
-                } header: {
-                    Text("Apple Watch and Live Activity")
-                } footer: {
-                    Text("Show session status and elapsed time on your iPhone and the Smart Stack on Apple Watch with watchOS 11 or later. Full adds viewers, bitrate, upload quality, temperature and battery. Alerts are optional; delivery depends on your device and notification settings. Score API shows the live score from a self-hosted scoreboard server (github.com/Lindhardsen/scoreboard) on the Watch app while streaming. Leave blank to turn this off.")
-                }
+                watchSettingsSections
 
                 Section(header: Text("Journal"), footer: Text("Configure which types of messages to record in the journal")) {
                     HStack {
@@ -1161,6 +1127,52 @@ struct SettingsView: View {
             .sheet(isPresented: $showingOverlayOrder) {
                 OverlayOrderView(overlays: $overlayDraft)
             }
+        }
+    }
+
+    @ViewBuilder
+    private var watchSettingsSections: some View {
+        Section {
+            Picker("Live Activity", selection: $activityPreferences.detail) {
+                ForEach(LiveActivityDetail.allCases, id: \.self) { detail in
+                    Text(detail.label).tag(detail)
+                }
+            }
+            Toggle("Alert on stream problems", isOn: $activityPreferences.alerts)
+                .disabled(activityPreferences.detail == .off || isRequestingActivityPermission)
+                .onChange(of: activityPreferences.alerts) { _, enabled in
+                    guard enabled else { return }
+                    isRequestingActivityPermission = true
+                    Task {
+                        let allowed = await StreamActivityNotifications.requestPermission()
+                        isRequestingActivityPermission = false
+                        activityPermissionDenied = !allowed
+                        if !allowed { activityPreferences.alerts = false }
+                    }
+                }
+            Toggle("Alert when recovered", isOn: $activityPreferences.recoveryAlerts)
+                .disabled(!activityPreferences.alerts || activityPreferences.detail == .off)
+            if activityPermissionDenied {
+                Text("Allow Tubeist notifications in iPhone Settings to enable alerts.")
+                    .foregroundStyle(.secondary)
+                Link("Open notification settings", destination: URL(string: UIApplication.openSettingsURLString)!)
+            }
+        } header: {
+            Text("Apple Watch and Live Activity")
+        } footer: {
+            Text("Show session status and elapsed time on your iPhone and the Smart Stack on Apple Watch with watchOS 11 or later. Full adds viewers, bitrate, upload quality, temperature and battery. Alerts are optional; delivery depends on your device and notification settings.")
+        }
+
+        Section {
+            TextField("External status URL", text: $externalStatusURL)
+                .keyboardType(.URL)
+                .textInputAutocapitalization(.never)
+                .disableAutocorrection(true)
+                .accessibilityIdentifier("externalStatusURL")
+        } header: {
+            Text("Watch companion")
+        } footer: {
+            Text("Show text from your chosen service on a separate Watch page while streaming or recording. Enter the complete HTTPS address of its plain text endpoint. Leave blank to disable.")
         }
     }
 
@@ -1432,6 +1444,10 @@ struct SettingsView: View {
     }
 
     private func validateDraft() throws {
+        let statusURL = externalStatusURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard statusURL.isEmpty || ExternalStatusClient.endpoint(statusURL) != nil else {
+            throw SettingsSaveError.invalidExternalStatusURL
+        }
         guard !youtubeDraft.thumbnail.isLoading else { throw SettingsSaveError.thumbnailLoading }
         let pendingOverlayURL = newOverlayURL.trimmingCharacters(in: .whitespacesAndNewlines)
         guard pendingOverlayURL.isEmpty || OverlayURLValidator.isAllowed(pendingOverlayURL) else {
@@ -1472,7 +1488,7 @@ struct SettingsView: View {
         Settings.liveActivityDetail = activityPreferences.detail
         Settings.liveActivityAlerts = activityPreferences.alerts
         Settings.liveActivityRecoveryAlerts = activityPreferences.recoveryAlerts
-        Settings.scoreboardAPIURL = scoreboardAPIURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        Settings.externalStatusURL = externalStatusURL.trimmingCharacters(in: .whitespacesAndNewlines)
 #if DEBUG
         Settings.captureRemuxFixtures = captureRemuxFixtures
         Settings.recordHLSAcceptance = recordHLSAcceptance
@@ -1486,12 +1502,14 @@ enum SettingsSaveError: LocalizedError, Equatable {
     case noOutputSelected
     case invalidBandwidth
     case invalidOverlayURL
+    case invalidExternalStatusURL
     case thumbnailLoading
 
     var errorDescription: String? {
         switch self {
         case .noOutputSelected: "Select streaming, recording, or both"
         case .invalidBandwidth: "Measured upload bandwidth must be at least 1 Mbps"
+        case .invalidExternalStatusURL: "Enter a complete HTTPS URL for external status"
         case .invalidOverlayURL: "Enter a valid overlay URL starting with http:// or https://"
         case .thumbnailLoading: "Wait for the thumbnail to finish loading before saving"
         }
@@ -1679,13 +1697,11 @@ final class Settings: Sendable {
         get { UserDefaults.standard.string(forKey: "CameraPosition") ?? "stationary" }
         set { UserDefaults.standard.set(newValue, forKey: "CameraPosition") }
     }
-    /// Base URL of a self-hosted scoreboard server's user page (github.com/Lindhardsen/scoreboard
-    /// or upstream github.com/Roenbaeck/scoreboard), e.g. "https://host/username".
-    /// WatchSessionManager appends "/api/score" to this to poll the live score.
-    /// Empty means the Watch score feature is off; nothing is fetched.
-    static var scoreboardAPIURL: String {
-        get { UserDefaults.standard.string(forKey: "ScoreboardAPIURL") ?? "" }
-        set { UserDefaults.standard.set(newValue, forKey: "ScoreboardAPIURL") }
+    /// Complete HTTPS endpoint returning plain UTF-8 text for the Watch.
+    /// Empty disables the optional page and its phone-side fetches.
+    static var externalStatusURL: String {
+        get { UserDefaults.standard.string(forKey: "ExternalStatusURL") ?? "" }
+        set { UserDefaults.standard.set(newValue, forKey: "ExternalStatusURL") }
     }
     static var journalError: Bool {
         get { bool(forKey: "JournalError", default: true) }
