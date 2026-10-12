@@ -146,10 +146,30 @@ jobs:
       - uses: actions/checkout@v5
       - name: Prepare Watch simulator
         id: watch
+        timeout-minutes: 20
         shell: bash
+        env:
+          WATCH_SIMULATOR_VERSION: '26.2'
         run: |
-          xcodebuild -downloadPlatform watchOS -buildVersion 26.2
-          watch_id="$(xcrun simctl create Tubeist-Watch-CI com.apple.CoreSimulator.SimDeviceType.Apple-Watch-Series-9-41mm com.apple.CoreSimulator.SimRuntime.watchOS-26-2)"
+          if ! xcodebuild -checkFirstLaunchStatus; then
+            sudo env DEVELOPER_DIR="$DEVELOPER_DIR" xcodebuild -runFirstLaunch
+          fi
+
+          runtime_id="com.apple.CoreSimulator.SimRuntime.watchOS-${WATCH_SIMULATOR_VERSION//./-}"
+          runtime_available() {
+            xcrun simctl list runtimes --json | python3 -c '
+          import json, sys
+          runtimes = json.load(sys.stdin)["runtimes"]
+          sys.exit(0 if any(r["identifier"] == sys.argv[1] and r.get("isAvailable", False) for r in runtimes) else 1)
+          ' "$runtime_id"
+          }
+          if ! runtime_available; then
+            xcodebuild -downloadPlatform watchOS -buildVersion "$WATCH_SIMULATOR_VERSION"
+          fi
+          xcrun simctl list runtimes
+          runtime_available
+
+          watch_id="$(xcrun simctl create Tubeist-Watch-CI com.apple.CoreSimulator.SimDeviceType.Apple-Watch-Series-9-41mm "$runtime_id")"
           echo "udid=$watch_id" >> "$GITHUB_OUTPUT"
           xcrun simctl boot "$watch_id"
           xcrun simctl bootstatus "$watch_id" -b
