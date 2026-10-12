@@ -17,7 +17,9 @@ struct WatchRootView: View {
             TabView(selection: $selectedPage) {
                 controls(at: timeline.date).tag(0)
                 if snapshot.externalStatusConfigured {
-                    WatchExternalStatusView(snapshot: snapshot, now: timeline.date).tag(1)
+                    WatchExternalStatusView(snapshot: snapshot,
+                                            formattedText: client.formattedExternalStatus,
+                                            now: timeline.date).tag(1)
                 }
             }
             .tabViewStyle(.page)
@@ -155,20 +157,22 @@ private struct WatchHighlightButton: View {
 
 struct WatchExternalStatusView: View {
     let snapshot: WatchStateSnapshot
+    let formattedText: AttributedString
     let now: Date
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 8) {
-                Text("External status").font(.headline)
-                if let status = snapshot.externalStatus {
-                    let current = status.isFresh(at: now) && snapshot.isFresh(at: now)
-                    // Remote content is never parsed as Markdown, HTML, links,
-                    // format strings, or commands.
-                    Text(verbatim: status.text)
+        VStack(spacing: 8) {
+            if let status = snapshot.externalStatus {
+                let current = status.isFresh(at: now) && snapshot.isFresh(at: now)
+                ScrollView {
+                    Text(formattedText)
                         .font(.body)
                         .foregroundStyle(current ? .primary : .secondary)
+                        .frame(maxWidth: .infinity, alignment: .center)
                         .accessibilityIdentifier("external-status-text")
+                }
+                // Keep freshness visible while longer status text scrolls.
+                VStack(spacing: 4) {
                     if !current {
                         Label("Out of date", systemImage: "clock.badge.exclamationmark")
                             .foregroundStyle(.yellow)
@@ -177,16 +181,20 @@ struct WatchExternalStatusView: View {
                     }
                     Text("Received \(status.receivedAt, style: .relative) ago")
                         .foregroundStyle(.secondary)
-                } else {
-                    Text(snapshot.externalStatusRefreshFailed
-                         ? "Status unavailable; retrying…" : "Waiting for external status…")
-                        .foregroundStyle(.secondary)
                 }
+                .frame(maxWidth: .infinity)
+                .fixedSize(horizontal: false, vertical: true)
+            } else {
+                Text(snapshot.externalStatusRefreshFailed
+                     ? "Status unavailable; retrying…" : "Waiting for external status…")
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            .font(.caption2)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 4)
         }
+        .font(.caption2)
+        .multilineTextAlignment(.center)
+        .padding(.horizontal, 4)
+        .padding(.bottom, 12) // Keep the footer above the page indicator.
     }
 }
 

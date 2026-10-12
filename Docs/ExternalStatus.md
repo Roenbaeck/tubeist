@@ -1,9 +1,9 @@
 # External status on Apple Watch
 
 Tubeist's Watch companion keeps stream controls and health on its first page.
-An optional second page displays plain text supplied by the service of your
-choice. The Smart Stack Live Activity and iPhone Live Activity layout do not
-change. The companion supports watchOS 11 and later.
+An optional second page displays centered text with limited Markdown styling
+supplied by the service of your choice. The Smart Stack Live Activity and iPhone
+Live Activity layout do not change. The companion supports watchOS 11 and later.
 
 Enter the complete endpoint address in **Settings → Watch companion → External
 status URL**, including its path and any query parameters. Leave it empty to
@@ -25,7 +25,7 @@ Local Network. This permission applies to local HTTPS servers too.
 HTTPS is recommended because it protects the text and URL from observation and
 alteration in transit. HTTP sends both in clear text; do not put private tokens
 or sensitive status information in an HTTP endpoint. The same content checks and
-literal display rules apply with either protocol.
+formatting rules apply with either protocol.
 
 ## Endpoint contract
 
@@ -40,8 +40,9 @@ literal display rules apply with either protocol.
   line separators become LF; surrounding whitespace is removed.
 - Control characters other than newlines and explicit Unicode bidi overrides
   and isolates are rejected. Ordinary Unicode scripts and emoji are supported.
-- Text is rendered literally, including markup and URL-looking strings. It is
-  never interpreted as HTML, Markdown, a link, a command, or executable code.
+- The phone forwards the validated string unchanged. The Watch supports only
+  bold, italic, and monospaced inline Markdown; see the formatting rules below.
+  No link actions, images, HTML rendering, or executable content are enabled.
 - Return an error status when no useful value is available. A successful fetch
   only proves that the endpoint was reached, not that its underlying data is
   recent. The service should make source outages evident in its response.
@@ -67,20 +68,54 @@ requirement itself when a Watch command arrives. Stop and Highlight commands
 are tied to the session shown on the Watch, so a delayed tap cannot affect a
 replacement session.
 
+## Formatting the status
+
+The Watch centers the status body and preserves ordinary newlines and internal
+blank lines. The page has no fixed heading. A centered footer shows the receipt
+age and any stale/error notice above the page indicator. The footer keeps its
+app styling and stays visible while longer status content scrolls vertically.
+
+Use `**bold**`, `*italic*` (or `_italic_`), and backticks for `monospaced` text.
+The Watch does not apply Markdown heading sizes, tables, colors, or alignment
+directives. Centering is a Watch layout choice, not syntax sent by the service.
+Existing plain text continues to work. Older companions display Markdown
+delimiters literally; update the companion before enabling server formatting.
+
+Escape literal ASCII punctuation with a backslash when interpolating user
+content into Markdown. For example, `\*Team\*` displays `*Team*`. The Scoreboard
+server escapes team names this way, so a name cannot introduce formatting,
+links, or encoded characters. The 4,096-byte, 500-character, and 8-line limits
+apply to the complete source, including Markdown and escape characters.
+
+The renderer uses native attributed text, keeping only bold, italic, and
+monospaced attributes. Link and image syntax displays its label/alt text with
+no action or image request. HTML tags remain text. Extended attributes and all
+other styling are discarded. After parsing, the visible text is validated again
+so encoded control characters or extra lines cannot bypass the limits. If that
+check or parsing fails, the Watch displays the original validated string
+literally. Formatting is cached when the text changes; timer ticks and unchanged
+phone heartbeats do not reparse it.
+
 ## Service example
 
 A server can return any short text appropriate to its audience:
 
 ```text
-Stage 2
-Next speaker: Alex
-Starting in 3 minutes
+**Stage 2**
+Next speaker: *Alex*
+Starting in `3 minutes`
 ```
 
 A sports service can instead format its teams and scores on the server. The
 client contract and Watch layout stay the same. The revised Scoreboard PR adds
 `http://your-host:8081/<username>/api/status` as one such provider, also available
-over HTTPS when the server is behind an HTTPS reverse proxy.
+over HTTPS when the server is behind an HTTPS reverse proxy. For example:
+
+```text
+**Lund – Hylte**
+Sets: 1–2
+**Points: 23–21**
+```
 
 ## Transport configuration and verification
 
@@ -108,7 +143,8 @@ hostnames are not known when the app is built. See Apple's
 `ExternalStatusTests` checks both URL schemes, the built app's ATS settings, and
 rejection of invalid responses. To run its optional `liveServiceReturnsExpectedText`
 integration test, set `TUBEIST_STATUS_TEST_URL` to a reachable service endpoint and
-`TUBEIST_STATUS_TEST_TEXT` to its exact expected display text (including newlines)
+`TUBEIST_STATUS_TEST_TEXT` to its exact expected response text (including Markdown
+and newlines)
 in the test process environment. This uses the real URLSession without a mocked
 response. Test against an HTTP Scoreboard endpoint and its current saved overlay;
 the test only reads the endpoint and does not update the score.
