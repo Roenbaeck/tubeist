@@ -176,13 +176,26 @@ actor StreamingActor {
     func beginPreparing(sessionID: UUID = UUID()) async throws {
         switch state {
         case .idle, .failed:
+            let previousState = state
+            state = .preparing
+            let appState = self.appState
+            // Reserve the media pipeline and check Settings in the same UI
+            // turn, closing the race between a queued Watch Start and the gear.
+            let accepted = await MainActor.run {
+                guard appState?.isSettingsPresented != true else { return false }
+                appState?.setStreamSessionState(.preparing)
+                return true
+            }
+            guard accepted else {
+                state = previousState
+                throw StreamStartError.settingsPresented
+            }
             self.sessionID = sessionID
             mediaIntakeActive = false
             outputPlan = nil
             youTubeCompletionTarget = nil
             youTubeHealthTarget = nil
             youTubeUploadFailure = nil
-            await transition(to: .preparing)
         case .preparing, .live, .stopping:
             throw StreamSessionError.sessionBusy(state)
         }
@@ -350,6 +363,10 @@ actor StreamingActor {
         await appState?.isBatterySavingOn ?? false
     }
 
+    func isSettingsPresented() async -> Bool {
+        await appState?.isSettingsPresented ?? false
+    }
+
     private func transition(to newState: StreamSessionState) async {
         state = newState
         let appState = self.appState
@@ -405,23 +422,50 @@ final class Streamer: Sendable {
     }
     func cycleSessions() async throws {
         guard !CommandLine.arguments.contains("-ui-testing") else { return }
+        try await commandQueue.run { [self] in
+            try await performSessionCycle()
+        }
+    }
+
+    private func performSessionCycle() async throws {
         let outputting = await CaptureDirector.shared.isOutputting()
         if outputting {
             await CaptureDirector.shared.stopOutput()
         }
         await FrameGrabber.shared.resetTinkerer()
-        try await CaptureDirector.shared.cycleSessions()
+        // Save still validates the new hardware configuration, then releases
+        // it before returning to the form (including a later Save failure).
+        try await CaptureDirector.shared.cycleSessions { [streamingActor] in
+            await streamingActor.isSettingsPresented()
+        }
         await streamingActor.refreshCameraView()
         OverlayBundler.shared.refreshCombinedImage()
-        if outputting {
+        if outputting, await !streamingActor.isSettingsPresented() {
             try await CaptureDirector.shared.startOutput()
         }
     }
     func startSessions() async throws {
-        try await CaptureDirector.shared.startSessions()
+        try await commandQueue.run { [self] in
+            guard await !streamingActor.isSettingsPresented() else { throw CancellationError() }
+            try await CaptureDirector.shared.startSessions()
+        }
     }
     func stopSessions() async {
         await CaptureDirector.shared.stopSessions()
+    }
+    func suspendPreviewForSettings() async {
+        guard !CommandLine.arguments.contains("-ui-testing") else { return }
+        try? await commandQueue.run { [self] in
+            // Recheck after earlier camera/monitor work finishes. Dismissing
+            // Settings before this runs must not stop the resumed preview.
+            guard await streamingActor.isSettingsPresented(),
+                  await !streamingActor.sessionState().ownsMediaPipeline else { return }
+            await CaptureDirector.shared.stopOutput()
+            await FrameGrabber.shared.terminateGrabbing()
+            await SoundGrabber.shared.terminateGrabbing()
+            await CaptureDirector.shared.suspendSessions()
+            LOG("Idle capture and preview suspended for Settings", level: .debug)
+        }
     }
     func suspendPreviewInBackground() async {
         try? await commandQueue.run { [self] in
@@ -527,6 +571,7 @@ final class Streamer: Sendable {
     }
 
     private func performStart(streamID: String) async throws {
+        guard await !streamingActor.isSettingsPresented() else { throw StreamStartError.settingsPresented }
         let sessionID = UUID()
         try await streamingActor.beginPreparing(sessionID: sessionID)
         var packagingStarted = false
@@ -795,6 +840,7 @@ final class Streamer: Sendable {
 
     private func performMonitorChange(_ monitor: Monitor) async {
         guard await MainActor.run(body: { UIApplication.shared.applicationState != .background }) else { return }
+        guard await !streamingActor.isSettingsPresented() else { return }
         LOG("Setting monitor to \(monitor)", level: .debug)
         let savingBattery = await streamingActor.isBatterySavingOn()
         if monitor == .output, !savingBattery, await !isStreaming() {
@@ -895,12 +941,14 @@ enum StreamStartError: LocalizedError, Equatable {
     case missingStreamKey
     case noOutputSelected
     case endingTestRequiresSignIn
+    case settingsPresented
 
     var errorDescription: String? {
         switch self {
         case .missingStreamKey: "Enter a YouTube HLS stream key before starting"
         case .noOutputSelected: "Enable YouTube streaming, local recording, or both"
         case .endingTestRequiresSignIn: "Sign in to YouTube before using the stream ending test, or turn the test off in Settings"
+        case .settingsPresented: "Close Settings on your iPhone before starting"
         }
     }
 }

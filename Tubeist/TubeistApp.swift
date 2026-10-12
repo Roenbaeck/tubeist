@@ -140,6 +140,7 @@ struct BackgroundStreamPolicy {
 @Observable @MainActor
 final class AppState {
     var isBatterySavingOn = false
+    var isSettingsPresented = false
     var streamSessionState: StreamSessionState = .idle
     var isStreamActive: Bool { streamSessionState.isLive }
     var activitySession: StreamActivitySession?
@@ -285,7 +286,7 @@ struct TubeistApp: App {
                     backgroundStreamPolicy.didTakeScreenshot()
                 }
                 .onAppear {
-                    UIApplication.shared.isIdleTimerDisabled = true
+                    UIApplication.shared.isIdleTimerDisabled = !appState.isSettingsPresented
                     // State is installed here. Accessing it in App.init can
                     // create temporary instances instead of the shared model.
                     guard appState.isAppInitialization else { return }
@@ -313,7 +314,7 @@ struct TubeistApp: App {
     }
 
     private func handleScenePhase(_ oldValue: ScenePhase, _ newValue: ScenePhase) {
-            UIApplication.shared.isIdleTimerDisabled = newValue == .active
+            UIApplication.shared.isIdleTimerDisabled = newValue == .active && !appState.isSettingsPresented
             switch (oldValue, newValue) {
             case (.inactive, .background), (.active, .background):
                 if !appState.soonGoingToBackground, !appState.isAppInitialization {

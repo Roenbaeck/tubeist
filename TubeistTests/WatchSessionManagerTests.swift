@@ -11,7 +11,34 @@ private func decode(_ reply: WatchCommandReply) -> (success: Bool, message: Stri
     (reply.success, reply.message)
 }
 
+@Suite(.serialized)
 struct WatchSessionManagerTests {
+    @Test @MainActor
+    func settingsDisablesWatchStartUntilDismissal() async {
+        let manager = WatchSessionManager(isAppActive: { true })
+        let app = AppState()
+        app.isAppInitialization = false
+        app.isSettingsPresented = true
+        manager.appState = app
+        #expect(!manager.currentSnapshot(appState: app).isAppActive)
+        let reply = await manager.handle(rawCommand: WatchCommand.start.rawValue)
+        #expect(decode(reply) == (false, "Close Settings on your iPhone before starting"))
+        #expect(app.streamSessionState == .idle)
+        app.isSettingsPresented = false
+        #expect(manager.currentSnapshot(appState: app).isAppActive)
+    }
+
+    @Test @MainActor
+    func startIsRejectedWhenPhoneIsInactive() async {
+        let manager = WatchSessionManager(isAppActive: { false })
+        let appState = AppState()
+        appState.isAppInitialization = false
+        manager.appState = appState
+        let reply = await manager.handle(rawCommand: WatchCommand.start.rawValue)
+        #expect(reply.success == false)
+        #expect(reply.message == "Open Tubeist on your iPhone before starting")
+    }
+
     @Test @MainActor
     func unrecognizedCommandIsRejected() async throws {
         let manager = WatchSessionManager()
@@ -61,7 +88,7 @@ struct WatchSessionManagerTests {
         let appState = AppState()
         appState.activitySession = nil
         manager.appState = appState
-        let reply = await manager.handle(rawCommand: WatchCommand.saveHighlight.rawValue)
+        let reply = await manager.handle(rawCommand: WatchCommand.saveHighlight.rawValue, sessionID: appState.activitySession?.id)
         #expect(decode(reply) == (false, "No active session"))
     }
 
@@ -78,7 +105,7 @@ struct WatchSessionManagerTests {
 
         var requestedSessionID: UUID?
         HighlightRequestBridge.handler = { id in requestedSessionID = id }
-        let reply = await manager.handle(rawCommand: WatchCommand.saveHighlight.rawValue)
+        let reply = await manager.handle(rawCommand: WatchCommand.saveHighlight.rawValue, sessionID: appState.activitySession?.id)
         #expect(decode(reply) == (true, nil))
         #expect(requestedSessionID == sessionID)
     }
@@ -94,9 +121,22 @@ struct WatchSessionManagerTests {
         defer { HighlightRequestBridge.handler = nil }
 
         HighlightRequestBridge.handler = { _ in throw HighlightIntentError.unavailable }
-        let reply = await manager.handle(rawCommand: WatchCommand.saveHighlight.rawValue)
+        let reply = await manager.handle(rawCommand: WatchCommand.saveHighlight.rawValue, sessionID: appState.activitySession?.id)
         #expect(reply.success == false)
         #expect(reply.message == HighlightIntentError.unavailable.errorDescription)
+    }
+
+    @Test @MainActor
+    func oldSessionCommandsCannotAffectANewSession() async {
+        let manager = WatchSessionManager()
+        let appState = AppState()
+        appState.activitySession = StreamActivitySession(id: UUID(), requestedAt: Date(), streamsToYouTube: true)
+        manager.appState = appState
+        for command in [WatchCommand.stop, .saveHighlight] {
+            let reply = await manager.handle(rawCommand: command.rawValue, sessionID: UUID())
+            #expect(reply.success == false)
+            #expect(reply.message == "Session changed; wait for the Watch to update")
+        }
     }
 
     @Test func replyStructRoundTripsThroughPropertyListEncoding() throws {

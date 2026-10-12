@@ -250,7 +250,7 @@ private struct AppliedSettingsSnapshot {
     let overlays: [OverlaySetting]
     let overlayRefreshRate: OverlayRefreshRate
     let activityPreferences: StreamActivityPreferences
-    let scoreboardAPIURL: String
+    let externalStatusURL: String
 #if DEBUG
     let captureRemuxFixtures: Bool
     let recordHLSAcceptance: Bool
@@ -281,7 +281,7 @@ private struct AppliedSettingsSnapshot {
             overlays: overlays,
             overlayRefreshRate: Settings.overlayRefreshRate,
             activityPreferences: .saved,
-            scoreboardAPIURL: Settings.scoreboardAPIURL,
+            externalStatusURL: Settings.externalStatusURL,
             captureRemuxFixtures: Settings.captureRemuxFixtures,
             recordHLSAcceptance: Settings.recordHLSAcceptance,
             manualHLSEndingTest: Settings.manualHLSEndingTest
@@ -309,7 +309,7 @@ private struct AppliedSettingsSnapshot {
             overlays: overlays,
             overlayRefreshRate: Settings.overlayRefreshRate,
             activityPreferences: .saved,
-            scoreboardAPIURL: Settings.scoreboardAPIURL
+            externalStatusURL: Settings.externalStatusURL
         )
 #endif
     }
@@ -338,7 +338,7 @@ private struct AppliedSettingsSnapshot {
         Settings.liveActivityDetail = activityPreferences.detail
         Settings.liveActivityAlerts = activityPreferences.alerts
         Settings.liveActivityRecoveryAlerts = activityPreferences.recoveryAlerts
-        Settings.scoreboardAPIURL = scoreboardAPIURL
+        Settings.externalStatusURL = externalStatusURL
 #if DEBUG
         Settings.captureRemuxFixtures = captureRemuxFixtures
         Settings.recordHLSAcceptance = recordHLSAcceptance
@@ -374,7 +374,7 @@ struct SettingsView: View {
     @State private var activityPreferences = StreamActivityPreferences.saved
     @State private var activityPermissionDenied = false
     @State private var isRequestingActivityPermission = false
-    @State private var scoreboardAPIURL: String = Settings.scoreboardAPIURL
+    @State private var externalStatusURL: String = Settings.externalStatusURL
     @State private var journalDebug: Bool = Settings.journalDebug
 #if DEBUG
     @State private var captureRemuxFixtures: Bool = Settings.captureRemuxFixtures
@@ -418,572 +418,7 @@ struct SettingsView: View {
         
     var body: some View {
         NavigationView {
-            Form {
-                if !Settings.hasCameraPermission() || !Settings.hasMicrophonePermission() {
-                    Button("Click here and grant Camera and Microphone access in the settings to use the app") {
-                        Settings.openSystemSettings()
-                    }
-                    .frame(maxWidth: .infinity, alignment: .center)
-                    .multilineTextAlignment(.center)
-                    .foregroundColor(Color.red)
-                }
-
-                Section(header: Text("YouTube Streaming and Recording"), footer: Text("Sign in below to set up YouTube streaming, or enter an existing HLS stream key. You can also save an original-quality recording on this phone.")) {
-                    Picker("Stream or Record", selection: $selectedOption) {
-                        ForEach(RecordingOption.allCases) { option in
-                            Text(option.description).tag(option)
-                        }
-                    }
-                    .onChange(of: selectedOption) { _, newValue in
-                        switch newValue {
-                        case .streamOnly:
-                            stream = true
-                            record = false
-                        case .streamAndRecord:
-                            stream = true
-                            record = true
-                        case .recordOnly:
-                            stream = false
-                            record = true
-                        }
-                    }
-
-                    if stream {
-                        HStack {
-                            if revealsStreamKey {
-                                TextField("YouTube HLS Stream Key", text: streamKeyBinding)
-                                    .keyboardType(.asciiCapable)
-                                    .autocapitalization(.none)
-                                    .disableAutocorrection(true)
-                            } else {
-                                SecureField("YouTube HLS Stream Key", text: streamKeyBinding)
-                                    .keyboardType(.asciiCapable)
-                                    .autocapitalization(.none)
-                                    .disableAutocorrection(true)
-                            }
-                            Button {
-                                revealsStreamKey.toggle()
-                            } label: {
-                                Image(systemName: revealsStreamKey ? "eye.slash" : "eye")
-                                    .frame(width: 44, height: 44)
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityLabel(revealsStreamKey ? "Hide stream key" : "Reveal stream key")
-                        }
-                    }
-                }
-                .onAppear {
-                    if stream && record {
-                        selectedOption = .streamAndRecord
-                    } else if record {
-                        selectedOption = .recordOnly
-                    } else if stream {
-                        selectedOption = .streamOnly
-                    } else {
-                        selectedOption = .recordOnly
-                        record = true
-                    }
-                }
-
-                if stream {
-                    if youtubeService.isSignedIn {
-                        Section(
-                            header: Text("Tubeist Stream Key"),
-                            footer: Text("Tubeist can create and manage a reusable HLS stream key for your signed-in channel. Choosing this replaces the key above; tap Save to use it. You can keep your existing key if it already works. Existing YouTube streams are kept.")
-                        ) {
-                            Button(streamKeyManager.currentKey.isEmpty ? "Create stream key" : "Use a Tubeist stream key") {
-                                Task { await setUpYouTubeStream() }
-                            }
-                            .buttonStyle(.bordered)
-                            .accessibilityIdentifier("Set up YouTube stream")
-                            .disabled(youtubeService.isLoading || isSettingUpYouTubeStream)
-                        }
-                    }
-
-                    Section(header: Text("YouTube Stream Configuration"), footer: Text(youtubeService.isSignedIn ? "Save keeps broadcast preferences in Tubeist; your broadcast is created or updated when you tap Start stream." : "Sign in with your Google account to set up a stream key and broadcast without YouTube Studio. Your channel must already be enabled for live streaming.")) {
-                        if !youtubeService.isSignedIn {
-                            Button("Sign in with Google") {
-                                Task {
-                                    await youtubeService.signIn()
-                                    if youtubeService.isSignedIn {
-                                        appState.isYouTubeSignedIn = true
-                                    }
-                                }
-                            }
-                        } else {
-                            LabeledContent("YouTube channel") {
-                                Text(youtubeService.authorizedChannelName
-                                     ?? (youtubeService.isLoading ? "Loading…" : "Channel name unavailable"))
-                                    .multilineTextAlignment(.trailing)
-                                    .foregroundStyle(.secondary)
-                                    .textSelection(.enabled)
-                            }
-                            .accessibilityIdentifier("YouTube channel")
-
-                            if youtubeService.isLoading || isSettingUpYouTubeStream {
-                                HStack {
-                                    ProgressView()
-                                    Text("Loading...")
-                                        .foregroundColor(.secondary)
-                                }
-                            } else if youtubeDraft.broadcast != nil {
-                                HStack {
-                                    Text("Status")
-                                    Spacer()
-                                    Button {
-                                        Task {
-                                            await refreshYouTubeBroadcast()
-                                        }
-                                    } label: {
-                                        Image(systemName: "arrow.clockwise")
-                                            .foregroundColor(.secondary)
-                                            .frame(width: 44, height: 44)
-                                    }
-                                    .disabled(youtubeService.isLoading || isYouTubeRefreshCoolingDown)
-                                    Circle()
-                                        .fill(broadcastLifeCycleStatus == "live" ? Color.red :
-                                              broadcastLifeCycleStatus == "testing" ? Color.orange :
-                                              broadcastLifeCycleStatus == "ready" ? Color.green : Color.gray)
-                                        .frame(width: 10, height: 10)
-                                    Text(YouTubeBroadcast.label(for: broadcastLifeCycleStatus))
-                                        .foregroundColor(.secondary)
-                                }
-
-                                if broadcastLifeCycleStatus == "live" || broadcastLifeCycleStatus == "testing" {
-                                    Button("Stop YouTube Stream", role: .destructive) {
-                                        Task {
-                                            guard let broadcastId else { return }
-                                            do {
-                                                try await youtubeService.stopBroadcast(id: broadcastId)
-                                                await loadYouTubeBroadcast()
-                                            } catch {
-                                                youtubeService.errorMessage = error.localizedDescription
-                                                LOG("Failed to stop broadcast: \(error.localizedDescription)", level: .error)
-                                            }
-                                        }
-                                    }
-                                    .buttonStyle(.bordered)
-                                }
-
-                                VStack(alignment: .leading, spacing: 8) {
-                                    Text("Stream title")
-                                        .font(.subheadline)
-                                        .foregroundStyle(.secondary)
-                                    TextField("Enter a stream title", text: $youtubeDraft.title)
-                                        .textFieldStyle(.roundedBorder)
-                                        .autocapitalization(.sentences)
-                                        .accessibilityLabel("Stream title")
-                                        .accessibilityIdentifier("youtubeStreamTitle")
-                                }
-
-                                Picker("Visibility", selection: $youtubeDraft.visibility) {
-                                    Text("Public").tag("public")
-                                    Text("Unlisted").tag("unlisted")
-                                    Text("Private").tag("private")
-                                }
-
-                                Toggle("Made for kids", isOn: $youtubeDraft.madeForKids)
-                                Toggle("DVR (viewers can rewind)", isOn: $youtubeDraft.enableDvr)
-                                Toggle("Allow embedding", isOn: $youtubeDraft.enableEmbed)
-                                Picker("Latency", selection: $youtubeDraft.latencyPreference) {
-                                    Text("Normal").tag("normal")
-                                    Text("Low").tag("low")
-                                    Text("Ultra-low").tag("ultraLow")
-                                }
-
-                                let previewThumbnail = youtubeDraft.thumbnail.image
-                                let isLoadingThumbnail = youtubeDraft.thumbnail.isLoading
-                                PhotosPicker(selection: thumbnailSelection, matching: .images) {
-                                    HStack {
-                                        Text("Thumbnail")
-                                        if isLoadingThumbnail {
-                                            ProgressView().accessibilityLabel("Loading thumbnail")
-                                        }
-                                        if let previewThumbnail {
-                                            Image(uiImage: previewThumbnail)
-                                                .resizable()
-                                                .scaledToFill()
-                                                .frame(width: 64, height: 36)
-                                                .clipped()
-                                                .cornerRadius(4)
-                                        } else {
-                                            Text("Select image")
-                                                .foregroundColor(.secondary)
-                                        }
-                                    }
-                                }
-                                if let error = youtubeDraft.thumbnail.errorMessage {
-                                    Text(error).foregroundColor(.red)
-                                    Button("Retry thumbnail") {
-                                        loadSelectedThumbnail()
-                                    }
-                                }
-
-                                Picker("Playlist", selection: $youtubeDraft.playlistId) {
-                                    Text("None").tag(String?.none)
-                                    ForEach(youtubeDraft.playlists) { playlist in
-                                        Text(playlist.title).tag(Optional(playlist.id))
-                                    }
-                                }
-                                if let errorMessage = youtubeService.errorMessage {
-                                    Text(errorMessage).foregroundColor(.red)
-                                    Text("Your unsaved changes are kept. Refresh to try again.")
-                                        .foregroundColor(.secondary)
-                                }
-                            } else if let errorMessage = youtubeService.errorMessage {
-                                Text(errorMessage)
-                                    .foregroundColor(.red)
-                                Button("Retry") {
-                                    Task {
-                                        await loadYouTubeBroadcast()
-                                    }
-                                }
-                            } else if youtubeConfigLoaded {
-                                Text("Set up a Tubeist stream key above, or enter an existing HLS key.")
-                                    .foregroundColor(.secondary)
-                                    .font(.caption)
-                                Button("Retry") {
-                                    Task {
-                                        await loadYouTubeBroadcast()
-                                    }
-                                }
-                            }
-
-                            Button("Sign out of YouTube", role: .destructive) {
-                                clearYouTubeAccountState()
-                            }
-                            .buttonStyle(.bordered)
-                        }
-                    }
-                }
-
-                Section(
-                    header: Text("Highlights"),
-                    footer: Text("Save a short clip with about 10 seconds before and 5 seconds after your tap, from the iPhone or Apple Watch. Highlights use additional memory and processing. Changes apply to the next stream or recording.")
-                ) {
-                    Toggle("Enable Highlights", isOn: $highlightsEnabled)
-                        .accessibilityIdentifier("highlightsEnabledToggle")
-                }
-
-#if DEBUG
-                Section(
-                    header: Text("YouTube HLS Development"),
-                    footer: Text("Diagnostic recording saves upload events and the exact video segments and playlists in Tubeist’s Files folder, up to 512 MB per stream. Use it for short test streams and delete the files afterward. Stream keys are not saved. Fixture capture separately saves one remux sample set.")
-                ) {
-                    Toggle("Capture fMP4 remux fixtures", isOn: $captureRemuxFixtures)
-                    Toggle("Record YouTube HLS diagnostics", isOn: $recordHLSAcceptance)
-                }
-                Section(
-                    header: Text("Stream Ending Test"),
-                    footer: Text("Requires YouTube sign-in. Stop uploads all remaining media but leaves the broadcast open, with automatic ending disabled. Wait for the final words in the YouTube player, then end the broadcast manually in YouTube Studio. The YouTube indicator stays red until the broadcast ends. Diagnostics are recorded automatically. Turn this off for normal streams.")
-                ) {
-                    Toggle("End broadcast manually in Studio", isOn: $manualHLSEndingTest)
-                        .accessibilityIdentifier("manualHLSEndingTestToggle")
-                }
-#endif
-
-                Section(header: Text("Camera"), footer: Text("Select if the camera will be moving around with altering scenery or remain stationary aimed at a single scene. If you do not want to get suggested presets and instead configure settings in detail, select 'Custom' here.")) {
-                    Picker("Camera Position", selection: cameraPositionBinding) {
-                        Text("Stationary").tag("stationary")
-                        Text("Moving").tag("moving")
-                        Text("Custom").tag("custom")
-                    }
-                    .pickerStyle(.segmented)
-                }
-                
-                // Figure out "sane" presets given some additional information, unless the user wants a custom mode
-                if cameraPosition != "custom" {
-                    Section(header: Text("Bandwidth"), footer: Text("Enter the upload speed in Mbps shown at https://speed.cloudflare.com.")) {
-                        Text("Measured upload bandwidth: \(String(format: "%.1f", Double(measuredBandwidth) / 1_000_000.0)) Mbps")
-                            .font(.callout)
-                        Slider(value: Binding(
-                            get: { Double(measuredBandwidth) },
-                            set: { measuredBandwidth = Int($0) }
-                        ), in: 1_000_000...50_000_000, step: 500_000)
-                        
-                        Picker("People sharing the bandwidth", selection: $networkSharing) {
-                            Text("Many (cellular or public WiFi)").tag("many")
-                            Text("Few (dedicated WiFi or Ethernet dongle)").tag("few")
-                        }
-                    }
-                    
-                    // computed properties
-                    var availablePresets: [Preset] {
-                        cameraPosition == "moving" ? movingCameraPresets : stationaryCameraPresets
-                    }
-                    var maximumBitrate: Int {
-                        let networkFactor = networkSharing == "many" ? 0.5 : 0.8
-                        return Int(Double(measuredBandwidth) * networkFactor)
-                    }
-                    
-                    Section(header: Text("PRESET"), footer: Text("Depending on your selections above, some presets may be determined to result in a poor streaming experience. These are colored red, and should not be used unless your network conditions change.")) {
-                        Picker(selection: Binding(get: { selectedPreset }, set: { preset in
-                            if let preset { selectPreset(preset) }
-                        })) {
-                            ForEach(availablePresets) { preset in
-                                let unstreamable = (preset.videoBitrate + preset.audioChannels * preset.audioBitrate) > maximumBitrate
-                                let presetColor: Color = unstreamable ? .red : .primary
-                                Text(preset.name)
-                                    .foregroundColor(presetColor)
-                                    .tag(Optional(preset))
-                            }
-                        } label: {
-                            // this is the way to trick an inline picker not to show an extra option with the label of the picker
-                        }
-                        .pickerStyle(.inline)
-                    }
-                }
-                else {
-                    // Allow custom settings here for every part of a Preset, except its name, which should be "Custom"
-                    Section(header: Text("Custom Settings")) {
-                        Picker("Stream resolution", selection: $customResolution) {
-                            Text("960x540").tag(Resolution(960, 540))
-                            Text("1280x720").tag(Resolution(1280, 720))
-                            Text("1920x1080").tag(Resolution(1920, 1080))
-                            Text("2560x1440").tag(Resolution(2560, 1440))
-                            Text("3840x2160").tag(Resolution(3840, 2160))
-                        }
-                        .pickerStyle(.segmented)
-                        .onChange(of: customResolution) { oldValue, newValue in
-                            Task {
-                                let frameRates = await CaptureDirector.shared.frameRateLookup()
-                                maxFrameRate = frameRates[customResolution] ?? DEFAULT_FRAMERATE
-                                
-                                if customFrameRate > maxFrameRate {
-                                    customFrameRate = maxFrameRate
-                                }
-                            }
-                        }
-                        
-                        Picker("Key frame interval", selection: $customKeyframeInterval) {
-                            Text("Two key frames per second").tag(0.5)
-                            Text("One key frame per second").tag(1.0)
-                            Text("One key frame per two seconds").tag(2.0)
-                        }
-                        .pickerStyle(.segmented)
-
-                        Picker("Audio channels", selection: $customAudioChannels) {
-                            Text("Mono audio channel").tag(1)
-                            Text("Stereo audio channels").tag(2)
-                        }
-                        .pickerStyle(.segmented)
-                        
-                        Text("Frame rate: \(String(format: "%.0f", customFrameRate)) FPS")
-                            .font(.callout)
-                        Slider(value: Binding(
-                            get: { trunc(customFrameRate) },
-                            set: { customFrameRate = min(maxFrameRate, $0 + (customFrameRate - trunc(customFrameRate))) }
-                        ), in: 2...maxFrameRate, step: 1) {
-                            Text("Whole part of frame rate")
-                        } minimumValueLabel: {
-                            Text("2")
-                        } maximumValueLabel: {
-                            Text("\(Int(maxFrameRate))")
-                        }
-
-                        Text("Audio bitrate per channel: \(customAudioBitrate / 1000) kbps")
-                            .font(.callout)
-                        Slider(value: Binding(
-                            get: { Double(customAudioBitrate) },
-                            set: { customAudioBitrate = Int($0) }
-                        ), in: 32_000...128_000, step: 8_000)
-
-                        Text("Video bitrate \(String(format: "%.1f", Double(customVideoBitrate) / 1_000_000.0)) Mbps")
-                            .font(.callout)
-                        Slider(value: Binding(
-                            get: { Double(customVideoBitrate) },
-                            set: { customVideoBitrate = Int($0) }
-                        ), in: 500_000...50_000_000, step: 500_000)
-                    }
-                }
-
-                Section {
-                    Toggle("Input resolution syncs with output resolution", isOn: $inputSyncsWithOutput)
-                } footer: {
-                    if inputSyncsWithOutput {
-                        Text("Input resolution is synchronized with the output resolution. Camera video frames will be produced in the same resolution as the selected output. This yields the least CPU usage at the cost of a slight loss in color fidelity.")
-                    }
-                    else {
-                        Text("Input resolution is always 4K regardless of output resolution. Camera video frames will be downsampled to the output resolution if it is lower than 4K. This yields the best possible color fidelity at the cost of higher CPU usage.")
-                    }
-                }
-
-                Section {
-                    Toggle("Prefer 10-bit 4:2:2 color", isOn: $prefers422Chroma)
-                } footer: {
-                    if prefers422Chroma {
-                        Text("Keeps 4:2:2 chroma detail when the camera delivers it and this iPhone's hardware encoder accepts it at the selected resolution and frame rate. Anything else uses 4:2:0. YouTube documents 4:2:0 for HDR, so turn this off if a stream fails to process or plays back incorrectly. The choice is made once when streaming or recording starts and does not change until the next start.")
-                    }
-                    else {
-                        Text("Always encodes 10-bit 4:2:0, which is what YouTube documents for HDR. Use this if 4:2:2 causes problems with your stream or on your playback devices.")
-                    }
-                }
-
-                Section {
-                    ForEach(overlayDraft) { overlay in
-                        Button {
-                            editingOverlay = overlay
-                        } label: {
-                            HStack {
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text(overlay.url)
-                                        .foregroundColor(.primary)
-                                        .multilineTextAlignment(.leading)
-                                    if overlay.scale != 1 {
-                                        Text("Scale: \(Int((overlay.scale * 100).rounded()))%")
-                                            .font(.caption)
-                                            .foregroundColor(.secondary)
-                                    }
-                                }
-                                Spacer()
-                                Image(systemName: "pencil")
-                                    .foregroundColor(.secondary)
-                            }
-                        }
-                        .accessibilityIdentifier("edit-overlay-\(overlay.id)")
-                    }
-                    .onDelete { offsets in
-                        overlayDraft.remove(atOffsets: offsets)
-                    }
-                    
-                    HStack {
-                        TextField("New Overlay URL", text: $newOverlayURL)
-                            .keyboardType(.URL)
-                            .autocapitalization(.none)
-                            .disableAutocorrection(true)
-                            .onSubmit(addOverlay)
-                        Button(action: addOverlay) {
-                            Image(systemName: "plus.circle.fill")
-                                .frame(width: 44, height: 44)
-                        }
-                        .accessibilityLabel("Add overlay")
-                    }
-                    Button("Reorder overlays") { showingOverlayOrder = true }
-                        .disabled(overlayDraft.count < 2)
-                        .accessibilityIdentifier("reorder-overlays")
-                } header: {
-                    Text("Overlays")
-                } footer: {
-                    Text("The top overlay in this list appears in front in both INPUT and OUTPUT. New overlays are added on top. Tap an overlay to edit its URL or scale, or Reorder overlays to change the stack. Save to apply your changes. Audio is captured from the last playing overlay if audio from multiple overlays overlap.")
-                }
-
-                Section {
-                    Picker("Maximum refresh rate", selection: $overlayRefreshRate) {
-                        ForEach(OverlayRefreshRate.allCases) { rate in
-                            Text(rate.label).tag(rate)
-                        }
-                    }
-                    .accessibilityIdentifier("overlay-refresh-rate")
-                } header: {
-                    Text("Overlay Refresh")
-                } footer: {
-                    Text("Applies to output, streaming, and recording. 1 update/second captures page changes and saves battery. 3, 10, and 30 updates/second also capture animations but use more power. Updates slow down if the phone cannot keep up. The input view renders the web page live.")
-                }
-
-                Section(header: Text("Monitoring")) {
-                    Picker("System health bar position", selection: $areSystemMetricsAtTop) {
-                        Text("Bottom").tag(false)
-                        Text("Top").tag(true)
-                    }
-                }
-
-                Section {
-                    Picker("Live Activity", selection: $activityPreferences.detail) {
-                        ForEach(LiveActivityDetail.allCases, id: \.self) { detail in
-                            Text(detail.label).tag(detail)
-                        }
-                    }
-                    Toggle("Alert on stream problems", isOn: $activityPreferences.alerts)
-                        .disabled(activityPreferences.detail == .off || isRequestingActivityPermission)
-                        .onChange(of: activityPreferences.alerts) { _, enabled in
-                            guard enabled else { return }
-                            isRequestingActivityPermission = true
-                            Task {
-                                let allowed = await StreamActivityNotifications.requestPermission()
-                                isRequestingActivityPermission = false
-                                activityPermissionDenied = !allowed
-                                if !allowed { activityPreferences.alerts = false }
-                            }
-                        }
-                    Toggle("Alert when recovered", isOn: $activityPreferences.recoveryAlerts)
-                        .disabled(!activityPreferences.alerts || activityPreferences.detail == .off)
-                    if activityPermissionDenied {
-                        Text("Allow Tubeist notifications in iPhone Settings to enable alerts.")
-                            .foregroundStyle(.secondary)
-                        Link("Open notification settings", destination: URL(string: UIApplication.openSettingsURLString)!)
-                    }
-                    TextField("Score API (e.g. https://host/username)", text: $scoreboardAPIURL)
-                        .keyboardType(.URL)
-                        .autocapitalization(.none)
-                        .disableAutocorrection(true)
-                        .accessibilityIdentifier("scoreboardAPIURL")
-                } header: {
-                    Text("Apple Watch and Live Activity")
-                } footer: {
-                    Text("Show session status and elapsed time on your iPhone and the Smart Stack on Apple Watch with watchOS 11 or later. Full adds viewers, bitrate, upload quality, temperature and battery. Alerts are optional; delivery depends on your device and notification settings. Score API shows the live score from a self-hosted scoreboard server (github.com/Lindhardsen/scoreboard) on the Watch app while streaming. Leave blank to turn this off.")
-                }
-
-                Section(header: Text("Journal"), footer: Text("Configure which types of messages to record in the journal")) {
-                    HStack {
-                        Toggle("Error", isOn: $journalError).labelsHidden()
-                            .accessibilityLabel("Error journal messages")
-                        Text("Error").font(.caption).multilineTextAlignment(.center)
-                        Spacer()
-                        Toggle("Warning", isOn: $journalWarning).labelsHidden()
-                            .accessibilityLabel("Warning journal messages")
-                        Text("Warning").font(.caption).multilineTextAlignment(.center)
-                        Spacer()
-                        Toggle("Info", isOn: $journalInfo).labelsHidden()
-                            .accessibilityLabel("Informational journal messages")
-                        Text("Info").font(.caption).multilineTextAlignment(.center)
-                        Spacer()
-                        Toggle("Debug", isOn: $journalDebug).labelsHidden()
-                            .accessibilityLabel("Debug journal messages")
-                        Text("Debug").font(.caption).multilineTextAlignment(.center)
-                    }
-                }
-
-                Section(header: Text("Privacy and Credentials"), footer: Text("Tubeist stores the HLS stream key and optional Google authorization in the iOS Keychain. Removing them disables streaming until a new key is entered.")) {
-                    Link(
-                        "Read the Tubeist Privacy Policy",
-                        destination: URL(string: "https://github.com/Roenbaeck/tubeist/blob/main/PRIVACY.md")!
-                    )
-                    if !streamKeyManager.currentKey.isEmpty || youtubeService.isSignedIn {
-                        Button("Remove YouTube Credentials", role: .destructive) {
-                            do {
-                                try Settings.setStreamKey(nil)
-                                streamKeyManager.updateKey("")
-                                // The saved key is gone even if sign-out fails.
-                                clearAppliedYouTubeStatus()
-                                clearYouTubeAccountState()
-                                if let errorMessage = youtubeService.errorMessage {
-                                    appState.activeAlert = errorMessage
-                                }
-                            } catch {
-                                appState.activeAlert = "Could not remove the YouTube stream key: \(error.localizedDescription)"
-                                LOG("Could not remove the YouTube stream key from Keychain", level: .error)
-                            }
-                        }
-                    }
-                }
-
-                if !Purchaser.shared.isProductPurchased("tubeist_lifetime_styling") {
-                    if let product = appState.availableProducts["tubeist_lifetime_styling"] {
-                        Section(header: Text("In-App Purchases"), footer: Text("This set of styles and effects is the only unlockable content in this app, made available at the lowest price possible. Once unlocked you have lifetime access to all styles and effects. It is a small contribution going toward continued app development.")) {
-                            HStack {
-                                Text("Styles and Effects Lifetime Access")
-                                Spacer()
-                                Button(product.displayPrice) {
-                                    Task {
-                                        await Purchaser.shared.purchase(product: product)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                
-            }
+            settingsForm
             .disabled(isSaving)
             .toolbar {
                 // Text fields otherwise have no way to dismiss the keyboard,
@@ -1161,6 +596,597 @@ struct SettingsView: View {
             .sheet(isPresented: $showingOverlayOrder) {
                 OverlayOrderView(overlays: $overlayDraft)
             }
+        }
+    }
+
+    private var settingsForm: some View {
+        Form {
+            if !Settings.hasCameraPermission() || !Settings.hasMicrophonePermission() {
+                Button("Click here and grant Camera and Microphone access in the settings to use the app") {
+                    Settings.openSystemSettings()
+                }
+                .frame(maxWidth: .infinity, alignment: .center)
+                .multilineTextAlignment(.center)
+                .foregroundColor(Color.red)
+            }
+
+            streamingSettingsSection
+
+            Section(
+                header: Text("Highlights"),
+                footer: Text("Save a short clip with about 10 seconds before and 5 seconds after your tap, from the iPhone or Apple Watch. Highlights use additional memory and processing. Changes apply to the next stream or recording.")
+            ) {
+                Toggle("Enable Highlights", isOn: $highlightsEnabled)
+                    .accessibilityIdentifier("highlightsEnabledToggle")
+            }
+
+#if DEBUG
+            Section(
+                header: Text("YouTube HLS Development"),
+                footer: Text("Diagnostic recording saves upload events and the exact video segments and playlists in Tubeist’s Files folder, up to 512 MB per stream. Use it for short test streams and delete the files afterward. Stream keys are not saved. Fixture capture separately saves one remux sample set.")
+            ) {
+                Toggle("Capture fMP4 remux fixtures", isOn: $captureRemuxFixtures)
+                Toggle("Record YouTube HLS diagnostics", isOn: $recordHLSAcceptance)
+            }
+            Section(
+                header: Text("Stream Ending Test"),
+                footer: Text("Requires YouTube sign-in. Stop uploads all remaining media but leaves the broadcast open, with automatic ending disabled. Wait for the final words in the YouTube player, then end the broadcast manually in YouTube Studio. The YouTube indicator stays red until the broadcast ends. Diagnostics are recorded automatically. Turn this off for normal streams.")
+            ) {
+                Toggle("End broadcast manually in Studio", isOn: $manualHLSEndingTest)
+                    .accessibilityIdentifier("manualHLSEndingTestToggle")
+            }
+#endif
+
+            captureSettingsSections
+
+            Section {
+                ForEach(overlayDraft) { overlay in
+                    Button {
+                        editingOverlay = overlay
+                    } label: {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(overlay.url)
+                                    .foregroundColor(.primary)
+                                    .multilineTextAlignment(.leading)
+                                if overlay.scale != 1 {
+                                    Text("Scale: \(Int((overlay.scale * 100).rounded()))%")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                }
+                            }
+                            Spacer()
+                            Image(systemName: "pencil")
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    .accessibilityIdentifier("edit-overlay-\(overlay.id)")
+                }
+                .onDelete { offsets in
+                    overlayDraft.remove(atOffsets: offsets)
+                }
+
+                HStack {
+                    TextField("New Overlay URL", text: $newOverlayURL)
+                        .keyboardType(.URL)
+                        .autocapitalization(.none)
+                        .disableAutocorrection(true)
+                        .onSubmit(addOverlay)
+                    Button(action: addOverlay) {
+                        Image(systemName: "plus.circle.fill")
+                            .frame(width: 44, height: 44)
+                    }
+                    .accessibilityLabel("Add overlay")
+                }
+                Button("Reorder overlays") { showingOverlayOrder = true }
+                    .disabled(overlayDraft.count < 2)
+                    .accessibilityIdentifier("reorder-overlays")
+            } header: {
+                Text("Overlays")
+            } footer: {
+                Text("The top overlay in this list appears in front in both INPUT and OUTPUT. New overlays are added on top. Tap an overlay to edit its URL or scale, or Reorder overlays to change the stack. Save to apply your changes. Audio is captured from the last playing overlay if audio from multiple overlays overlap.")
+            }
+
+            Section {
+                Picker("Maximum refresh rate", selection: $overlayRefreshRate) {
+                    ForEach(OverlayRefreshRate.allCases) { rate in
+                        Text(rate.label).tag(rate)
+                    }
+                }
+                .accessibilityIdentifier("overlay-refresh-rate")
+            } header: {
+                Text("Overlay Refresh")
+            } footer: {
+                Text("Applies to output, streaming, and recording. 1 update/second captures page changes and saves battery. 3, 10, and 30 updates/second also capture animations but use more power. Updates slow down if the phone cannot keep up. The input view renders the web page live.")
+            }
+
+            Section(header: Text("Monitoring")) {
+                Picker("System health bar position", selection: $areSystemMetricsAtTop) {
+                    Text("Bottom").tag(false)
+                    Text("Top").tag(true)
+                }
+            }
+
+            watchSettingsSections
+
+            Section(header: Text("Journal"), footer: Text("Configure which types of messages to record in the journal")) {
+                HStack {
+                    Toggle("Error", isOn: $journalError).labelsHidden()
+                        .accessibilityLabel("Error journal messages")
+                    Text("Error").font(.caption).multilineTextAlignment(.center)
+                    Spacer()
+                    Toggle("Warning", isOn: $journalWarning).labelsHidden()
+                        .accessibilityLabel("Warning journal messages")
+                    Text("Warning").font(.caption).multilineTextAlignment(.center)
+                    Spacer()
+                    Toggle("Info", isOn: $journalInfo).labelsHidden()
+                        .accessibilityLabel("Informational journal messages")
+                    Text("Info").font(.caption).multilineTextAlignment(.center)
+                    Spacer()
+                    Toggle("Debug", isOn: $journalDebug).labelsHidden()
+                        .accessibilityLabel("Debug journal messages")
+                    Text("Debug").font(.caption).multilineTextAlignment(.center)
+                }
+            }
+
+            Section(header: Text("Privacy and Credentials"), footer: Text("Tubeist stores the HLS stream key and optional Google authorization in the iOS Keychain. Removing them disables streaming until a new key is entered.")) {
+                Link(
+                    "Read the Tubeist Privacy Policy",
+                    destination: URL(string: "https://github.com/Roenbaeck/tubeist/blob/main/PRIVACY.md")!
+                )
+                if !streamKeyManager.currentKey.isEmpty || youtubeService.isSignedIn {
+                    Button("Remove YouTube Credentials", role: .destructive) {
+                        do {
+                            try Settings.setStreamKey(nil)
+                            streamKeyManager.updateKey("")
+                            // The saved key is gone even if sign-out fails.
+                            clearAppliedYouTubeStatus()
+                            clearYouTubeAccountState()
+                            if let errorMessage = youtubeService.errorMessage {
+                                appState.activeAlert = errorMessage
+                            }
+                        } catch {
+                            appState.activeAlert = "Could not remove the YouTube stream key: \(error.localizedDescription)"
+                            LOG("Could not remove the YouTube stream key from Keychain", level: .error)
+                        }
+                    }
+                }
+            }
+
+            if !Purchaser.shared.isProductPurchased("tubeist_lifetime_styling") {
+                if let product = appState.availableProducts["tubeist_lifetime_styling"] {
+                    Section(header: Text("In-App Purchases"), footer: Text("This set of styles and effects is the only unlockable content in this app, made available at the lowest price possible. Once unlocked you have lifetime access to all styles and effects. It is a small contribution going toward continued app development.")) {
+                        HStack {
+                            Text("Styles and Effects Lifetime Access")
+                            Spacer()
+                            Button(product.displayPrice) {
+                                Task {
+                                    await Purchaser.shared.purchase(product: product)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+        }
+    }
+
+    @ViewBuilder
+    private var streamingSettingsSection: some View {
+        Section(header: Text("YouTube Streaming and Recording"), footer: Text("Sign in below to set up YouTube streaming, or enter an existing HLS stream key. You can also save an original-quality recording on this phone.")) {
+            Picker("Stream or Record", selection: $selectedOption) {
+                ForEach(RecordingOption.allCases) { option in
+                    Text(option.description).tag(option)
+                }
+            }
+            .onChange(of: selectedOption) { _, newValue in
+                switch newValue {
+                case .streamOnly:
+                    stream = true
+                    record = false
+                case .streamAndRecord:
+                    stream = true
+                    record = true
+                case .recordOnly:
+                    stream = false
+                    record = true
+                }
+            }
+
+            if stream {
+                HStack {
+                    if revealsStreamKey {
+                        TextField("YouTube HLS Stream Key", text: streamKeyBinding)
+                            .keyboardType(.asciiCapable)
+                            .autocapitalization(.none)
+                            .disableAutocorrection(true)
+                    } else {
+                        SecureField("YouTube HLS Stream Key", text: streamKeyBinding)
+                            .keyboardType(.asciiCapable)
+                            .autocapitalization(.none)
+                            .disableAutocorrection(true)
+                    }
+                    Button {
+                        revealsStreamKey.toggle()
+                    } label: {
+                        Image(systemName: revealsStreamKey ? "eye.slash" : "eye")
+                            .frame(width: 44, height: 44)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(revealsStreamKey ? "Hide stream key" : "Reveal stream key")
+                }
+            }
+        }
+        .onAppear {
+            if stream && record {
+                selectedOption = .streamAndRecord
+            } else if record {
+                selectedOption = .recordOnly
+            } else if stream {
+                selectedOption = .streamOnly
+            } else {
+                selectedOption = .recordOnly
+                record = true
+            }
+        }
+
+        if stream {
+            if youtubeService.isSignedIn {
+                Section(
+                    header: Text("Tubeist Stream Key"),
+                    footer: Text("Tubeist can create and manage a reusable HLS stream key for your signed-in channel. Choosing this replaces the key above; tap Save to use it. You can keep your existing key if it already works. Existing YouTube streams are kept.")
+                ) {
+                    Button(streamKeyManager.currentKey.isEmpty ? "Create stream key" : "Use a Tubeist stream key") {
+                        Task { await setUpYouTubeStream() }
+                    }
+                    .buttonStyle(.bordered)
+                    .accessibilityIdentifier("Set up YouTube stream")
+                    .disabled(youtubeService.isLoading || isSettingUpYouTubeStream)
+                }
+            }
+
+            Section(header: Text("YouTube Stream Configuration"), footer: Text(youtubeService.isSignedIn ? "Save keeps broadcast preferences in Tubeist; your broadcast is created or updated when you tap Start stream." : "Sign in with your Google account to set up a stream key and broadcast without YouTube Studio. Your channel must already be enabled for live streaming.")) {
+                if !youtubeService.isSignedIn {
+                    Button("Sign in with Google") {
+                        Task {
+                            await youtubeService.signIn()
+                            if youtubeService.isSignedIn {
+                                appState.isYouTubeSignedIn = true
+                            }
+                        }
+                    }
+                } else {
+                    LabeledContent("YouTube channel") {
+                        Text(youtubeService.authorizedChannelName
+                             ?? (youtubeService.isLoading ? "Loading…" : "Channel name unavailable"))
+                            .multilineTextAlignment(.trailing)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    }
+                    .accessibilityIdentifier("YouTube channel")
+
+                    if youtubeService.isLoading || isSettingUpYouTubeStream {
+                        HStack {
+                            ProgressView()
+                            Text("Loading...")
+                                .foregroundColor(.secondary)
+                        }
+                    } else if youtubeDraft.broadcast != nil {
+                        HStack {
+                            Text("Status")
+                            Spacer()
+                            Button {
+                                Task {
+                                    await refreshYouTubeBroadcast()
+                                }
+                            } label: {
+                                Image(systemName: "arrow.clockwise")
+                                    .foregroundColor(.secondary)
+                                    .frame(width: 44, height: 44)
+                            }
+                            .disabled(youtubeService.isLoading || isYouTubeRefreshCoolingDown)
+                            Circle()
+                                .fill(broadcastLifeCycleStatus == "live" ? Color.red :
+                                      broadcastLifeCycleStatus == "testing" ? Color.orange :
+                                      broadcastLifeCycleStatus == "ready" ? Color.green : Color.gray)
+                                .frame(width: 10, height: 10)
+                            Text(YouTubeBroadcast.label(for: broadcastLifeCycleStatus))
+                                .foregroundColor(.secondary)
+                        }
+
+                        if broadcastLifeCycleStatus == "live" || broadcastLifeCycleStatus == "testing" {
+                            Button("Stop YouTube Stream", role: .destructive) {
+                                Task {
+                                    guard let broadcastId else { return }
+                                    do {
+                                        try await youtubeService.stopBroadcast(id: broadcastId)
+                                        await loadYouTubeBroadcast()
+                                    } catch {
+                                        youtubeService.errorMessage = error.localizedDescription
+                                        LOG("Failed to stop broadcast: \(error.localizedDescription)", level: .error)
+                                    }
+                                }
+                            }
+                            .buttonStyle(.bordered)
+                        }
+
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Stream title")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                            TextField("Enter a stream title", text: $youtubeDraft.title)
+                                .textFieldStyle(.roundedBorder)
+                                .autocapitalization(.sentences)
+                                .accessibilityLabel("Stream title")
+                                .accessibilityIdentifier("youtubeStreamTitle")
+                        }
+
+                        Picker("Visibility", selection: $youtubeDraft.visibility) {
+                            Text("Public").tag("public")
+                            Text("Unlisted").tag("unlisted")
+                            Text("Private").tag("private")
+                        }
+
+                        Toggle("Made for kids", isOn: $youtubeDraft.madeForKids)
+                        Toggle("DVR (viewers can rewind)", isOn: $youtubeDraft.enableDvr)
+                        Toggle("Allow embedding", isOn: $youtubeDraft.enableEmbed)
+                        Picker("Latency", selection: $youtubeDraft.latencyPreference) {
+                            Text("Normal").tag("normal")
+                            Text("Low").tag("low")
+                            Text("Ultra-low").tag("ultraLow")
+                        }
+
+                        let previewThumbnail = youtubeDraft.thumbnail.image
+                        let isLoadingThumbnail = youtubeDraft.thumbnail.isLoading
+                        PhotosPicker(selection: thumbnailSelection, matching: .images) {
+                            HStack {
+                                Text("Thumbnail")
+                                if isLoadingThumbnail {
+                                    ProgressView().accessibilityLabel("Loading thumbnail")
+                                }
+                                if let previewThumbnail {
+                                    Image(uiImage: previewThumbnail)
+                                        .resizable()
+                                        .scaledToFill()
+                                        .frame(width: 64, height: 36)
+                                        .clipped()
+                                        .cornerRadius(4)
+                                } else {
+                                    Text("Select image")
+                                        .foregroundColor(.secondary)
+                                }
+                            }
+                        }
+                        if let error = youtubeDraft.thumbnail.errorMessage {
+                            Text(error).foregroundColor(.red)
+                            Button("Retry thumbnail") {
+                                loadSelectedThumbnail()
+                            }
+                        }
+
+                        Picker("Playlist", selection: $youtubeDraft.playlistId) {
+                            Text("None").tag(String?.none)
+                            ForEach(youtubeDraft.playlists) { playlist in
+                                Text(playlist.title).tag(Optional(playlist.id))
+                            }
+                        }
+                        if let errorMessage = youtubeService.errorMessage {
+                            Text(errorMessage).foregroundColor(.red)
+                            Text("Your unsaved changes are kept. Refresh to try again.")
+                                .foregroundColor(.secondary)
+                        }
+                    } else if let errorMessage = youtubeService.errorMessage {
+                        Text(errorMessage)
+                            .foregroundColor(.red)
+                        Button("Retry") {
+                            Task {
+                                await loadYouTubeBroadcast()
+                            }
+                        }
+                    } else if youtubeConfigLoaded {
+                        Text("Set up a Tubeist stream key above, or enter an existing HLS key.")
+                            .foregroundColor(.secondary)
+                            .font(.caption)
+                        Button("Retry") {
+                            Task {
+                                await loadYouTubeBroadcast()
+                            }
+                        }
+                    }
+
+                    Button("Sign out of YouTube", role: .destructive) {
+                        clearYouTubeAccountState()
+                    }
+                    .buttonStyle(.bordered)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var captureSettingsSections: some View {
+        Section(header: Text("Camera"), footer: Text("Select if the camera will be moving around with altering scenery or remain stationary aimed at a single scene. If you do not want to get suggested presets and instead configure settings in detail, select 'Custom' here.")) {
+            Picker("Camera Position", selection: cameraPositionBinding) {
+                Text("Stationary").tag("stationary")
+                Text("Moving").tag("moving")
+                Text("Custom").tag("custom")
+            }
+            .pickerStyle(.segmented)
+        }
+
+        // Figure out "sane" presets given some additional information, unless the user wants a custom mode
+        if cameraPosition != "custom" {
+            Section(header: Text("Bandwidth"), footer: Text("Enter the upload speed in Mbps shown at https://speed.cloudflare.com.")) {
+                Text("Measured upload bandwidth: \(String(format: "%.1f", Double(measuredBandwidth) / 1_000_000.0)) Mbps")
+                    .font(.callout)
+                Slider(value: Binding(
+                    get: { Double(measuredBandwidth) },
+                    set: { measuredBandwidth = Int($0) }
+                ), in: 1_000_000...50_000_000, step: 500_000)
+
+                Picker("People sharing the bandwidth", selection: $networkSharing) {
+                    Text("Many (cellular or public WiFi)").tag("many")
+                    Text("Few (dedicated WiFi or Ethernet dongle)").tag("few")
+                }
+            }
+
+            // computed properties
+            var availablePresets: [Preset] {
+                cameraPosition == "moving" ? movingCameraPresets : stationaryCameraPresets
+            }
+            var maximumBitrate: Int {
+                let networkFactor = networkSharing == "many" ? 0.5 : 0.8
+                return Int(Double(measuredBandwidth) * networkFactor)
+            }
+
+            Section(header: Text("PRESET"), footer: Text("Depending on your selections above, some presets may be determined to result in a poor streaming experience. These are colored red, and should not be used unless your network conditions change.")) {
+                Picker(selection: Binding(get: { selectedPreset }, set: { preset in
+                    if let preset { selectPreset(preset) }
+                })) {
+                    ForEach(availablePresets) { preset in
+                        let unstreamable = (preset.videoBitrate + preset.audioChannels * preset.audioBitrate) > maximumBitrate
+                        let presetColor: Color = unstreamable ? .red : .primary
+                        Text(preset.name)
+                            .foregroundColor(presetColor)
+                            .tag(Optional(preset))
+                    }
+                } label: {
+                    // this is the way to trick an inline picker not to show an extra option with the label of the picker
+                }
+                .pickerStyle(.inline)
+            }
+        }
+        else {
+            // Allow custom settings here for every part of a Preset, except its name, which should be "Custom"
+            Section(header: Text("Custom Settings")) {
+                Picker("Stream resolution", selection: $customResolution) {
+                    Text("960x540").tag(Resolution(960, 540))
+                    Text("1280x720").tag(Resolution(1280, 720))
+                    Text("1920x1080").tag(Resolution(1920, 1080))
+                    Text("2560x1440").tag(Resolution(2560, 1440))
+                    Text("3840x2160").tag(Resolution(3840, 2160))
+                }
+                .pickerStyle(.segmented)
+                .onChange(of: customResolution) { oldValue, newValue in
+                    Task {
+                        let frameRates = await CaptureDirector.shared.frameRateLookup()
+                        maxFrameRate = frameRates[customResolution] ?? DEFAULT_FRAMERATE
+
+                        if customFrameRate > maxFrameRate {
+                            customFrameRate = maxFrameRate
+                        }
+                    }
+                }
+
+                Picker("Key frame interval", selection: $customKeyframeInterval) {
+                    Text("Two key frames per second").tag(0.5)
+                    Text("One key frame per second").tag(1.0)
+                    Text("One key frame per two seconds").tag(2.0)
+                }
+                .pickerStyle(.segmented)
+
+                Picker("Audio channels", selection: $customAudioChannels) {
+                    Text("Mono audio channel").tag(1)
+                    Text("Stereo audio channels").tag(2)
+                }
+                .pickerStyle(.segmented)
+
+                Text("Frame rate: \(String(format: "%.0f", customFrameRate)) FPS")
+                    .font(.callout)
+                Slider(value: Binding(
+                    get: { trunc(customFrameRate) },
+                    set: { customFrameRate = min(maxFrameRate, $0 + (customFrameRate - trunc(customFrameRate))) }
+                ), in: 2...maxFrameRate, step: 1) {
+                    Text("Whole part of frame rate")
+                } minimumValueLabel: {
+                    Text("2")
+                } maximumValueLabel: {
+                    Text("\(Int(maxFrameRate))")
+                }
+
+                Text("Audio bitrate per channel: \(customAudioBitrate / 1000) kbps")
+                    .font(.callout)
+                Slider(value: Binding(
+                    get: { Double(customAudioBitrate) },
+                    set: { customAudioBitrate = Int($0) }
+                ), in: 32_000...128_000, step: 8_000)
+
+                Text("Video bitrate \(String(format: "%.1f", Double(customVideoBitrate) / 1_000_000.0)) Mbps")
+                    .font(.callout)
+                Slider(value: Binding(
+                    get: { Double(customVideoBitrate) },
+                    set: { customVideoBitrate = Int($0) }
+                ), in: 500_000...50_000_000, step: 500_000)
+            }
+        }
+
+        Section {
+            Toggle("Input resolution syncs with output resolution", isOn: $inputSyncsWithOutput)
+        } footer: {
+            if inputSyncsWithOutput {
+                Text("Input resolution is synchronized with the output resolution. Camera video frames will be produced in the same resolution as the selected output. This yields the least CPU usage at the cost of a slight loss in color fidelity.")
+            }
+            else {
+                Text("Input resolution is always 4K regardless of output resolution. Camera video frames will be downsampled to the output resolution if it is lower than 4K. This yields the best possible color fidelity at the cost of higher CPU usage.")
+            }
+        }
+
+        Section {
+            Toggle("Prefer 10-bit 4:2:2 color", isOn: $prefers422Chroma)
+        } footer: {
+            if prefers422Chroma {
+                Text("Keeps 4:2:2 chroma detail when the camera delivers it and this iPhone's hardware encoder accepts it at the selected resolution and frame rate. Anything else uses 4:2:0. YouTube documents 4:2:0 for HDR, so turn this off if a stream fails to process or plays back incorrectly. The choice is made once when streaming or recording starts and does not change until the next start.")
+            }
+            else {
+                Text("Always encodes 10-bit 4:2:0, which is what YouTube documents for HDR. Use this if 4:2:2 causes problems with your stream or on your playback devices.")
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var watchSettingsSections: some View {
+        Section {
+            Picker("Live Activity", selection: $activityPreferences.detail) {
+                ForEach(LiveActivityDetail.allCases, id: \.self) { detail in
+                    Text(detail.label).tag(detail)
+                }
+            }
+            Toggle("Alert on stream problems", isOn: $activityPreferences.alerts)
+                .disabled(activityPreferences.detail == .off || isRequestingActivityPermission)
+                .onChange(of: activityPreferences.alerts) { _, enabled in
+                    guard enabled else { return }
+                    isRequestingActivityPermission = true
+                    Task {
+                        let allowed = await StreamActivityNotifications.requestPermission()
+                        isRequestingActivityPermission = false
+                        activityPermissionDenied = !allowed
+                        if !allowed { activityPreferences.alerts = false }
+                    }
+                }
+            Toggle("Alert when recovered", isOn: $activityPreferences.recoveryAlerts)
+                .disabled(!activityPreferences.alerts || activityPreferences.detail == .off)
+            if activityPermissionDenied {
+                Text("Allow Tubeist notifications in iPhone Settings to enable alerts.")
+                    .foregroundStyle(.secondary)
+                Link("Open notification settings", destination: URL(string: UIApplication.openSettingsURLString)!)
+            }
+        } header: {
+            Text("Apple Watch and Live Activity")
+        } footer: {
+            Text("Show session status and elapsed time on your iPhone and the Smart Stack on Apple Watch with watchOS 11 or later. Full adds viewers, bitrate, upload quality, temperature and battery. Alerts are optional; delivery depends on your device and notification settings.")
+        }
+
+        Section {
+            TextField("External status URL", text: $externalStatusURL)
+                .keyboardType(.URL)
+                .textInputAutocapitalization(.never)
+                .disableAutocorrection(true)
+                .accessibilityIdentifier("externalStatusURL")
+        } header: {
+            Text("Watch companion")
+        } footer: {
+            Text("Show text from your chosen service on a separate Watch page while streaming or recording. Enter the complete HTTP or HTTPS address of its plain text endpoint. HTTPS is recommended. Leave blank to disable.")
         }
     }
 
@@ -1432,6 +1458,10 @@ struct SettingsView: View {
     }
 
     private func validateDraft() throws {
+        let statusURL = externalStatusURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard statusURL.isEmpty || ExternalStatusClient.endpoint(statusURL) != nil else {
+            throw SettingsSaveError.invalidExternalStatusURL
+        }
         guard !youtubeDraft.thumbnail.isLoading else { throw SettingsSaveError.thumbnailLoading }
         let pendingOverlayURL = newOverlayURL.trimmingCharacters(in: .whitespacesAndNewlines)
         guard pendingOverlayURL.isEmpty || OverlayURLValidator.isAllowed(pendingOverlayURL) else {
@@ -1472,7 +1502,7 @@ struct SettingsView: View {
         Settings.liveActivityDetail = activityPreferences.detail
         Settings.liveActivityAlerts = activityPreferences.alerts
         Settings.liveActivityRecoveryAlerts = activityPreferences.recoveryAlerts
-        Settings.scoreboardAPIURL = scoreboardAPIURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        Settings.externalStatusURL = externalStatusURL.trimmingCharacters(in: .whitespacesAndNewlines)
 #if DEBUG
         Settings.captureRemuxFixtures = captureRemuxFixtures
         Settings.recordHLSAcceptance = recordHLSAcceptance
@@ -1486,12 +1516,14 @@ enum SettingsSaveError: LocalizedError, Equatable {
     case noOutputSelected
     case invalidBandwidth
     case invalidOverlayURL
+    case invalidExternalStatusURL
     case thumbnailLoading
 
     var errorDescription: String? {
         switch self {
         case .noOutputSelected: "Select streaming, recording, or both"
         case .invalidBandwidth: "Measured upload bandwidth must be at least 1 Mbps"
+        case .invalidExternalStatusURL: "Enter a complete HTTP or HTTPS URL for external status"
         case .invalidOverlayURL: "Enter a valid overlay URL starting with http:// or https://"
         case .thumbnailLoading: "Wait for the thumbnail to finish loading before saving"
         }
@@ -1679,13 +1711,11 @@ final class Settings: Sendable {
         get { UserDefaults.standard.string(forKey: "CameraPosition") ?? "stationary" }
         set { UserDefaults.standard.set(newValue, forKey: "CameraPosition") }
     }
-    /// Base URL of a self-hosted scoreboard server's user page (github.com/Lindhardsen/scoreboard
-    /// or upstream github.com/Roenbaeck/scoreboard), e.g. "https://host/username".
-    /// WatchSessionManager appends "/api/score" to this to poll the live score.
-    /// Empty means the Watch score feature is off; nothing is fetched.
-    static var scoreboardAPIURL: String {
-        get { UserDefaults.standard.string(forKey: "ScoreboardAPIURL") ?? "" }
-        set { UserDefaults.standard.set(newValue, forKey: "ScoreboardAPIURL") }
+    /// Complete HTTP or HTTPS endpoint returning plain UTF-8 text for the Watch.
+    /// Empty disables the optional page and its phone-side fetches.
+    static var externalStatusURL: String {
+        get { UserDefaults.standard.string(forKey: "ExternalStatusURL") ?? "" }
+        set { UserDefaults.standard.set(newValue, forKey: "ExternalStatusURL") }
     }
     static var journalError: Bool {
         get { bool(forKey: "JournalError", default: true) }

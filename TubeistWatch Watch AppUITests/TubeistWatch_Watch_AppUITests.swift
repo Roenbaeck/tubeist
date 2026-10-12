@@ -1,43 +1,64 @@
-//
-//  TubeistWatch_Watch_AppUITests.swift
-//  TubeistWatch Watch AppUITests
-//
-//  Created by Jan Lindhardsen on 2026-10-04.
-//
-
 import XCTest
 
-final class TubeistWatch_Watch_AppUITests: XCTestCase {
-
-    override func setUpWithError() throws {
-        // Put setup code here. This method is called before the invocation of each test method in the class.
-
-        // In UI tests it is usually best to stop immediately when a failure occurs.
-        continueAfterFailure = false
-
-        // In UI tests it’s important to set the initial state - such as interface orientation - required for your tests before they run. The setUp method is a good place to do this.
-    }
-
-    override func tearDownWithError() throws {
-        // Put teardown code here. This method is called after the invocation of each test method in the class.
-    }
-
+final class WatchPagesUITests: XCTestCase {
     @MainActor
-    func testExample() throws {
-        // UI tests must launch the application that they test.
-        let app = XCUIApplication()
-        app.launch()
-
-        // Use XCTAssert and related functions to verify your tests produce the correct results.
-        // XCUIAutomation Documentation
-        // https://developer.apple.com/documentation/xcuiautomation
-    }
-
-    @MainActor
-    func testLaunchPerformance() throws {
-        // This measures how long it takes to launch your application.
-        measure(metrics: [XCTApplicationLaunchMetric()]) {
-            XCUIApplication().launch()
+    func testExternalTextHasItsOwnPageAndIsRenderedLiterally() {
+        let app = launch()
+        XCTAssertTrue(app.buttons["Stop"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["Highlight"].isHittable)
+        capture(app, name: "Watch controls")
+        for _ in 0..<3 {
+            swipePage(app, left: true)
+            let text = app.staticTexts["external-status-text"]
+            XCTAssertTrue(text.waitForExistence(timeout: 5))
+            XCTAssertEqual(text.label, "<b>Stage 2</b>\n**Hello**")
+            XCTAssertTrue(text.isHittable)
+            capture(app, name: "Separate external status page")
+            XCTAssertFalse(app.buttons["Stop"].isHittable)
+            swipePage(app, left: false)
+            XCTAssertTrue(app.buttons["Stop"].waitForExistence(timeout: 5))
+            XCTAssertTrue(app.buttons["Stop"].isHittable)
         }
+    }
+
+    @MainActor
+    func testDisabledStatusDoesNotAddAPage() {
+        let app = launch(["-watch-ui-disabled"])
+        swipePage(app, left: true)
+        XCTAssertFalse(app.staticTexts["external-status-text"].exists)
+        XCTAssertTrue(app.buttons["Stop"].isHittable)
+    }
+
+    @MainActor
+    func testStaleTextIsMarkedOutOfDate() {
+        let app = launch(["-watch-ui-stale"])
+        swipePage(app, left: true)
+        XCTAssertTrue(app.staticTexts["Out of date"].waitForExistence(timeout: 5))
+    }
+
+    @MainActor
+    private func swipePage(_ app: XCUIApplication, left: Bool) {
+        // Keep the gesture inside the page. XCTest's default app swipe starts
+        // 5 points from the screen edge and can miss paging on hosted Watches.
+        let start = app.coordinate(withNormalizedOffset: CGVector(dx: left ? 0.85 : 0.15, dy: 0.5))
+        let end = app.coordinate(withNormalizedOffset: CGVector(dx: left ? 0.15 : 0.85, dy: 0.5))
+        start.press(forDuration: 0.05, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 0.05)
+    }
+
+    @MainActor
+    private func capture(_ app: XCUIApplication, name: String) {
+        let attachment = XCTAttachment(screenshot: app.screenshot())
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
+    @MainActor
+    private func launch(_ additionalArguments: [String] = []) -> XCUIApplication {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["-watch-ui-fixture"] + additionalArguments
+        app.launch()
+        return app
     }
 }

@@ -163,6 +163,42 @@ private actor InterruptedCaptureSession: CaptureSessionDriving {
 }
 
 struct CaptureSessionRecoveryTests {
+    @Test func settingsSaveValidatesNewCaptureThenKeepsItSuspendedUntilDismissal() async throws {
+        let driver = InterruptedCaptureSession()
+        let controller = SessionController(driver: driver)
+        try await controller.startSessions()
+        await controller.suspendSessions()
+
+        try await controller.cycleSessions(suspendAfterStartIf: { true })
+        #expect(await !driver.isRunning)
+        #expect(await driver.hasInputs)
+        #expect(await driver.configurations == 2)
+        #expect(await driver.starts == 2) // Save validated the new graph.
+
+        try await controller.startSessions()
+        #expect(await driver.isRunning)
+        #expect(await driver.configurations == 2) // Dismiss resumes that graph.
+        #expect(await driver.starts == 3)
+    }
+
+    @Test func failedSettingsReconfigurationLeavesNoCaptureRunning() async throws {
+        let driver = InterruptedCaptureSession()
+        let controller = SessionController(driver: driver)
+        try await controller.startSessions()
+        await controller.suspendSessions()
+        await driver.failNextConfiguration()
+        await #expect(throws: CaptureSetupError.cannotAddAudioInput) {
+            try await controller.cycleSessions(suspendAfterStartIf: { true })
+        }
+        #expect(await !driver.isRunning)
+        #expect(await !driver.hasInputs)
+
+        // Restoring the previous settings must also remain suspended.
+        try await controller.cycleSessions(suspendAfterStartIf: { true })
+        #expect(await !driver.isRunning)
+        #expect(await driver.hasInputs)
+    }
+
     @Test func temporaryInterruptionPreservesInputsAndTheAutomaticResumeRequest() async throws {
         let driver = InterruptedCaptureSession()
         let controller = SessionController(driver: driver)

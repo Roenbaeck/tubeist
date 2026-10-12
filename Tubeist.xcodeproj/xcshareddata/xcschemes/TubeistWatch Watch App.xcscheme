@@ -15,34 +15,9 @@
             buildForAnalyzing = "YES">
             <BuildableReference
                BuildableIdentifier = "primary"
-               BlueprintIdentifier = "3D8F898D30719CF90000EC54"
+               BlueprintIdentifier = "3D8F89D7307241310000EC54"
                BuildableName = "TubeistWatch Watch App.app"
-               ReferencedContainer = "container:Tubeist.xcodeproj">
-            </BuildableReference>
-         </BuildActionEntry>
-         <BuildActionEntry
-            buildForTesting = "YES"
-            buildForRunning = "YES"
-            buildForProfiling = "YES"
-            buildForArchiving = "YES"
-            buildForAnalyzing = "YES">
-            <BuildableReference
-               BuildableIdentifier = "primary"
-               BlueprintIdentifier = "3D8F898830719CF90000EC54"
-               BuildableName = "TubeistWatch.app"
-               ReferencedContainer = "container:Tubeist.xcodeproj">
-            </BuildableReference>
-         </BuildActionEntry>
-         <BuildActionEntry
-            buildForTesting = "YES"
-            buildForRunning = "YES"
-            buildForProfiling = "YES"
-            buildForArchiving = "YES"
-            buildForAnalyzing = "YES">
-            <BuildableReference
-               BuildableIdentifier = "primary"
-               BlueprintIdentifier = "46B97E622CE1120B00E802FC"
-               BuildableName = "Tubeist.app"
+               BlueprintName = "TubeistWatch Watch App"
                ReferencedContainer = "container:Tubeist.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
@@ -60,8 +35,9 @@
             parallelizable = "YES">
             <BuildableReference
                BuildableIdentifier = "primary"
-               BlueprintIdentifier = "3D8F89A630719CFA0000EC54"
+               BlueprintIdentifier = "3D8F89ED307241320000EC54"
                BuildableName = "TubeistWatch Watch AppUITests.xctest"
+               BlueprintName = "TubeistWatch Watch AppUITests"
                ReferencedContainer = "container:Tubeist.xcodeproj">
             </BuildableReference>
          </TestableReference>
@@ -70,8 +46,9 @@
             parallelizable = "YES">
             <BuildableReference
                BuildableIdentifier = "primary"
-               BlueprintIdentifier = "3D8F899C30719CFA0000EC54"
+               BlueprintIdentifier = "3D8F89E3307241320000EC54"
                BuildableName = "TubeistWatch Watch AppTests.xctest"
+               BlueprintName = "TubeistWatch Watch AppTests"
                ReferencedContainer = "container:Tubeist.xcodeproj">
             </BuildableReference>
          </TestableReference>
@@ -92,7 +69,7 @@
          runnableDebuggingMode = "0">
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "3D8F898D30719CF90000EC54"
+            BlueprintIdentifier = "3D8F89D7307241310000EC54"
             BuildableName = "TubeistWatch Watch App.app"
             ReferencedContainer = "container:Tubeist.xcodeproj">
          </BuildableReference>
@@ -108,7 +85,7 @@
          runnableDebuggingMode = "0">
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "3D8F898D30719CF90000EC54"
+            BlueprintIdentifier = "3D8F89D7307241310000EC54"
             BuildableName = "TubeistWatch Watch App.app"
             ReferencedContainer = "container:Tubeist.xcodeproj">
          </BuildableReference>

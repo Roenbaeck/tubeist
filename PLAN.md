@@ -330,8 +330,10 @@ or a specific finalization failure is visible.
 - [x] Complete the Keychain credential store and migration.
 - [x] Mask the stream key with an explicit temporary reveal control.
 - [x] Retain canary tests proving keys and key-bearing URLs cannot escape.
-- [x] Remove NSAllowsArbitraryLoads; permit only HTTPS YouTube/API traffic and the
-  narrowest exception genuinely required by web overlays.
+- [x] Require HTTPS for YouTube/API traffic. User-configured web overlays and
+  external Watch status servers support HTTP via NSAllowsArbitraryLoads; explicit
+  Google/YouTube domain entries retain full ATS protection for those services.
+  See Docs/ExternalStatus.md for the transport policy and App Review rationale.
 - [x] Review overlay navigation and document its network behavior.
 - [x] Add PrivacyInfo.xcprivacy with approved required-reason declarations.
 - [x] Rewrite PRIVACY.md for local processing/recording, YouTube transfer, OAuth,
