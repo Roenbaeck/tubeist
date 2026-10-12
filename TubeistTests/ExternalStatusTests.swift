@@ -32,29 +32,68 @@ struct ExternalStatusTests {
         }
     }
 
-    @Test func endpointRequiresCompleteHTTPSAndKeepsPathAndQuery() {
-        let url = "https://example.com/custom/display?token=abc"
-        #expect(ExternalStatusClient.endpoint(" \(url)\n")?.absoluteString == url)
-        for invalid in ["", "example.com", "http://example.com/status", "file:///tmp/text",
+    @Test func endpointAcceptsHTTPAndHTTPSAndKeepsHostPortPathAndQuery() {
+        for url in ["http://example.com/custom/display?token=abc",
+                    "https://example.com/custom/display?token=abc",
+                    "http://192.168.1.50:8081/test-user/api/status",
+                    "http://nas.local:8081/test-user/api/status",
+                    "http://nas:8081/test-user/api/status",
+                    "http://[::1]:8081/test-user/api/status"] {
+            #expect(ExternalStatusClient.endpoint(" \(url)\n")?.absoluteString == url)
+        }
+        for invalid in ["", "example.com", "ftp://example.com/status", "file:///tmp/text",
                         "https:///", "https://user:password@example.com/", "https://example.com/#fragment",
-                        "https://example.com:65536/status"] {
+                        "https://example.com:65536/status", "http:///",
+                        "http://user:password@example.com/", "http://example.com/#fragment",
+                        "http://example.com:0/status", "http://example.com:65536/status"] {
             #expect(ExternalStatusClient.endpoint(invalid) == nil)
         }
     }
 
-    @Test func httpClientChecksContractAndBoundsBodyEvenWithoutContentLength() async throws {
+    @Test func appTransportPolicyAllowsUserSelectedHTTPServers() throws {
+        let localNetworkPurpose = try #require(Bundle.main.object(forInfoDictionaryKey: "NSLocalNetworkUsageDescription") as? String)
+        #expect(!localNetworkPurpose.isEmpty)
+        let policy = try #require(Bundle.main.object(forInfoDictionaryKey: "NSAppTransportSecurity") as? [String: Any])
+        #expect(policy["NSAllowsArbitraryLoads"] as? Bool == true)
+        // Any of these keys, even false, would override the HTTP exception.
+        for key in ["NSAllowsArbitraryLoadsInWebContent", "NSAllowsArbitraryLoadsForMedia", "NSAllowsLocalNetworking"] {
+            #expect(policy[key] == nil)
+        }
+        let domains = try #require(policy["NSExceptionDomains"] as? [String: [String: Any]])
+        for domain in ["youtube.com", "googleapis.com", "google.com"] {
+            let protection = try #require(domains[domain])
+            #expect(protection["NSIncludesSubdomains"] as? Bool == true)
+            #expect(protection["NSExceptionAllowsInsecureHTTPLoads"] as? Bool != true)
+            #expect(protection["NSExceptionMinimumTLSVersion"] == nil)
+            #expect(protection["NSExceptionRequiresForwardSecrecy"] as? Bool != false)
+        }
+    }
+
+    @Test(arguments: ["http", "https"])
+    func httpClientChecksContractAndBoundsBodyEvenWithoutContentLength(scheme: String) async throws {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [StatusURLProtocol.self]
         let session = URLSession(configuration: configuration)
         defer { session.invalidateAndCancel() }
         let client = ExternalStatusClient(session: session)
-        let text = try await client.fetch(from: URL(string: "https://example.com/exact/path?token=abc")!)
+        let text = try await client.fetch(from: URL(string: "\(scheme)://example.com/exact/path?token=abc")!)
         #expect(text == "plain **text**")
-        for path in ["error", "redirect", "html", "latin1", "invalidUTF8", "large", "largeHeader", "empty"] {
+        for path in ["error", "redirect", "html", "json", "latin1", "invalidUTF8", "large", "largeHeader", "empty", "control", "bidi", "tooManyLines"] {
             await #expect(throws: ExternalStatusError.self) {
-                try await client.fetch(from: URL(string: "https://example.com/\(path)")!)
+                try await client.fetch(from: URL(string: "\(scheme)://example.com/\(path)")!)
             }
         }
+    }
+
+    // Opt-in integration check against a running service, using the app's real
+    // URLSession and compiled transport policy. See Docs/ExternalStatus.md.
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["TUBEIST_STATUS_TEST_URL"] != nil))
+    func liveServiceReturnsExpectedText() async throws {
+        let environment = ProcessInfo.processInfo.environment
+        let address = try #require(environment["TUBEIST_STATUS_TEST_URL"])
+        let expected = try #require(environment["TUBEIST_STATUS_TEST_TEXT"])
+        let url = try #require(ExternalStatusClient.endpoint(address))
+        #expect(try await ExternalStatusClient.shared.fetch(from: url) == expected)
     }
 
     @Test func watchHealthIncludesUploadFailuresAndExpires() {
@@ -86,11 +125,15 @@ private final class StatusURLProtocol: URLProtocol, @unchecked Sendable {
         case "error": code = 503
         case "redirect": code = 302; headers["Location"] = "http://other.example/"
         case "html": headers["Content-Type"] = "text/html"
+        case "json": headers["Content-Type"] = "application/json"
         case "latin1": headers["Content-Type"] = "text/plain; charset=iso-8859-1"
         case "invalidUTF8": body = Data([0xff])
         case "large": body = Data(repeating: 65, count: 4097)
         case "largeHeader": headers["Content-Length"] = "999999"
         case "empty": body = Data()
+        case "control": body = Data("hello\0world".utf8)
+        case "bidi": body = Data("left\u{202e}right".utf8)
+        case "tooManyLines": body = Data(String(repeating: "a\n", count: 9).utf8)
         default:
             // The client must preserve the endpoint and negotiate plain text.
             if url.path != "/exact/path" || url.query != "token=abc"

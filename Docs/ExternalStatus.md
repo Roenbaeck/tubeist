@@ -12,11 +12,27 @@ recording, with the Watch app installed on a paired Watch. The phone fetches and
 forwards text through WatchConnectivity; the Watch does not poll the service.
 No sport or provider data model is built into either app.
 
+Both HTTP and HTTPS are supported. For an existing Scoreboard server, use its
+normal host and port, for example
+`http://192.168.1.50:8081/yourusername/api/status`. Replace the address and username
+with your own; `localhost` on the iPhone means the iPhone, not your NAS. The server
+must be reachable from the phone. A reverse proxy or certificate is not required
+for HTTP. If you already serve it over HTTPS, use the final HTTPS endpoint instead.
+For a server on your local network, allow Tubeist's Local Network access when iOS
+asks. If previously denied, enable it in iPhone Settings → Privacy & Security →
+Local Network. This permission applies to local HTTPS servers too.
+
+HTTPS is recommended because it protects the text and URL from observation and
+alteration in transit. HTTP sends both in clear text; do not put private tokens
+or sensitive status information in an HTTP endpoint. The same content checks and
+literal display rules apply with either protocol.
+
 ## Endpoint contract
 
-- HTTPS GET to the exact configured URL; no path is appended. Redirects are
+- HTTP or HTTPS GET to the exact configured URL; no path is appended. Redirects are
   rejected. Supply the final address. URLs containing credentials or fragments
-  are rejected. The system's normal TLS certificate validation applies.
+  are rejected. HTTPS still uses the system's normal TLS certificate validation;
+  the client never accepts an invalid certificate or retries HTTPS over HTTP.
 - Return HTTP 200 and `Content-Type: text/plain; charset=utf-8` (omitting the
   charset is also accepted, but the body must still be valid UTF-8).
 - At most 4,096 UTF-8 bytes, 500 extended grapheme clusters, and 8 lines. The
@@ -63,7 +79,39 @@ Starting in 3 minutes
 
 A sports service can instead format its teams and scores on the server. The
 client contract and Watch layout stay the same. The revised Scoreboard PR adds
-`https://your-host/<username>/api/status` as one such provider.
+`http://your-host:8081/<username>/api/status` as one such provider, also available
+over HTTPS when the server is behind an HTTPS reverse proxy.
+
+## Transport configuration and verification
+
+The iPhone app declares `NSAllowsArbitraryLoads` so URLSession can reach
+user-configured HTTP servers, including arbitrary DNS hostnames. ATS exceptions
+are configured in the app's Info.plist, not for an individual request. This is an
+app-wide exception; normal HTTPS certificate trust checks still apply, but ATS's
+additional transport requirements are relaxed. No certificate-trust override is
+installed by the status client.
+
+The `NSExceptionDomains` entries for `youtube.com`, `googleapis.com`, and
+`google.com`, including their subdomains, restore full ATS defaults for Tubeist's
+stream uploads, API, and sign-in services. Their HTTPS requirements remain in
+place; the HTTP allowance is intended for user-configured services.
+
+Do not combine this key with `NSAllowsArbitraryLoadsInWebContent`,
+`NSAllowsArbitraryLoadsForMedia`, or `NSAllowsLocalNetworking`: their presence,
+even with a false value, causes iOS to ignore `NSAllowsArbitraryLoads`. The broader
+exception also preserves HTTP support for existing overlays. Apple requires an
+App Review justification for this setting: Tubeist connects to user-selected
+overlay and plain-text status servers that may only provide HTTP and whose
+hostnames are not known when the app is built. See Apple's
+[NSAllowsArbitraryLoads documentation](https://developer.apple.com/documentation/bundleresources/information-property-list/nsapptransportsecurity/nsallowsarbitraryloads).
+
+`ExternalStatusTests` checks both URL schemes, the built app's ATS settings, and
+rejection of invalid responses. To run its optional `liveServiceReturnsExpectedText`
+integration test, set `TUBEIST_STATUS_TEST_URL` to a reachable service endpoint and
+`TUBEIST_STATUS_TEST_TEXT` to its exact expected display text (including newlines)
+in the test process environment. This uses the real URLSession without a mocked
+response. Test against an HTTP Scoreboard endpoint and its current saved overlay;
+the test only reads the endpoint and does not update the score.
 
 No new background mode or remote-code capability is used. This design displays
 remote content through standard URLSession and WatchConnectivity APIs; normal

@@ -41,7 +41,7 @@ enum ExternalStatusError: Error, LocalizedError, Equatable {
 
     var errorDescription: String? {
         switch self {
-        case .invalidURL: "Enter a complete HTTPS URL for external status."
+        case .invalidURL: "Enter a complete HTTP or HTTPS URL for external status."
         case .invalidResponse: "The external status endpoint must return UTF-8 plain text."
         case .invalidText: "The external status contains unsupported text."
         case .emptyText: "The external status is empty."

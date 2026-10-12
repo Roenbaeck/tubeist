@@ -23,7 +23,8 @@ struct ExternalStatusClient: Sendable {
     static func endpoint(_ value: String) -> URL? {
         let value = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !value.isEmpty, let components = URLComponents(string: value),
-              components.scheme?.lowercased() == "https",
+              let scheme = components.scheme?.lowercased(),
+              scheme == "http" || scheme == "https",
               let host = components.host, !host.isEmpty,
               components.user == nil, components.password == nil,
               components.fragment == nil,
@@ -59,7 +60,7 @@ struct ExternalStatusClient: Sendable {
 }
 
 /// A configured URL may contain a private token. Require its final endpoint
-/// instead of following redirects to a different host or an insecure URL.
+/// instead of following redirects, including HTTPS-to-HTTP downgrades.
 private final class ExternalStatusRedirectPolicy: NSObject, URLSessionTaskDelegate {
     func urlSession(_ session: URLSession, task: URLSessionTask,
                     willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest,

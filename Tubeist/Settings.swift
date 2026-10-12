@@ -1172,7 +1172,7 @@ struct SettingsView: View {
         } header: {
             Text("Watch companion")
         } footer: {
-            Text("Show text from your chosen service on a separate Watch page while streaming or recording. Enter the complete HTTPS address of its plain text endpoint. Leave blank to disable.")
+            Text("Show text from your chosen service on a separate Watch page while streaming or recording. Enter the complete HTTP or HTTPS address of its plain text endpoint. HTTPS is recommended. Leave blank to disable.")
         }
     }
 
@@ -1509,7 +1509,7 @@ enum SettingsSaveError: LocalizedError, Equatable {
         switch self {
         case .noOutputSelected: "Select streaming, recording, or both"
         case .invalidBandwidth: "Measured upload bandwidth must be at least 1 Mbps"
-        case .invalidExternalStatusURL: "Enter a complete HTTPS URL for external status"
+        case .invalidExternalStatusURL: "Enter a complete HTTP or HTTPS URL for external status"
         case .invalidOverlayURL: "Enter a valid overlay URL starting with http:// or https://"
         case .thumbnailLoading: "Wait for the thumbnail to finish loading before saving"
         }
@@ -1697,7 +1697,7 @@ final class Settings: Sendable {
         get { UserDefaults.standard.string(forKey: "CameraPosition") ?? "stationary" }
         set { UserDefaults.standard.set(newValue, forKey: "CameraPosition") }
     }
-    /// Complete HTTPS endpoint returning plain UTF-8 text for the Watch.
+    /// Complete HTTP or HTTPS endpoint returning plain UTF-8 text for the Watch.
     /// Empty disables the optional page and its phone-side fetches.
     static var externalStatusURL: String {
         get { UserDefaults.standard.string(forKey: "ExternalStatusURL") ?? "" }
