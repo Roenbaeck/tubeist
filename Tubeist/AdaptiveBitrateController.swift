@@ -45,6 +45,12 @@ struct AdaptiveBitrateController: Sendable {
         var provenExpirySeconds = 30.0
         var briefEpisodeSeconds = 6.0
         var failedIncreaseCooldown = 20.0
+        /// Start at the floor so the first segments reach YouTube on time, then
+        /// climb on each clear ACK until the first cut or the window closes.
+        var rampsUpAtStartup = true
+        var startupSeconds = 30.0
+        var startupHeadroom = 0.9
+        var startupMaximumStep = 4.0
     }
 
     enum State: String, Sendable {
@@ -78,6 +84,9 @@ struct AdaptiveBitrateController: Sendable {
     private var increaseAt = -Double.infinity
     private var increasesBlockedUntil = -Double.infinity
     private var evidence: [(at: Double, capacity: Double)] = []
+    private var startupEnded: Bool
+    private var startupEndsAt: Double?
+    private var lastMediaBitsPerSecond = 0.0
 
     init(maximumBitrate: Int, minimumBitrate: Int, audioBitrate: Int, policy: Policy = Policy()) {
         self.init(ladder: BitrateLadder(maximum: maximumBitrate, minimum: minimumBitrate),
@@ -87,8 +96,10 @@ struct AdaptiveBitrateController: Sendable {
     init(ladder: BitrateLadder, audioBitrate: Int, policy: Policy = Policy()) {
         self.ladder = ladder
         self.audioBitrate = max(0, audioBitrate)
-        self.targetBitrate = ladder.maximum
         self.policy = policy
+        startupEnded = !policy.rampsUpAtStartup
+        targetBitrate = startupEnded ? ladder.maximum : ladder.minimum
+        if targetBitrate < ladder.maximum { state = .recovering }
     }
 
     mutating func delivered(bytes: Int, elapsed: Double, mediaDuration: Double, now: Double) {
@@ -112,6 +123,8 @@ struct AdaptiveBitrateController: Sendable {
         lastDeliveryAt = now
         freshDelivery = true
         lastMediaDuration = mediaDuration
+        lastMediaBitsPerSecond = Double(bytes) * 8 / mediaDuration
+        if startupEndsAt == nil { startupEndsAt = now + policy.startupSeconds }
         slowDeliveries = elapsed > mediaDuration * 1.25 ? slowDeliveries + 1 : 0
     }
 
@@ -173,6 +186,7 @@ struct AdaptiveBitrateController: Sendable {
                 increaseFrom = nil
             }
             state = budget < Double(minimumBitrate) ? .capacityBelowQualityFloor : .catchingUp
+            startupEnded = true
         }
 
         // Only a successful final ACK proves the queue drained. Ordinary arrivals
@@ -200,25 +214,35 @@ struct AdaptiveBitrateController: Sendable {
                 provenAt = now
             }
         } else { stableSince = nil }
-        guard now >= increasesBlockedUntil, now - lastChange >= policy.restoreSeconds,
-              let next = ladder.next(above: targetBitrate) else { return }
 
-        func supported(_ candidate: Int, seconds: Double, margin: Double) -> Bool {
-            let needed = wireRate(candidate) * margin
-            // A bad sample resets the sustained-evidence interval for this rung.
-            let suffix = evidence.reversed().prefix { $0.capacity >= needed && $0.at > lastReduction }
-            return suffix.count >= 3 && now - (suffix.last?.at ?? now) >= seconds
-        }
         var desired: Int?
-        if briefRecovery, let provenBitrate, now - provenAt <= policy.provenExpirySeconds {
-            desired = ladder.rungs.first {
-                $0 > targetBitrate && $0 <= provenBitrate && fastThroughput >= wireRate($0) * 1.25
-                    && supported($0, seconds: policy.restoreSeconds, margin: 1.25)
-            }
+        if !startupEnded, let startupEndsAt, now <= startupEndsAt {
+            // Skip the wall-clock evidence, but never past what this upload shows
+            // room for, nor far past the rate it measured: one sample is thin.
+            let budget = policy.startupHeadroom * latestThroughput / policy.wireOverhead - Double(audioBitrate)
+            let limit = policy.startupMaximumStep * lastMediaBitsPerSecond
+            desired = ladder.rungs.first { $0 > targetBitrate && Double($0) <= budget && wireRate($0) <= limit }
         }
-        if desired == nil, min(fastThroughput, estimatedThroughput) >= wireRate(next) * 1.3,
-           supported(next, seconds: policy.exploreSeconds, margin: 1.3) {
-            desired = next
+        if desired == nil {
+            guard now >= increasesBlockedUntil, now - lastChange >= policy.restoreSeconds,
+                  let next = ladder.next(above: targetBitrate) else { return }
+
+            func supported(_ candidate: Int, seconds: Double, margin: Double) -> Bool {
+                let needed = wireRate(candidate) * margin
+                // A bad sample resets the sustained-evidence interval for this rung.
+                let suffix = evidence.reversed().prefix { $0.capacity >= needed && $0.at > lastReduction }
+                return suffix.count >= 3 && now - (suffix.last?.at ?? now) >= seconds
+            }
+            if briefRecovery, let provenBitrate, now - provenAt <= policy.provenExpirySeconds {
+                desired = ladder.rungs.first {
+                    $0 > targetBitrate && $0 <= provenBitrate && fastThroughput >= wireRate($0) * 1.25
+                        && supported($0, seconds: policy.restoreSeconds, margin: 1.25)
+                }
+            }
+            if desired == nil, min(fastThroughput, estimatedThroughput) >= wireRate(next) * 1.3,
+               supported(next, seconds: policy.exploreSeconds, margin: 1.3) {
+                desired = next
+            }
         }
         if let desired {
             increaseFrom = targetBitrate
@@ -249,6 +273,7 @@ struct AdaptiveBitrateController: Sendable {
         guard now.isFinite else { return }
         targetBitrate = minimumBitrate
         state = .catchingUp
+        startupEnded = true
         lastChange = now
         lastReduction = now
         increasesBlockedUntil = now + policy.failedIncreaseCooldown

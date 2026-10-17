@@ -45,6 +45,32 @@ because older, larger segments remain in a shrinking queue. Continued stalls,
 further slow completions and emergency queue pressure can still demand cuts.
 A lower target does not change bytes already encoded.
 
+## Startup
+
+A stream starts at the quality floor, not the ceiling. Segments encoded before
+the first measurement cannot be cut, and late opening segments leave YouTube's
+player starting at the live edge, where every later hiccup can show a spinner.
+The first segment is encoded before any upload completes, so its rate is a guess;
+the floor is the guess that is safe on any link that can sustain the floor.
+
+The encoder asks for the target at its first frame, so the first segment already
+uses the floor. Then, for 30 seconds after the first ACK and until the first
+congestion episode or overflow, every fresh clear completion may raise the target
+without the wall-clock evidence below. The new rung must fit
+`0.9 × latest throughput / 1.08 − audio`, and its wire rate must be at most four
+times the media rate of the segment just measured. Small segments understate the
+link because each transaction pays two requests, so this converges over a few
+segments rather than in one step. It reaches the ceiling within about ten seconds
+when the link has room, and stops near what the link sustains otherwise. Each
+raise is an ordinary increase for failed-increase rollback. After the window,
+normal recovery continues from wherever the ramp stopped.
+
+The cost is about ten seconds below the ceiling at the start of a stream on a
+fast link, which also applies to a local recording made with the stream. The
+ten percent headroom is deliberate: a ceiling within about fifteen percent of
+measured transaction throughput stays one rung lower than before, where
+uploads previously ran near saturation.
+
 ## Recovery
 
 No increase is allowed while work remains. A successful final ACK proves the
@@ -72,8 +98,8 @@ there is no waiting media.
 The local waiting queue permits at most ten seconds or 30 fragments (the count
 cap protects against unusually short fragments). An arrival that would exceed
 it discards older unannounced media and selects the floor. Media duration alone
-understates latency when segments were encoded far above capacity, typically at
-a ceiling the link cannot sustain, before the first upload completes. The queue
+understates latency when segments were encoded far above capacity, as after a
+sudden collapse, or at startup if the ramp is disabled. The queue
 therefore also overflows when its bytes, plus the unsent part of the active
 upload, would take more than ten seconds at the larger EWMA. While a reduction
 is under way, the estimate instead uses the cut's capacity, min(latest, fast
@@ -83,9 +109,9 @@ for the duration cap would keep them and discard the smaller, newer media. Stead
 state keeps the optimistic estimate, so a brief dip drops nothing. The same estimate
 is checked after each ACK, before the next upload is announced, and keeps only
 the newest complete segment. It is unknown until the first ACK, so a stalled
-first request alone drops nothing. That first sample includes connection setup:
-if setup alone takes more than about four seconds on a fast link, up to three
-startup segments may be dropped that would otherwise have arrived late. Preserve the current
+first request alone drops nothing. That first sample includes connection setup,
+which understates the link; starting at the floor keeps the opening segments
+small enough that this rarely matters. Preserve the current
 announced/in-flight transaction and its stable retry bytes/filename. After it
 finishes, trim again to the newest complete queued segment before resuming.
 Signal the gap in both the HLS playlist and MPEG-TS adaptation fields. Preserve
@@ -112,7 +138,9 @@ the production observation cadence (arrivals, ACKs and a 250 ms watchdog).
 It covers two-second dips at four phases, sustained halving, brief peaks versus
 an otherwise identical trace, complete outages, starting at a ceiling five
 times the link's capacity, and collapses to a fifth of capacity, either as a
-step or as a ramp over four or eight seconds. Target invariants include
+step or as a ramp over four or eight seconds. Full-session simulations run with
+the startup ramp, which separately must never delay an opening segment and must
+settle at the ceiling or near capacity within fifteen seconds. Target invariants include
 bounded backlog, no drops on modest transient/sustained changes, stable settled
 quality, and eventual restoration after sustained recovery. Unit tests separately
 exercise sample freshness, wall-clock confirmation, rollback, floors and invalid

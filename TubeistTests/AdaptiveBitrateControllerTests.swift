@@ -3,8 +3,10 @@ import Testing
 @testable import Tubeist
 
 struct AdaptiveBitrateControllerTests {
-    private func controller() -> AdaptiveBitrateController {
-        AdaptiveBitrateController(maximumBitrate: 6_000_000, minimumBitrate: 1_000_000, audioBitrate: 128_000)
+    /// Steady-state rules start at the ceiling; the startup ramp has its own tests.
+    private func controller(rampsUpAtStartup: Bool = false) -> AdaptiveBitrateController {
+        AdaptiveBitrateController(maximumBitrate: 6_000_000, minimumBitrate: 1_000_000, audioBitrate: 128_000,
+                                  policy: .init(rampsUpAtStartup: rampsUpAtStartup))
     }
 
     private func observe(_ c: inout AdaptiveBitrateController, at now: Double,
@@ -181,12 +183,60 @@ struct AdaptiveBitrateControllerTests {
     }
 
     @Test func startingFarAboveCapacityDropsDoomedSegmentsInsteadOfDelayingLiveMedia() {
-        // Three ceiling-rate segments are encoded before the first ACK; together
-        // they would take 30 seconds to upload over this link.
-        let result = simulate(seconds: 120, maximum: 20_000_000) { _ in 4_000_000 }
+        // Without the startup ramp, three ceiling-rate segments are encoded before
+        // the first ACK; together they would take 30 seconds to upload over this link.
+        let result = simulate(seconds: 120, maximum: 20_000_000, rampsUpAtStartup: false) { _ in 4_000_000 }
         #expect(result.maximumLatency < 11)
         #expect(result.dropped <= 3)
         #expect(result.rates.filter { $0.at >= 20 }.allSatisfy { $0.rate < 4_000_000 })
+    }
+
+    @Test func startupBeginsAtTheFloorAndClimbsOnClearUploads() {
+        var c = controller(rampsUpAtStartup: true)
+        #expect(c.targetBitrate == 1_000_000)
+        #expect(c.state == .recovering)
+        // A 20 Mbps link, but the 1.5 Mbps segment just measured caps the step at four times its rate.
+        ack(&c, at: 2, capacity: 20_000_000, elapsed: 0.15)
+        #expect(c.targetBitrate == 4_800_000)
+        ack(&c, at: 4, capacity: 20_000_000, elapsed: 0.5)
+        #expect(c.targetBitrate == 6_000_000)
+        #expect(c.state == .steady)
+    }
+
+    @Test func startupRampStopsWhereTheLinkHasNoRoomAndAfterItsWindow() {
+        var c = controller(rampsUpAtStartup: true)
+        // 1.4 Mbps leaves no room above the floor with 10% headroom.
+        ack(&c, at: 2, capacity: 1_400_000, elapsed: 1.5)
+        #expect(c.targetBitrate == 1_000_000)
+        var late = c
+        ack(&late, at: 40, capacity: 20_000_000, elapsed: 0.15)
+        #expect(late.targetBitrate == 1_000_000)
+        ack(&c, at: 30, capacity: 20_000_000, elapsed: 0.15)
+        #expect(c.targetBitrate == 4_800_000)
+    }
+
+    @Test func congestionEndsTheStartupRamp() {
+        var c = controller(rampsUpAtStartup: true)
+        ack(&c, at: 2, capacity: 20_000_000, elapsed: 0.15)
+        ack(&c, at: 7, capacity: 2_000_000, elapsed: 3, bytes: 1_000_000, seconds: 4)
+        let reduced = c.targetBitrate
+        #expect(reduced < 4_800_000)
+        // Still inside the window, but the ramp no longer skips the usual evidence.
+        ack(&c, at: 9, capacity: 20_000_000, elapsed: 0.15)
+        #expect(c.targetBitrate == reduced)
+    }
+
+    @Test(arguments: [(6_000_000, 3_000_000), (6_000_000, 10_000_000), (6_000_000, 50_000_000),
+                      (20_000_000, 4_000_000), (20_000_000, 50_000_000)])
+    func startupNeverDelaysTheFirstSegmentsAndReachesWhatTheLinkSustains(maximum: Int, link: Double) {
+        let result = simulate(seconds: 60, maximum: maximum) { _ in link }
+        #expect(result.dropped == 0)
+        #expect(result.maximumLatency < 2.5)
+        // Within 15 seconds: the ceiling when the link has room, otherwise near capacity.
+        let settled = result.rates.first { $0.at >= 15 }!.rate
+        let sustainable = 0.85 * link / 1.08 - 128_000
+        #expect(settled == maximum || Double(settled) > 0.5 * sustainable)
+        #expect(Double(settled) <= sustainable)
     }
 
     @Test(arguments: [0.0, 4.0, 8.0])
@@ -252,7 +302,8 @@ struct AdaptiveBitrateControllerTests {
     /// variable segment sizes, and bitrate captured at the START of encoding.
     /// This includes the encoder/segment delay missing from instantaneous models.
     /// Overflow mirrors the sink: queued media duration or estimated drain time.
-    private func simulate(seconds: Double, maximum: Int = 6_000_000, capacity: (Double) -> Double) -> Trace {
+    private func simulate(seconds: Double, maximum: Int = 6_000_000, rampsUpAtStartup: Bool = true,
+                          capacity: (Double) -> Double) -> Trace {
         struct Segment {
             let bytes: Int
             let duration = 2.0
@@ -260,7 +311,8 @@ struct AdaptiveBitrateControllerTests {
             var remaining: Double
             var started = 0.0
         }
-        var c = AdaptiveBitrateController(maximumBitrate: maximum, minimumBitrate: 1_000_000, audioBitrate: 128_000)
+        var c = AdaptiveBitrateController(maximumBitrate: maximum, minimumBitrate: 1_000_000, audioBitrate: 128_000,
+                                          policy: .init(rampsUpAtStartup: rampsUpAtStartup))
         var queue: [Segment] = []
         var current: Segment?
         var nextArrival = 2.0

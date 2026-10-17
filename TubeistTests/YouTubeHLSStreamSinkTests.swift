@@ -228,7 +228,8 @@ struct YouTubeHLSStreamSinkTests {
         try await sink.prepare(endpoint: .manualPrimary(streamKey: "test"),
                                sessionIdentifier: "watchdog", userAgent: "Tubeist/Test", transport: transport,
                                bitrateController: AdaptiveBitrateController(maximumBitrate: 6_000_000,
-                                   minimumBitrate: 1_000_000, audioBitrate: 128_000),
+                                   minimumBitrate: 1_000_000, audioBitrate: 128_000,
+                                   policy: .init(rampsUpAtStartup: false)),
                                uploadNow: { clock.now() })
         await sink.enqueue(Fragment(sequence: 0, segment: Data(repeating: 0, count: 1_500_000),
                                     duration: 2, container: .mpegTransportStream))
@@ -288,7 +289,8 @@ struct YouTubeHLSStreamSinkTests {
         let sink = YouTubeHLSStreamSink()
         try await sink.prepare(endpoint: endpoint, sessionIdentifier: "vt_direct_session", userAgent: "Tubeist/Test",
                                transport: transport, bitrateController: AdaptiveBitrateController(
-                                maximumBitrate: 4_000_000, minimumBitrate: 1_000_000, audioBitrate: 128_000), sleeper: { _ in })
+                                maximumBitrate: 4_000_000, minimumBitrate: 1_000_000, audioBitrate: 128_000,
+                                policy: .init(rampsUpAtStartup: false)), sleeper: { _ in })
         await sink.enqueue(Fragment(sequence: 0, segment: ts.data, duration: ts.duration, container: .mpegTransportStream))
         try await sink.finish(timeout: successfulSinkShutdownTimeout)
         let requests = await transport.requests()
