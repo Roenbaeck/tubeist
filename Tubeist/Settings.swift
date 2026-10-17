@@ -1129,8 +1129,8 @@ struct SettingsView: View {
             }
 
             Section(footer: Text(customRampsUpAtStartup
-                ? "Streams start at the lowest quality and reach the video bitrate within about ten seconds when the connection has room, so the opening never stalls on YouTube."
-                : "Streams start at the full video bitrate. Use this only on a connection you know sustains it; if it cannot, the opening of the stream may stall on YouTube.")) {
+                ? "Streams start at the lowest quality and reach the video bitrate within about ten seconds when the connection has room. The first segments then arrive on time, so YouTube builds a playback buffer that helps the whole stream ride out later bandwidth drops."
+                : "Streams start at the full video bitrate. Use this only on a connection you know sustains it. If the first segments arrive late, YouTube starts playback with almost no buffer, and every later bandwidth drop is more likely to make viewers wait for the rest of the stream.")) {
                 Toggle("Ramp up at stream start", isOn: $customRampsUpAtStartup)
             }
         }
