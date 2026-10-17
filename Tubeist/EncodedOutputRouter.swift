@@ -179,7 +179,8 @@ actor YouTubeHLSStreamSink {
             return
         }
         if queue.count >= Self.maximumQueuedFragments ||
-            queue.reduce(fragment.duration, { $0 + $1.duration }) > Self.maximumQueuedDuration {
+            queue.reduce(fragment.duration, { $0 + $1.duration }) > Self.maximumQueuedDuration ||
+            uploadWouldExceedLiveLatency(adding: fragment) {
             needsLiveCatchup = true
             discardQueuedMedia(before: fragment.type == .finalization
                 ? (queue.lastIndex(where: { $0.type == .separable }) ?? 0) : queue.count)
@@ -368,11 +369,27 @@ actor YouTubeHLSStreamSink {
         return bitrateController?.targetBitrate
     }
 
+    private var waitingUploadBytes: Int {
+        queue.reduce(0) { $0 + ($1.type == .initialization ? 0 : $1.segment.count) }
+    }
+
+    /// Queued media duration understates latency when segments were encoded far
+    /// above capacity, e.g. at the selected ceiling before the first measurement.
+    private func uploadWouldExceedLiveLatency(adding fragment: Fragment?) -> Bool {
+        let waiting = waitingUploadBytes
+        guard waiting > 0, let drain = bitrateController?.estimatedDrainSeconds(
+            waitingBytes: waiting + (fragment.map { $0.type == .initialization ? 0 : $0.segment.count } ?? 0),
+            inFlightBytes: currentBytes,
+            inFlightSeconds: uploadStartedAt.map { max(0, uploadNow() - $0) } ?? 0
+        ) else { return false }
+        return drain > Self.maximumQueuedDuration
+    }
+
     private func updateBitrateController() {
         let previous = bitrateController?.state
         let now = uploadNow()
         bitrateController?.update(
-            waitingBytes: queue.reduce(0) { $0 + ($1.type == .initialization ? 0 : $1.segment.count) },
+            waitingBytes: waitingUploadBytes,
             waitingMediaSeconds: queue.reduce(0) { $0 + $1.duration },
             inFlightBytes: currentBytes,
             inFlightDuration: currentDuration,
@@ -390,9 +407,10 @@ actor YouTubeHLSStreamSink {
               isPrepared,
               failure == nil,
               !queue.isEmpty {
-            if needsLiveCatchup, uploadStartedAt == nil {
+            if needsLiveCatchup || uploadWouldExceedLiveLatency(adding: nil), uploadStartedAt == nil {
                 // The stalled transaction may have outlived several overflow
-                // trims. Resume with the newest complete segment at its ACK.
+                // trims, or its ACK may reveal that the waiting media cannot
+                // arrive in time. Resume with the newest complete segment.
                 discardQueuedMedia(before: queue.lastIndex(where: { $0.type == .separable }) ?? 0)
                 needsLiveCatchup = false
             }

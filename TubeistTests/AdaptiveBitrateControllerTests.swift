@@ -152,6 +152,56 @@ struct AdaptiveBitrateControllerTests {
         #expect(c.targetBitrate == 6_000_000)
     }
 
+    @Test func drainEstimateUsesOnlyCompletedUploads() {
+        var c = controller()
+        // A slow first connection is not evidence of a slow link.
+        #expect(c.estimatedDrainSeconds(waitingBytes: 5_000_000, inFlightBytes: 1_000_000, inFlightSeconds: 9) == nil)
+        ack(&c, at: 2, capacity: 4_000_000)
+        #expect(c.estimatedDrainSeconds(waitingBytes: 5_000_000, inFlightBytes: 0, inFlightSeconds: 0) == 10)
+        // Credit the active upload with the time it has already been sending.
+        #expect(c.estimatedDrainSeconds(waitingBytes: 5_000_000, inFlightBytes: 1_000_000, inFlightSeconds: 1) == 11)
+        #expect(c.estimatedDrainSeconds(waitingBytes: 5_000_000, inFlightBytes: 1_000_000, inFlightSeconds: 5) == 10)
+        // After a dip, the slower EWMA remains the optimistic estimate.
+        ack(&c, at: 4, capacity: 1_000_000, elapsed: 2)
+        #expect(c.estimatedDrainSeconds(waitingBytes: 5_000_000, inFlightBytes: 0, inFlightSeconds: 0)! > 10)
+        #expect(c.estimatedDrainSeconds(waitingBytes: 5_000_000, inFlightBytes: 0, inFlightSeconds: 0)! < 11)
+        #expect(c.estimatedDrainSeconds(waitingBytes: -1, inFlightBytes: 0, inFlightSeconds: 0) == nil)
+        #expect(c.estimatedDrainSeconds(waitingBytes: 0, inFlightBytes: 0, inFlightSeconds: .nan) == nil)
+    }
+
+    @Test func drainEstimateDuringAReductionUsesTheCutCapacity() {
+        var c = controller()
+        ack(&c, at: 2, capacity: 10_000_000)
+        ack(&c, at: 4, capacity: 10_000_000)
+        #expect(c.estimatedDrainSeconds(waitingBytes: 2_500_000, inFlightBytes: 0, inFlightSeconds: 0)! < 3)
+        // The slow EWMA still remembers 10 Mbps; queued media would take ten seconds.
+        ack(&c, at: 9, capacity: 2_000_000, elapsed: 3, bytes: 2_000_000, seconds: 4)
+        #expect(c.state == .capacityBelowQualityFloor)
+        #expect(c.estimatedDrainSeconds(waitingBytes: 2_500_000, inFlightBytes: 0, inFlightSeconds: 0) == 10)
+    }
+
+    @Test func startingFarAboveCapacityDropsDoomedSegmentsInsteadOfDelayingLiveMedia() {
+        // Three ceiling-rate segments are encoded before the first ACK; together
+        // they would take 30 seconds to upload over this link.
+        let result = simulate(seconds: 120, maximum: 20_000_000) { _ in 4_000_000 }
+        #expect(result.maximumLatency < 11)
+        #expect(result.dropped <= 3)
+        #expect(result.rates.filter { $0.at >= 20 }.allSatisfy { $0.rate < 4_000_000 })
+    }
+
+    @Test(arguments: [0.0, 4.0, 8.0])
+    func gradualCollapseDropsOldOversizedSegmentsRatherThanNewOnes(rampSeconds: Double) {
+        // Ceiling-rate segments encoded before the first cut cannot drain at 2 Mbps.
+        // Waiting until ten seconds of small, newer media overflow keeps the old
+        // segments and discards the new ones.
+        let result = simulate(seconds: 120) { now in
+            now < 40 ? 10_000_000 : max(2_000_000, 10_000_000 - 8_000_000 * (now - 40) / max(rampSeconds, 0.001))
+        }
+        #expect(result.maximumLatency < 11)
+        #expect(result.dropped < 5)
+        #expect(result.rates.filter { $0.at >= 60 }.allSatisfy { $0.rate < 2_000_000 })
+    }
+
     @Test(arguments: [0.0, 0.5, 1.0, 1.5])
     func shortHalvingAtDifferentSegmentPhasesRecoversWithoutDrops(phase: Double) {
         let result = simulate(seconds: 90) { now in (40 + phase..<42 + phase).contains(now) ? 5_000_000 : 10_000_000 }
@@ -194,26 +244,30 @@ struct AdaptiveBitrateControllerTests {
     private struct Trace {
         var dropped = 0
         var maximumWaiting = 0.0
+        var maximumLatency = 0.0
         var rates: [(at: Double, rate: Int)] = []
     }
 
     /// A continuous link with serialized transactions, 80 ms request latency,
     /// variable segment sizes, and bitrate captured at the START of encoding.
     /// This includes the encoder/segment delay missing from instantaneous models.
-    private func simulate(seconds: Double, capacity: (Double) -> Double) -> Trace {
+    /// Overflow mirrors the sink: queued media duration or estimated drain time.
+    private func simulate(seconds: Double, maximum: Int = 6_000_000, capacity: (Double) -> Double) -> Trace {
         struct Segment {
             let bytes: Int
             let duration = 2.0
+            let arrived: Double
             var remaining: Double
             var started = 0.0
         }
-        var c = controller()
+        var c = AdaptiveBitrateController(maximumBitrate: maximum, minimumBitrate: 1_000_000, audioBitrate: 128_000)
         var queue: [Segment] = []
         var current: Segment?
         var nextArrival = 2.0
         var nextObservation = 0.0
         var encodingRate = c.targetBitrate
         var index = 0
+        var needsLiveCatchup = false
         var trace = Trace()
         let dt = 0.02
         for step in 0...Int(seconds / dt) {
@@ -222,12 +276,16 @@ struct AdaptiveBitrateControllerTests {
             if now + 0.0001 >= nextArrival {
                 let vbr = [0.90, 1.10, 1.0, 1.05, 0.95][index % 5]
                 let bits = (Double(encodingRate) * vbr + 128_000) * 1.08 * 2
-                if queue.count >= 5 {
+                let drain = queue.isEmpty ? nil : c.estimatedDrainSeconds(
+                    waitingBytes: queue.reduce(Int(bits / 8)) { $0 + $1.bytes }, inFlightBytes: current?.bytes ?? 0,
+                    inFlightSeconds: current.map { now - $0.started } ?? 0)
+                if queue.count >= 5 || drain ?? 0 > 10 {
                     trace.dropped += queue.count
                     queue.removeAll()
                     c.discardedBacklog(now: now)
+                    needsLiveCatchup = true
                 }
-                queue.append(Segment(bytes: Int(bits / 8), remaining: bits))
+                queue.append(Segment(bytes: Int(bits / 8), arrived: now, remaining: bits))
                 event = true
                 nextArrival += 2
                 index += 1
@@ -238,6 +296,7 @@ struct AdaptiveBitrateControllerTests {
                 if segment.remaining <= 0 {
                     current = nil
                     event = true
+                    trace.maximumLatency = max(trace.maximumLatency, now - segment.arrived)
                     c.delivered(bytes: segment.bytes, elapsed: now - segment.started, mediaDuration: 2, now: now)
                 } else { current = segment }
             }
@@ -247,6 +306,15 @@ struct AdaptiveBitrateControllerTests {
                 nextObservation = now + 0.25
             }
             if current == nil, !queue.isEmpty {
+                // Overflow during a stall, or an ACK revealing an undeliverable
+                // backlog: resume with the newest segment, as the sink does.
+                if queue.count > 1, needsLiveCatchup || c.estimatedDrainSeconds(
+                    waitingBytes: queue.reduce(0) { $0 + $1.bytes }, inFlightBytes: 0, inFlightSeconds: 0) ?? 0 > 10 {
+                    trace.dropped += queue.count - 1
+                    queue.removeFirst(queue.count - 1)
+                    c.discardedBacklog(now: now)
+                }
+                needsLiveCatchup = false
                 current = queue.removeFirst()
                 current?.started = now
             }

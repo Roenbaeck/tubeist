@@ -185,6 +185,42 @@ struct YouTubeHLSStreamSinkTests {
         #expect(await sink.metrics().lastAcceptedMediaSequence == 1)
     }
 
+    @Test(arguments: [1, 100])
+    func firstAckDropsOnlyBacklogThatCannotArriveInTime(packetsPerSegment: Int) async throws {
+        let transport = RecoveringDirectSinkTransport()
+        let sink = YouTubeHLSStreamSink()
+        try await sink.prepare(endpoint: .manualPrimary(streamKey: "test"),
+                               sessionIdentifier: "drain_overflow", userAgent: "Tubeist/Test",
+                               transport: transport,
+                               bitrateController: AdaptiveBitrateController(maximumBitrate: 6_000_000,
+                                   minimumBitrate: 1_000_000, audioBitrate: 128_000),
+                               sleeper: { _ in })
+        await sink.enqueue(Fragment(sequence: 0, segment: directSentinel(0), duration: 2, container: .mpegTransportStream))
+        try await transport.waitUntilRequested()
+        // Encoded before the first measurement; six seconds is within the duration cap.
+        let waiting = (1...3).map { sequence in
+            (0..<packetsPerSegment).reduce(into: Data()) { data, _ in data += directSentinel(UInt8(sequence)) }
+        }
+        for (index, segment) in waiting.enumerated() {
+            await sink.enqueue(Fragment(sequence: index + 1, segment: segment, duration: 2, container: .mpegTransportStream))
+        }
+        #expect(await sink.metrics().droppedFragments == 0)
+        // One packet takes at least 0.3 s: three more need about a second, but
+        // three hundred would take more than a minute.
+        try await Task.sleep(for: .milliseconds(300))
+        await transport.releaseFirstRequest()
+        #expect(try await sink.finish(timeout: successfulSinkShutdownTimeout))
+        let media = await transport.requests().filter { $0.contentType == "video/mp2t" }.map(\.body)
+        if packetsPerSegment == 1 {
+            #expect(media == [directSentinel(0)] + waiting)
+            #expect(await sink.metrics().droppedFragments == 0)
+        } else {
+            #expect(media == [directSentinel(0), try MPEGTransportStreamMuxer.markingDiscontinuity(waiting[2])])
+            #expect(await sink.metrics().droppedFragments == 2)
+            #expect(await sink.metrics().videoBitrate == 1_000_000)
+        }
+    }
+
     @Test func activeUploadWatchdogReducesBitrateWithoutAnAckOrAnotherArrival() async throws {
         let clock = SinkUploadClock()
         let transport = SerialSinkTransport(clock: clock, uploadSeconds: 0.1)

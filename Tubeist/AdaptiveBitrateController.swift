@@ -231,6 +231,20 @@ struct AdaptiveBitrateController: Sendable {
         }
     }
 
+    /// Seconds until the newest waiting byte is delivered. Segments encoded far above
+    /// capacity take much longer to send than they last. Optimistic (the larger EWMA)
+    /// in steady state, so a brief dip drops nothing. During a reduction the slow EWMA
+    /// still remembers the faster link, so use the same capacity as the cut budget.
+    /// Unknown before the first ACK: a slow first connection is not a slow link.
+    func estimatedDrainSeconds(waitingBytes: Int, inFlightBytes: Int, inFlightSeconds: Double) -> Double? {
+        guard waitingBytes >= 0, inFlightBytes >= 0, inFlightSeconds.isFinite, inFlightSeconds >= 0,
+              let latestThroughput, let fastThroughput, let estimatedThroughput else { return nil }
+        let reducing = state == .catchingUp || state == .capacityBelowQualityFloor
+        let capacity = reducing ? min(latestThroughput, fastThroughput) : max(fastThroughput, estimatedThroughput)
+        let remaining = max(0, Double(inFlightBytes) * 8 - capacity * inFlightSeconds)
+        return (remaining + Double(waitingBytes) * 8) / capacity
+    }
+
     mutating func discardedBacklog(now: Double) {
         guard now.isFinite else { return }
         targetBitrate = minimumBitrate

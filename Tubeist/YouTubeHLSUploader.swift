@@ -77,10 +77,16 @@ protocol YouTubeHLSHTTPTransport: Sendable {
 actor URLSessionYouTubeHLSHTTPTransport: YouTubeHLSHTTPTransport {
     private let session: URLSession
 
+    /// The idle timeout detects a dead connection. The whole-transfer limit must
+    /// exceed any upload that is still progressing: retries resend the same bytes,
+    /// so a segment slower than this limit would otherwise never be acknowledged.
+    static let requestTimeout: TimeInterval = 10
+    static let resourceTimeout: TimeInterval = 120
+
     init() {
         self.session = Self.makeSession(
-            requestTimeout: 10,
-            resourceTimeout: 30,
+            requestTimeout: Self.requestTimeout,
+            resourceTimeout: Self.resourceTimeout,
             delegate: nil
         )
     }

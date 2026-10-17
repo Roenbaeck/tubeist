@@ -72,7 +72,9 @@ actor HLSUploadReplay {
             await recorder.start()
             // Same URLSession configuration and uploader as production. The
             // delegate only observes metrics; it does not alter authentication.
-            let transport = URLSessionYouTubeHLSHTTPTransport(requestTimeout: 10, resourceTimeout: 30, delegate: log)
+            let transport = URLSessionYouTubeHLSHTTPTransport(
+                requestTimeout: URLSessionYouTubeHLSHTTPTransport.requestTimeout,
+                resourceTimeout: URLSessionYouTubeHLSHTTPTransport.resourceTimeout, delegate: log)
             let userAgent = await MainActor.run {
                 "Apple / \(UIDevice.current.model.replacingOccurrences(of: " ", with: "_")) / Tubeist-\(Bundle.main.appVersion ?? "unknown")"
             }
