@@ -71,7 +71,6 @@
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "3D8F89D7307241310000EC54"
             BuildableName = "TubeistWatch Watch App.app"
-            BlueprintName = "TubeistWatch Watch App"
             ReferencedContainer = "container:Tubeist.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
@@ -88,7 +87,6 @@
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "3D8F89D7307241310000EC54"
             BuildableName = "TubeistWatch Watch App.app"
-            BlueprintName = "TubeistWatch Watch App"
             ReferencedContainer = "container:Tubeist.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
