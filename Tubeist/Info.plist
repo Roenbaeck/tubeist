@@ -15,8 +15,13 @@
 	</array>
 	<key>NSAppTransportSecurity</key>
 	<dict>
+		<!-- User-configured overlay and status servers may only support HTTP.
+		     Do not add the web-content/media/local exception keys alongside this:
+		     their presence overrides NSAllowsArbitraryLoads on iOS 10 and later. -->
 		<key>NSAllowsArbitraryLoads</key>
 		<true/>
+		<!-- Restore full ATS protection for Tubeist's YouTube and Google services.
+		     Listed domains use ATS defaults independently of the global exception. -->
 		<key>NSExceptionDomains</key>
 		<dict>
 			<key>google.com</key>
