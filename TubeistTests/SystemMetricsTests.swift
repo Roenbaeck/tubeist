@@ -7,7 +7,29 @@ import Testing
 @preconcurrency import Darwin
 @testable import Tubeist
 
+@MainActor
 struct SystemMetricsTests {
+    @Test func streamHealthKeepsItsRulesWhenComputedApartFromTheMetrics() {
+        func health(streaming: Bool = true, failed: Bool = false, capture: CaptureLiveness.State? = .healthy,
+                    utilization: Int = 50, buffered: Int = 1, belowFloor: Bool = false,
+                    current: StreamHealth = .awaiting) -> StreamHealth {
+            SystemMetricsView.streamHealth(streaming: streaming, outputFailed: failed, captureState: capture,
+                                           networkUtilization: utilization, bufferedFragments: buffered,
+                                           belowQualityFloor: belowFloor, current: current)
+        }
+        #expect(health() == .pristine)
+        #expect(health(failed: true) == .unusable)
+        #expect(health(capture: .failed) == .unusable)
+        #expect(health(capture: .recovering, utilization: 120) == .unusable)
+        #expect(health(utilization: 100) == .degraded)
+        #expect(health(buffered: 2) == .degraded)
+        #expect(health(belowFloor: true) == .degraded)
+        #expect(health(capture: .concealing) == .degraded)
+        #expect(health(streaming: false, buffered: 0, current: .pristine) == .silenced)
+        // A stopped stream still draining keeps its last health.
+        #expect(health(streaming: false, buffered: 3, current: .degraded) == .degraded)
+    }
+
     @Test func repeatedCPUSamplingReleasesCurrentThreadSendRights() throws {
         let sampler = SystemCPUSampler()
         let referencesBefore = try currentThreadSendReferences()
