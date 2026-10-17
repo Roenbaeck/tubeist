@@ -54,8 +54,8 @@ The first segment is encoded before any upload completes, so its rate is a guess
 the floor is the guess that is safe on any link that can sustain the floor.
 
 The encoder asks for the target at its first frame, so the first segment already
-uses the floor. Then, for 30 seconds after the first ACK and until the first
-congestion episode or overflow, every fresh clear completion may raise the target
+uses the floor. Then, for 30 seconds after the first clear completion and until
+the first congestion episode or overflow, every fresh clear completion may raise the target
 without the wall-clock evidence below. The new rung must fit
 `0.9 × latest throughput / 1.08 − audio`, and its wire rate must be at most four
 times the media rate of the segment just measured. Small segments understate the
@@ -88,6 +88,20 @@ queue drained. Only subsequent fresh, clear completions can build evidence.
 * **Failed increase:** renewed congestion within 20 seconds rolls back at least
   to the prior rung, invalidates optimistic restoration, and blocks increases
   for 20 seconds. It never blocks reductions.
+* **Collapse ramp:** explore alone needs a minute or two to climb back from the
+  floor, long after the link has recovered. A congestion episode that cuts to at
+  most half the rate it started at arms the startup ramp again, with that
+  starting rate as its ceiling. It opens at the first clear completion after the
+  episode and stays open, however long the link stays poor, until it reaches that
+  ceiling or any congestion ends it. Each raise needs two completions at least
+  half a segment apart that both show room. A brief peak or a burst of tiny uploads
+  therefore cannot trigger one. It respects the post-overflow increase block. It
+  is not armed when the collapse follows a ramp raise within 20 seconds, since
+  the ramp overshot, or within 180 seconds of the previous collapse, since the
+  link is unstable. Then explore earns the quality back. In simulation, quality
+  returns 10-16 seconds after bandwidth does, instead of 98-122. On a link
+  collapsing every 30-100 seconds, the one fast recovery costs two extra dropped
+  segments over the cautious path.
 
 Normal arrivals do not count as congestion merely because one segment is ready
 for its first upload. A stalled active transaction prevents recovery even if
@@ -139,8 +153,12 @@ It covers two-second dips at four phases, sustained halving, brief peaks versus
 an otherwise identical trace, complete outages, starting at a ceiling five
 times the link's capacity, and collapses to a fifth of capacity, either as a
 step or as a ramp over four or eight seconds. Full-session simulations run with
-the startup ramp, which separately must never delay an opening segment and must
-settle at the ceiling or near capacity within fifteen seconds. Target invariants include
+both ramps. The startup ramp separately must never delay an opening segment and must
+settle at the ceiling or near capacity within fifteen seconds. The collapse ramp
+must restore quality within twenty seconds after a twenty-second drop, which the
+cautious path cannot do within forty. On links flapping every 15 or 30 seconds,
+it may cost at most two extra drops. Unit tests for the slow-path rules disable
+both ramps. Target invariants include
 bounded backlog, no drops on modest transient/sustained changes, stable settled
 quality, and eventual restoration after sustained recovery. Unit tests separately
 exercise sample freshness, wall-clock confirmation, rollback, floors and invalid

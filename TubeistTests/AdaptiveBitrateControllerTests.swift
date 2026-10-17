@@ -3,10 +3,13 @@ import Testing
 @testable import Tubeist
 
 struct AdaptiveBitrateControllerTests {
-    /// Steady-state rules start at the ceiling; the startup ramp has its own tests.
-    private func controller(rampsUpAtStartup: Bool = false) -> AdaptiveBitrateController {
+    /// Steady-state rules start at the ceiling and recover through the usual
+    /// evidence; the startup and collapse ramps have their own tests.
+    private func controller(rampsUpAtStartup: Bool = false,
+                            rampsUpAfterCollapse: Bool = false) -> AdaptiveBitrateController {
         AdaptiveBitrateController(maximumBitrate: 6_000_000, minimumBitrate: 1_000_000, audioBitrate: 128_000,
-                                  policy: .init(rampsUpAtStartup: rampsUpAtStartup))
+                                  policy: .init(rampsUpAtStartup: rampsUpAtStartup,
+                                                rampsUpAfterCollapse: rampsUpAfterCollapse))
     }
 
     private func observe(_ c: inout AdaptiveBitrateController, at now: Double,
@@ -216,7 +219,8 @@ struct AdaptiveBitrateControllerTests {
     }
 
     @Test func congestionEndsTheStartupRamp() {
-        var c = controller(rampsUpAtStartup: true)
+        // A collapse right after a ramp raise means the ramp overshot: no recovery ramp.
+        var c = controller(rampsUpAtStartup: true, rampsUpAfterCollapse: true)
         ack(&c, at: 2, capacity: 20_000_000, elapsed: 0.15)
         ack(&c, at: 7, capacity: 2_000_000, elapsed: 3, bytes: 1_000_000, seconds: 4)
         let reduced = c.targetBitrate
@@ -224,6 +228,58 @@ struct AdaptiveBitrateControllerTests {
         // Still inside the window, but the ramp no longer skips the usual evidence.
         ack(&c, at: 9, capacity: 20_000_000, elapsed: 0.15)
         #expect(c.targetBitrate == reduced)
+    }
+
+    @Test func collapseRampsBackOnceTwoSpacedUploadsAgree() {
+        var c = controller(rampsUpAfterCollapse: true)
+        ack(&c, at: 2, capacity: 8_000_000)
+        ack(&c, at: 5, capacity: 1_500_000, elapsed: 3, bytes: 1_000_000, seconds: 4)
+        #expect(c.targetBitrate == 1_000_000)
+        // The first fast upload after the collapse may be a brief peak.
+        ack(&c, at: 7, capacity: 12_000_000, elapsed: 0.5)
+        #expect(c.targetBitrate == 1_000_000)
+        ack(&c, at: 9, capacity: 12_000_000, elapsed: 0.5)
+        #expect(c.targetBitrate == 6_000_000)
+    }
+
+    @Test func burstsAndRecurringCollapsesDoNotRampBack() {
+        var c = controller(rampsUpAfterCollapse: true)
+        ack(&c, at: 2, capacity: 8_000_000)
+        ack(&c, at: 5, capacity: 1_500_000, elapsed: 3, bytes: 1_000_000, seconds: 4)
+        var burst = c
+        ack(&burst, at: 7, capacity: 12_000_000, elapsed: 0.05)
+        ack(&burst, at: 7.1, capacity: 12_000_000, elapsed: 0.05)
+        #expect(burst.targetBitrate == 1_000_000)
+        ack(&c, at: 7, capacity: 12_000_000, elapsed: 0.5)
+        ack(&c, at: 9, capacity: 12_000_000, elapsed: 0.5)
+        #expect(c.targetBitrate == 6_000_000)
+        // A second collapse within three minutes: the link must earn its quality back.
+        ack(&c, at: 40, capacity: 1_500_000, elapsed: 3, bytes: 1_000_000, seconds: 4)
+        #expect(c.targetBitrate == 1_000_000)
+        ack(&c, at: 42, capacity: 12_000_000, elapsed: 0.5)
+        ack(&c, at: 44, capacity: 12_000_000, elapsed: 0.5)
+        #expect(c.targetBitrate == 1_000_000)
+    }
+
+    @Test func seriousDropRecoversQuicklyOnceBandwidthReturns() {
+        let capacity: (Double) -> Double = { (40..<60).contains($0) ? 2_000_000 : 10_000_000 }
+        let result = simulate(seconds: 120, capacity: capacity)
+        let cautious = simulate(seconds: 120, rampsUpAfterCollapse: false, capacity: capacity)
+        let restored = { (trace: Trace) in trace.rates.first { $0.at >= 60 && $0.rate == 6_000_000 }?.at ?? .infinity }
+        #expect(restored(result) < 80)
+        #expect(restored(cautious) > 100)
+        #expect(result.dropped <= cautious.dropped)
+        #expect(result.maximumLatency <= cautious.maximumLatency)
+    }
+
+    @Test(arguments: [15.0, 30.0])
+    func flappingLinkFallsBackToCautiousRecovery(period: Double) {
+        let capacity: (Double) -> Double = { Int($0 / period) % 2 == 0 ? 10_000_000 : 2_000_000 }
+        let result = simulate(seconds: 300, capacity: capacity)
+        let cautious = simulate(seconds: 300, rampsUpAfterCollapse: false, capacity: capacity)
+        // At most one fast recovery: one more collapse at a higher rate than before.
+        #expect(result.dropped <= cautious.dropped + 2)
+        #expect(result.maximumLatency <= cautious.maximumLatency + 2)
     }
 
     @Test(arguments: [(6_000_000, 3_000_000), (6_000_000, 10_000_000), (6_000_000, 50_000_000),
@@ -303,7 +359,7 @@ struct AdaptiveBitrateControllerTests {
     /// This includes the encoder/segment delay missing from instantaneous models.
     /// Overflow mirrors the sink: queued media duration or estimated drain time.
     private func simulate(seconds: Double, maximum: Int = 6_000_000, rampsUpAtStartup: Bool = true,
-                          capacity: (Double) -> Double) -> Trace {
+                          rampsUpAfterCollapse: Bool = true, capacity: (Double) -> Double) -> Trace {
         struct Segment {
             let bytes: Int
             let duration = 2.0
@@ -312,7 +368,8 @@ struct AdaptiveBitrateControllerTests {
             var started = 0.0
         }
         var c = AdaptiveBitrateController(maximumBitrate: maximum, minimumBitrate: 1_000_000, audioBitrate: 128_000,
-                                          policy: .init(rampsUpAtStartup: rampsUpAtStartup))
+                                          policy: .init(rampsUpAtStartup: rampsUpAtStartup,
+                                                        rampsUpAfterCollapse: rampsUpAfterCollapse))
         var queue: [Segment] = []
         var current: Segment?
         var nextArrival = 2.0
