@@ -76,25 +76,48 @@ protocol YouTubeHLSHTTPTransport: Sendable {
 
 actor URLSessionYouTubeHLSHTTPTransport: YouTubeHLSHTTPTransport {
     private let session: URLSession
+    private let requestTimeout: TimeInterval
+    private let resourceTimeout: TimeInterval
+    private let minimumThroughput: Double?
 
-    init() {
-        self.session = Self.makeSession(
-            requestTimeout: 10,
-            resourceTimeout: 30,
-            delegate: nil
-        )
+    /// The idle timeout detects a dead connection. The whole-transfer limit must
+    /// exceed any upload that is still progressing: retries resend the same bytes,
+    /// so a segment slower than this limit would otherwise never be acknowledged.
+    static let requestTimeout: TimeInterval = 10
+    static let resourceTimeout: TimeInterval = 120
+
+    /// `minimumThroughput` (bits per second) is the slowest link the stream must
+    /// still work on, normally the wire rate of the quality floor.
+    init(minimumThroughput: Double? = nil) {
+        self.init(requestTimeout: Self.requestTimeout, resourceTimeout: Self.resourceTimeout,
+                  minimumThroughput: minimumThroughput, delegate: nil)
     }
 
     init(
         requestTimeout: TimeInterval,
         resourceTimeout: TimeInterval,
-        delegate: (any URLSessionDelegate & Sendable)
+        minimumThroughput: Double? = nil,
+        delegate: (any URLSessionDelegate & Sendable)?
     ) {
+        self.requestTimeout = requestTimeout
+        self.resourceTimeout = resourceTimeout
+        self.minimumThroughput = minimumThroughput
         self.session = Self.makeSession(
             requestTimeout: requestTimeout,
             resourceTimeout: resourceTimeout,
             delegate: delegate
         )
+    }
+
+    /// URLSession's idle timer can expire while a large body is still draining
+    /// from the socket buffer, so a slow but progressing segment upload is killed,
+    /// then resent from the start. Give each body the time it needs on the slowest
+    /// supported link; small requests keep the short dead-connection timeout.
+    static func timeout(forBodyBytes bytes: Int, minimumThroughput: Double?,
+                        requestTimeout: TimeInterval = requestTimeout,
+                        resourceTimeout: TimeInterval = resourceTimeout) -> TimeInterval {
+        guard let minimumThroughput, minimumThroughput > 0 else { return requestTimeout }
+        return min(resourceTimeout, max(requestTimeout, 1.5 * Double(bytes) * 8 / minimumThroughput))
     }
 
     private nonisolated static func makeSession(
@@ -118,6 +141,10 @@ actor URLSessionYouTubeHLSHTTPTransport: YouTubeHLSHTTPTransport {
     func send(_ request: URLRequest, body: Data) async throws -> YouTubeHLSHTTPResponse {
         var request = request
         request.httpBody = body
+        if minimumThroughput != nil {
+            request.timeoutInterval = Self.timeout(forBodyBytes: body.count, minimumThroughput: minimumThroughput,
+                                                   requestTimeout: requestTimeout, resourceTimeout: resourceTimeout)
+        }
         let (responseBody, response) = try await session.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse else {
             throw YouTubeHLSUploadError.invalidResponse

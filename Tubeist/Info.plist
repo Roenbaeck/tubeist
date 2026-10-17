@@ -24,7 +24,7 @@
 		     Listed domains use ATS defaults independently of the global exception. -->
 		<key>NSExceptionDomains</key>
 		<dict>
-			<key>youtube.com</key>
+			<key>google.com</key>
 			<dict>
 				<key>NSIncludesSubdomains</key>
 				<true/>
@@ -34,15 +34,13 @@
 				<key>NSIncludesSubdomains</key>
 				<true/>
 			</dict>
-			<key>google.com</key>
+			<key>youtube.com</key>
 			<dict>
 				<key>NSIncludesSubdomains</key>
 				<true/>
 			</dict>
 		</dict>
 	</dict>
-	<key>NSLocalNetworkUsageDescription</key>
-	<string>Tubeist connects to the status server you choose on your local network to display its text on your Apple Watch.</string>
 	<key>UIFileSharingEnabled</key>
 	<true/>
 </dict>
