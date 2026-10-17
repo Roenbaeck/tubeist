@@ -65,6 +65,8 @@ struct AdaptiveBitrateController: Sendable {
     let ladder: BitrateLadder
     var maximumBitrate: Int { ladder.maximum }
     var minimumBitrate: Int { ladder.minimum }
+    /// Link throughput needed to sustain the quality floor, audio and overhead included.
+    var minimumWireRate: Double { wireRate(minimumBitrate) }
     let audioBitrate: Int
     let policy: Policy
     private(set) var targetBitrate: Int

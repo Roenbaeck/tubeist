@@ -142,7 +142,8 @@ actor YouTubeHLSStreamSink {
         guard generation == sessionGeneration else {
             throw YouTubeHLSPackagingError.notPrepared
         }
-        var uploadTransport: any YouTubeHLSHTTPTransport = transport ?? URLSessionYouTubeHLSHTTPTransport()
+        var uploadTransport: any YouTubeHLSHTTPTransport = transport ?? URLSessionYouTubeHLSHTTPTransport(
+            minimumThroughput: bitrateController?.minimumWireRate)
 #if DEBUG
         if let directory = await HLSAcceptanceRecorder.shared.begin(
             sessionIdentifier: sessionIdentifier,

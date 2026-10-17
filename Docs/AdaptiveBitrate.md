@@ -15,6 +15,14 @@ and backoff. Queue waiting time is excluded. The uploader remains serial and
 starts each transaction as soon as its predecessor completes; there is no
 intentional delivery pacing.
 
+The production uploader and transport were checked against a loopback HTTPS
+server that paces reads at 1.3-20 Mbps. Samples were 98-100% of the true rate for
+segments of 375 KB and larger, 9-33 second uploads included. The first, small
+upload, which pays the TLS handshake, read 77-98%. Queued and uploaded bytes are both
+MPEG-TS, so backlog and capacity are in the same units. With diagnostics
+recording enabled, hashing and saving each body adds a few milliseconds to
+the timed transaction, a negligible and conservative bias.
+
 The controller keeps the latest sample and fast/slow EWMAs with 4/20-second time
 constants. EWMA weight uses elapsed time between ACKs, capped by the segment's
 media duration. A quick burst cannot replace the history instantly; an idle
@@ -135,10 +143,15 @@ retains its own complete encoded output.
 Overflow blocks increases for 20 seconds and invalidates proven-quality memory.
 It does not reset throughput history. Production transport uses a 10-second
 idle request timeout and transient-error backoff; permanent HTTP failures remain
-visible. Its 120-second resource timeout bounds a whole transfer. Retries resend
-the same announced bytes, so a slow but progressing upload must fit within it;
-otherwise one ceiling segment over a slow link would never be acknowledged.
-Stop enforces its own deadline.
+visible. Retries resend the same announced bytes, so a slow but progressing
+upload must never time out, or one ceiling segment over a slow link would never
+be acknowledged. URLSession's idle timer can expire while a large body is still
+draining from the socket buffer. On loopback, 12-16 second uploads failed
+reproducibly at 10 seconds while the server was still reading. Each request
+therefore gets `max(10 s, 1.5 × body bits / floor wire rate)`, enough for any
+segment to finish on a link that can sustain the quality floor. Playlists and
+floor-rate segments keep the short dead-connection timeout. The 120-second
+resource timeout bounds a whole transfer. Stop enforces its own deadline.
 
 This is a local latency policy, not a claim about YouTube's ingest/playback
 buffer. YouTube's five-outstanding-segment playlist limit is separate:

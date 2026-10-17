@@ -9,6 +9,24 @@ import Testing
 
 struct YouTubeHLSUploaderTests {
 
+    @Test func requestTimeoutLetsAnySegmentFinishOnTheSlowestSupportedLink() {
+        // 1080p floor: 0.93 Mbps video + 192 kbps audio, plus overhead.
+        let floor = AdaptiveBitrateController(maximumBitrate: 5_800_000, minimumBitrate: 933_120,
+                                              audioBitrate: 192_000).minimumWireRate
+        #expect(abs(floor - 1_215_000) < 1_000)
+        func timeout(_ bytes: Int) -> TimeInterval {
+            URLSessionYouTubeHLSHTTPTransport.timeout(forBodyBytes: bytes, minimumThroughput: floor)
+        }
+        // Playlists and floor-rate segments keep prompt dead-connection detection.
+        #expect(timeout(400) == URLSessionYouTubeHLSHTTPTransport.requestTimeout)
+        #expect(timeout(300_000) == URLSessionYouTubeHLSHTTPTransport.requestTimeout)
+        // A ceiling segment takes about ten seconds at the floor rate; allow half again.
+        #expect(abs(timeout(1_620_000) - 16) < 0.1)
+        #expect(timeout(50_000_000) == URLSessionYouTubeHLSHTTPTransport.resourceTimeout)
+        #expect(URLSessionYouTubeHLSHTTPTransport.timeout(forBodyBytes: 50_000_000, minimumThroughput: nil)
+            == URLSessionYouTubeHLSHTTPTransport.requestTimeout)
+    }
+
     @Test func manualEndingKeepsTheWindowWithoutEndListOrGrace() async throws {
         let transport = MockYouTubeHLSTransport(statuses: Array(repeating: 200, count: 14))
         let uploader = try YouTubeHLSUploader(
