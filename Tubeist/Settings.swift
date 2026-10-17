@@ -18,10 +18,13 @@ struct Preset: Codable, Equatable, Identifiable, Hashable {
     let audioChannels: Int
     let audioBitrate: Int
     let videoBitrate: Int
+    /// Start at the quality floor and climb as uploads show room. Only a custom
+    /// preset can turn this off, for a connection known to sustain the bitrate.
+    let rampsUpAtStartup: Bool
     let bitrateLadder: BitrateLadder
 
     init(name: String, width: Int, height: Int, frameRate: Double, keyframeInterval: Double,
-         audioChannels: Int, audioBitrate: Int, videoBitrate: Int) {
+         audioChannels: Int, audioBitrate: Int, videoBitrate: Int, rampsUpAtStartup: Bool = true) {
         self.name = name
         self.width = width
         self.height = height
@@ -30,6 +33,7 @@ struct Preset: Codable, Equatable, Identifiable, Hashable {
         self.audioChannels = audioChannels
         self.audioBitrate = audioBitrate
         self.videoBitrate = videoBitrate
+        self.rampsUpAtStartup = rampsUpAtStartup
         let pixelsPerSecond = Double(width) * Double(height) * frameRate
         let floor = pixelsPerSecond.isFinite ? Int(max(250_000, min(Double(Int.max / 2), pixelsPerSecond * 0.015))) : 250_000
         bitrateLadder = BitrateLadder(maximum: videoBitrate, minimum: floor)
@@ -44,7 +48,8 @@ struct Preset: Codable, Equatable, Identifiable, Hashable {
                   keyframeInterval: try values.decode(Double.self, forKey: .keyframeInterval),
                   audioChannels: try values.decode(Int.self, forKey: .audioChannels),
                   audioBitrate: try values.decode(Int.self, forKey: .audioBitrate),
-                  videoBitrate: try values.decode(Int.self, forKey: .videoBitrate))
+                  videoBitrate: try values.decode(Int.self, forKey: .videoBitrate),
+                  rampsUpAtStartup: try values.decodeIfPresent(Bool.self, forKey: .rampsUpAtStartup) ?? true)
     }
 
     enum CodingKeys: String, CodingKey {
@@ -56,6 +61,7 @@ struct Preset: Codable, Equatable, Identifiable, Hashable {
         case audioChannels = "audio_channels"
         case audioBitrate = "audio_bitrate"
         case videoBitrate = "video_bitrate"
+        case rampsUpAtStartup = "ramps_up_at_startup"
     }
     
     var description: String {
@@ -67,7 +73,8 @@ struct Preset: Codable, Equatable, Identifiable, Hashable {
         - Keyframe interval: \(keyframeInterval)s
         - Video bitrate: \(videoBitrate)
         - Audio channels: \(audioChannels)
-        - Audio bitrate: \(audioBitrate)        
+        - Audio bitrate: \(audioBitrate)
+        - Ramps up at startup: \(rampsUpAtStartup)        
         """
     }
 }
@@ -396,6 +403,7 @@ struct SettingsView: View {
     @State private var customAudioChannels: Int = DEFAULT_AUDIO_CHANNELS
     @State private var customAudioBitrate: Int = DEFAULT_AUDIO_BITRATE
     @State private var customVideoBitrate: Int = DEFAULT_VIDEO_BITRATE
+    @State private var customRampsUpAtStartup = true
     @State private var maxFrameRate: Double = DEFAULT_FRAMERATE
     @State private var youtubeService = YouTubeService()
     @State private var youtubeDraft = YouTubeSettingsDraft()
@@ -1119,6 +1127,12 @@ struct SettingsView: View {
                     set: { customVideoBitrate = Int($0) }
                 ), in: 500_000...50_000_000, step: 500_000)
             }
+
+            Section(footer: Text(customRampsUpAtStartup
+                ? "Streams start at the lowest quality and reach the video bitrate within about ten seconds when the connection has room, so the opening never stalls on YouTube."
+                : "Streams start at the full video bitrate. Use this only on a connection you know sustains it; if it cannot, the opening of the stream may stall on YouTube.")) {
+                Toggle("Ramp up at stream start", isOn: $customRampsUpAtStartup)
+            }
         }
 
         Section {
@@ -1248,6 +1262,7 @@ struct SettingsView: View {
         customAudioChannels = preset.audioChannels
         customAudioBitrate = preset.audioBitrate
         customVideoBitrate = preset.videoBitrate
+        customRampsUpAtStartup = preset.rampsUpAtStartup
     }
 
     private var broadcastId: String? {
@@ -1273,7 +1288,8 @@ struct SettingsView: View {
             keyframeInterval: customKeyframeInterval,
             audioChannels: customAudioChannels,
             audioBitrate: customAudioBitrate,
-            videoBitrate: customVideoBitrate
+            videoBitrate: customVideoBitrate,
+            rampsUpAtStartup: customRampsUpAtStartup
         )
     }
 

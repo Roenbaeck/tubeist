@@ -74,7 +74,11 @@ raise is an ordinary increase for failed-increase rollback. After the window,
 normal recovery continues from wherever the ramp stopped.
 
 The cost is about ten seconds below the ceiling at the start of a stream on a
-fast link, which also applies to a local recording made with the stream. The
+fast link, which also applies to a local recording made with the stream. A
+custom preset can turn the startup ramp off in Settings ("Ramp up at stream
+start"), for connections known to sustain the selected bitrate; the stream then
+starts at the ceiling as before. Built-in presets always ramp, and presets saved
+before the option existed decode with it on. The collapse ramp is unaffected. The
 ten percent headroom is deliberate: a ceiling within about fifteen percent of
 measured transaction throughput stays one rung lower than before, where
 uploads previously ran near saturation.

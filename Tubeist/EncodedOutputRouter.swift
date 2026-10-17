@@ -710,10 +710,10 @@ actor EncodedOutputRouter {
         mode = .direct
     }
 
-    private static func makeBitrateController() -> AdaptiveBitrateController {
-        let preset = Settings.selectedPreset
-        return AdaptiveBitrateController(ladder: preset.bitrateLadder,
-                                         audioBitrate: preset.audioBitrate * preset.audioChannels)
+    static func makeBitrateController(for preset: Preset = Settings.selectedPreset) -> AdaptiveBitrateController {
+        AdaptiveBitrateController(ladder: preset.bitrateLadder,
+                                         audioBitrate: preset.audioBitrate * preset.audioChannels,
+                                         policy: .init(rampsUpAtStartup: preset.rampsUpAtStartup))
     }
 
     func recommendedVideoBitrate() async -> Int? {

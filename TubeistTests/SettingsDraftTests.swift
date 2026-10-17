@@ -18,6 +18,23 @@ struct SettingsDraftTests {
         #expect(low.bitrateLadder.rungs == [100_000])
     }
 
+    @Test func onlyACustomPresetCanStartAtFullBitrateAndOlderSettingsStillRampUp() throws {
+        #expect((stationaryCameraPresets + movingCameraPresets).allSatisfy { $0.rampsUpAtStartup })
+        let custom = Preset(name: "Custom", width: 1920, height: 1080, frameRate: 30, keyframeInterval: 2,
+                            audioChannels: 2, audioBitrate: 96_000, videoBitrate: 20_000_000, rampsUpAtStartup: false)
+        let saved = try JSONEncoder().encode(custom)
+        #expect(try JSONDecoder().decode(Preset.self, from: saved) == custom)
+        // Settings saved before the option existed have no key.
+        let legacy = Data(#"{"name":"Custom","width":1920,"height":1080,"frame_rate":30,"keyframe_interval":2,"audio_channels":2,"audio_bitrate":96000,"video_bitrate":20000000}"#.utf8)
+        let reloaded = try JSONDecoder().decode(Preset.self, from: legacy)
+        #expect(reloaded.rampsUpAtStartup)
+        // Leaving Custom selects a built-in preset, which always ramps up.
+        #expect(Preset.forCameraPosition("moving", matching: custom).rampsUpAtStartup)
+        #expect(EncodedOutputRouter.makeBitrateController(for: custom).targetBitrate == 20_000_000)
+        #expect(EncodedOutputRouter.makeBitrateController(for: movingCameraPresets[2]).targetBitrate
+            == movingCameraPresets[2].bitrateLadder.minimum)
+    }
+
     @Test func switchingCameraModesKeepsResolutionAndUsesTheNewBitrateAndKeyframeInterval() throws {
         for stationary in stationaryCameraPresets {
             let moving = Preset.forCameraPosition("moving", matching: stationary)
