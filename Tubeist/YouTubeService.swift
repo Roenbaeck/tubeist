@@ -34,6 +34,7 @@ struct YouTubeBroadcast: Identifiable, Sendable, Equatable {
     var enableAutoStop: Bool
 
     var selfDeclaredMadeForKids: Bool? = nil
+    var thumbnailURL: String? = nil
 
     /// A local template, never a remote broadcast ID or a status-polling target.
     static func draft(for stream: YouTubeStream) -> YouTubeBroadcast {
@@ -173,6 +174,7 @@ struct YouTubeLiveStreamResource: Decodable, Sendable {
 
     struct Snippet: Decodable, Sendable {
         let publishedAt: String?
+        let title: String?
     }
 
     let id: String?
@@ -182,10 +184,27 @@ struct YouTubeLiveStreamResource: Decodable, Sendable {
 
 struct YouTubeBroadcastResource: Decodable, Sendable {
     struct Snippet: Decodable, Sendable {
+        struct Thumbnail: Decodable, Sendable {
+            let url: String?
+        }
+
+        struct Thumbnails: Decodable, Sendable {
+            let maxres: Thumbnail?
+            let standard: Thumbnail?
+            let high: Thumbnail?
+            let medium: Thumbnail?
+            let `default`: Thumbnail?
+
+            var bestURL: String? {
+                [maxres, standard, high, medium, `default`].lazy.compactMap { $0?.url }.first
+            }
+        }
+
         let title: String?
         let scheduledStartTime: String?
         let actualStartTime: String?
         let publishedAt: String?
+        let thumbnails: Thumbnails?
     }
 
     struct Status: Decodable, Sendable {
@@ -247,7 +266,8 @@ struct YouTubeBroadcastResource: Decodable, Sendable {
             recordFromStart: contentDetails?.recordFromStart ?? true,
             enableAutoStart: contentDetails?.enableAutoStart ?? true,
             enableAutoStop: contentDetails?.enableAutoStop ?? true,
-            selfDeclaredMadeForKids: status?.selfDeclaredMadeForKids
+            selfDeclaredMadeForKids: status?.selfDeclaredMadeForKids,
+            thumbnailURL: snippet.thumbnails?.bestURL
         )
     }
 }
