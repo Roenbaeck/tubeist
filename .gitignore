@@ -43,3 +43,5 @@ fastlane/sign&cert
 
 # Local contributor patch archive
 /tubeist-watch-live-activity.zip
+
+.superpowers/
