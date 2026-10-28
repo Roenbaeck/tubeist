@@ -19,6 +19,12 @@ enum YouTubeError: LocalizedError, Equatable {
     case invalidResponse
     case tokenRefreshFailed
     case plannedBroadcastUnavailable(String)
+    /// A broadcast on the stream key is already live or testing.
+    case keyInUse(String)
+    /// A fixable conflict on the stream key; the phone offers the fix.
+    case keyConflict(YouTubeKeyConflict)
+    /// Another Tubeist broadcast waits on the key; Tubeist never rebinds it.
+    case keyBlocked(String)
 
     var errorDescription: String? {
         switch self {
@@ -38,8 +44,41 @@ enum YouTubeError: LocalizedError, Equatable {
         case .tokenRefreshFailed: "Failed to refresh access token"
         case .plannedBroadcastUnavailable(let title):
             "The planned stream '\(title)' is no longer available. Choose another in Settings."
+        case .keyInUse(let title): "Another device is already streaming to '\(title)'."
+        case .keyConflict(let conflict): conflict.prompt
+        case .keyBlocked(let other):
+            "'\(other)' is waiting on this key. End or delete it in YouTube Studio, then try again."
         }
     }
+}
+
+/// Start found other broadcasts that could take over the stream key. Fixed
+/// only by `YouTubeService.moveToOwnMatchKeys(broadcastIDs:)`, which the UI
+/// calls after the user confirms `prompt`. Titles only, never secret keys.
+struct YouTubeKeyConflict: Sendable, Equatable {
+    enum Kind: Sendable, Equatable { case plannedNeedsOwnKey, newStreamKeyTaken }
+
+    let kind: Kind
+    /// The pick, or the phone key's title for "New stream".
+    let matchTitle: String
+    /// nil when the pick is alone on a non-match key.
+    let otherTitle: String?
+    let broadcastIDsToMove: [String]
+
+    var prompt: String {
+        switch kind {
+        case .plannedNeedsOwnKey:
+            if let otherTitle {
+                "'\(matchTitle)' shares its key with '\(otherTitle)'. Give this match its own key?"
+            } else {
+                "'\(matchTitle)' is not on its own key. Give this match its own key?"
+            }
+        case .newStreamKeyTaken:
+            "'\(otherTitle ?? matchTitle)' is planned on this phone's key and could take over this stream. Move it to its own key?"
+        }
+    }
+
+    var watchMessage: String { "Open Tubeist on the phone to set up '\(matchTitle)'." }
 }
 
 struct YouTubeAPIResponse: Sendable, Equatable {
