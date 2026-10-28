@@ -2111,3 +2111,354 @@ private func streamItem(
 private func streamsResponse(_ items: [[String: Any]]) throws -> Data {
     try JSONSerialization.data(withJSONObject: ["items": items], options: [.sortedKeys])
 }
+
+// MARK: - Start on a planned or restart selection
+
+extension YouTubeServiceTests {
+    @Test @MainActor
+    func plannedStartSendsOnlyChangedFieldsAndForcesGoLive() async throws {
+        let fixture = PlannedStartFixture(m5: plannedM5(enableAutoStart: false))
+        var selection = fixture.selection
+        selection.edited.title = "Match 5 – Final"
+
+        let preparation = try await fixture.start(selection)
+
+        #expect(preparation.broadcast.id == "m5")
+        #expect(preparation.broadcast.title == "Match 5 – Final")
+        #expect(preparation.warnings.isEmpty)
+        let requests = await fixture.transport.requests
+        let lookup = try #require(requests.first { queryItems(in: $0).contains(.init(name: "id", value: "m5")) })
+        #expect(lookup.httpMethod == "GET")
+        #expect(queryItems(in: lookup).contains(.init(name: "part", value: "snippet,status,contentDetails")))
+        let puts = requests.filter { $0.httpMethod == "PUT" }
+        #expect(puts.count == 1)
+        let body = try plannedJSONBody(puts.first?.httpBody)
+        #expect(body["id"] as? String == "m5")
+        #expect((body["snippet"] as? [String: Any])?["title"] as? String == "Match 5 – Final")
+        #expect((body["snippet"] as? [String: Any])?["scheduledStartTime"] as? String == fixture.today)
+        #expect((body["status"] as? [String: Any])?["privacyStatus"] as? String == "unlisted")
+        let details = try #require(body["contentDetails"] as? [String: Any])
+        #expect(details["enableAutoStart"] as? Bool == true)
+        #expect(details["enableAutoStop"] as? Bool == true)
+        let monitor = try #require(details["monitorStream"] as? [String: Any])
+        #expect(monitor["enableMonitorStream"] as? Bool == false)
+        #expect(monitor["broadcastStreamDelayMs"] as? Int == 0)
+        #expect(!requests.contains { $0.httpMethod == "POST" })
+        #expect(!requests.contains { $0.url?.path.contains("thumbnails") == true })
+        #expect(!requests.contains { $0.url?.path.hasSuffix("/playlistItems") == true })
+    }
+
+    @Test @MainActor
+    func plannedStartWithNoChangesAndGoLiveAlreadySetSendsNoWrite() async throws {
+        let fixture = PlannedStartFixture()
+
+        let preparation = try await fixture.start(fixture.selection)
+
+        #expect(preparation.broadcast.id == "m5")
+        #expect(preparation.healthTarget.broadcastID == "m5")
+        #expect(preparation.completionTarget?.id == "m5")
+        let methods = await fixture.transport.requests.map(\.httpMethod)
+        #expect(!methods.contains("PUT"))
+        #expect(!methods.contains("POST"))
+        #expect(!methods.contains("DELETE"))
+    }
+
+    enum PlannedRefusal: String, CaseIterable, Sendable {
+        case missing, complete, boundElsewhere, otherStreamSelection, scheduledYesterday
+    }
+
+    @Test(arguments: PlannedRefusal.allCases) @MainActor
+    func plannedStartIsRefusedWithoutAnyWrite(_ refusal: PlannedRefusal) async throws {
+        let yesterday = plannedFixtureNow.addingTimeInterval(-86_400)
+        let fixture = PlannedStartFixture(m5: {
+            switch refusal {
+            case .missing: return nil
+            case .complete: return plannedM5(status: "complete")
+            case .boundElsewhere: return plannedM5(stream: "stream-2")
+            default: return plannedM5()
+            }
+        }())
+        let selection = PlannedStreamSelection(
+            kind: .planned, broadcastId: "m5",
+            streamId: refusal == .otherStreamSelection ? "other" : "stream-1",
+            scheduledStartTime: refusal == .scheduledYesterday
+                ? ISO8601DateFormatter().string(from: yesterday) : fixture.today,
+            loaded: fixture.selection.loaded, edited: fixture.selection.edited,
+            loadedMembership: nil, thumbnailChanged: true
+        )
+
+        await #expect(throws: YouTubeError.plannedBroadcastUnavailable("Match 5")) {
+            _ = try await fixture.start(selection, thumbnail: Data([0xFF, 0xD8, 0xFF, 0xD9]))
+        }
+        let methods = await fixture.transport.requests.map(\.httpMethod)
+        #expect(!methods.contains { ["PUT", "POST", "DELETE"].contains($0) })
+    }
+
+    @Test func plannedUnavailableErrorNamesTheStream() {
+        #expect(YouTubeError.plannedBroadcastUnavailable("Match 5").errorDescription
+            == "The planned stream 'Match 5' is no longer available. Choose another in Settings.")
+    }
+
+    @Test @MainActor
+    func changingPlaylistRemovesTheOldItemThenAdds() async throws {
+        let fixture = PlannedStartFixture()
+        var selection = fixture.selection
+        selection.loaded.playlistId = "old-list"
+        selection.edited.playlistId = "new-list"
+        selection.loadedMembership = YouTubePlaylistMembership(playlistId: "old-list", itemId: "item-1")
+
+        let preparation = try await fixture.start(selection)
+
+        #expect(preparation.warnings.isEmpty)
+        let requests = await fixture.transport.requests
+        let delete = try #require(requests.firstIndex { $0.httpMethod == "DELETE" })
+        #expect(queryItems(in: requests[delete]) == [URLQueryItem(name: "id", value: "item-1")])
+        let insert = try #require(requests.firstIndex {
+            $0.httpMethod == "POST" && $0.url?.path.hasSuffix("/playlistItems") == true
+        })
+        #expect(delete < insert)
+        #expect(requests[insert].httpBody?.range(of: Data(#""playlistId":"new-list""#.utf8)) != nil)
+    }
+
+    @Test @MainActor
+    func failedRemovalWarnsButStillStarts() async throws {
+        let fixture = PlannedStartFixture(deleteStatus: 500)
+        var selection = fixture.selection
+        selection.loaded.playlistId = "old-list"
+        selection.edited.playlistId = nil
+        selection.loadedMembership = YouTubePlaylistMembership(playlistId: "old-list", itemId: "item-1")
+
+        let preparation = try await fixture.start(selection)
+
+        #expect(preparation.broadcast.id == "m5")
+        #expect(preparation.warnings == [
+            "Could not remove 'Match 5' from its previous playlist. Check it in YouTube Studio."
+        ])
+        #expect(!(await fixture.transport.requests).contains { $0.httpMethod == "POST" })
+    }
+
+    @Test @MainActor
+    func unchangedThumbnailIsNotUploaded() async throws {
+        let fixture = PlannedStartFixture()
+        var selection = fixture.selection
+        selection.thumbnailChanged = false
+
+        _ = try await fixture.start(selection, thumbnail: Data([0xFF, 0xD8, 0xFF, 0xD9]))
+
+        #expect(!(await fixture.transport.requests).contains { $0.url?.path.hasSuffix("/thumbnails/set") == true })
+    }
+
+    @Test @MainActor
+    func changedThumbnailIsUploaded() async throws {
+        let fixture = PlannedStartFixture()
+        var selection = fixture.selection
+        selection.thumbnailChanged = true
+        let image = Data([0xFF, 0xD8, 0xFF, 0xD9])
+
+        _ = try await fixture.start(selection, thumbnail: image)
+
+        let upload = try #require(await fixture.transport.requests.first { $0.url?.path.hasSuffix("/thumbnails/set") == true })
+        #expect(queryItems(in: upload).contains(.init(name: "videoId", value: "m5")))
+        #expect(upload.httpBody == image)
+    }
+
+    @Test @MainActor
+    func restartCreatesANewBroadcastWithTheEditedDetails() async throws {
+        let fixture = PlannedStartFixture()
+        var selection = fixture.selection
+        selection.edited.title = "Match 5 – Part 2"
+        selection.edited.privacyStatus = "public"
+        selection.edited.playlistId = "season"
+        selection = selection.restarting()
+        let image = Data([0xFF, 0xD8, 0xFF, 0xD9])
+
+        let preparation = try await fixture.start(selection, thumbnail: image)
+
+        #expect(preparation.broadcast.id == "new-event")
+        let requests = await fixture.transport.requests
+        let insert = try #require(requests.firstIndex {
+            $0.httpMethod == "POST" && $0.url?.path.hasSuffix("/liveBroadcasts") == true
+        })
+        let body = try plannedJSONBody(requests[insert].httpBody)
+        #expect((body["snippet"] as? [String: Any])?["title"] as? String == "Match 5 – Part 2")
+        #expect((body["status"] as? [String: Any])?["privacyStatus"] as? String == "public")
+        let bind = try #require(requests.firstIndex { $0.url?.path.hasSuffix("/liveBroadcasts/bind") == true })
+        #expect(insert < bind)
+        #expect(!requests.contains { queryItems(in: $0).contains(.init(name: "id", value: "m5")) })
+        let playlistInsert = try #require(requests.first {
+            $0.httpMethod == "POST" && $0.url?.path.hasSuffix("/playlistItems") == true
+        })
+        #expect(playlistInsert.httpBody?.range(of: Data(#""playlistId":"season""#.utf8)) != nil)
+        #expect(playlistInsert.httpBody?.range(of: Data(#""videoId":"new-event""#.utf8)) != nil)
+        let upload = try #require(requests.first { $0.url?.path.hasSuffix("/thumbnails/set") == true })
+        #expect(queryItems(in: upload).contains(.init(name: "videoId", value: "new-event")))
+        #expect(!requests.contains { $0.httpMethod == "DELETE" })
+    }
+
+    @Test @MainActor
+    func restartReappliesEditedDetailsToAResumedTubeistBroadcast() async throws {
+        // createOrResume returns the cached ready Tubeist broadcast ("Saved title")
+        // and ignores the template, so the edited details must be PUT afterwards.
+        let fixture = PlannedStartFixture(cache: createdBroadcastCache("new-event"), upcoming: broadcastPageResponse(status: "ready", bound: true))
+        var selection = fixture.selection
+        selection.edited.title = "Match 5 – Final"
+        selection = selection.restarting()
+
+        let preparation = try await fixture.start(selection)
+
+        #expect(preparation.broadcast.id == "new-event")
+        #expect(preparation.broadcast.title == "Match 5 – Final")
+        let requests = await fixture.transport.requests
+        #expect(!requests.contains { $0.httpMethod == "POST" && $0.url?.path.hasSuffix("/liveBroadcasts") == true })
+        let put = try #require(requests.first { $0.httpMethod == "PUT" })
+        let body = try plannedJSONBody(put.httpBody)
+        #expect(body["id"] as? String == "new-event")
+        #expect((body["snippet"] as? [String: Any])?["title"] as? String == "Match 5 – Final")
+        #expect((body["status"] as? [String: Any])?["privacyStatus"] as? String == "unlisted")
+        let details = try #require(body["contentDetails"] as? [String: Any])
+        #expect(details["enableEmbed"] as? Bool == true)
+        #expect(details["enableAutoStart"] as? Bool == true)
+        #expect(details["enableAutoStop"] as? Bool == true)
+        let monitor = try #require(details["monitorStream"] as? [String: Any])
+        #expect(monitor["enableMonitorStream"] as? Bool == false)
+        #expect(monitor["broadcastStreamDelayMs"] as? Int == 0)
+    }
+
+    @Test @MainActor
+    func restartFromAnEarlierDayIsRefused() async throws {
+        let fixture = PlannedStartFixture()
+        let earlier = PlannedStreamSelection(
+            kind: .restart, broadcastId: "m5", streamId: "stream-1",
+            scheduledStartTime: ISO8601DateFormatter().string(from: plannedFixtureNow.addingTimeInterval(-86_400)),
+            loaded: fixture.selection.loaded, edited: fixture.selection.edited,
+            loadedMembership: nil, thumbnailChanged: false
+        )
+
+        await #expect(throws: YouTubeError.plannedBroadcastUnavailable("Match 5")) {
+            _ = try await fixture.start(earlier)
+        }
+        let methods = await fixture.transport.requests.map(\.httpMethod)
+        #expect(!methods.contains { ["PUT", "POST", "DELETE"].contains($0) })
+    }
+
+    @Test @MainActor
+    func plannedStartStillRefusesWhileABroadcastIsActive() async throws {
+        let fixture = PlannedStartFixture(active: studioPlannedPage(status: "live", id: "active"))
+
+        await #expect(throws: YouTubeError.broadcastNotReady("live")) {
+            _ = try await fixture.start(fixture.selection)
+        }
+        let methods = await fixture.transport.requests.map(\.httpMethod)
+        #expect(!methods.contains { ["PUT", "POST", "DELETE"].contains($0) })
+    }
+}
+
+private func plannedJSONBody(_ body: Data?) throws -> [String: Any] {
+    let data = try #require(body)
+    return try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+}
+
+private let plannedFixtureNow = Date(timeIntervalSince1970: 1_800_000_000)
+
+private var plannedFixtureCalendar: Calendar {
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = TimeZone(identifier: "UTC")!
+    return calendar
+}
+
+/// The Studio-planned "Match 5" broadcast as `liveBroadcasts.list` returns it.
+private func plannedM5(
+    status: String = "ready", stream: String = "stream-1", enableAutoStart: Bool = true
+) -> [String: Any] {
+    [
+        "id": "m5",
+        "snippet": ["title": "Match 5", "scheduledStartTime": ISO8601DateFormatter().string(from: plannedFixtureNow)],
+        "status": ["privacyStatus": "unlisted", "lifeCycleStatus": status, "selfDeclaredMadeForKids": false],
+        "contentDetails": [
+            "boundStreamId": stream, "enableDvr": true, "latencyPreference": "normal",
+            "monitorStream": ["enableMonitorStream": false, "broadcastStreamDelayMs": 0],
+            "enableEmbed": true, "recordFromStart": true,
+            "enableAutoStart": enableAutoStart, "enableAutoStop": true,
+        ],
+    ]
+}
+
+/// Routes each request by method and path so tests do not depend on call order.
+@MainActor private struct PlannedStartFixture {
+    let transport: RoutingYouTubeAPITransport
+    let service: YouTubeService
+    let today = ISO8601DateFormatter().string(from: plannedFixtureNow)
+    let selection: PlannedStreamSelection
+
+    init(
+        m5: [String: Any]? = plannedM5(), deleteStatus: Int = 204,
+        cache: YouTubeDiscoveryCache = YouTubeDiscoveryCache(),
+        active: YouTubeAPIResponse = emptyYouTubePage(), upcoming: YouTubeAPIResponse = emptyYouTubePage()
+    ) {
+        let m5Page = YouTubeAPIResponse(
+            data: try! JSONSerialization.data(withJSONObject: ["items": m5.map { [$0] } ?? []]), statusCode: 200)
+        transport = RoutingYouTubeAPITransport { request in
+            let path = request.url?.path ?? ""
+            let query = queryItems(in: request)
+            switch (request.httpMethod ?? "GET", path) {
+            case ("GET", let p) where p.hasSuffix("/liveStreams"):
+                return matchingStreamPage()
+            case ("GET", let p) where p.hasSuffix("/liveBroadcasts"):
+                if query.contains(.init(name: "broadcastStatus", value: "active")) { return active }
+                if query.contains(.init(name: "broadcastStatus", value: "upcoming")) { return upcoming }
+                if query.contains(.init(name: "id", value: "m5")) { return m5Page }
+                if query.contains(.init(name: "id", value: "new-event")) {
+                    return broadcastPageResponse(status: "ready", bound: true)
+                }
+                return emptyYouTubePage()
+            case ("PUT", let p) where p.hasSuffix("/liveBroadcasts"):
+                // Echo the update; it already has the resource's shape.
+                return .init(data: request.httpBody ?? Data(), statusCode: 200)
+            case ("POST", let p) where p.hasSuffix("/liveBroadcasts"):
+                return broadcastResourceResponse(status: "created", bound: false)
+            case ("POST", let p) where p.hasSuffix("/liveBroadcasts/bind"):
+                return broadcastResourceResponse(status: "ready", bound: true)
+            case ("POST", let p) where p.hasSuffix("/thumbnails/set"):
+                return .init(data: Data(), statusCode: 200)
+            case ("GET", let p) where p.hasSuffix("/playlistItems"):
+                return emptyYouTubePage()
+            case ("POST", let p) where p.hasSuffix("/playlistItems"):
+                return .init(data: Data(#"{"id":"playlist-item"}"#.utf8), statusCode: 200)
+            case ("DELETE", let p) where p.hasSuffix("/playlistItems"):
+                return .init(data: Data(), statusCode: deleteStatus)
+            default:
+                return .init(data: Data(), statusCode: 418)
+            }
+        }
+        service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore(),
+                                 discoveryCache: cache, now: { plannedFixtureNow })
+        let resource = try! JSONDecoder().decode(
+            YouTubeBroadcastResource.self, from: JSONSerialization.data(withJSONObject: plannedM5()))
+        let details = PlannedStreamDetails(broadcast: resource.broadcast!, playlistId: nil)
+        selection = PlannedStreamSelection(
+            kind: .planned, broadcastId: "m5", streamId: "stream-1", scheduledStartTime: today,
+            loaded: details, edited: details, loadedMembership: nil, thumbnailChanged: false
+        )
+    }
+
+    func start(_ selection: PlannedStreamSelection, thumbnail: Data? = nil) async throws -> YouTubeStreamingPreparation {
+        try await service.prepareForStreaming(
+            streamKey: "test-key", preferences: setupPreferences(), thumbnailData: Data([0x01]),
+            plannedSelection: selection, plannedThumbnail: thumbnail, calendar: plannedFixtureCalendar
+        )
+    }
+}
+
+private actor RoutingYouTubeAPITransport: YouTubeAPITransport {
+    private let route: @Sendable (URLRequest) -> YouTubeAPIResponse
+    private(set) var requests: [URLRequest] = []
+
+    init(route: @escaping @Sendable (URLRequest) -> YouTubeAPIResponse) {
+        self.route = route
+    }
+
+    func response(for request: URLRequest) async throws -> YouTubeAPIResponse {
+        requests.append(request)
+        return route(request)
+    }
+}

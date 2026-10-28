@@ -111,6 +111,8 @@ struct YouTubeStreamingPreparation: Sendable, Equatable {
     let broadcast: YouTubeBroadcast
     let completionTarget: YouTubeBroadcastCompletionTarget?
     let healthTarget: YouTubeHealthTarget
+    /// Non-blocking problems the user should check in YouTube Studio.
+    var warnings: [String] = []
 }
 
 /// Captured at Start; completion must never follow a later Settings selection.
@@ -958,7 +960,10 @@ final class YouTubeService {
         streamKey: String,
         preferences: YouTubeBroadcastPreferences? = nil,
         thumbnailData: Data? = nil,
-        endingPolicy: HLSStreamEndingPolicy = .automatic
+        endingPolicy: HLSStreamEndingPolicy = .automatic,
+        plannedSelection: PlannedStreamSelection? = nil,
+        plannedThumbnail: Data? = nil,
+        calendar: Calendar = .current
     ) async throws -> YouTubeStreamingPreparation {
         beginLoading()
         defer { endLoading() }
@@ -975,7 +980,8 @@ final class YouTubeService {
         let task = Task { @MainActor in
             try await self.performStreamingPreparation(
                 streamKey: streamKey, preferences: preferences, thumbnailData: thumbnailData,
-                scope: scope, endingPolicy: endingPolicy
+                scope: scope, endingPolicy: endingPolicy,
+                plannedSelection: plannedSelection, plannedThumbnail: plannedThumbnail, calendar: calendar
             )
         }
         discoveryCache.preparations[key] = task
@@ -989,8 +995,15 @@ final class YouTubeService {
 
     private func performStreamingPreparation(
         streamKey: String, preferences: YouTubeBroadcastPreferences?, thumbnailData: Data?, scope: String,
-        endingPolicy: HLSStreamEndingPolicy
+        endingPolicy: HLSStreamEndingPolicy, plannedSelection: PlannedStreamSelection? = nil,
+        plannedThumbnail: Data? = nil, calendar: Calendar = .current
     ) async throws -> YouTubeStreamingPreparation {
+        if let plannedSelection {
+            return try await performPlannedPreparation(
+                streamKey: streamKey, selection: plannedSelection, thumbnail: plannedThumbnail,
+                scope: scope, endingPolicy: endingPolicy, calendar: calendar
+            )
+        }
         let selection = try await selectedBroadcast(forStreamKey: streamKey)
         let endpoint = try YouTubeStreamDiscovery.hlsEndpoint(for: selection.stream)
         try checkAuthorization(scope)
@@ -1080,6 +1093,142 @@ final class YouTubeService {
             healthTarget: YouTubeHealthTarget(streamID: selection.stream.id, broadcastID: broadcast.id,
                                               authorizationScope: scope)
         )
+    }
+
+    /// Start on a broadcast picked in Settings (`.planned`) or a new one with
+    /// the same details (`.restart`). Never falls back to another broadcast.
+    private func performPlannedPreparation(
+        streamKey: String, selection planned: PlannedStreamSelection, thumbnail: Data?, scope: String,
+        endingPolicy: HLSStreamEndingPolicy, calendar: Calendar
+    ) async throws -> YouTubeStreamingPreparation {
+        let selection = try await selectedBroadcast(forStreamKey: streamKey)
+        let stream = selection.stream
+        let endpoint = try YouTubeStreamDiscovery.hlsEndpoint(for: stream)
+        try checkAuthorization(scope)
+        if let current = selection.broadcast, current.isActive {
+            throw YouTubeError.broadcastNotReady(current.statusLabel.lowercased())
+        }
+        let unavailable = YouTubeError.plannedBroadcastUnavailable(planned.edited.title)
+        // A pick from another day, account or stream key must not touch YouTube.
+        guard planned.streamId == stream.id,
+              PlannedStreams.isScheduledToday(planned.scheduledStartTime, now: now(), calendar: calendar) else {
+            throw unavailable
+        }
+        let edited = planned.edited
+        var broadcast: YouTubeBroadcast
+        var prepared: YouTubeBroadcast
+        switch planned.kind {
+        case .planned:
+            let token = try await getValidAccessToken()
+            let url = try resourceURL("liveBroadcasts", query: [
+                .init(name: "id", value: planned.broadcastId), .init(name: "part", value: "snippet,status,contentDetails")
+            ])
+            let page: YouTubeListResponse<YouTubeBroadcastResource> = try await apiGet(url: url, token: token, operation: .broadcasts)
+            try checkAuthorization(scope)
+            guard let fetched = page.items.first(where: { $0.id == planned.broadcastId })?.broadcast,
+                  fetched.boundStreamId == stream.id, fetched.lifeCycleStatus == "ready" else {
+                throw unavailable
+            }
+            broadcast = fetched
+            // Only what the user changed; Studio edits since the pick survive.
+            let loaded = planned.loaded
+            prepared = fetched
+            if edited.title != loaded.title { prepared.title = edited.title }
+            if edited.privacyStatus != loaded.privacyStatus { prepared.privacyStatus = edited.privacyStatus }
+            if edited.selfDeclaredMadeForKids != loaded.selfDeclaredMadeForKids {
+                prepared.selfDeclaredMadeForKids = edited.selfDeclaredMadeForKids
+            }
+            if edited.enableDvr != loaded.enableDvr { prepared.enableDvr = edited.enableDvr }
+            if edited.enableEmbed != loaded.enableEmbed { prepared.enableEmbed = edited.enableEmbed }
+            if edited.latencyPreference != loaded.latencyPreference { prepared.latencyPreference = edited.latencyPreference }
+        case .restart:
+            var template = YouTubeBroadcast.draft(for: stream)
+            Self.apply(edited, to: &template)
+            template.enableAutoStop = endingPolicy.automaticallyEndsBroadcast
+            broadcast = try await createOrResumeBroadcast(template: template, stream: stream, scope: scope)
+            guard broadcast.lifeCycleStatus == "ready" else {
+                throw YouTubeError.broadcastNotReady(broadcast.statusLabel.lowercased())
+            }
+            // A resumed Tubeist broadcast ignores the template, so apply every edited field.
+            prepared = broadcast
+            Self.apply(edited, to: &prepared)
+        }
+        prepared.enableAutoStart = true
+        prepared.enableMonitorStream = false
+        prepared.broadcastStreamDelayMs = 0
+        prepared.enableAutoStop = endingPolicy.automaticallyEndsBroadcast
+        if prepared != broadcast {
+            try await updateBroadcast(
+                id: broadcast.id,
+                title: prepared.title,
+                privacyStatus: prepared.privacyStatus,
+                scheduledStartTime: broadcast.scheduledStartTime,
+                enableDvr: prepared.enableDvr,
+                latencyPreference: prepared.latencyPreference,
+                enableMonitorStream: prepared.enableMonitorStream,
+                broadcastStreamDelayMs: prepared.broadcastStreamDelayMs,
+                enableEmbed: prepared.enableEmbed,
+                recordFromStart: prepared.recordFromStart,
+                enableAutoStart: prepared.enableAutoStart,
+                enableAutoStop: prepared.enableAutoStop,
+                selfDeclaredMadeForKids: prepared.selfDeclaredMadeForKids,
+                verifyAutoStop: endingPolicy == .manualDiagnostic
+            )
+            try checkAuthorization(scope)
+            broadcast = prepared
+        }
+        var warnings: [String] = []
+        // Optional extras must not block Start.
+        let uploadsThumbnail = planned.kind == .restart || planned.thumbnailChanged
+        if uploadsThumbnail, let thumbnail {
+            do {
+                try await uploadThumbnail(videoId: broadcast.id, imageData: thumbnail)
+                try checkAuthorization(scope)
+            } catch {
+                try checkAuthorization(scope)
+                if YouTubeDiagnostics.failure(error) == "cancelled" { throw error }
+                diagnostics.log("YouTube thumbnail could not be set (\(YouTubeDiagnostics.failure(error))); starting without it", .warning)
+            }
+        }
+        let playlistChanged = planned.kind == .restart || edited.playlistId != planned.loaded.playlistId
+        if planned.kind == .planned, playlistChanged, let membership = planned.loadedMembership {
+            do {
+                try await removeFromPlaylist(itemId: membership.itemId)
+            } catch {
+                try checkAuthorization(scope)
+                if YouTubeDiagnostics.failure(error) == "cancelled" { throw error }
+                diagnostics.log("YouTube broadcast could not be removed from its previous playlist (\(YouTubeDiagnostics.failure(error))); starting anyway", .warning)
+                warnings.append("Could not remove '\(broadcast.title)' from its previous playlist. Check it in YouTube Studio.")
+            }
+        }
+        if playlistChanged, let playlistId = edited.playlistId {
+            do {
+                try await addToPlaylist(playlistId: playlistId, videoId: broadcast.id)
+            } catch {
+                try checkAuthorization(scope)
+                if YouTubeDiagnostics.failure(error) == "cancelled" { throw error }
+                diagnostics.log("YouTube broadcast could not be added to the saved playlist (\(YouTubeDiagnostics.failure(error))); starting without it", .warning)
+            }
+        }
+        try checkAuthorization(scope)
+        return YouTubeStreamingPreparation(
+            endpoint: endpoint,
+            broadcast: broadcast,
+            completionTarget: endingPolicy.automaticallyEndsBroadcast
+                ? YouTubeBroadcastCompletionTarget(id: broadcast.id, authorizationScope: scope) : nil,
+            healthTarget: YouTubeHealthTarget(streamID: stream.id, broadcastID: broadcast.id,
+                                              authorizationScope: scope),
+            warnings: warnings
+        )
+    }
+
+    private static func apply(_ details: PlannedStreamDetails, to broadcast: inout YouTubeBroadcast) {
+        broadcast.title = details.title
+        broadcast.privacyStatus = details.privacyStatus
+        broadcast.selfDeclaredMadeForKids = details.selfDeclaredMadeForKids
+        broadcast.enableDvr = details.enableDvr
+        broadcast.enableEmbed = details.enableEmbed
+        broadcast.latencyPreference = details.latencyPreference
     }
 
     private func authorizationScope() throws -> String {

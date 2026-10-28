@@ -18,6 +18,7 @@ enum YouTubeError: LocalizedError, Equatable {
     case thumbnailTooLarge
     case invalidResponse
     case tokenRefreshFailed
+    case plannedBroadcastUnavailable(String)
 
     var errorDescription: String? {
         switch self {
@@ -35,6 +36,8 @@ enum YouTubeError: LocalizedError, Equatable {
         case .thumbnailTooLarge: "The selected thumbnail cannot be compressed below YouTube's 2 MB limit"
         case .invalidResponse: "Invalid response from YouTube API"
         case .tokenRefreshFailed: "Failed to refresh access token"
+        case .plannedBroadcastUnavailable(let title):
+            "The planned stream '\(title)' is no longer available. Choose another in Settings."
         }
     }
 }
