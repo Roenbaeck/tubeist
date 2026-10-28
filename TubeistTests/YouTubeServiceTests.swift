@@ -617,6 +617,90 @@ struct YouTubeServiceTests {
             .queryItems?.contains(URLQueryItem(name: "pageToken", value: "page-2")) == true)
     }
 
+    @Test @MainActor
+    func plannedListReturnsOnlyTodaysBroadcastsOnThisStreamAndNotTubeistsOwn() async throws {
+        let calendar = Calendar(identifier: .gregorian)
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let today = ISO8601DateFormatter().string(from: now)
+        let tomorrow = ISO8601DateFormatter().string(from: now.addingTimeInterval(86_400))
+        func item(_ id: String, stream: String, start: String) -> [String: Any] {
+            ["id": id, "snippet": ["title": id, "scheduledStartTime": start],
+             "status": ["privacyStatus": "unlisted", "lifeCycleStatus": "ready"],
+             "contentDetails": ["boundStreamId": stream]]
+        }
+        let page = YouTubeAPIResponse(data: try JSONSerialization.data(withJSONObject: ["items": [
+            item("match-today", stream: "stream-1", start: today),
+            item("other-stream", stream: "stream-2", start: today),
+            item("match-tomorrow", stream: "stream-1", start: tomorrow),
+            item("created", stream: "stream-1", start: today),
+        ]]), statusCode: 200)
+        let titled = YouTubeAPIResponse(data: Data(#"{"items":[{"id":"stream-1","snippet":{"title":"Court 1"},"cdn":{"ingestionType":"hls","ingestionInfo":{"streamName":"test-key","ingestionAddress":"https://a.upload.youtube.com/http_upload_hls?cid=test-key&file="}}}]}"#.utf8), statusCode: 200)
+        // selectedBroadcast: active, upcoming, stream lookup; then title lookup and the planned list.
+        let transport = MockYouTubeAPITransport(responses: [emptyYouTubePage(), page, titled, titled, page])
+        let service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore(),
+                                     discoveryCache: createdBroadcastCache("created"), now: { now })
+
+        let result = try await service.loadPlannedBroadcasts(forStreamKey: "test-key", calendar: calendar)
+
+        #expect(result.broadcasts.map(\.id) == ["match-today"])
+        #expect(result.streamTitle == "Court 1")
+        let requests = await transport.requests
+        #expect(queryItems(in: try #require(requests.last)).contains(URLQueryItem(name: "broadcastStatus", value: "upcoming")))
+    }
+
+    @Test @MainActor
+    func membershipReturnsFirstPlaylistContainingTheBroadcast() async throws {
+        let playlists = ["p1", "p2", "p3"].map { YouTubePlaylist(id: $0, title: $0) }
+        let hit = YouTubeAPIResponse(data: Data(#"{"items":[{"id":"item-9"}]}"#.utf8), statusCode: 200)
+        let transport = MockYouTubeAPITransport(responses: [emptyYouTubePage(), hit, emptyYouTubePage()])
+        let service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore(), discoveryCache: YouTubeDiscoveryCache())
+
+        let found = try await service.playlistMembership(videoId: "video", among: playlists)
+
+        #expect(found == YouTubePlaylistMembership(playlistId: "p2", itemId: "item-9"))
+        let requests = await transport.requests
+        #expect(requests.count == 2)
+        #expect(queryItems(in: requests[1]).contains(URLQueryItem(name: "videoId", value: "video")))
+
+        let none = MockYouTubeAPITransport(responses: [emptyYouTubePage(), emptyYouTubePage(), emptyYouTubePage()])
+        let other = YouTubeService(transport: none, tokenStore: validMemoryTokenStore(), discoveryCache: YouTubeDiscoveryCache())
+        #expect(try await other.playlistMembership(videoId: "video", among: playlists) == nil)
+        #expect(await none.requests.count == 3)
+    }
+
+    @Test @MainActor
+    func removeFromPlaylistSendsDeleteWithItemID() async throws {
+        let transport = MockYouTubeAPITransport(responses: [.init(data: Data(), statusCode: 204)])
+        let service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore(), discoveryCache: YouTubeDiscoveryCache())
+
+        try await service.removeFromPlaylist(itemId: "item-9")
+
+        let request = try #require(await transport.requests.first)
+        #expect(request.httpMethod == "DELETE")
+        #expect(request.url?.path == "/youtube/v3/playlistItems")
+        #expect(queryItems(in: request) == [URLQueryItem(name: "id", value: "item-9")])
+    }
+
+    @Test @MainActor
+    func thumbnailDownloadSendsNoAuthorizationHeader() async throws {
+        let body = Data([1, 2, 3])
+        let transport = MockYouTubeAPITransport(responses: [
+            .init(data: body, statusCode: 200),
+            .init(data: Data(count: 2_000_001), statusCode: 200),
+        ])
+        let service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore(), discoveryCache: YouTubeDiscoveryCache())
+
+        let data = try await service.downloadThumbnail(from: "https://i.ytimg.com/vi/x/maxres.jpg")
+
+        #expect(data == body)
+        let request = try #require(await transport.requests.first)
+        #expect(request.value(forHTTPHeaderField: "Authorization") == nil)
+        #expect(request.httpMethod == "GET")
+        await #expect(throws: YouTubeError.thumbnailTooLarge) {
+            _ = try await service.downloadThumbnail(from: "https://i.ytimg.com/vi/x/maxres.jpg")
+        }
+    }
+
     @Test(arguments: [200, 500]) @MainActor
     func broadcastLookupPreservesOpaqueTokensThroughFourPages(_ lastStatus: Int) async throws {
         let pageTokens = ["page-2", "page/3%2B=", "page+4&part=bad#? é"]

@@ -101,6 +101,11 @@ struct YouTubeStream: Sendable, Equatable {
     let backupIngestionAddress: String?
 }
 
+struct YouTubePlannedStreams: Sendable, Equatable {
+    let streamTitle: String?
+    let broadcasts: [YouTubeBroadcast]
+}
+
 struct YouTubeStreamingPreparation: Sendable, Equatable {
     let endpoint: YouTubeHLSEndpoint
     let broadcast: YouTubeBroadcast
@@ -1567,6 +1572,81 @@ final class YouTubeService {
         }
 
         LOG("Added broadcast to playlist \(playlistId)", level: .debug)
+    }
+
+    // MARK: - YouTube API: Planned streams
+
+    /// Today's upcoming broadcasts bound to the stream behind `streamKey`,
+    /// excluding the one Tubeist created for "New stream".
+    func loadPlannedBroadcasts(forStreamKey streamKey: String, calendar: Calendar = .current) async throws -> YouTubePlannedStreams {
+        beginLoading()
+        defer { endLoading() }
+
+        let scope = try authorizationScope()
+        let key = YouTubeDiscoveryCache.key(scope: scope, streamKey: streamKey)
+        let stream = try await selectedBroadcast(forStreamKey: streamKey).stream
+        let token = try await getValidAccessToken()
+        let title = try await streamByID(stream.id, token: token)?.snippet?.title
+        try checkAuthorization(scope)
+        let items: [YouTubeBroadcastResource] = try await paginatedItems(
+            url: "\(YOUTUBE_API_BASE)/liveBroadcasts?part=snippet,contentDetails,status&broadcastStatus=upcoming&broadcastType=all&maxResults=50",
+            token: token, operation: .broadcasts
+        )
+        try checkAuthorization(scope)
+        let own = discoveryCache.id("createdBroadcast", for: key).map { Set([$0]) } ?? []
+        return YouTubePlannedStreams(
+            streamTitle: title,
+            broadcasts: PlannedStreams.today(items.compactMap(\.broadcast), streamId: stream.id,
+                                             excluding: own, now: now(), calendar: calendar)
+        )
+    }
+
+    /// The first of `playlists` (in order) that contains `videoId`.
+    func playlistMembership(videoId: String, among playlists: [YouTubePlaylist]) async throws -> YouTubePlaylistMembership? {
+        beginLoading()
+        defer { endLoading() }
+
+        let scope = try authorizationScope()
+        let token = try await getValidAccessToken()
+        for playlist in playlists {
+            let url = try resourceURL("playlistItems", query: [
+                .init(name: "part", value: "id"), .init(name: "playlistId", value: playlist.id),
+                .init(name: "videoId", value: videoId), .init(name: "maxResults", value: "1"),
+            ])
+            let found: YouTubeListResponse<YouTubeIdentifierResource> = try await apiGet(
+                url: url, token: token, operation: .playlistItems)
+            try checkAuthorization(scope)
+            if let itemId = found.items.first?.id {
+                return YouTubePlaylistMembership(playlistId: playlist.id, itemId: itemId)
+            }
+        }
+        return nil
+    }
+
+    /// Public thumbnail image: no credentials are attached.
+    func downloadThumbnail(from url: String) async throws -> Data {
+        guard let requestURL = URL(string: url) else { throw YouTubeError.invalidResponse }
+        var request = URLRequest(url: requestURL)
+        request.timeoutInterval = 30
+        let data = try await requestExecutor.data(for: request, operation: .thumbnailDownload)
+        guard data.count <= 2_000_000 else { throw YouTubeError.thumbnailTooLarge }
+        return data
+    }
+
+    func removeFromPlaylist(itemId: String) async throws {
+        beginLoading()
+        defer { endLoading() }
+
+        let scope = try authorizationScope()
+        let token = try await getValidAccessToken()
+        guard let url = URL(string: try resourceURL("playlistItems", query: [.init(name: "id", value: itemId)])) else {
+            throw YouTubeError.invalidResponse
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "DELETE"
+        request.timeoutInterval = 30
+        _ = try await authenticatedData(for: request, fallbackToken: token, operation: .deletePlaylistItem)
+        try checkAuthorization(scope)
     }
 
     // MARK: - HTTP Helpers
