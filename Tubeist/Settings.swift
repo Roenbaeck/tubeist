@@ -248,7 +248,8 @@ private struct AppliedSettingsSnapshot {
     let youtubeBroadcastPreferences: YouTubeBroadcastPreferences?
     let youtubeThumbnailData: Data?
     let plannedStreamSelection: PlannedStreamSelection?
-    let plannedStreamThumbnailData: Data?
+    /// Outer nil: the planned thumbnail could not be read, so restore leaves it alone.
+    let plannedStreamThumbnailData: Data??
     let overlays: [OverlaySetting]
     let overlayRefreshRate: OverlayRefreshRate
     let activityPreferences: StreamActivityPreferences
@@ -258,6 +259,16 @@ private struct AppliedSettingsSnapshot {
     let recordHLSAcceptance: Bool
     let manualHLSEndingTest: Bool
 #endif
+
+    /// A planned-thumbnail read error must not block Save in the manual flow.
+    private static func readablePlannedThumbnail() -> Data?? {
+        do {
+            return .some(try Settings.loadPlannedStreamThumbnailData())
+        } catch {
+            LOG("Could not read the planned stream thumbnail: \(error.localizedDescription)", level: .warning)
+            return nil
+        }
+    }
 
     static func capture(overlays: [OverlaySetting]) throws -> Self {
 #if DEBUG
@@ -281,7 +292,7 @@ private struct AppliedSettingsSnapshot {
             youtubeBroadcastPreferences: Settings.youtubeBroadcastPreferences,
             youtubeThumbnailData: try Settings.loadYouTubeThumbnailData(),
             plannedStreamSelection: Settings.plannedStreamSelection,
-            plannedStreamThumbnailData: try Settings.loadPlannedStreamThumbnailData(),
+            plannedStreamThumbnailData: readablePlannedThumbnail(),
             overlays: overlays,
             overlayRefreshRate: Settings.overlayRefreshRate,
             activityPreferences: .saved,
@@ -311,7 +322,7 @@ private struct AppliedSettingsSnapshot {
             youtubeBroadcastPreferences: Settings.youtubeBroadcastPreferences,
             youtubeThumbnailData: try Settings.loadYouTubeThumbnailData(),
             plannedStreamSelection: Settings.plannedStreamSelection,
-            plannedStreamThumbnailData: try Settings.loadPlannedStreamThumbnailData(),
+            plannedStreamThumbnailData: readablePlannedThumbnail(),
             overlays: overlays,
             overlayRefreshRate: Settings.overlayRefreshRate,
             activityPreferences: .saved,
@@ -340,7 +351,9 @@ private struct AppliedSettingsSnapshot {
         Settings.youtubeBroadcastPreferences = youtubeBroadcastPreferences
         try Settings.setYouTubeThumbnailData(youtubeThumbnailData)
         Settings.plannedStreamSelection = plannedStreamSelection
-        try Settings.setPlannedStreamThumbnailData(plannedStreamThumbnailData)
+        if let plannedStreamThumbnailData {
+            try Settings.setPlannedStreamThumbnailData(plannedStreamThumbnailData)
+        }
         manager.replaceOverlays(with: overlays)
         Settings.overlayRefreshRate = overlayRefreshRate
         Settings.liveActivityDetail = activityPreferences.detail
@@ -415,6 +428,8 @@ struct SettingsView: View {
     /// later choice, and until then "New stream" never clears it on Save.
     @State private var plannedListLoaded = false
     @State private var plannedListFailed = false
+    /// The playlist lookup for the picked match failed, so "None" may be wrong.
+    @State private var plannedMembershipFailed = false
     @State private var savedPlannedThumbnailData: Data?
     /// The image behind the current planned pick, kept so Save stores it as loaded.
     @State private var plannedThumbnailData: Data?
@@ -608,9 +623,9 @@ struct SettingsView: View {
                                     }
                                     .disabled(youtubeDraft.broadcast?.isActive == true)
                                     if plannedListFailed && !plannedListLoaded {
-                                        Text(Settings.plannedStreamSelection == nil
-                                             ? "Couldn't load planned streams. Refresh to try again."
-                                             : "Couldn't load planned streams; your saved choice is kept.")
+                                        Text(Settings.plannedStreamSelection.map {
+                                            "Couldn't load planned streams; Start will still use '\($0.edited.title)'."
+                                        } ?? "Couldn't load planned streams. Refresh to try again.")
                                             .foregroundColor(.secondary)
                                             .font(.caption)
                                     }
@@ -675,6 +690,11 @@ struct SettingsView: View {
                                     ForEach(youtubeDraft.playlists) { playlist in
                                         Text(playlist.title).tag(Optional(playlist.id))
                                     }
+                                }
+                                if plannedMembershipFailed, case .planned = youtubeDraft.plannedChoice {
+                                    Text("Couldn't check this match's playlist. Check it in YouTube Studio.")
+                                        .foregroundColor(.secondary)
+                                        .font(.caption)
                                 }
                                 if let errorMessage = youtubeService.errorMessage {
                                     Text(errorMessage).foregroundColor(.red)
@@ -1294,6 +1314,7 @@ struct SettingsView: View {
         selectedPhotoItem = nil
         youtubeDraft.choose(choice)
         plannedThumbnailData = nil
+        plannedMembershipFailed = false
         switch choice {
         case .newStream:
             break
@@ -1314,9 +1335,11 @@ struct SettingsView: View {
         defer { if plannedDetailsLoadID == loadID { plannedDetailsLoadID = nil } }
         guard let planned = youtubeDraft.plannedBroadcasts.first(where: { $0.id == id }) else { return }
         var membership: YouTubePlaylistMembership?
+        var membershipFailed = false
         do {
             membership = try await youtubeService.playlistMembership(videoId: id, among: youtubeDraft.playlists)
         } catch {
+            membershipFailed = true
             LOG("Could not look up playlists for the planned stream: \(plannedLoadDiagnostic(error))", level: .warning)
         }
         var thumbnail: Data?
@@ -1329,6 +1352,7 @@ struct SettingsView: View {
         }
         guard plannedDetailsLoadID == loadID, youtubeDraft.plannedChoice == .planned(id) else { return }
         plannedThumbnailData = thumbnail
+        plannedMembershipFailed = membershipFailed
         youtubeDraft.loadPlannedDetails(for: id, membership: membership, thumbnail: thumbnail)
     }
 
