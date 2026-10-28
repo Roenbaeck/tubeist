@@ -83,7 +83,6 @@ final class YouTubeSettingsDraft {
     let thumbnail = SettingsThumbnailDraft()
 
     private(set) var plannedBroadcasts: [YouTubeBroadcast] = []
-    private(set) var plannedStreamTitle: String?
     private(set) var plannedNeedsOwnKey: Set<String> = []
     private(set) var restartSelection: PlannedStreamSelection?
     private(set) var plannedChoice: PlannedStreamChoice = .newStream
@@ -149,7 +148,6 @@ final class YouTubeSettingsDraft {
     func applyPlanned(_ planned: YouTubePlannedStreams, saved: PlannedStreamSelection?, savedThumbnail: Data?,
                       now: Date, calendar: Calendar) {
         plannedBroadcasts = planned.broadcasts
-        plannedStreamTitle = planned.streamTitle
         plannedNeedsOwnKey = planned.needsOwnKey
         if case .planned(let id) = plannedChoice, !planned.broadcasts.contains(where: { $0.id == id }) {
             choose(.newStream)
@@ -260,7 +258,6 @@ final class YouTubeSettingsDraft {
         playlistId = nil
         thumbnail.reset()
         plannedBroadcasts = []
-        plannedStreamTitle = nil
         restartSelection = nil
         plannedChoice = .newStream
         stashedTemplate = nil

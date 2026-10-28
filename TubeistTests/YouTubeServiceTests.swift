@@ -2433,12 +2433,16 @@ extension YouTubeServiceTests {
     }
 
     @Test @MainActor
-    func restartIsRefusedWhenTheReadyOriginalWasMovedToAnotherKey() async throws {
-        let fixture = PlannedStartFixture(m5: plannedM5(stream: "stream-2"))
+    func restartFollowsTheReadyOriginalToItsNewKey() async throws {
+        // Saved on stream-1; Assign has since moved it to `Tubeist match 2`.
+        let fixture = PlannedStartFixture(m5: plannedM5(stream: "match-2"))
+        #expect(fixture.selection.streamId == "stream-1")
 
-        await #expect(throws: YouTubeError.plannedBroadcastUnavailable("Match 5")) {
-            _ = try await fixture.start(fixture.selection.restarting())
-        }
+        let preparation = try await fixture.start(fixture.selection.restarting())
+
+        #expect(preparation.broadcast.id == "m5")
+        #expect(preparation.endpoint == (try YouTubeHLSEndpoint(URL(string: matchKeyAddress(2))!)))
+        #expect(preparation.healthTarget.streamID == "match-2")
         let methods = await fixture.transport.requests.map(\.httpMethod)
         #expect(!methods.contains { ["PUT", "POST", "DELETE"].contains($0) })
     }
@@ -3319,7 +3323,7 @@ extension YouTubeServiceTests {
     }
 
     @Test @MainActor
-    func newStreamStillResumesItsOwnLiveBroadcast() async throws {
+    func newStreamStillRefusesItsOwnLiveBroadcastAsToday() async throws {
         let transport = MockYouTubeAPITransport(responses: [
             studioPlannedPage(status: "live", id: "active"), matchingStreamPage(),
         ])

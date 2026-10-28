@@ -2027,7 +2027,6 @@ final class YouTubeService {
         defer { endLoading() }
 
         let scope = try authorizationScope()
-        let key = YouTubeDiscoveryCache.key(scope: scope, streamKey: streamKey)
         let stream = try await selectedBroadcast(forStreamKey: streamKey).stream
         let token = try await getValidAccessToken()
         let title = try await streamByID(stream.id, token: token)?.snippet?.title
