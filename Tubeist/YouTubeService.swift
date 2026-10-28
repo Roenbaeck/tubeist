@@ -925,6 +925,28 @@ final class YouTubeService {
         return (broadcast, playlists)
     }
 
+    /// Read-only Settings: the broadcast a running stream uses, found by its ID,
+    /// with the YouTube title of the key it is bound to (never the key itself).
+    func loadBroadcastInUse(id: String) async throws
+        -> (broadcast: YouTubeBroadcast, playlists: [YouTubePlaylist], keyTitle: String?)? {
+        beginLoading()
+        defer { endLoading() }
+        let scope = try authorizationScope()
+        let token = try await getValidAccessToken()
+        try checkAuthorization(scope)
+        try await fetchAuthorizedChannel(token: token, scope: scope, streamKey: "")
+        try checkAuthorization(scope)
+        guard let broadcast = try await plannedBroadcast(id: id, scope: scope) else { return nil }
+        var keyTitle: String?
+        if let streamID = broadcast.boundStreamId, !streamID.isEmpty {
+            let resource = try await streamByID(streamID, token: token)
+            try checkAuthorization(scope)
+            keyTitle = resource?.snippet?.title
+        }
+        let playlists = try await listPlaylists()
+        return (broadcast, playlists, keyTitle)
+    }
+
     /// Also used before the user has chosen or created a stream key.
     func loadAuthorizedChannel() async throws {
         beginLoading()

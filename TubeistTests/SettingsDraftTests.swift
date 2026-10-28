@@ -306,6 +306,22 @@ struct SettingsDraftTests {
                                       loadedMembership: nil, thumbnailChanged: false)
     }
 
+    @Test func plannedLabelsMarkSharedKeys() {
+        let draft = YouTubeSettingsDraft()
+        draft.useStreamKey("key-a")
+        draft.apply(broadcast: makeBroadcast(), playlists: [], savedPreferences: nil, savedThumbnail: nil)
+        let m1 = plannedBroadcast("m1"), m2 = plannedBroadcast("m2")
+        draft.applyPlanned(
+            YouTubePlannedStreams(streamTitle: "Phone", broadcasts: [m1, m2], needsOwnKey: ["m2"]),
+            saved: nil, savedThumbnail: nil, now: Self.now, calendar: Self.utc)
+        func label(_ b: YouTubeBroadcast) -> String {
+            PlannedStreams.label(for: b, calendar: Self.utc,
+                                 needsOwnKey: draft.plannedNeedsOwnKey.contains(b.id))
+        }
+        #expect(label(m2).hasSuffix(" · shares a key"))
+        #expect(!label(m1).hasSuffix(" · shares a key"))
+    }
+
     @Test func savedPickIsMatchedByBroadcastIdOnly() {
         let draft = plannedDraft(saved: savedSelection(broadcastId: "b1", streamId: "stream-1"),
                                  broadcasts: [plannedBroadcast("b1", streamID: "match-7")])

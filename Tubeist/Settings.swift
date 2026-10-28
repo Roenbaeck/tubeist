@@ -443,6 +443,9 @@ struct SettingsView: View {
     @State private var plannedThumbnailData: Data?
     @State private var plannedDetailsLoadID: UUID?
     @State private var isLoadingBroadcastInUse = false
+    @State private var broadcastInUseKeyTitle: String?
+    @State private var isAssigningMatchKeys = false
+    @State private var matchKeysMessage: String?
     @State private var selectedPhotoItem: PhotosPickerItem? = nil
     @State private var isSettingUpYouTubeStream = false
     @State private var youtubeConfigLoaded: Bool = false
@@ -601,6 +604,17 @@ struct SettingsView: View {
                 Button("OK") { saveErrorMessage = nil }
             } message: {
                 Text(saveErrorMessage ?? "The settings could not be saved")
+            }
+            .alert(
+                "Match keys",
+                isPresented: Binding(
+                    get: { matchKeysMessage != nil },
+                    set: { if !$0 { matchKeysMessage = nil } }
+                )
+            ) {
+                Button("OK") { matchKeysMessage = nil }
+            } message: {
+                Text(matchKeysMessage ?? "")
             }
             .sheet(item: $editingOverlay) { overlay in
                 NavigationStack {
@@ -950,7 +964,7 @@ struct SettingsView: View {
                     .accessibilityIdentifier("YouTube channel")
 
                     if youtubeService.isLoading || isSettingUpYouTubeStream || isLoadingPlannedDetails
-                        || isLoadingBroadcastInUse {
+                        || isLoadingBroadcastInUse || isAssigningMatchKeys {
                         HStack {
                             ProgressView()
                             Text("Loading...")
@@ -977,6 +991,14 @@ struct SettingsView: View {
                                 .frame(width: 10, height: 10)
                             Text(YouTubeBroadcast.label(for: broadcastLifeCycleStatus))
                                 .foregroundColor(.secondary)
+                        }
+
+                        if isReadOnly, let keyTitle = broadcastInUseKeyTitle {
+                            LabeledContent("Stream key") {
+                                Text(keyTitle)
+                                    .multilineTextAlignment(.trailing)
+                                    .foregroundStyle(.secondary)
+                            }
                         }
 
                         if !isReadOnly, broadcastLifeCycleStatus == "live" || broadcastLifeCycleStatus == "testing" {
@@ -1009,6 +1031,11 @@ struct SettingsView: View {
                                 }
                             }
                             .disabled(youtubeDraft.broadcast?.isActive == true)
+                            Button("Assign match keys") {
+                                Task { await assignMatchKeys() }
+                            }
+                            .accessibilityIdentifier("Assign match keys")
+                            .disabled(youtubeService.isLoading || isAssigningMatchKeys)
                             if plannedListFailed && !plannedListLoaded {
                                 Text(Settings.plannedStreamSelection.map {
                                     "Couldn't load planned streams; Start will still use '\($0.edited.title)'."
@@ -1347,9 +1374,24 @@ struct SettingsView: View {
     private var isLoadingPlannedDetails: Bool { plannedDetailsLoadID != nil }
 
     private var plannedStreamFooter: String {
-        let prompt = "Don't see a match? In YouTube Studio, open it and select this phone's stream key"
-        guard let title = youtubeDraft.plannedStreamTitle, !title.isEmpty else { return prompt + "." }
-        return "\(prompt): \(title)"
+        "New match in Studio? Press Assign match keys, or Start will offer to set it up."
+    }
+
+    private func assignMatchKeys() async {
+        guard !isAssigningMatchKeys, !youtubeService.isLoading else { return }
+        isAssigningMatchKeys = true
+        defer { isAssigningMatchKeys = false }
+        do {
+            let result = try await youtubeService.assignMatchKeys()
+            matchKeysMessage = YouTubeDiagnostics.text(result.summary, secrets: [
+                streamKeyManager.currentKey, Settings.youtubeAccessToken ?? "", Settings.youtubeRefreshToken ?? ""
+            ])
+            await loadYouTubeBroadcast()
+        } catch {
+            matchKeysMessage = YouTubeDiagnostics.text(error.localizedDescription, secrets: [
+                streamKeyManager.currentKey, Settings.youtubeAccessToken ?? "", Settings.youtubeRefreshToken ?? ""
+            ])
+        }
     }
 
     private var plannedChoiceBinding: Binding<PlannedStreamChoice> {
@@ -1647,15 +1689,24 @@ struct SettingsView: View {
         isLoadingBroadcastInUse = true
         defer { if generation == youtubeLoadGeneration { isLoadingBroadcastInUse = false } }
         do {
-            if streamKey.isEmpty {
+            if streamKey.isEmpty && appState.youtubeBroadcastId?.isEmpty != false {
                 try await youtubeService.loadAuthorizedChannel()
                 guard isCurrent() else { return }
                 youtubeConfigLoaded = true
                 lastYouTubeLoadContext = context
                 return
             }
-            let configuration = try await youtubeService.loadSettingsConfiguration(forStreamKey: streamKey)
+            var keyTitle: String?
+            let configuration: (broadcast: YouTubeBroadcast, playlists: [YouTubePlaylist])
+            if let inUseID = appState.youtubeBroadcastId, !inUseID.isEmpty,
+               let inUse = try await youtubeService.loadBroadcastInUse(id: inUseID) {
+                configuration = (inUse.broadcast, inUse.playlists)
+                keyTitle = inUse.keyTitle
+            } else {
+                configuration = try await youtubeService.loadSettingsConfiguration(forStreamKey: streamKey)
+            }
             guard isCurrent() else { return }
+            broadcastInUseKeyTitle = keyTitle
             let broadcast = configuration.broadcast
             // Playlist and thumbnail are best effort: a failure leaves them empty.
             var membership: YouTubePlaylistMembership?
