@@ -1,7 +1,7 @@
 # Match stream keys: one YouTube stream key per planned match
 
 - Date: 2026-10-28
-- Status: draft, awaiting approval
+- Status: approved 2026-10-28
 - Builds on: `docs/superpowers/specs/2026-10-28-planned-streams-design.md`
   (planned streams, read-only Settings). Everything there still applies unless
   this document changes it.
