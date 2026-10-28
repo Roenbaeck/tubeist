@@ -62,7 +62,7 @@ struct CameraMonitorView: UIViewControllerRepresentable {
     }
 
     func makeUIViewController(context: Context) -> UIViewController {
-        let viewController = UIViewController()
+        let viewController = CameraPreviewController()
         viewController.loadViewIfNeeded()
         Self.setPreviewEnabled(isPreviewEnabled)
 
@@ -86,11 +86,27 @@ struct CameraMonitorView: UIViewControllerRepresentable {
 
     func updateUIViewController(_ uiViewController: UIViewController, context: Context) {
         Self.setPreviewEnabled(isPreviewEnabled)
+        Self.layOutPreviewLayer(in: uiViewController.view)
+    }
+
+    fileprivate static func layOutPreviewLayer(in view: UIView) {
         CATransaction.begin()
         CATransaction.setAnimationDuration(0)
-        let height = uiViewController.view.bounds.height
+        let height = view.bounds.height
         let width = height * (16.0/9.0)
         CameraMonitorView.previewLayer?.frame = CGRect(x: 0, y: 0, width: width, height: height)
         CATransaction.commit()
+    }
+}
+
+/// Sizes the preview layer whenever SwiftUI lays out the view. An update can
+/// run before that, while the view still has the full screen's bounds; on
+/// screens squarer than 16:9 (iPhone Duo) the preview then spilled outside
+/// its 16:9 area.
+private final class CameraPreviewController: UIViewController {
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        guard CameraMonitorView.previewLayer?.superlayer === view.layer else { return }
+        CameraMonitorView.layOutPreviewLayer(in: view)
     }
 }
