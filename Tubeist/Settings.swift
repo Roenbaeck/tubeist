@@ -247,6 +247,8 @@ private struct AppliedSettingsSnapshot {
     let selectedPlaylistID: String?
     let youtubeBroadcastPreferences: YouTubeBroadcastPreferences?
     let youtubeThumbnailData: Data?
+    let plannedStreamSelection: PlannedStreamSelection?
+    let plannedStreamThumbnailData: Data?
     let overlays: [OverlaySetting]
     let overlayRefreshRate: OverlayRefreshRate
     let activityPreferences: StreamActivityPreferences
@@ -278,6 +280,8 @@ private struct AppliedSettingsSnapshot {
             selectedPlaylistID: Settings.youtubeSelectedPlaylistId,
             youtubeBroadcastPreferences: Settings.youtubeBroadcastPreferences,
             youtubeThumbnailData: try Settings.loadYouTubeThumbnailData(),
+            plannedStreamSelection: Settings.plannedStreamSelection,
+            plannedStreamThumbnailData: try Settings.loadPlannedStreamThumbnailData(),
             overlays: overlays,
             overlayRefreshRate: Settings.overlayRefreshRate,
             activityPreferences: .saved,
@@ -306,6 +310,8 @@ private struct AppliedSettingsSnapshot {
             selectedPlaylistID: Settings.youtubeSelectedPlaylistId,
             youtubeBroadcastPreferences: Settings.youtubeBroadcastPreferences,
             youtubeThumbnailData: try Settings.loadYouTubeThumbnailData(),
+            plannedStreamSelection: Settings.plannedStreamSelection,
+            plannedStreamThumbnailData: try Settings.loadPlannedStreamThumbnailData(),
             overlays: overlays,
             overlayRefreshRate: Settings.overlayRefreshRate,
             activityPreferences: .saved,
@@ -333,6 +339,8 @@ private struct AppliedSettingsSnapshot {
         Settings.youtubeSelectedPlaylistId = selectedPlaylistID
         Settings.youtubeBroadcastPreferences = youtubeBroadcastPreferences
         try Settings.setYouTubeThumbnailData(youtubeThumbnailData)
+        Settings.plannedStreamSelection = plannedStreamSelection
+        try Settings.setPlannedStreamThumbnailData(plannedStreamThumbnailData)
         manager.replaceOverlays(with: overlays)
         Settings.overlayRefreshRate = overlayRefreshRate
         Settings.liveActivityDetail = activityPreferences.detail
@@ -1884,16 +1892,48 @@ final class Settings: Sendable {
         }
     }
 
+    static var plannedStreamSelection: PlannedStreamSelection? {
+        get {
+            guard let data = UserDefaults.standard.data(forKey: "PlannedStreamSelection") else {
+                return nil
+            }
+            return try? JSONDecoder().decode(PlannedStreamSelection.self, from: data)
+        }
+        set {
+            let data = newValue.flatMap { try? JSONEncoder().encode($0) }
+            UserDefaults.standard.set(data, forKey: "PlannedStreamSelection")
+        }
+    }
+
+    private static let templateThumbnailFileName = "youtube-broadcast-thumbnail.jpg"
+    private static let plannedThumbnailFileName = "planned-stream-thumbnail.jpg"
+
     static func loadYouTubeThumbnailData() throws -> Data? {
+        try loadThumbnail(named: templateThumbnailFileName)
+    }
+
+    static func setYouTubeThumbnailData(_ data: Data?) throws {
+        try setThumbnail(data, named: templateThumbnailFileName)
+    }
+
+    static func loadPlannedStreamThumbnailData() throws -> Data? {
+        try loadThumbnail(named: plannedThumbnailFileName)
+    }
+
+    static func setPlannedStreamThumbnailData(_ data: Data?) throws {
+        try setThumbnail(data, named: plannedThumbnailFileName)
+    }
+
+    private static func loadThumbnail(named name: String) throws -> Data? {
         let fileManager = FileManager.default
-        let url = try youtubeThumbnailURL(fileManager: fileManager, createDirectory: false)
+        let url = try youtubeThumbnailURL(named: name, fileManager: fileManager, createDirectory: false)
         guard fileManager.fileExists(atPath: url.path) else { return nil }
         return try Data(contentsOf: url, options: .mappedIfSafe)
     }
 
-    static func setYouTubeThumbnailData(_ data: Data?) throws {
+    private static func setThumbnail(_ data: Data?, named name: String) throws {
         let fileManager = FileManager.default
-        let url = try youtubeThumbnailURL(fileManager: fileManager, createDirectory: data != nil)
+        let url = try youtubeThumbnailURL(named: name, fileManager: fileManager, createDirectory: data != nil)
         if let data {
             try data.write(to: url, options: .atomic)
         } else if fileManager.fileExists(atPath: url.path) {
@@ -1902,6 +1942,7 @@ final class Settings: Sendable {
     }
 
     private static func youtubeThumbnailURL(
+        named name: String,
         fileManager: FileManager,
         createDirectory: Bool
     ) throws -> URL {
@@ -1921,7 +1962,7 @@ final class Settings: Sendable {
                 withIntermediateDirectories: true
             )
         }
-        return directory.appendingPathComponent("youtube-broadcast-thumbnail.jpg")
+        return directory.appendingPathComponent(name)
     }
 
     private static func credential(_ credential: TubeistCredential) -> String? {

@@ -137,3 +137,95 @@ struct SettingsMigrationTests {
         #expect(store.values[.youTubeStreamKey] == nil)
     }
 }
+
+/// These touch the real `UserDefaults.standard` keys and Application Support
+/// files through `Settings`, so they run serialized and restore what they found.
+@Suite(.serialized)
+struct PlannedSelectionPersistenceTests {
+    private struct Saved {
+        let selection: PlannedStreamSelection?
+        let plannedThumbnail: Data?
+        let preferences: YouTubeBroadcastPreferences?
+        let templateThumbnail: Data?
+
+        @MainActor
+        static func capture() throws -> Saved {
+            Saved(
+                selection: Settings.plannedStreamSelection,
+                plannedThumbnail: try Settings.loadPlannedStreamThumbnailData(),
+                preferences: Settings.youtubeBroadcastPreferences,
+                templateThumbnail: try Settings.loadYouTubeThumbnailData()
+            )
+        }
+
+        @MainActor
+        func restore() throws {
+            Settings.plannedStreamSelection = selection
+            try Settings.setPlannedStreamThumbnailData(plannedThumbnail)
+            Settings.youtubeBroadcastPreferences = preferences
+            try Settings.setYouTubeThumbnailData(templateThumbnail)
+        }
+    }
+
+    private func preferences() -> YouTubeBroadcastPreferences {
+        YouTubeBroadcastPreferences(
+            streamId: "stream-1", title: "Template", privacyStatus: "unlisted",
+            enableDvr: true, latencyPreference: "low", enableMonitorStream: false,
+            broadcastStreamDelayMs: 0, enableEmbed: false, recordFromStart: true,
+            enableAutoStart: true, enableAutoStop: true, playlistId: "pl-1"
+        )
+    }
+
+    private func selection() -> PlannedStreamSelection {
+        let details = PlannedStreamDetails(
+            broadcast: YouTubeBroadcast(
+                id: "b-1", title: "Match 5", privacyStatus: "unlisted", boundStreamId: "stream-1",
+                scheduledStartTime: "2026-10-31T09:00:00Z", actualStartTime: nil, publishedAt: nil,
+                lifeCycleStatus: "ready", enableDvr: true, latencyPreference: "low",
+                enableMonitorStream: false, broadcastStreamDelayMs: 0, enableEmbed: false,
+                recordFromStart: true, enableAutoStart: true, enableAutoStop: true,
+                selfDeclaredMadeForKids: false
+            ),
+            playlistId: "pl-1"
+        )
+        return PlannedStreamSelection(
+            kind: .planned, broadcastId: "b-1", streamId: "stream-1",
+            scheduledStartTime: "2026-10-31T09:00:00Z", loaded: details, edited: details,
+            loadedMembership: YouTubePlaylistMembership(playlistId: "pl-1", itemId: "item-1"),
+            thumbnailChanged: true
+        )
+    }
+
+    @Test @MainActor func existingSettingsWithoutAPlannedSelectionLoadUnchanged() throws {
+        let saved = try Saved.capture()
+        defer { try? saved.restore() }
+        let template = preferences()
+        let thumbnail = Data([0xFF, 0xD8, 0x01, 0x02])
+        UserDefaults.standard.removeObject(forKey: "PlannedStreamSelection")
+        try Settings.setPlannedStreamThumbnailData(nil)
+        Settings.youtubeBroadcastPreferences = template
+        try Settings.setYouTubeThumbnailData(thumbnail)
+
+        #expect(Settings.plannedStreamSelection == nil)
+        #expect(try Settings.loadPlannedStreamThumbnailData() == nil)
+        #expect(Settings.youtubeBroadcastPreferences == template)
+        #expect(try Settings.loadYouTubeThumbnailData() == thumbnail)
+    }
+
+    @Test @MainActor func plannedSelectionAndThumbnailRoundTripAndClear() throws {
+        let saved = try Saved.capture()
+        defer { try? saved.restore() }
+        let expected = selection()
+        let thumbnail = Data([0xFF, 0xD8, 0x09])
+
+        Settings.plannedStreamSelection = expected
+        try Settings.setPlannedStreamThumbnailData(thumbnail)
+        #expect(Settings.plannedStreamSelection == expected)
+        #expect(try Settings.loadPlannedStreamThumbnailData() == thumbnail)
+
+        Settings.plannedStreamSelection = nil
+        try Settings.setPlannedStreamThumbnailData(nil)
+        #expect(UserDefaults.standard.object(forKey: "PlannedStreamSelection") == nil)
+        #expect(try Settings.loadPlannedStreamThumbnailData() == nil)
+    }
+}

@@ -854,12 +854,25 @@ final class Streamer: Sendable {
             let thumbnailData = preferences == nil
                 ? nil
                 : try Settings.loadYouTubeThumbnailData()
+            let plannedSelection = Settings.plannedStreamSelection
+            let plannedThumbnail = plannedSelection == nil
+                ? nil
+                : try Settings.loadPlannedStreamThumbnailData()
             let preparation = try await service.prepareForStreaming(
                 streamKey: streamKey,
                 preferences: preferences,
                 thumbnailData: thumbnailData,
-                endingPolicy: endingPolicy
+                endingPolicy: endingPolicy,
+                plannedSelection: plannedSelection,
+                plannedThumbnail: plannedThumbnail
             )
+            if let plannedSelection {
+                // Next Start restarts this broadcast with the details just used.
+                Settings.plannedStreamSelection = plannedSelection.restarting()
+                for warning in preparation.warnings {
+                    await streamingActor.presentAlert(warning)
+                }
+            }
             endpoint = preparation.endpoint
             // Use the title resolved for this broadcast, including Settings
             // preferences, rather than an unrelated channel's saved template.
