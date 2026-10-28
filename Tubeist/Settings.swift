@@ -407,6 +407,12 @@ struct SettingsView: View {
     @State private var maxFrameRate: Double = DEFAULT_FRAMERATE
     @State private var youtubeService = YouTubeService()
     @State private var youtubeDraft = YouTubeSettingsDraft()
+    /// The saved pick is offered once per stream key, so a refresh never re-applies it over a later choice.
+    @State private var didApplySavedPlannedSelection = false
+    @State private var savedPlannedThumbnailData: Data?
+    /// The image behind the current planned pick, kept so Save stores it as loaded.
+    @State private var plannedThumbnailData: Data?
+    @State private var plannedDetailsLoadID: UUID?
     @State private var selectedPhotoItem: PhotosPickerItem? = nil
     @State private var isSettingUpYouTubeStream = false
     @State private var youtubeConfigLoaded: Bool = false
@@ -508,7 +514,7 @@ struct SettingsView: View {
                         }
                     }
 
-                    Section(header: Text("YouTube Stream Configuration"), footer: Text(youtubeService.isSignedIn ? "Save keeps broadcast preferences in Tubeist; your broadcast is created or updated when you tap Start stream." : "Sign in with your Google account to set up a stream key and broadcast without YouTube Studio. Your channel must already be enabled for live streaming.")) {
+                    Section(header: Text("YouTube Stream Configuration"), footer: Text(youtubeService.isSignedIn ? "Save keeps broadcast preferences in Tubeist; your broadcast is created or updated when you tap Start stream. \(plannedStreamFooter)" : "Sign in with your Google account to set up a stream key and broadcast without YouTube Studio. Your channel must already be enabled for live streaming.")) {
                         if !youtubeService.isSignedIn {
                             Button("Sign in with Google") {
                                 Task {
@@ -528,7 +534,7 @@ struct SettingsView: View {
                             }
                             .accessibilityIdentifier("YouTube channel")
 
-                            if youtubeService.isLoading || isSettingUpYouTubeStream {
+                            if youtubeService.isLoading || isSettingUpYouTubeStream || isLoadingPlannedDetails {
                                 HStack {
                                     ProgressView()
                                     Text("Loading...")
@@ -573,6 +579,19 @@ struct SettingsView: View {
                                     .buttonStyle(.bordered)
                                 }
 
+                                Picker("Planned stream", selection: plannedChoiceBinding) {
+                                    Text("New stream").tag(PlannedStreamChoice.newStream)
+                                    if let restartSelection = youtubeDraft.restartSelection {
+                                        Text(PlannedStreams.restartLabel(for: restartSelection))
+                                            .tag(PlannedStreamChoice.restart)
+                                    }
+                                    ForEach(youtubeDraft.plannedBroadcasts, id: \.id) { planned in
+                                        Text(PlannedStreams.label(for: planned, calendar: .current))
+                                            .tag(PlannedStreamChoice.planned(planned.id))
+                                    }
+                                }
+                                .disabled(youtubeDraft.broadcast?.isActive == true)
+
                                 VStack(alignment: .leading, spacing: 8) {
                                     Text("Stream title")
                                         .font(.subheadline)
@@ -599,8 +618,8 @@ struct SettingsView: View {
                                     Text("Ultra-low").tag("ultraLow")
                                 }
 
-                                let previewThumbnail = youtubeDraft.thumbnail.image
-                                let isLoadingThumbnail = youtubeDraft.thumbnail.isLoading
+                                let previewThumbnail = youtubeDraft.activeThumbnail.image
+                                let isLoadingThumbnail = youtubeDraft.activeThumbnail.isLoading
                                 PhotosPicker(selection: thumbnailSelection, matching: .images) {
                                     HStack {
                                         Text("Thumbnail")
@@ -620,7 +639,7 @@ struct SettingsView: View {
                                         }
                                     }
                                 }
-                                if let error = youtubeDraft.thumbnail.errorMessage {
+                                if let error = youtubeDraft.activeThumbnail.errorMessage {
                                     Text(error).foregroundColor(.red)
                                     Button("Retry thumbnail") {
                                         loadSelectedThumbnail()
@@ -1046,7 +1065,17 @@ struct SettingsView: View {
                         try commitDraft()
                         localSettingsCommitted = true
                         if youtubeDraft.broadcast != nil && youtubeService.isSignedIn {
-                            try saveYouTubePreferences()
+                            if youtubeDraft.plannedChoice == .newStream {
+                                try saveYouTubePreferences()
+                                Settings.plannedStreamSelection = nil
+                                try Settings.setPlannedStreamThumbnailData(nil)
+                            } else {
+                                try savePlannedStream()
+                            }
+                        } else if Settings.streamKey != previousSettings?.streamKey {
+                            // A saved pick belongs to the stream behind the previous key.
+                            Settings.plannedStreamSelection = nil
+                            try Settings.setPlannedStreamThumbnailData(nil)
                         }
                         try await Streamer.shared.cycleSessions()
                         await Settings.configureJournal()
@@ -1072,7 +1101,7 @@ struct SettingsView: View {
                     }
                 }
             }
-            .disabled(isSaving || isSettingUpYouTubeStream || youtubeDraft.thumbnail.isLoading || isRequestingActivityPermission)
+            .disabled(isSaving || isSettingUpYouTubeStream || youtubeDraft.activeThumbnail.isLoading || isLoadingPlannedDetails || isRequestingActivityPermission)
             .buttonStyle(.borderedProminent))
             .interactiveDismissDisabled(isSaving || isSettingUpYouTubeStream)
             .onAppear {
@@ -1094,6 +1123,7 @@ struct SettingsView: View {
             .onDisappear {
                 youtubeLoadGeneration = UUID()
                 youtubeDraft.thumbnail.cancelLoading()
+                youtubeDraft.plannedThumbnail.cancelLoading()
             }
             .alert(
                 "Could Not Save Settings",
@@ -1199,9 +1229,70 @@ struct SettingsView: View {
 
     private func loadSelectedThumbnail() {
         guard let selectedPhotoItem else { return }
-        youtubeDraft.thumbnail.select {
+        youtubeDraft.activeThumbnail.select {
             try await selectedPhotoItem.loadTransferable(type: Data.self)
         }
+    }
+
+    private var isLoadingPlannedDetails: Bool { plannedDetailsLoadID != nil }
+
+    private var plannedStreamFooter: String {
+        let prompt = "Don't see a match? In YouTube Studio, open it and select this phone's stream key"
+        guard let title = youtubeDraft.plannedStreamTitle, !title.isEmpty else { return prompt + "." }
+        return "\(prompt): \(title)"
+    }
+
+    private var plannedChoiceBinding: Binding<PlannedStreamChoice> {
+        Binding(get: { youtubeDraft.plannedChoice }, set: { selectPlannedChoice($0) })
+    }
+
+    private func selectPlannedChoice(_ choice: PlannedStreamChoice) {
+        guard choice != youtubeDraft.plannedChoice, !isLoadingPlannedDetails else { return }
+        selectedPhotoItem = nil
+        youtubeDraft.choose(choice)
+        plannedThumbnailData = nil
+        switch choice {
+        case .newStream:
+            break
+        case .restart:
+            // The restart entry exists only for the saved pick, so the saved image is its own.
+            plannedThumbnailData = savedPlannedThumbnailData
+            youtubeDraft.plannedThumbnail.reset(image: savedPlannedThumbnailData.flatMap { UIImage(data: $0) })
+        case .planned(let id):
+            // Set before the task starts so Save is disabled at once.
+            let loadID = UUID()
+            plannedDetailsLoadID = loadID
+            Task { await loadPlannedDetails(for: id, loadID: loadID) }
+        }
+    }
+
+    /// Membership and thumbnail are best effort: a failure still loads the pick.
+    private func loadPlannedDetails(for id: String, loadID: UUID) async {
+        defer { if plannedDetailsLoadID == loadID { plannedDetailsLoadID = nil } }
+        guard let planned = youtubeDraft.plannedBroadcasts.first(where: { $0.id == id }) else { return }
+        var membership: YouTubePlaylistMembership?
+        do {
+            membership = try await youtubeService.playlistMembership(videoId: id, among: youtubeDraft.playlists)
+        } catch {
+            LOG("Could not look up playlists for the planned stream: \(plannedLoadDiagnostic(error))", level: .warning)
+        }
+        var thumbnail: Data?
+        if let url = planned.thumbnailURL {
+            do {
+                thumbnail = try await youtubeService.downloadThumbnail(from: url)
+            } catch {
+                LOG("Could not download the planned stream thumbnail: \(plannedLoadDiagnostic(error))", level: .warning)
+            }
+        }
+        guard plannedDetailsLoadID == loadID, youtubeDraft.plannedChoice == .planned(id) else { return }
+        plannedThumbnailData = thumbnail
+        youtubeDraft.loadPlannedDetails(for: id, membership: membership, thumbnail: thumbnail)
+    }
+
+    private func plannedLoadDiagnostic(_ error: Error) -> String {
+        YouTubeDiagnostics.text(error.localizedDescription, secrets: [
+            streamKeyManager.currentKey, Settings.youtubeAccessToken ?? "", Settings.youtubeRefreshToken ?? "",
+        ])
     }
 
     private var cameraPositionBinding: Binding<String> {
@@ -1313,6 +1404,10 @@ struct SettingsView: View {
         lastYouTubeLoadContext = nil
         youtubeLoadGeneration = UUID()
         youtubeDraft.reset()
+        didApplySavedPlannedSelection = false
+        savedPlannedThumbnailData = nil
+        plannedThumbnailData = nil
+        plannedDetailsLoadID = nil
         selectedPhotoItem = nil
         youtubeConfigLoaded = false
         youtubeService.errorMessage = nil
@@ -1400,6 +1495,7 @@ struct SettingsView: View {
             lastYouTubeLoadContext = context
             youtubeService.errorMessage = nil
             LOG("Loaded YouTube broadcast: \(broadcast.title)", level: .debug)
+            await loadPlannedStreams(forStreamKey: streamKey, generation: generation, context: context)
         } catch {
             guard generation == youtubeLoadGeneration, context == youtubeLoadContext,
                   streamKey == streamKeyManager.currentKey, !Task.isCancelled else {
@@ -1413,6 +1509,56 @@ struct SettingsView: View {
             lastYouTubeLoadContext = context
             LOG("Failed to load YouTube configuration: \(message)", level: .error)
         }
+    }
+
+    /// Runs after the template has loaded; a failure here leaves only "New stream".
+    private func loadPlannedStreams(forStreamKey streamKey: String, generation: UUID,
+                                    context: YouTubeSettingsLoadContext) async {
+        let isCurrent = {
+            generation == youtubeLoadGeneration && context == youtubeLoadContext
+                && streamKey == streamKeyManager.currentKey && !Task.isCancelled
+        }
+        do {
+            let planned = try await youtubeService.loadPlannedBroadcasts(forStreamKey: streamKey)
+            guard isCurrent() else { return }
+            let saved = didApplySavedPlannedSelection ? nil : Settings.plannedStreamSelection
+            let savedThumbnail = saved == nil ? nil : try? Settings.loadPlannedStreamThumbnailData()
+            youtubeDraft.applyPlanned(planned, saved: saved, savedThumbnail: savedThumbnail,
+                                      now: Date(), calendar: .current)
+            if !didApplySavedPlannedSelection {
+                didApplySavedPlannedSelection = true
+                savedPlannedThumbnailData = savedThumbnail
+                if youtubeDraft.plannedChoice != .newStream {
+                    plannedThumbnailData = savedThumbnail
+                }
+            }
+        } catch {
+            guard isCurrent() else { return }
+            LOG("Could not load planned streams: \(plannedLoadDiagnostic(error))", level: .warning)
+        }
+    }
+
+    /// Stores the pick only; the template and its thumbnail stay as saved.
+    private func savePlannedStream() throws {
+        guard youtubeDraft.streamKey == streamKeyManager.currentKey else { return }
+        guard let selection = youtubeDraft.plannedSelection() else {
+            throw SettingsSaveError.plannedStreamLoading
+        }
+        let thumbnail = youtubeDraft.plannedThumbnail
+        var data: Data?
+        if thumbnail.hasNewSelection,
+           let image = thumbnail.image,
+           let resized = image.scaledToFit(maxWidth: 1280, maxHeight: 720) {
+            guard let imageData = resized.jpegDataWithinLimit(maxBytes: 2_000_000) else {
+                throw YouTubeError.thumbnailTooLarge
+            }
+            data = imageData
+        } else if thumbnail.image != nil {
+            data = plannedThumbnailData
+        }
+        Settings.plannedStreamSelection = selection
+        try Settings.setPlannedStreamThumbnailData(data)
+        LOG("Saved the planned stream for the next stream", level: .debug)
     }
 
     func saveYouTubePreferences() throws {
@@ -1440,7 +1586,8 @@ struct SettingsView: View {
     }
 
     private func validateDraft() throws {
-        guard !youtubeDraft.thumbnail.isLoading else { throw SettingsSaveError.thumbnailLoading }
+        guard !youtubeDraft.activeThumbnail.isLoading else { throw SettingsSaveError.thumbnailLoading }
+        guard !isLoadingPlannedDetails else { throw SettingsSaveError.plannedStreamLoading }
         let pendingOverlayURL = newOverlayURL.trimmingCharacters(in: .whitespacesAndNewlines)
         guard pendingOverlayURL.isEmpty || OverlayURLValidator.isAllowed(pendingOverlayURL) else {
             throw SettingsSaveError.invalidOverlayURL
@@ -1495,6 +1642,7 @@ enum SettingsSaveError: LocalizedError, Equatable {
     case invalidBandwidth
     case invalidOverlayURL
     case thumbnailLoading
+    case plannedStreamLoading
 
     var errorDescription: String? {
         switch self {
@@ -1502,6 +1650,7 @@ enum SettingsSaveError: LocalizedError, Equatable {
         case .invalidBandwidth: "Measured upload bandwidth must be at least 1 Mbps"
         case .invalidOverlayURL: "Enter a valid overlay URL starting with http:// or https://"
         case .thumbnailLoading: "Wait for the thumbnail to finish loading before saving"
+        case .plannedStreamLoading: "Wait for the planned stream to finish loading before saving"
         }
     }
 }
