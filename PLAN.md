@@ -589,3 +589,25 @@ tracking. Gate each feature on the active device, route, and format capabilities
 Spatial audio and Cinematic capture remain lower priority because they require
 more changes to capture and recording. Low-latency stabilization is already
 exposed in Tubeist.
+
+## Match stream keys — device acceptance
+
+Pending (user), in this order:
+
+- [ ] Manual flow on each phone with no planned matches: Save, Start, Stop, then
+  Watch Start.
+- [ ] Schedule 3 matches in YouTube Studio on the default key and press Assign.
+  The summary reads "3 matches, each with its own key. 3 moved, 0 already set
+  up." and Studio shows three `Tubeist match N` keys.
+- [ ] Pick match 1 on phone A, Start, Stop. Only match 1 is used.
+- [ ] Bug-2 repro: leave one planned auto-start match on phone B's key and
+  choose "New stream" on B. Start shows the prompt; "Move it" streams to B's
+  new broadcast and the match stays upcoming on its own key.
+- [ ] Phone A streams match 2, then phone B picks match 2 and Starts. B shows
+  "Another device is already streaming to 'Match 2'."
+- [ ] Create a new match in Studio after Assign, pick it and Start. The "shares
+  its key…" prompt appears and the stream lands in that match.
+- [ ] Watch Start with a conflict: the phone shows "Open Tubeist on the phone to
+  set up '<match>'."
+- [ ] Open read-only Settings mid-stream: it shows "Stream key: Tubeist match N"
+  and scrolls.
