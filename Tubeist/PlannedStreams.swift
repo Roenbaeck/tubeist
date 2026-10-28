@@ -68,7 +68,7 @@ struct PlannedStreamSelection: Codable, Sendable, Equatable {
 }
 
 enum PlannedStreams {
-    private static func parse(_ iso: String) -> Date? {
+    static func parse(_ iso: String) -> Date? {
         let plain = ISO8601DateFormatter()
         if let date = plain.date(from: iso) { return date }
         let fractional = ISO8601DateFormatter()
