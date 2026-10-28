@@ -416,11 +416,27 @@ enum YouTubeTimestamp {
     }
 }
 
+/// Which upcoming (ready/created) broadcasts discovery may adopt. Active
+/// broadcasts are always eligible.
+enum YouTubeUpcomingPolicy: Sendable, Equatable {
+    case any
+    /// Only the upcoming broadcast with this ID (nil admits none).
+    case only(String?)
+}
+
 enum YouTubeBroadcastDiscovery {
     static func selectCurrentOrUpcoming(
-        from broadcasts: [YouTubeBroadcast]
+        from broadcasts: [YouTubeBroadcast],
+        upcoming: YouTubeUpcomingPolicy = .any
     ) -> YouTubeBroadcast? {
-        let eligible = broadcasts.filter { $0.isActive || $0.lifeCycleStatus == "ready" || $0.lifeCycleStatus == "created" }
+        let eligible = broadcasts.filter {
+            if $0.isActive { return true }
+            guard $0.lifeCycleStatus == "ready" || $0.lifeCycleStatus == "created" else { return false }
+            switch upcoming {
+            case .any: return true
+            case .only(let id): return id != nil && $0.id == id
+            }
+        }
         let active = eligible.filter(\.isActive)
         if let current = active.max(by: isOlder) {
             return current
@@ -567,7 +583,8 @@ final class YouTubeService {
     }
 
     private func matchingSelection(
-        on page: [YouTubeBroadcastResource], streamKey: String, token: String
+        on page: [YouTubeBroadcastResource], streamKey: String, token: String,
+        upcoming: YouTubeUpcomingPolicy = .any
     ) async throws -> (broadcast: YouTubeBroadcast, stream: YouTubeStream)? {
         let broadcasts = page.compactMap(\.broadcast).filter {
             $0.isActive || $0.lifeCycleStatus == "ready" || $0.lifeCycleStatus == "created"
@@ -599,7 +616,7 @@ final class YouTubeService {
             $0.boundStreamId.map { matchingIDs.contains($0) } == true
         }
         diagnostics.log("YouTube broadcast discovery: \(page.count) broadcasts; \(matchingBroadcasts.count) bound to the matching stream", .debug)
-        guard let broadcast = YouTubeBroadcastDiscovery.selectCurrentOrUpcoming(from: matchingBroadcasts) else {
+        guard let broadcast = YouTubeBroadcastDiscovery.selectCurrentOrUpcoming(from: matchingBroadcasts, upcoming: upcoming) else {
             return nil
         }
         let stream = try YouTubeStreamDiscovery.findStream(
@@ -1106,6 +1123,8 @@ final class YouTubeService {
                 discoveryCache.setID(nil, kind: "stream", for: key)
             }
         }
+        // New stream adopts only a broadcast Tubeist created for this key.
+        let upcomingPolicy = YouTubeUpcomingPolicy.only(discoveryCache.id("createdBroadcast", for: key))
         // Never enumerate completed broadcasts. Active matches take precedence.
         for status in ["active", "upcoming"] {
             diagnostics.log("YouTube broadcast discovery: searching \(status) broadcasts", .debug)
@@ -1116,12 +1135,13 @@ final class YouTubeService {
                 stopAfterPage: { page in
                     if let knownStream {
                         if let broadcast = YouTubeBroadcastDiscovery.selectCurrentOrUpcoming(
-                            from: page.compactMap(\.broadcast).filter { $0.boundStreamId == knownStream.id }
+                            from: page.compactMap(\.broadcast).filter { $0.boundStreamId == knownStream.id },
+                            upcoming: upcomingPolicy
                         ) {
                             selection = (broadcast, knownStream)
                         }
                     } else {
-                        selection = try await self.matchingSelection(on: page, streamKey: streamKey, token: token)
+                        selection = try await self.matchingSelection(on: page, streamKey: streamKey, token: token, upcoming: upcomingPolicy)
                     }
                     return selection != nil
                 }
