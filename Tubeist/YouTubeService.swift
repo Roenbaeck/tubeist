@@ -107,6 +107,24 @@ struct YouTubePlannedStreams: Sendable, Equatable {
     let broadcasts: [YouTubeBroadcast]
 }
 
+struct MatchKeyFailure: Sendable, Equatable {
+    let title: String
+    let reason: String
+}
+
+struct MatchKeyAssignmentResult: Sendable, Equatable {
+    let total: Int
+    let moved: Int
+    let alreadySet: Int
+    let failures: [MatchKeyFailure]
+
+    var summary: String {
+        (["\(total) matches, each with its own key. \(moved) moved, \(alreadySet) already set up."]
+            + failures.map { "Could not give '\($0.title)' its own key: \($0.reason)." })
+            .joined(separator: "\n")
+    }
+}
+
 struct YouTubeStreamingPreparation: Sendable, Equatable {
     let endpoint: YouTubeHLSEndpoint
     let broadcast: YouTubeBroadcast
@@ -185,9 +203,14 @@ struct YouTubeLiveStreamResource: Decodable, Sendable {
         let title: String?
     }
 
+    struct Status: Decodable, Sendable {
+        let streamStatus: String?
+    }
+
     let id: String?
     let snippet: Snippet?
     let cdn: CDN?
+    let status: Status?
 }
 
 struct YouTubeBroadcastResource: Decodable, Sendable {
@@ -526,6 +549,11 @@ final class YouTubeDiscoveryCache {
     func setID(_ value: String?, kind: String, for key: String) {
         identifiers[key + "/" + kind] = value
         defaults?.set(identifiers, forKey: "YouTubeDiscoveryIDs")
+    }
+
+    /// Broadcasts this phone created, across all of its stream keys.
+    func rememberedCreatedBroadcastIDs(scope: String) -> Set<String> {
+        Set(identifiers.filter { $0.key.hasPrefix(scope + "/") && $0.key.hasSuffix("/createdBroadcast") }.values)
     }
 
     func clear(scope: String) {
@@ -1381,14 +1409,7 @@ final class YouTubeService {
         }
         if resource == nil {
             try checkAuthorization(scope)
-            resource = try await apiPost(
-                url: "\(YOUTUBE_API_BASE)/liveStreams?part=snippet,cdn,contentDetails",
-                token: token, jsonBody: JSONSerialization.data(withJSONObject: [
-                    "snippet": ["title": "Tubeist"],
-                    "cdn": ["ingestionType": "hls", "resolution": "variable", "frameRate": "variable"],
-                    "contentDetails": ["isReusable": true]
-                ]), operation: .createStream
-            )
+            resource = try await insertReusableHLSStream(title: "Tubeist", token: token)
         }
         try checkAuthorization(scope)
         guard let resource, let id = resource.id, !id.isEmpty,
@@ -1401,6 +1422,17 @@ final class YouTubeService {
         discoveryCache.setID(id, kind: "stream", for: YouTubeDiscoveryCache.key(scope: scope, streamKey: streamKey))
         diagnostics.log("YouTube: reusable HLS stream configured", .debug)
         return stream
+    }
+
+    private func insertReusableHLSStream(title: String, token: String) async throws -> YouTubeLiveStreamResource {
+        try await apiPost(
+            url: "\(YOUTUBE_API_BASE)/liveStreams?part=snippet,cdn,contentDetails",
+            token: token, jsonBody: JSONSerialization.data(withJSONObject: [
+                "snippet": ["title": title],
+                "cdn": ["ingestionType": "hls", "resolution": "variable", "frameRate": "variable"],
+                "contentDetails": ["isReusable": true]
+            ]), operation: .createStream
+        )
     }
 
     private func createOrResumeBroadcast(template: YouTubeBroadcast, stream: YouTubeStream, scope: String) async throws -> YouTubeBroadcast {
@@ -1450,17 +1482,23 @@ final class YouTubeService {
             pending = broadcast
         }
         guard let pending else { throw YouTubeError.invalidResponse }
+        let broadcast = try await bind(broadcastID: pending.id, to: stream.id, token: token, scope: scope)
+        diagnostics.log("YouTube: created and bound the next broadcast", .debug)
+        return broadcast
+    }
+
+    /// Binds and verifies that YouTube reports the requested binding.
+    private func bind(broadcastID: String, to streamID: String, token: String, scope: String) async throws -> YouTubeBroadcast {
         try checkAuthorization(scope)
         let url = try resourceURL("liveBroadcasts/bind", query: [
-            .init(name: "id", value: pending.id), .init(name: "streamId", value: stream.id),
+            .init(name: "id", value: broadcastID), .init(name: "streamId", value: streamID),
             .init(name: "part", value: "snippet,status,contentDetails")
         ])
         let bound: YouTubeBroadcastResource = try await apiPost(url: url, token: token, jsonBody: Data(), operation: .bindBroadcast)
         try checkAuthorization(scope)
-        guard let broadcast = bound.broadcast, broadcast.id == pending.id, broadcast.boundStreamId == stream.id else {
+        guard let broadcast = bound.broadcast, broadcast.id == broadcastID, broadcast.boundStreamId == streamID else {
             throw YouTubeError.invalidResponse
         }
-        diagnostics.log("YouTube: created and bound the next broadcast", .debug)
         return broadcast
     }
 
@@ -1824,6 +1862,170 @@ final class YouTubeService {
         request.timeoutInterval = 30
         _ = try await authenticatedData(for: request, fallbackToken: token, operation: .deletePlaylistItem)
         try checkAuthorization(scope)
+    }
+
+    // MARK: - YouTube API: Match keys
+
+    /// Settings action: gives every upcoming planned match its own match key,
+    /// then lists again to verify, with one more pass for anything still sharing.
+    func assignMatchKeys() async throws -> MatchKeyAssignmentResult {
+        beginLoading()
+        defer { endLoading() }
+
+        let scope = try authorizationScope()
+        let remembered = discoveryCache.rememberedCreatedBroadcastIDs(scope: scope)
+        let token = try await getValidAccessToken()
+        try checkAuthorization(scope)
+        var listing = try await matchKeyListing(token: token, scope: scope)
+        var pending = Self.matchesToMove(listing, remembered: remembered)
+        diagnostics.log("YouTube match keys: \(listing.upcoming.count) upcoming broadcasts; \(pending.count) matches need their own key", .debug)
+        var moved: Set<String> = []
+        var reasons: [String: String] = [:]
+        for _ in 1...2 where !pending.isEmpty {
+            var free = listing.freeKeys
+            for match in pending {
+                do {
+                    try await moveToOwnKey(match, free: &free, streams: &listing.streams, token: token, scope: scope)
+                    moved.insert(match.id)
+                    reasons[match.id] = nil
+                } catch where !Self.endsMatchKeyAssignment(error) {
+                    let failure = YouTubeDiagnostics.failure(error)
+                    diagnostics.log("YouTube match keys: could not move a match; \(failure)", .warning)
+                    reasons[match.id] = failure
+                }
+            }
+            listing.upcoming = try await listBroadcasts("upcoming", token: token, scope: scope)
+            pending = Self.matchesToMove(listing, remembered: remembered)
+        }
+
+        let planned = Set(listing.upcoming.filter { MatchKeys.isPlannedMatch($0, remembered: remembered) }.map(\.id))
+        let failures = pending.map { MatchKeyFailure(title: $0.title, reason: reasons[$0.id] ?? "still shares a key") }
+        let failed = Set(pending.map(\.id))
+        let movedCount = planned.intersection(moved).subtracting(failed).count
+        diagnostics.log("YouTube match keys: \(planned.count) matches; \(movedCount) moved; \(failures.count) failed", .debug)
+        return MatchKeyAssignmentResult(
+            total: planned.count, moved: movedCount,
+            alreadySet: planned.count - movedCount - planned.intersection(failed).count, failures: failures
+        )
+    }
+
+    /// Start fixes: moves the given planned matches off a shared or non-match
+    /// key. A match already alone on a match key is left as it is.
+    func moveToOwnMatchKeys(broadcastIDs: [String]) async throws {
+        beginLoading()
+        defer { endLoading() }
+
+        let scope = try authorizationScope()
+        let remembered = discoveryCache.rememberedCreatedBroadcastIDs(scope: scope)
+        let token = try await getValidAccessToken()
+        try checkAuthorization(scope)
+        var listing = try await matchKeyListing(token: token, scope: scope)
+        let needing = Set(MatchKeys.matchesNeedingOwnKey(
+            upcoming: listing.upcoming, streams: listing.streams, remembered: remembered).map(\.id))
+        var free = listing.freeKeys
+        for id in broadcastIDs {
+            let broadcast = listing.upcoming.first { $0.id == id }
+            guard let match = broadcast, MatchKeys.isPlannedMatch(match, remembered: remembered) else {
+                throw YouTubeError.plannedBroadcastUnavailable(broadcast?.title ?? id)
+            }
+            guard needing.contains(id) else { continue }
+            try await moveToOwnKey(match, free: &free, streams: &listing.streams, token: token, scope: scope)
+        }
+    }
+
+    private struct MatchKeyListing {
+        var upcoming: [YouTubeBroadcast]
+        let active: [YouTubeBroadcast]
+        var streams: [MatchKeyStream]
+        /// Streams receiving video are never free, whatever is bound to them.
+        let receiving: Set<String>
+
+        var freeKeys: [MatchKeyStream] {
+            MatchKeys.freeKeys(streams.filter { !receiving.contains($0.id) }, upcoming: upcoming, active: active)
+        }
+    }
+
+    private func matchKeyListing(token: String, scope: String) async throws -> MatchKeyListing {
+        let upcoming = try await listBroadcasts("upcoming", token: token, scope: scope)
+        let active = try await listBroadcasts("active", token: token, scope: scope)
+        let resources: [YouTubeLiveStreamResource] = try await paginatedItems(
+            url: "\(YOUTUBE_API_BASE)/liveStreams?part=snippet,cdn,status&mine=true&maxResults=50",
+            token: token, operation: .streams
+        )
+        try checkAuthorization(scope)
+        // Only IDs and titles leave here; never the secret ingestion key.
+        let streams = resources.compactMap { resource in
+            resource.id.map { MatchKeyStream(id: $0, title: resource.snippet?.title ?? "") }
+        }
+        let receiving = Set(resources.filter { $0.status?.streamStatus == "active" }.compactMap(\.id))
+        return MatchKeyListing(upcoming: upcoming, active: active, streams: streams, receiving: receiving)
+    }
+
+    private func listBroadcasts(_ status: String, token: String, scope: String) async throws -> [YouTubeBroadcast] {
+        let items: [YouTubeBroadcastResource] = try await paginatedItems(
+            url: "\(YOUTUBE_API_BASE)/liveBroadcasts?part=snippet,contentDetails,status&broadcastStatus=\(status)&broadcastType=all&maxResults=50",
+            token: token, operation: .broadcasts
+        )
+        try checkAuthorization(scope)
+        return items.compactMap(\.broadcast)
+    }
+
+    /// Matches that need their own key. Where only planned matches share a match
+    /// key, one of them stays, so the others' moves leave it alone there.
+    private static func matchesToMove(_ listing: MatchKeyListing, remembered: Set<String>) -> [YouTubeBroadcast] {
+        let needing = MatchKeys.matchesNeedingOwnKey(
+            upcoming: listing.upcoming, streams: listing.streams, remembered: remembered)
+        let matchKeyIDs = Set(listing.streams.filter { MatchKeys.isMatchKey(title: $0.title) }.map(\.id))
+        var staying: Set<String> = []
+        var seenKeys: Set<String> = []
+        for match in needing {
+            guard let key = match.boundStreamId, matchKeyIDs.contains(key), seenKeys.insert(key).inserted else { continue }
+            let onKey = listing.upcoming.filter { $0.boundStreamId == key }
+            if onKey.allSatisfy({ other in needing.contains { $0.id == other.id } }) { staying.insert(match.id) }
+        }
+        return needing.filter { !staying.contains($0.id) }
+    }
+
+    private func moveToOwnKey(
+        _ match: YouTubeBroadcast, free: inout [MatchKeyStream], streams: inout [MatchKeyStream],
+        token: String, scope: String
+    ) async throws {
+        let key: MatchKeyStream
+        if free.isEmpty {
+            key = try await createMatchKey(
+                number: MatchKeys.nextNumber(existingTitles: streams.map(\.title)), token: token, scope: scope)
+            streams.append(key)
+        } else {
+            key = free.removeFirst()
+        }
+        do {
+            _ = try await bind(broadcastID: match.id, to: key.id, token: token, scope: scope)
+        } catch {
+            // The key is still free; offer it to the next match.
+            free.insert(key, at: 0)
+            throw error
+        }
+        diagnostics.log("YouTube match keys: moved a match to its own key", .debug)
+    }
+
+    private func createMatchKey(number: Int, token: String, scope: String) async throws -> MatchKeyStream {
+        let title = MatchKeys.title(number: number)
+        try checkAuthorization(scope)
+        let resource = try await insertReusableHLSStream(title: title, token: token)
+        try checkAuthorization(scope)
+        guard let id = resource.id, !id.isEmpty else { throw YouTubeError.invalidResponse }
+        diagnostics.log("YouTube match keys: created a reusable HLS match key", .debug)
+        return MatchKeyStream(id: id, title: title)
+    }
+
+    /// Sign-in problems and cancellation end the whole action; anything else
+    /// is reported against the one match.
+    private static func endsMatchKeyAssignment(_ error: Error) -> Bool {
+        if YouTubeDiagnostics.isCancellation(error) { return true }
+        switch error as? YouTubeError {
+        case .notSignedIn, .noClientId, .authFailed, .tokenRefreshFailed, .apiError(401, _): return true
+        default: return false
+        }
     }
 
     // MARK: - HTTP Helpers

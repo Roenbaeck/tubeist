@@ -2569,3 +2569,366 @@ private actor RoutingYouTubeAPITransport: YouTubeAPITransport {
         return route(request)
     }
 }
+
+// MARK: - Match keys
+
+extension YouTubeServiceTests {
+    @Test @MainActor
+    func assignMovesSharedAndUnboundMatchesAndKeepsAloneOnes() async throws {
+        let fixture = MatchKeyFixture(upcoming: [
+            matchKeyBroadcast("m1", stream: "studio-default"),
+            matchKeyBroadcast("m2", stream: "studio-default"),
+            matchKeyBroadcast("m3", stream: "key-1"),
+            matchKeyBroadcast("m4", stream: nil),
+        ], streams: [
+            matchKeyStream("studio-default", title: "Default stream key"),
+            matchKeyStream("key-1", title: "Tubeist match 1"),
+            matchKeyStream("key-2", title: "Tubeist match 2"),
+        ])
+
+        let result = try await fixture.service.assignMatchKeys()
+
+        #expect(result == MatchKeyAssignmentResult(total: 4, moved: 3, alreadySet: 1, failures: []))
+        let binds = await fixture.binds()
+        #expect(binds.map(\.broadcast) == ["m1", "m2", "m4"])
+        #expect(binds[0].stream == "key-2")
+        let created = await fixture.createdStreams()
+        #expect(created.map(\.title) == ["Tubeist match 3", "Tubeist match 4"])
+        for body in created.map(\.body) {
+            #expect((body["cdn"] as? [String: Any])?["ingestionType"] as? String == "hls")
+            #expect((body["contentDetails"] as? [String: Any])?["isReusable"] as? Bool == true)
+        }
+        #expect(binds[1].stream == created[0].id)
+        #expect(binds[2].stream == created[1].id)
+        let streamPosts = await fixture.transport.requests.filter {
+            $0.httpMethod == "POST" && $0.url?.path.hasSuffix("/liveStreams") == true
+        }
+        #expect(streamPosts.allSatisfy { queryItems(in: $0).contains(.init(name: "part", value: "snippet,cdn,contentDetails")) })
+        let lists = await fixture.transport.requests.filter { $0.httpMethod == "GET" }.map(queryItems(in:))
+        #expect(lists.contains { $0.contains(.init(name: "broadcastStatus", value: "upcoming")) && $0.contains(.init(name: "broadcastType", value: "all")) })
+        #expect(lists.contains { $0.contains(.init(name: "mine", value: "true")) && $0.contains(.init(name: "part", value: "snippet,cdn,status")) })
+    }
+
+    @Test @MainActor
+    func assignReusesFreeKeysAcrossPagesBeforeCreatingOne() async throws {
+        let fixture = MatchKeyFixture(upcoming: [
+            matchKeyBroadcast("m1", stream: "studio-default"),
+            matchKeyBroadcast("m2", stream: "key-1"),
+        ], streams: [
+            matchKeyStream("studio-default", title: "Default stream key"),
+            matchKeyStream("key-1", title: "Tubeist match 1"),
+            matchKeyStream("key-3", title: "Tubeist match 3"),
+            matchKeyStream("key-2", title: "Tubeist match 2", streamStatus: "active"),
+        ], pageSize: 2)
+
+        let result = try await fixture.service.assignMatchKeys()
+
+        #expect(result.failures.isEmpty)
+        // key-2 is still receiving video, so the free key is key-3 (on page 2).
+        #expect(await fixture.binds().map(\.stream) == ["key-3"])
+        #expect(await fixture.createdStreams().isEmpty)
+    }
+
+    @Test @MainActor
+    func assignNeverRebindsTubeistsPersistentOrActiveBroadcasts() async throws {
+        let scope = YouTubeDiscoveryCache.scope(refreshToken: "refresh-token")
+        let cache = YouTubeDiscoveryCache()
+        cache.setID("remembered", kind: "createdBroadcast", for: YouTubeDiscoveryCache.key(scope: scope, streamKey: "phone-key"))
+        let fixture = MatchKeyFixture(upcoming: [
+            matchKeyBroadcast("own", stream: "studio-default",
+                              published: "2026-11-01T11:59:50Z", scheduled: "2026-11-01T12:00:00Z"),
+            matchKeyBroadcast("remembered", stream: "studio-default"),
+            matchKeyBroadcast("persistent", stream: "studio-default", persistent: true),
+            matchKeyBroadcast("ended", stream: "studio-default", status: "complete"),
+            matchKeyBroadcast("m1", stream: "studio-default"),
+        ], active: [
+            matchKeyBroadcast("live", stream: "studio-default", status: "live"),
+        ], streams: [
+            matchKeyStream("studio-default", title: "Default stream key"),
+        ], cache: cache)
+
+        let result = try await fixture.service.assignMatchKeys()
+
+        #expect(await fixture.binds().map(\.broadcast) == ["m1"])
+        #expect(result == MatchKeyAssignmentResult(total: 1, moved: 1, alreadySet: 0, failures: []))
+    }
+
+    @Test @MainActor
+    func verificationMovesAMatchThatEndedUpSharingAKey() async throws {
+        let fixture = MatchKeyFixture(upcoming: [
+            matchKeyBroadcast("m1", stream: "studio-default"),
+        ], streams: [
+            matchKeyStream("studio-default", title: "Default stream key"),
+            matchKeyStream("key-2", title: "Tubeist match 2"),
+        ], onRelist: { listing, upcoming in
+            // Another phone put m9 on the same key at the same moment.
+            guard listing == 2 else { return upcoming }
+            return upcoming + [matchKeyBroadcast("m9", stream: "key-2")]
+        })
+
+        let result = try await fixture.service.assignMatchKeys()
+
+        let binds = await fixture.binds()
+        #expect(binds.count == 2)
+        #expect(binds[0].broadcast == "m1" && binds[0].stream == "key-2")
+        #expect(["m1", "m9"].contains(binds[1].broadcast))
+        #expect(binds[1].stream != "key-2")
+        #expect(result.failures.isEmpty)
+        #expect(await fixture.upcomingListings() == 3)
+    }
+
+    @Test @MainActor
+    func assignReportsPerMatchFailureAndContinues() async throws {
+        let fixture = MatchKeyFixture(upcoming: [
+            matchKeyBroadcast("m1", stream: "studio-default"),
+            matchKeyBroadcast("m2", stream: "studio-default"),
+        ], streams: [
+            matchKeyStream("studio-default", title: "Default stream key"),
+            matchKeyStream("key-1", title: "Tubeist match 1"),
+        ], bindStatus: ["m2": 403])
+
+        let result = try await fixture.service.assignMatchKeys()
+
+        #expect(result.failures == [MatchKeyFailure(title: "m2 title", reason: "HTTP 403")])
+        #expect(await fixture.boundStream(of: "m1") == "key-1")
+        #expect(result.moved == 1)
+        #expect(result.summary.contains("Could not give 'm2 title' its own key:"))
+        #expect(result.summary.split(separator: "\n").last == "Could not give 'm2 title' its own key: HTTP 403.")
+    }
+
+    @Test @MainActor
+    func assignThrowsWhenSignedOut() async throws {
+        let fixture = MatchKeyFixture(upcoming: [], streams: [], tokenStore: MemoryYouTubeTokenStore(
+            accessToken: nil, refreshToken: nil, expiry: nil))
+
+        await #expect(throws: YouTubeError.notSignedIn) {
+            _ = try await fixture.service.assignMatchKeys()
+        }
+        #expect(await fixture.transport.requests.isEmpty)
+    }
+
+    @Test
+    func summaryCopy() {
+        #expect(MatchKeyAssignmentResult(total: 12, moved: 3, alreadySet: 9, failures: []).summary
+                == "12 matches, each with its own key. 3 moved, 9 already set up.")
+    }
+
+    @Test @MainActor
+    func assignNeverLogsOrReturnsSecretKeys() async throws {
+        let captured = CapturedYouTubeDiagnostics()
+        let fixture = MatchKeyFixture(upcoming: [
+            matchKeyBroadcast("m1", stream: "studio-default"),
+            matchKeyBroadcast("m2", stream: "studio-default"),
+            matchKeyBroadcast("m3", stream: nil),
+        ], streams: [
+            matchKeyStream("studio-default", title: "Default stream key"),
+            matchKeyStream("key-1", title: "Tubeist match 1"),
+        ], bindStatus: ["m2": 500], diagnostics: captured.diagnostics)
+
+        let result = try await fixture.service.assignMatchKeys()
+
+        #expect(!result.failures.isEmpty)
+        let texts = [result.summary, captured.text] + result.failures.map(\.reason)
+        #expect(!captured.text.isEmpty)
+        #expect(texts.allSatisfy { !$0.contains("secret-") })
+    }
+
+    @Test @MainActor
+    func moveToOwnMatchKeysMovesOnlyTheGivenMatches() async throws {
+        let fixture = MatchKeyFixture(upcoming: [
+            matchKeyBroadcast("m1", stream: "studio-default"),
+            matchKeyBroadcast("m2", stream: "studio-default"),
+        ], streams: [
+            matchKeyStream("studio-default", title: "Default stream key"),
+            matchKeyStream("key-1", title: "Tubeist match 1"),
+        ])
+
+        try await fixture.service.moveToOwnMatchKeys(broadcastIDs: ["m2"])
+
+        #expect(await fixture.binds().map(\.broadcast) == ["m2"])
+        #expect(await fixture.boundStream(of: "m2") == "key-1")
+    }
+
+    @Test @MainActor
+    func moveToOwnMatchKeysThrowsOnFirstFailure() async throws {
+        let fixture = MatchKeyFixture(upcoming: [
+            matchKeyBroadcast("m1", stream: "studio-default"),
+            matchKeyBroadcast("m2", stream: "studio-default"),
+        ], streams: [
+            matchKeyStream("studio-default", title: "Default stream key"),
+            matchKeyStream("key-1", title: "Tubeist match 1"),
+            matchKeyStream("key-2", title: "Tubeist match 2"),
+        ], bindStatus: ["m1": 403])
+
+        await #expect(throws: YouTubeError.self) {
+            try await fixture.service.moveToOwnMatchKeys(broadcastIDs: ["m1", "m2"])
+        }
+        #expect(await fixture.binds().map(\.broadcast) == ["m1"])
+    }
+
+    @Test @MainActor
+    func rememberedCreatedBroadcastIDsCoverEveryKeyInTheScope() {
+        let cache = YouTubeDiscoveryCache()
+        let scope = YouTubeDiscoveryCache.scope(refreshToken: "refresh-token")
+        let other = YouTubeDiscoveryCache.scope(refreshToken: "other-token")
+        cache.setID("a", kind: "createdBroadcast", for: YouTubeDiscoveryCache.key(scope: scope, streamKey: "key-a"))
+        cache.setID("b", kind: "createdBroadcast", for: YouTubeDiscoveryCache.key(scope: scope, streamKey: "key-b"))
+        cache.setID("s", kind: "stream", for: YouTubeDiscoveryCache.key(scope: scope, streamKey: "key-a"))
+        cache.setID("c", kind: "createdBroadcast", for: YouTubeDiscoveryCache.key(scope: other, streamKey: "key-a"))
+
+        #expect(cache.rememberedCreatedBroadcastIDs(scope: scope) == ["a", "b"])
+    }
+}
+
+/// A planned broadcast as `liveBroadcasts.list` returns it; title is "<id> title".
+private func matchKeyBroadcast(
+    _ id: String, stream: String?, status: String = "ready",
+    published: String = "2026-10-20T10:00:00Z", scheduled: String = "2026-11-01T12:00:00Z",
+    persistent: Bool = false
+) -> [String: Any] {
+    var details: [String: Any] = ["enableAutoStart": true, "enableAutoStop": true]
+    details["boundStreamId"] = stream
+    return [
+        "id": id,
+        "snippet": ["title": "\(id) title", "publishedAt": published, "scheduledStartTime": scheduled,
+                    "isDefaultBroadcast": persistent],
+        "status": ["privacyStatus": "unlisted", "lifeCycleStatus": status],
+        "contentDetails": details,
+    ]
+}
+
+/// A `liveStreams.list` item whose secret key is "secret-<id>".
+private func matchKeyStream(_ id: String, title: String, streamStatus: String = "ready") -> [String: Any] {
+    [
+        "id": id,
+        "snippet": ["title": title],
+        "cdn": ["ingestionType": "hls", "ingestionInfo": [
+            "streamName": "secret-\(id)",
+            "ingestionAddress": "https://a.upload.youtube.com/http_upload_hls?cid=secret-\(id)&file=",
+        ]],
+        "status": ["streamStatus": streamStatus],
+    ]
+}
+
+/// A small in-memory channel: binds and stream inserts change what later lists return.
+private final class MatchKeyChannel: @unchecked Sendable {
+    private let lock = NSLock()
+    private var upcoming: [[String: Any]]
+    private let active: [[String: Any]]
+    private var streams: [[String: Any]]
+    private let pageSize: Int
+    private let bindStatus: [String: Int]
+    private let onRelist: @Sendable (Int, [[String: Any]]) -> [[String: Any]]
+    private var listings = 0
+    private var created = 0
+
+    init(upcoming: [[String: Any]], active: [[String: Any]], streams: [[String: Any]], pageSize: Int,
+         bindStatus: [String: Int], onRelist: @escaping @Sendable (Int, [[String: Any]]) -> [[String: Any]]) {
+        self.upcoming = upcoming
+        self.active = active
+        self.streams = streams
+        self.pageSize = pageSize
+        self.bindStatus = bindStatus
+        self.onRelist = onRelist
+    }
+
+    var upcomingListings: Int { lock.withLock { listings } }
+
+    func boundStream(of id: String) -> String? {
+        lock.withLock {
+            (upcoming.first { $0["id"] as? String == id }?["contentDetails"] as? [String: Any])?["boundStreamId"] as? String
+        }
+    }
+
+    func respond(to request: URLRequest) -> YouTubeAPIResponse {
+        lock.withLock {
+            let path = request.url?.path ?? ""
+            let query = queryItems(in: request)
+            func value(_ name: String) -> String? { query.first { $0.name == name }?.value }
+            switch (request.httpMethod ?? "GET", path) {
+            case ("GET", let p) where p.hasSuffix("/liveStreams"):
+                return page(streams, token: value("pageToken"))
+            case ("GET", let p) where p.hasSuffix("/liveBroadcasts"):
+                if value("broadcastStatus") == "active" { return page(active, token: nil) }
+                if value("broadcastStatus") == "upcoming" {
+                    if value("pageToken") == nil {
+                        listings += 1
+                        upcoming = onRelist(listings, upcoming)
+                    }
+                    return page(upcoming, token: value("pageToken"))
+                }
+                return page([], token: nil)
+            case ("POST", let p) where p.hasSuffix("/liveStreams"):
+                created += 1
+                let body = (try? JSONSerialization.jsonObject(with: request.httpBody ?? Data())) as? [String: Any]
+                let title = (body?["snippet"] as? [String: Any])?["title"] as? String ?? ""
+                let stream = matchKeyStream("created-\(created)", title: title)
+                streams.append(stream)
+                return .init(data: try! JSONSerialization.data(withJSONObject: stream), statusCode: 200)
+            case ("POST", let p) where p.hasSuffix("/liveBroadcasts/bind"):
+                guard let id = value("id"), let streamId = value("streamId"),
+                      let index = upcoming.firstIndex(where: { $0["id"] as? String == id }) else {
+                    return .init(data: Data(), statusCode: 404)
+                }
+                if let status = bindStatus[id] {
+                    return .init(data: Data(#"{"error":{"message":"denied"}}"#.utf8), statusCode: status)
+                }
+                var details = upcoming[index]["contentDetails"] as? [String: Any] ?? [:]
+                details["boundStreamId"] = streamId
+                upcoming[index]["contentDetails"] = details
+                return .init(data: try! JSONSerialization.data(withJSONObject: upcoming[index]), statusCode: 200)
+            default:
+                return .init(data: Data(), statusCode: 418)
+            }
+        }
+    }
+
+    private func page(_ items: [[String: Any]], token: String?) -> YouTubeAPIResponse {
+        let start = token.flatMap(Int.init) ?? 0
+        let end = min(items.count, start + pageSize)
+        var object: [String: Any] = ["items": Array(items[start..<end])]
+        if end < items.count { object["nextPageToken"] = String(end) }
+        return .init(data: try! JSONSerialization.data(withJSONObject: object), statusCode: 200)
+    }
+}
+
+@MainActor private struct MatchKeyFixture {
+    let channel: MatchKeyChannel
+    let transport: RoutingYouTubeAPITransport
+    let service: YouTubeService
+
+    init(
+        upcoming: [[String: Any]], active: [[String: Any]] = [], streams: [[String: Any]],
+        pageSize: Int = 50, bindStatus: [String: Int] = [:], cache: YouTubeDiscoveryCache = YouTubeDiscoveryCache(),
+        tokenStore: MemoryYouTubeTokenStore = validMemoryTokenStore(),
+        diagnostics: YouTubeDiagnostics = YouTubeDiagnostics(),
+        onRelist: @escaping @Sendable (Int, [[String: Any]]) -> [[String: Any]] = { $1 }
+    ) {
+        let channel = MatchKeyChannel(upcoming: upcoming, active: active, streams: streams, pageSize: pageSize,
+                                      bindStatus: bindStatus, onRelist: onRelist)
+        self.channel = channel
+        transport = RoutingYouTubeAPITransport { channel.respond(to: $0) }
+        service = YouTubeService(transport: transport, tokenStore: tokenStore, discoveryCache: cache,
+                                 now: { plannedFixtureNow }, diagnostics: diagnostics)
+    }
+
+    func binds() async -> [(broadcast: String, stream: String)] {
+        await transport.requests.filter { $0.url?.path.hasSuffix("/liveBroadcasts/bind") == true }.map { request in
+            let query = queryItems(in: request)
+            return (query.first { $0.name == "id" }?.value ?? "", query.first { $0.name == "streamId" }?.value ?? "")
+        }
+    }
+
+    func createdStreams() async -> [(id: String, title: String, body: [String: Any])] {
+        let posts = await transport.requests.filter {
+            $0.httpMethod == "POST" && $0.url?.path.hasSuffix("/liveStreams") == true
+        }
+        return posts.enumerated().map { index, request in
+            let body = (try? JSONSerialization.jsonObject(with: request.httpBody ?? Data())) as? [String: Any] ?? [:]
+            return ("created-\(index + 1)", (body["snippet"] as? [String: Any])?["title"] as? String ?? "", body)
+        }
+    }
+
+    func boundStream(of id: String) async -> String? { channel.boundStream(of: id) }
+    func upcomingListings() async -> Int { channel.upcomingListings }
+}
