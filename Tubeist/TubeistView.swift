@@ -40,6 +40,9 @@ struct TubeistView: View {
     @State private var areSystemMetricsAtTop = Settings.areSystemMetricsAtTop
     @State private var overlayManager = OverlaySettingsManager()
     @State private var showSettings = false
+    /// Fixed when Settings opens: a running stream gets a read-only sheet whose
+    /// opening and closing leave the camera, overlays and YouTube status alone.
+    @State private var settingsReadOnly = false
     @State private var showStabilizationConfirmation = false
     @State private var showBatterySavingConfirmation = false
     @State private var showFocusAndExposureArea = false
@@ -649,9 +652,8 @@ struct TubeistView: View {
                         VStack(alignment: .center, spacing: 0) {
                             
                             Button(action: {
-                                if !appState.isStreamSessionRunning {
-                                    showSettings = true
-                                }
+                                settingsReadOnly = appState.isStreamSessionRunning
+                                showSettings = true
                             }) {
                                 Image(systemName: "gear")
                                     .font(.system(size: 24))
@@ -663,6 +665,9 @@ struct TubeistView: View {
                             .accessibilityLabel("Settings")
                             .accessibilityHint("Opens streaming, recording, camera, and overlay settings")
                             .sheet(isPresented: $showSettings, onDismiss: {
+                                // Nothing can change in read-only Settings, so
+                                // nothing running is reloaded or recreated.
+                                guard !settingsReadOnly else { return }
                                 youtubeStatusGeneration = UUID()
                                 areSystemMetricsAtTop = Settings.areSystemMetricsAtTop
                                 // Save, Cancel, and swipe-to-dismiss all reload
@@ -680,7 +685,7 @@ struct TubeistView: View {
                                     appState.youtubeBroadcastId = nil
                                 }
                             }) {
-                                SettingsView(overlayManager: overlayManager)
+                                SettingsView(overlayManager: overlayManager, isReadOnly: settingsReadOnly)
                             }
                             .padding(.bottom, 10)
                             
@@ -1111,7 +1116,8 @@ struct TubeistView: View {
         .onChange(of: showSettings) { _, isPresented in
             // Save can rebuild the camera graph. Refresh it when Settings
             // closes, while transient inactive states retain the ready graph.
-            if isPresented { isCameraReady = false }
+            // Read-only Settings cannot rebuild it, so the stream's camera stays ready.
+            if isPresented, !settingsReadOnly { isCameraReady = false }
         }
         .onChange(of: appState.isBatterySavingOn) { oldValue, newValue in
             appState.isAudioLevelRunning = !appState.isBatterySavingOn

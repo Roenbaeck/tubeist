@@ -364,6 +364,9 @@ private struct YouTubeSettingsLoadContext: Equatable {
 
 struct SettingsView: View {
     var overlayManager: OverlaySettingsManager
+    /// While a stream runs, Settings only shows values: nothing is saved,
+    /// no session is cycled and YouTube is only read.
+    var isReadOnly: Bool = false
     @Environment(AppState.self) var appState
     @Environment(\.presentationMode) private var presentationMode
     @State private var stream: Bool = Settings.stream
@@ -416,6 +419,7 @@ struct SettingsView: View {
     /// The image behind the current planned pick, kept so Save stores it as loaded.
     @State private var plannedThumbnailData: Data?
     @State private var plannedDetailsLoadID: UUID?
+    @State private var isLoadingBroadcastInUse = false
     @State private var selectedPhotoItem: PhotosPickerItem? = nil
     @State private var isSettingUpYouTubeStream = false
     @State private var youtubeConfigLoaded: Bool = false
@@ -436,6 +440,13 @@ struct SettingsView: View {
     var body: some View {
         NavigationView {
             Form {
+                if isReadOnly {
+                    Section {
+                        Text("Settings are locked while streaming. Stop the stream to change them.")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
                 if !Settings.hasCameraPermission() || !Settings.hasMicrophonePermission() {
                     Button("Click here and grant Camera and Microphone access in the settings to use the app") {
                         Settings.openSystemSettings()
@@ -517,7 +528,7 @@ struct SettingsView: View {
                         }
                     }
 
-                    Section(header: Text("YouTube Stream Configuration"), footer: Text(youtubeService.isSignedIn ? "Save keeps broadcast preferences in Tubeist; your broadcast is created or updated when you tap Start stream. \(plannedStreamFooter)" : "Sign in with your Google account to set up a stream key and broadcast without YouTube Studio. Your channel must already be enabled for live streaming.")) {
+                    Section(header: Text("YouTube Stream Configuration"), footer: Text(isReadOnly ? "Showing the YouTube broadcast in use." : youtubeService.isSignedIn ? "Save keeps broadcast preferences in Tubeist; your broadcast is created or updated when you tap Start stream. \(plannedStreamFooter)" : "Sign in with your Google account to set up a stream key and broadcast without YouTube Studio. Your channel must already be enabled for live streaming.")) {
                         if !youtubeService.isSignedIn {
                             Button("Sign in with Google") {
                                 Task {
@@ -537,7 +548,8 @@ struct SettingsView: View {
                             }
                             .accessibilityIdentifier("YouTube channel")
 
-                            if youtubeService.isLoading || isSettingUpYouTubeStream || isLoadingPlannedDetails {
+                            if youtubeService.isLoading || isSettingUpYouTubeStream || isLoadingPlannedDetails
+                                || isLoadingBroadcastInUse {
                                 HStack {
                                     ProgressView()
                                     Text("Loading...")
@@ -566,7 +578,7 @@ struct SettingsView: View {
                                         .foregroundColor(.secondary)
                                 }
 
-                                if broadcastLifeCycleStatus == "live" || broadcastLifeCycleStatus == "testing" {
+                                if !isReadOnly, broadcastLifeCycleStatus == "live" || broadcastLifeCycleStatus == "testing" {
                                     Button("Stop YouTube Stream", role: .destructive) {
                                         Task {
                                             guard let broadcastId else { return }
@@ -582,24 +594,26 @@ struct SettingsView: View {
                                     .buttonStyle(.bordered)
                                 }
 
-                                Picker("Planned stream", selection: plannedChoiceBinding) {
-                                    Text("New stream").tag(PlannedStreamChoice.newStream)
-                                    if let restartSelection = youtubeDraft.restartSelection {
-                                        Text(PlannedStreams.restartLabel(for: restartSelection))
-                                            .tag(PlannedStreamChoice.restart)
+                                if !isReadOnly {
+                                    Picker("Planned stream", selection: plannedChoiceBinding) {
+                                        Text("New stream").tag(PlannedStreamChoice.newStream)
+                                        if let restartSelection = youtubeDraft.restartSelection {
+                                            Text(PlannedStreams.restartLabel(for: restartSelection))
+                                                .tag(PlannedStreamChoice.restart)
+                                        }
+                                        ForEach(youtubeDraft.plannedBroadcasts, id: \.id) { planned in
+                                            Text(PlannedStreams.label(for: planned, calendar: .current))
+                                                .tag(PlannedStreamChoice.planned(planned.id))
+                                        }
                                     }
-                                    ForEach(youtubeDraft.plannedBroadcasts, id: \.id) { planned in
-                                        Text(PlannedStreams.label(for: planned, calendar: .current))
-                                            .tag(PlannedStreamChoice.planned(planned.id))
+                                    .disabled(youtubeDraft.broadcast?.isActive == true)
+                                    if plannedListFailed && !plannedListLoaded {
+                                        Text(Settings.plannedStreamSelection == nil
+                                             ? "Couldn't load planned streams. Refresh to try again."
+                                             : "Couldn't load planned streams; your saved choice is kept.")
+                                            .foregroundColor(.secondary)
+                                            .font(.caption)
                                     }
-                                }
-                                .disabled(youtubeDraft.broadcast?.isActive == true)
-                                if plannedListFailed && !plannedListLoaded {
-                                    Text(Settings.plannedStreamSelection == nil
-                                         ? "Couldn't load planned streams. Refresh to try again."
-                                         : "Couldn't load planned streams; your saved choice is kept.")
-                                        .foregroundColor(.secondary)
-                                        .font(.caption)
                                 }
 
                                 VStack(alignment: .leading, spacing: 8) {
@@ -664,8 +678,10 @@ struct SettingsView: View {
                                 }
                                 if let errorMessage = youtubeService.errorMessage {
                                     Text(errorMessage).foregroundColor(.red)
-                                    Text("Your unsaved changes are kept. Refresh to try again.")
-                                        .foregroundColor(.secondary)
+                                    if !isReadOnly {
+                                        Text("Your unsaved changes are kept. Refresh to try again.")
+                                            .foregroundColor(.secondary)
+                                    }
                                 }
                             } else if let errorMessage = youtubeService.errorMessage {
                                 Text(errorMessage)
@@ -686,10 +702,12 @@ struct SettingsView: View {
                                 }
                             }
 
-                            Button("Sign out of YouTube", role: .destructive) {
-                                clearYouTubeAccountState()
+                            if !isReadOnly {
+                                Button("Sign out of YouTube", role: .destructive) {
+                                    clearYouTubeAccountState()
+                                }
+                                .buttonStyle(.bordered)
                             }
-                            .buttonStyle(.bordered)
                         }
                     }
                 }
@@ -985,7 +1003,7 @@ struct SettingsView: View {
                         "Read the Tubeist Privacy Policy",
                         destination: URL(string: "https://github.com/Roenbaeck/tubeist/blob/main/PRIVACY.md")!
                     )
-                    if !streamKeyManager.currentKey.isEmpty || youtubeService.isSignedIn {
+                    if !isReadOnly, !streamKeyManager.currentKey.isEmpty || youtubeService.isSignedIn {
                         Button("Remove YouTube Credentials", role: .destructive) {
                             do {
                                 try Settings.setStreamKey(nil)
@@ -1021,7 +1039,7 @@ struct SettingsView: View {
                 }
                 
             }
-            .disabled(isSaving)
+            .disabled(isSaving || isReadOnly)
             .toolbar {
                 // Text fields otherwise have no way to dismiss the keyboard,
                 // which in landscape covers roughly half the form.
@@ -1053,69 +1071,81 @@ struct SettingsView: View {
             }
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
-            .navigationBarItems(leading: Button("Cancel") {
-                presentationMode.wrappedValue.dismiss()
-            }.disabled(isSaving || isSettingUpYouTubeStream), trailing: Button("Save") {
-                Task {
-                    isSaving = true
-                    defer { isSaving = false }
-                    var previousSettings: AppliedSettingsSnapshot?
-                    var localSettingsCommitted = false
-                    do {
-                        try validateDraft()
-                        // Save also includes an unsubmitted URL still in the
-                        // text field; Return and the plus button are optional.
-                        addOverlay()
-                        previousSettings = try AppliedSettingsSnapshot.capture(
-                            overlays: overlayManager.overlays
-                        )
-                        if cameraPosition == "custom" {
-                            saveCustomPreset()
-                        }
-                        try commitDraft()
-                        localSettingsCommitted = true
-                        let hasYouTubeDraft = youtubeDraft.broadcast != nil && youtubeService.isSignedIn
-                        if hasYouTubeDraft && youtubeDraft.plannedChoice != .newStream {
-                            try savePlannedStream()
-                        } else {
-                            if hasYouTubeDraft {
-                                try saveYouTubePreferences()
-                            }
-                            if PlannedStreams.shouldClearSavedSelection(
-                                choice: youtubeDraft.plannedChoice,
-                                plannedListLoaded: hasYouTubeDraft && plannedListLoaded,
-                                streamKeyChanged: Settings.streamKey != previousSettings?.streamKey
-                            ) {
-                                Settings.plannedStreamSelection = nil
-                                try Settings.setPlannedStreamThumbnailData(nil)
-                            }
-                        }
-                        try await Streamer.shared.cycleSessions()
-                        await Settings.configureJournal()
-                        youtubeService.errorMessage = nil
-                        saveErrorMessage = nil
-                        appState.activityPreferences = .saved
-                        applySavedYouTubeStatus(previousStreamKey: previousSettings?.streamKey)
+            .navigationBarItems(leading: Group {
+                if !isReadOnly {
+                    Button("Cancel") {
                         presentationMode.wrappedValue.dismiss()
-                    } catch {
-                        var failureMessage = error.localizedDescription
-                        if localSettingsCommitted, let previousSettings {
+                    }.disabled(isSaving || isSettingUpYouTubeStream)
+                }
+            }, trailing: Group {
+                if isReadOnly {
+                    Button("Close") {
+                        presentationMode.wrappedValue.dismiss()
+                    }
+                } else {
+                    Button("Save") {
+                        Task {
+                            isSaving = true
+                            defer { isSaving = false }
+                            var previousSettings: AppliedSettingsSnapshot?
+                            var localSettingsCommitted = false
                             do {
-                                try await previousSettings.restore(overlays: overlayManager)
+                                try validateDraft()
+                                // Save also includes an unsubmitted URL still in the
+                                // text field; Return and the plus button are optional.
+                                addOverlay()
+                                previousSettings = try AppliedSettingsSnapshot.capture(
+                                    overlays: overlayManager.overlays
+                                )
+                                if cameraPosition == "custom" {
+                                    saveCustomPreset()
+                                }
+                                try commitDraft()
+                                localSettingsCommitted = true
+                                let hasYouTubeDraft = youtubeDraft.broadcast != nil && youtubeService.isSignedIn
+                                if hasYouTubeDraft && youtubeDraft.plannedChoice != .newStream {
+                                    try savePlannedStream()
+                                } else {
+                                    if hasYouTubeDraft {
+                                        try saveYouTubePreferences()
+                                    }
+                                    if PlannedStreams.shouldClearSavedSelection(
+                                        choice: youtubeDraft.plannedChoice,
+                                        plannedListLoaded: hasYouTubeDraft && plannedListLoaded,
+                                        streamKeyChanged: Settings.streamKey != previousSettings?.streamKey
+                                    ) {
+                                        Settings.plannedStreamSelection = nil
+                                        try Settings.setPlannedStreamThumbnailData(nil)
+                                    }
+                                }
                                 try await Streamer.shared.cycleSessions()
-                                failureMessage += " Local app settings were restored."
+                                await Settings.configureJournal()
+                                youtubeService.errorMessage = nil
+                                saveErrorMessage = nil
+                                appState.activityPreferences = .saved
+                                applySavedYouTubeStatus(previousStreamKey: previousSettings?.streamKey)
+                                presentationMode.wrappedValue.dismiss()
                             } catch {
-                                failureMessage += " Restoring the previous app settings also failed: \(error.localizedDescription)"
+                                var failureMessage = error.localizedDescription
+                                if localSettingsCommitted, let previousSettings {
+                                    do {
+                                        try await previousSettings.restore(overlays: overlayManager)
+                                        try await Streamer.shared.cycleSessions()
+                                        failureMessage += " Local app settings were restored."
+                                    } catch {
+                                        failureMessage += " Restoring the previous app settings also failed: \(error.localizedDescription)"
+                                    }
+                                }
+                                youtubeService.errorMessage = failureMessage
+                                saveErrorMessage = failureMessage
+                                LOG("Could not save settings: \(error.localizedDescription)", level: .error)
                             }
                         }
-                        youtubeService.errorMessage = failureMessage
-                        saveErrorMessage = failureMessage
-                        LOG("Could not save settings: \(error.localizedDescription)", level: .error)
                     }
+                    .disabled(isSaving || isSettingUpYouTubeStream || youtubeDraft.activeThumbnail.isLoading || isLoadingPlannedDetails || isRequestingActivityPermission)
+                    .buttonStyle(.borderedProminent)
                 }
-            }
-            .disabled(isSaving || isSettingUpYouTubeStream || youtubeDraft.activeThumbnail.isLoading || isLoadingPlannedDetails || isRequestingActivityPermission)
-            .buttonStyle(.borderedProminent))
+            })
             .interactiveDismissDisabled(isSaving || isSettingUpYouTubeStream)
             .onAppear {
                 guard !didInitializeDraft else { return }
@@ -1471,6 +1501,10 @@ struct SettingsView: View {
 
     func loadYouTubeBroadcast(forStreamKey requestedStreamKey: String? = nil) async {
         let streamKey = requestedStreamKey ?? streamKeyManager.currentKey
+        if isReadOnly {
+            await loadBroadcastInUse(forStreamKey: streamKey)
+            return
+        }
         updateYouTubeDraftContext()
         youtubeLoadGeneration = UUID()
         youtubeService.errorMessage = nil
@@ -1522,6 +1556,69 @@ struct SettingsView: View {
             youtubeConfigLoaded = true
             lastYouTubeLoadContext = context
             LOG("Failed to load YouTube configuration: \(message)", level: .error)
+        }
+    }
+
+    /// Read-only Settings shows the broadcast the running stream uses, with
+    /// YouTube's own values. It only reads from YouTube and never touches
+    /// `Settings`, the planned machinery or the main screen's YouTube status.
+    private func loadBroadcastInUse(forStreamKey streamKey: String) async {
+        updateYouTubeDraftContext()
+        youtubeLoadGeneration = UUID()
+        youtubeService.errorMessage = nil
+        let generation = youtubeLoadGeneration
+        let context = youtubeLoadContext
+        let isCurrent = {
+            generation == youtubeLoadGeneration && context == youtubeLoadContext && !Task.isCancelled
+        }
+        isLoadingBroadcastInUse = true
+        defer { if generation == youtubeLoadGeneration { isLoadingBroadcastInUse = false } }
+        do {
+            if streamKey.isEmpty {
+                try await youtubeService.loadAuthorizedChannel()
+                guard isCurrent() else { return }
+                youtubeConfigLoaded = true
+                lastYouTubeLoadContext = context
+                return
+            }
+            let configuration = try await youtubeService.loadSettingsConfiguration(forStreamKey: streamKey)
+            guard isCurrent() else { return }
+            let broadcast = configuration.broadcast
+            // Playlist and thumbnail are best effort: a failure leaves them empty.
+            var membership: YouTubePlaylistMembership?
+            if !broadcast.id.isEmpty {
+                do {
+                    membership = try await youtubeService.playlistMembership(
+                        videoId: broadcast.id, among: configuration.playlists)
+                } catch {
+                    LOG("Could not look up playlists for the broadcast in use: \(plannedLoadDiagnostic(error))", level: .warning)
+                }
+            }
+            var thumbnail: Data?
+            if let url = broadcast.thumbnailURL {
+                do {
+                    thumbnail = try await youtubeService.downloadThumbnail(from: url)
+                } catch {
+                    LOG("Could not download the thumbnail of the broadcast in use: \(plannedLoadDiagnostic(error))", level: .warning)
+                }
+            }
+            guard isCurrent() else { return }
+            youtubeDraft.apply(broadcast: broadcast, playlists: configuration.playlists,
+                               savedPreferences: nil, savedThumbnail: nil)
+            youtubeDraft.playlistId = membership?.playlistId
+            youtubeDraft.thumbnail.reset(image: thumbnail.flatMap { UIImage(data: $0) })
+            youtubeConfigLoaded = true
+            lastYouTubeLoadContext = context
+            LOG("Loaded the YouTube broadcast in use: \(broadcast.title)", level: .debug)
+        } catch {
+            guard isCurrent() else { return }
+            let message = YouTubeDiagnostics.text(error.localizedDescription, secrets: [
+                streamKey, Settings.youtubeAccessToken ?? "", Settings.youtubeRefreshToken ?? "",
+            ])
+            youtubeService.errorMessage = message
+            youtubeConfigLoaded = true
+            lastYouTubeLoadContext = context
+            LOG("Failed to load the YouTube broadcast in use: \(message)", level: .error)
         }
     }
 
