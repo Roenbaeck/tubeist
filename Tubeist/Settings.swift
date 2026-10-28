@@ -407,8 +407,11 @@ struct SettingsView: View {
     @State private var maxFrameRate: Double = DEFAULT_FRAMERATE
     @State private var youtubeService = YouTubeService()
     @State private var youtubeDraft = YouTubeSettingsDraft()
-    /// The saved pick is offered once per stream key, so a refresh never re-applies it over a later choice.
-    @State private var didApplySavedPlannedSelection = false
+    /// Set once the planned list loads for the current key. The saved pick is
+    /// offered only on that first load, so a refresh never re-applies it over a
+    /// later choice, and until then "New stream" never clears it on Save.
+    @State private var plannedListLoaded = false
+    @State private var plannedListFailed = false
     @State private var savedPlannedThumbnailData: Data?
     /// The image behind the current planned pick, kept so Save stores it as loaded.
     @State private var plannedThumbnailData: Data?
@@ -591,6 +594,13 @@ struct SettingsView: View {
                                     }
                                 }
                                 .disabled(youtubeDraft.broadcast?.isActive == true)
+                                if plannedListFailed && !plannedListLoaded {
+                                    Text(Settings.plannedStreamSelection == nil
+                                         ? "Couldn't load planned streams. Refresh to try again."
+                                         : "Couldn't load planned streams; your saved choice is kept.")
+                                        .foregroundColor(.secondary)
+                                        .font(.caption)
+                                }
 
                                 VStack(alignment: .leading, spacing: 8) {
                                     Text("Stream title")
@@ -1064,18 +1074,21 @@ struct SettingsView: View {
                         }
                         try commitDraft()
                         localSettingsCommitted = true
-                        if youtubeDraft.broadcast != nil && youtubeService.isSignedIn {
-                            if youtubeDraft.plannedChoice == .newStream {
+                        let hasYouTubeDraft = youtubeDraft.broadcast != nil && youtubeService.isSignedIn
+                        if hasYouTubeDraft && youtubeDraft.plannedChoice != .newStream {
+                            try savePlannedStream()
+                        } else {
+                            if hasYouTubeDraft {
                                 try saveYouTubePreferences()
+                            }
+                            if PlannedStreams.shouldClearSavedSelection(
+                                choice: youtubeDraft.plannedChoice,
+                                plannedListLoaded: hasYouTubeDraft && plannedListLoaded,
+                                streamKeyChanged: Settings.streamKey != previousSettings?.streamKey
+                            ) {
                                 Settings.plannedStreamSelection = nil
                                 try Settings.setPlannedStreamThumbnailData(nil)
-                            } else {
-                                try savePlannedStream()
                             }
-                        } else if Settings.streamKey != previousSettings?.streamKey {
-                            // A saved pick belongs to the stream behind the previous key.
-                            Settings.plannedStreamSelection = nil
-                            try Settings.setPlannedStreamThumbnailData(nil)
                         }
                         try await Streamer.shared.cycleSessions()
                         await Settings.configureJournal()
@@ -1404,7 +1417,8 @@ struct SettingsView: View {
         lastYouTubeLoadContext = nil
         youtubeLoadGeneration = UUID()
         youtubeDraft.reset()
-        didApplySavedPlannedSelection = false
+        plannedListLoaded = false
+        plannedListFailed = false
         savedPlannedThumbnailData = nil
         plannedThumbnailData = nil
         plannedDetailsLoadID = nil
@@ -1521,12 +1535,13 @@ struct SettingsView: View {
         do {
             let planned = try await youtubeService.loadPlannedBroadcasts(forStreamKey: streamKey)
             guard isCurrent() else { return }
-            let saved = didApplySavedPlannedSelection ? nil : Settings.plannedStreamSelection
+            let saved = plannedListLoaded ? nil : Settings.plannedStreamSelection
             let savedThumbnail = saved == nil ? nil : try? Settings.loadPlannedStreamThumbnailData()
             youtubeDraft.applyPlanned(planned, saved: saved, savedThumbnail: savedThumbnail,
                                       now: Date(), calendar: .current)
-            if !didApplySavedPlannedSelection {
-                didApplySavedPlannedSelection = true
+            plannedListFailed = false
+            if !plannedListLoaded {
+                plannedListLoaded = true
                 savedPlannedThumbnailData = savedThumbnail
                 if youtubeDraft.plannedChoice != .newStream {
                     plannedThumbnailData = savedThumbnail
@@ -1534,6 +1549,7 @@ struct SettingsView: View {
             }
         } catch {
             guard isCurrent() else { return }
+            plannedListFailed = true
             LOG("Could not load planned streams: \(plannedLoadDiagnostic(error))", level: .warning)
         }
     }
@@ -1546,10 +1562,11 @@ struct SettingsView: View {
         }
         let thumbnail = youtubeDraft.plannedThumbnail
         var data: Data?
-        if thumbnail.hasNewSelection,
-           let image = thumbnail.image,
-           let resized = image.scaledToFit(maxWidth: 1280, maxHeight: 720) {
-            guard let imageData = resized.jpegDataWithinLimit(maxBytes: 2_000_000) else {
+        if thumbnail.hasNewSelection {
+            // Never fall back to the previous image: Start would upload it as the new one.
+            guard let image = thumbnail.image,
+                  let resized = image.scaledToFit(maxWidth: 1280, maxHeight: 720),
+                  let imageData = resized.jpegDataWithinLimit(maxBytes: 2_000_000) else {
                 throw YouTubeError.thumbnailTooLarge
             }
             data = imageData

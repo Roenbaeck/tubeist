@@ -99,4 +99,12 @@ enum PlannedStreams {
     static func restartLabel(for selection: PlannedStreamSelection) -> String {
         "Restart: \(selection.edited.title)"
     }
+
+    /// Save drops the saved pick only once it is known not to apply: the key
+    /// changed, or the list loaded for this key and "New stream" is chosen.
+    /// Before or after a failed load, "New stream" is just the default.
+    static func shouldClearSavedSelection(choice: PlannedStreamChoice, plannedListLoaded: Bool,
+                                          streamKeyChanged: Bool) -> Bool {
+        streamKeyChanged || (plannedListLoaded && choice == .newStream)
+    }
 }

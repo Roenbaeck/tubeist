@@ -103,4 +103,17 @@ struct PlannedStreamTests {
         let bare = try JSONDecoder().decode(YouTubeBroadcastResource.self, from: Data(without.utf8))
         #expect(bare.broadcast?.thumbnailURL == nil)
     }
+
+    @Test func saveClearsSavedSelectionOnlyWhenKnownNotToApply() {
+        // Loaded for this key and "New stream" chosen: the user dropped the pick.
+        #expect(PlannedStreams.shouldClearSavedSelection(choice: .newStream, plannedListLoaded: true, streamKeyChanged: false))
+        // Still loading, or the load failed: "New stream" is only the default.
+        #expect(!PlannedStreams.shouldClearSavedSelection(choice: .newStream, plannedListLoaded: false, streamKeyChanged: false))
+        // A pick is saved by its own path, not cleared.
+        #expect(!PlannedStreams.shouldClearSavedSelection(choice: .planned("b-1"), plannedListLoaded: true, streamKeyChanged: false))
+        #expect(!PlannedStreams.shouldClearSavedSelection(choice: .restart, plannedListLoaded: true, streamKeyChanged: false))
+        // A new key: the pick belonged to the old stream.
+        #expect(PlannedStreams.shouldClearSavedSelection(choice: .newStream, plannedListLoaded: false, streamKeyChanged: true))
+        #expect(PlannedStreams.shouldClearSavedSelection(choice: .newStream, plannedListLoaded: true, streamKeyChanged: true))
+    }
 }
