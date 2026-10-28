@@ -2652,7 +2652,7 @@ extension YouTubeServiceTests {
         #expect(streamPosts.allSatisfy { queryItems(in: $0).contains(.init(name: "part", value: "snippet,cdn,contentDetails")) })
         let lists = await fixture.transport.requests.filter { $0.httpMethod == "GET" }.map(queryItems(in:))
         #expect(lists.contains { $0.contains(.init(name: "broadcastStatus", value: "upcoming")) && $0.contains(.init(name: "broadcastType", value: "all")) })
-        #expect(lists.contains { $0.contains(.init(name: "mine", value: "true")) && $0.contains(.init(name: "part", value: "snippet,cdn,status")) })
+        #expect(lists.contains { $0.contains(.init(name: "mine", value: "true")) && $0.contains(.init(name: "part", value: "snippet,status")) })
     }
 
     @Test @MainActor
@@ -2757,6 +2757,69 @@ extension YouTubeServiceTests {
     func summaryCopy() {
         #expect(MatchKeyAssignmentResult(total: 12, moved: 3, alreadySet: 9, failures: []).summary
                 == "12 matches, each with its own key. 3 moved, 9 already set up.")
+    }
+
+    @Test
+    func summaryWithNoMatches() {
+        #expect(MatchKeyAssignmentResult(total: 0, moved: 0, alreadySet: 0, failures: []).summary
+                == "No upcoming matches to set up.")
+    }
+
+    @Test @MainActor
+    func assignNeverMovesAMatchWhoseKeyIsReceivingVideo() async throws {
+        let fixture = MatchKeyFixture(upcoming: [
+            matchKeyBroadcast("m1", stream: "studio-default"),
+            matchKeyBroadcast("m2", stream: "studio-default"),
+        ], streams: [
+            matchKeyStream("studio-default", title: "Default stream key", streamStatus: "active"),
+            matchKeyStream("key-1", title: "Tubeist match 1"),
+            matchKeyStream("key-2", title: "Tubeist match 2"),
+        ])
+
+        let result = try await fixture.service.assignMatchKeys()
+
+        #expect(await fixture.binds().isEmpty)
+        #expect(result == MatchKeyAssignmentResult(total: 2, moved: 0, alreadySet: 0, failures: [
+            MatchKeyFailure(title: "m1 title", reason: "its key is receiving video"),
+            MatchKeyFailure(title: "m2 title", reason: "its key is receiving video"),
+        ]))
+    }
+
+    @Test @MainActor
+    func assignKeepsTheAutoStartMatchOnASharedMatchKey() async throws {
+        let fixture = MatchKeyFixture(upcoming: [
+            matchKeyBroadcast("m1", stream: "key-1", autoStart: false),
+            matchKeyBroadcast("m2", stream: "key-1"),
+        ], streams: [
+            matchKeyStream("key-1", title: "Tubeist match 1"),
+            matchKeyStream("key-2", title: "Tubeist match 2"),
+        ])
+
+        let result = try await fixture.service.assignMatchKeys()
+
+        let binds = await fixture.binds()
+        #expect(binds.map(\.broadcast) == ["m1"])
+        #expect(binds.map(\.stream) == ["key-2"])
+        #expect(result == MatchKeyAssignmentResult(total: 2, moved: 1, alreadySet: 1, failures: []))
+    }
+
+    @Test @MainActor
+    func matchKeyListingsNeverFetchSecretKeys() async throws {
+        let fixture = MatchKeyFixture(upcoming: [
+            matchKeyBroadcast("m1", stream: "studio-default"),
+        ], streams: [
+            matchKeyStream("studio-default", title: "Default stream key"),
+            matchKeyStream("key-1", title: "Tubeist match 1"),
+        ])
+
+        _ = try await fixture.service.assignMatchKeys()
+        try await fixture.service.moveToOwnMatchKeys(broadcastIDs: ["m1"])
+
+        let listings = await fixture.transport.requests.map(queryItems(in:)).filter {
+            $0.contains(.init(name: "mine", value: "true"))
+        }
+        #expect(!listings.isEmpty)
+        #expect(listings.allSatisfy { $0.contains(.init(name: "part", value: "snippet,status")) })
     }
 
     @Test @MainActor
@@ -3398,6 +3461,30 @@ extension YouTubeServiceTests {
         #expect(cache.id("createdBroadcast", for: YouTubeDiscoveryCache.key(scope: scope, streamKey: "match-key-3"))
             == "new-event")
         #expect(cache.id("createdBroadcast", for: YouTubeDiscoveryCache.key(scope: scope, streamKey: "match-key-2")) == nil)
+    }
+
+    @Test @MainActor
+    func newStreamOffersToMoveAPlannedMatchWithoutAutoStart() async throws {
+        let transport = MockYouTubeAPITransport(responses: [
+            emptyYouTubePage(),
+            keyCheckPage([keyCheckItem("planned-1", title: "15:00 match", stream: "stream-1", autoStart: false)]),
+            matchingStreamPage(), matchingStreamPage(), titledPhoneStreamPage(),
+        ])
+        let service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore(), discoveryCache: YouTubeDiscoveryCache())
+
+        await #expect(throws: YouTubeError.keyConflict(YouTubeKeyConflict(
+            kind: .newStreamKeyTaken, matchTitle: "Phone A", otherTitle: "15:00 match",
+            broadcastIDsToMove: ["planned-1"]))) {
+            _ = try await service.prepareForStreaming(streamKey: "test-key", preferences: setupPreferences())
+        }
+        #expect(!(await transport.requests).contains { $0.httpMethod != "GET" })
+    }
+
+    @Test
+    func newStreamWatchMessageNamesThePlannedMatch() {
+        let conflict = YouTubeKeyConflict(
+            kind: .newStreamKeyTaken, matchTitle: "Phone A", otherTitle: "15:00 match", broadcastIDsToMove: ["planned-1"])
+        #expect(conflict.watchMessage == "Open Tubeist on the phone to set up '15:00 match'.")
     }
 
     @Test

@@ -131,7 +131,10 @@ struct MatchKeyAssignmentResult: Sendable, Equatable {
     let failures: [MatchKeyFailure]
 
     var summary: String {
-        (["\(total) matches, each with its own key. \(moved) moved, \(alreadySet) already set up."]
+        let headline = total == 0
+            ? "No upcoming matches to set up."
+            : "\(total) matches, each with its own key. \(moved) moved, \(alreadySet) already set up."
+        return ([headline]
             + failures.map { "Could not give '\($0.title)' its own key: \($0.reason)." })
             .joined(separator: "\n")
     }
@@ -1475,12 +1478,13 @@ final class YouTubeService {
         }
         let remembered = discoveryCache.rememberedCreatedBroadcastIDs(scope: scope)
         var seen: Set<String> = []
+        // Any planned match on the phone key counts, auto-start or not.
         let others = upcoming.filter {
-            $0.boundStreamId == stream.id && $0.id != current?.id && $0.enableAutoStart
+            $0.boundStreamId == stream.id && $0.id != current?.id
                 && !$0.isDefaultBroadcast && seen.insert($0.id).inserted
         }
         if let foreign = others.first(where: {
-            !remembered.contains($0.id) && MatchKeys.isTubeistOwn($0, remembered: remembered)
+            $0.enableAutoStart && !remembered.contains($0.id) && MatchKeys.isTubeistOwn($0, remembered: remembered)
         }) {
             diagnostics.log("YouTube key check: another Tubeist broadcast waits on this phone's key", .warning)
             throw YouTubeError.keyBlocked(foreign.title)
@@ -2129,8 +2133,11 @@ final class YouTubeService {
         }
 
         let planned = Set(listing.upcoming.filter { MatchKeys.isPlannedMatch($0, remembered: remembered) }.map(\.id))
+        // Never moved: someone may be streaming to that key right now.
+        let held = Self.matchesOnReceivingKeys(listing, remembered: remembered)
         let failures = pending.map { MatchKeyFailure(title: $0.title, reason: reasons[$0.id] ?? "still shares a key") }
-        let failed = Set(pending.map(\.id))
+            + held.map { MatchKeyFailure(title: $0.title, reason: "its key is receiving video") }
+        let failed = Set((pending + held).map(\.id))
         let movedCount = planned.intersection(moved).subtracting(failed).count
         diagnostics.log("YouTube match keys: \(planned.count) matches; \(movedCount) moved; \(failures.count) failed", .debug)
         return MatchKeyAssignmentResult(
@@ -2218,11 +2225,11 @@ final class YouTubeService {
     private func listMatchKeyStreams(token: String, scope: String) async throws
         -> (streams: [MatchKeyStream], receiving: Set<String>) {
         let resources: [YouTubeLiveStreamResource] = try await paginatedItems(
-            url: "\(YOUTUBE_API_BASE)/liveStreams?part=snippet,cdn,status&mine=true&maxResults=50",
+            url: "\(YOUTUBE_API_BASE)/liveStreams?part=snippet,status&mine=true&maxResults=50",
             token: token, operation: .streams
         )
         try checkAuthorization(scope)
-        // Only IDs and titles leave here; never the secret ingestion key.
+        // Only IDs, titles and status; the secret ingestion key is never fetched.
         let streams = resources.compactMap { resource in
             resource.id.map { MatchKeyStream(id: $0, title: resource.snippet?.title ?? "") }
         }
@@ -2239,20 +2246,31 @@ final class YouTubeService {
         return items.compactMap(\.broadcast)
     }
 
-    /// Matches that need their own key. Where only planned matches share a match
-    /// key, one of them stays, so the others' moves leave it alone there.
+    /// Matches that need their own key, except any whose key receives video.
+    /// Where only planned matches share a match key, one of them stays (the
+    /// one with auto-start on), so the others' moves leave it alone there.
     private static func matchesToMove(_ listing: MatchKeyListing, remembered: Set<String>) -> [YouTubeBroadcast] {
         let needing = MatchKeys.matchesNeedingOwnKey(
             upcoming: listing.upcoming, streams: listing.streams, remembered: remembered)
+            .filter { !listing.receiving.contains($0.boundStreamId ?? "") }
+        let needingIDs = Set(needing.map(\.id))
         let matchKeyIDs = Set(listing.streams.filter { MatchKeys.isMatchKey(title: $0.title) }.map(\.id))
         var staying: Set<String> = []
         var seenKeys: Set<String> = []
         for match in needing {
             guard let key = match.boundStreamId, matchKeyIDs.contains(key), seenKeys.insert(key).inserted else { continue }
             let onKey = listing.upcoming.filter { $0.boundStreamId == key }
-            if onKey.allSatisfy({ other in needing.contains { $0.id == other.id } }) { staying.insert(match.id) }
+            guard onKey.allSatisfy({ needingIDs.contains($0.id) }) else { continue }
+            if let keep = onKey.first(where: \.enableAutoStart) ?? onKey.first { staying.insert(keep.id) }
         }
         return needing.filter { !staying.contains($0.id) }
+    }
+
+    /// Matches needing their own key that Assign leaves alone because their
+    /// key is receiving video.
+    private static func matchesOnReceivingKeys(_ listing: MatchKeyListing, remembered: Set<String>) -> [YouTubeBroadcast] {
+        MatchKeys.matchesNeedingOwnKey(upcoming: listing.upcoming, streams: listing.streams, remembered: remembered)
+            .filter { listing.receiving.contains($0.boundStreamId ?? "") }
     }
 
     private func moveToOwnKey(

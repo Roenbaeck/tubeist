@@ -78,7 +78,11 @@ struct YouTubeKeyConflict: Sendable, Equatable {
         }
     }
 
-    var watchMessage: String { "Open Tubeist on the phone to set up '\(matchTitle)'." }
+    /// Names the match to set up: the pick, or the match planned on the phone key.
+    var watchMessage: String {
+        let match = kind == .newStreamKeyTaken ? otherTitle ?? matchTitle : matchTitle
+        return "Open Tubeist on the phone to set up '\(match)'."
+    }
 }
 
 struct YouTubeAPIResponse: Sendable, Equatable {
