@@ -77,6 +77,7 @@ struct TubeistView: View {
     @State private var settingsReadOnly = false
     @State private var showStabilizationConfirmation = false
     @State private var showBatterySavingConfirmation = false
+    @State private var pendingKeyConflict: YouTubeKeyConflict?
     @State private var showFocusAndExposureArea = false
     @State private var showCameraPicker = false
     @State private var showStylingPicker = false
@@ -160,6 +161,39 @@ struct TubeistView: View {
         let factor = cameraZoom.clamped(initial * magnification)
         let deviceID = cameraZoom.deviceID
         Task { await CaptureDirector.shared.setZoomFactor(factor, deviceID: deviceID) }
+    }
+
+    /// Starts a stream with a fresh stream ID. A key conflict opens the
+    /// confirmation dialog instead of failing; other errors fade as before.
+    private func startStreamNow() {
+        let streamID = Streamer.makeStreamID()
+        Task {
+            showCameraPicker = false
+            do {
+                try await Streamer.shared.startStream(streamID: streamID)
+                LOG("Started streaming engine", level: .info)
+            } catch YouTubeError.keyConflict(let conflict) {
+                pendingKeyConflict = conflict
+            } catch {
+                fade(error.localizedDescription)
+                LOG("Could not start streaming engine: \(error.localizedDescription)", level: .error)
+            }
+        }
+    }
+
+    /// Confirmed fix: move the planned matches to their own keys, then Start
+    /// again through the same checks as the button.
+    private func resolveKeyConflict(_ conflict: YouTubeKeyConflict) {
+        Task {
+            do {
+                try await YouTubeService().moveToOwnMatchKeys(broadcastIDs: conflict.broadcastIDsToMove)
+            } catch {
+                fade(error.localizedDescription)
+                LOG("Could not move to own match keys: \(error.localizedDescription)", level: .error)
+                return
+            }
+            startStreamNow()
+        }
     }
 
     func fade(_ message: String) {
@@ -933,17 +967,7 @@ struct TubeistView: View {
                                         fade("YouTube is still finishing the previous stream")
                                     }
                                     else if isCameraReady && Settings.hasCameraPermission() && Settings.hasMicrophonePermission() {
-                                        let streamID = Streamer.makeStreamID()
-                                        Task {
-                                            showCameraPicker = false
-                                            do {
-                                                try await Streamer.shared.startStream(streamID: streamID)
-                                                LOG("Started streaming engine", level: .info)
-                                            } catch {
-                                                fade(error.localizedDescription)
-                                                LOG("Could not start streaming engine: \(error.localizedDescription)", level: .error)
-                                            }
-                                        }
+                                        startStreamNow()
                                     }
                                     else if !Settings.hasCameraPermission() || !Settings.hasMicrophonePermission() {
                                         Settings.openSystemSettings()
@@ -968,6 +992,22 @@ struct TubeistView: View {
                             .disabled(appState.streamSessionState == .stopping)
                             .background(Color.black.opacity(0.5))
                             .cornerRadius(25)
+                            .confirmationDialog(
+                                "Stream key",
+                                isPresented: Binding(
+                                    get: { pendingKeyConflict != nil },
+                                    set: { if !$0 { pendingKeyConflict = nil } }
+                                ),
+                                titleVisibility: .hidden,
+                                presenting: pendingKeyConflict
+                            ) { conflict in
+                                Button(conflict.kind == .plannedNeedsOwnKey ? "Give it its own key" : "Move it") {
+                                    resolveKeyConflict(conflict)
+                                }
+                                Button("Cancel", role: .cancel) {}
+                            } message: { conflict in
+                                Text(conflict.prompt)
+                            }
                             .accessibilityLabel(appState.isStreamSessionRunning ? "Stop stream" : "Start stream")
                             .accessibilityValue(appState.streamSessionState.statusDescription)
                             .accessibilityHint(appState.isStreamSessionRunning ? "Finalizes recording and YouTube uploads" : "Starts the selected streaming and recording outputs")
