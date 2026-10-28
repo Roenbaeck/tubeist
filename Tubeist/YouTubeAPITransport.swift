@@ -18,6 +18,7 @@ enum YouTubeError: LocalizedError, Equatable {
     case thumbnailTooLarge
     case invalidResponse
     case tokenRefreshFailed
+    case plannedBroadcastUnavailable(String)
 
     var errorDescription: String? {
         switch self {
@@ -35,6 +36,8 @@ enum YouTubeError: LocalizedError, Equatable {
         case .thumbnailTooLarge: "The selected thumbnail cannot be compressed below YouTube's 2 MB limit"
         case .invalidResponse: "Invalid response from YouTube API"
         case .tokenRefreshFailed: "Failed to refresh access token"
+        case .plannedBroadcastUnavailable(let title):
+            "The planned stream '\(title)' is no longer available. Choose another in Settings."
         }
     }
 }
@@ -65,13 +68,16 @@ enum YouTubeAPIOperation: String, Sendable {
     case playlists = "playlists.list"
     case playlistItems = "playlistItems.list"
     case insertPlaylistItem = "playlistItems.insert"
+    case deletePlaylistItem = "playlistItems.delete"
+    case thumbnailDownload = "thumbnail download"
 
     var successLevel: LogLevel { .debug }
     var failureLevel: LogLevel {
         if self == .videoLiveDetails { return .debug }
         switch self {
         // These operations are optional and cannot prevent media delivery.
-        case .channels, .streamHealth, .thumbnail, .playlistItems, .insertPlaylistItem:
+        case .channels, .streamHealth, .thumbnail, .playlistItems, .insertPlaylistItem,
+             .deletePlaylistItem, .thumbnailDownload:
             return .warning
         default:
             return .error
