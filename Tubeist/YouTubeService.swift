@@ -611,6 +611,8 @@ final class YouTubeService {
     private var tokenStore: any YouTubeTokenStoring
     private let discoveryCache: YouTubeDiscoveryCache
     private let now: @Sendable () -> Date
+    /// A random index below the given count; tests inject a fixed one.
+    private let randomIndex: @Sendable (Int) -> Int
     private var authenticationSession: ASWebAuthenticationSession?
     private var tokenRefreshTask: Task<String, Error>?
 
@@ -619,13 +621,15 @@ final class YouTubeService {
         tokenStore: any YouTubeTokenStoring = SettingsYouTubeTokenStore(),
         discoveryCache: YouTubeDiscoveryCache = .shared,
         now: @escaping @Sendable () -> Date = Date.init,
-        diagnostics: YouTubeDiagnostics = YouTubeDiagnostics()
+        diagnostics: YouTubeDiagnostics = YouTubeDiagnostics(),
+        randomIndex: @escaping @Sendable (Int) -> Int = { Int.random(in: 0..<$0) }
     ) {
         requestExecutor = YouTubeAPIRequestExecutor(transport: transport, diagnostics: diagnostics)
         self.diagnostics = diagnostics
         self.tokenStore = tokenStore
         self.discoveryCache = discoveryCache
         self.now = now
+        self.randomIndex = randomIndex
         isSignedIn = tokenStore.refreshToken != nil
     }
 
@@ -1243,13 +1247,19 @@ final class YouTubeService {
             }
             // The ended broadcast's key as YouTube reports it; the saved one
             // only when the original no longer exists.
-            stream = try await restartKey(
+            var restartStream = try await restartKey(
                 endedKeyID: original == nil ? planned.streamId : original?.boundStreamId, token: token, scope: scope)
-            endpoint = try YouTubeStreamDiscovery.hlsEndpoint(for: stream)
-            var template = YouTubeBroadcast.draft(for: stream)
+            var restartEndpoint = try YouTubeStreamDiscovery.hlsEndpoint(for: restartStream)
+            var template = YouTubeBroadcast.draft(for: restartStream)
             Self.apply(edited, to: &template)
             template.enableAutoStop = endingPolicy.automaticallyEndsBroadcast
-            broadcast = try await createOrResumeBroadcast(template: template, stream: stream, scope: scope)
+            broadcast = try await createOrResumeBroadcast(template: template, stream: restartStream, scope: scope)
+            if let moved = try await moveRestartOffTakenKey(broadcast, from: restartStream, token: token, scope: scope) {
+                (broadcast, restartStream) = moved
+                restartEndpoint = try YouTubeStreamDiscovery.hlsEndpoint(for: restartStream)
+            }
+            stream = restartStream
+            endpoint = restartEndpoint
             guard broadcast.lifeCycleStatus == "ready" else {
                 throw YouTubeError.broadcastNotReady(broadcast.statusLabel.lowercased())
             }
@@ -1357,8 +1367,12 @@ final class YouTubeService {
     /// nothing live or upcoming bound to it (checks 1 and 2 hold by choice).
     private func restartKey(endedKeyID: String?, token: String, scope: String) async throws -> YouTubeStream {
         let listing = try await matchKeyListing(token: token, scope: scope)
+        // Right after Stop the ended key still reports video arriving; that
+        // counts only while a live or testing broadcast is bound to it.
         if let endedKeyID, let ended = try await keyStream(id: endedKeyID, token: token, scope: scope),
-           MatchKeys.isMatchKey(title: ended.title), !listing.receiving.contains(endedKeyID) {
+           MatchKeys.isMatchKey(title: ended.title),
+           !listing.receiving.contains(endedKeyID)
+            || !listing.active.contains(where: { $0.boundStreamId == endedKeyID && $0.isActive }) {
             // This phone's pending broadcast for the key is the one Restart resumes.
             let resumable = discoveryCache.id(
                 "createdBroadcast", for: YouTubeDiscoveryCache.key(scope: scope, streamKey: ended.stream.streamName))
@@ -1368,18 +1382,46 @@ final class YouTubeService {
                 return ended.stream
             }
         }
-        let chosen: MatchKeyStream
-        if let free = listing.freeKeys.first {
-            chosen = free
-        } else {
-            chosen = try await createMatchKey(
-                number: MatchKeys.nextNumber(existingTitles: listing.streams.map(\.title)), token: token, scope: scope)
-        }
         diagnostics.log("YouTube restart: the ended broadcast's key is taken; using a free match key", .debug)
+        return try await freeMatchKeyStream(listing, token: token, scope: scope)
+    }
+
+    /// A random free match key, or a new `Tubeist match N` when none is free.
+    private func freeMatchKeyStream(_ listing: MatchKeyListing, token: String, scope: String) async throws -> YouTubeStream {
+        var free = listing.freeKeys
+        let chosen = free.isEmpty
+            ? try await createMatchKey(
+                number: MatchKeys.nextNumber(existingTitles: listing.streams.map(\.title)), token: token, scope: scope)
+            : takeRandomKey(from: &free)
         guard let key = try await keyStream(id: chosen.id, token: token, scope: scope) else {
             throw YouTubeError.noStreamFound
         }
         return key.stream
+    }
+
+    /// Two phones may pick the same free key at once. After a recreated
+    /// Restart is bound, moves it once to another free key if anything else
+    /// is now on its key. Returns nil when the key is still its own.
+    private func moveRestartOffTakenKey(
+        _ broadcast: YouTubeBroadcast, from stream: YouTubeStream, token: String, scope: String
+    ) async throws -> (broadcast: YouTubeBroadcast, stream: YouTubeStream)? {
+        let listing = try await matchKeyListing(token: token, scope: scope)
+        guard (listing.upcoming + listing.active).contains(where: {
+            $0.boundStreamId == stream.id && $0.id != broadcast.id
+        }) else { return nil }
+        diagnostics.log("YouTube restart: another broadcast took the same key; moving to another free match key", .warning)
+        let next = try await freeMatchKeyStream(listing, token: token, scope: scope)
+        let rebound = try await bind(broadcastID: broadcast.id, to: next.id, token: token, scope: scope)
+        // A later Restart resumes this broadcast on its new key.
+        discoveryCache.setID(nil, kind: "createdBroadcast",
+                             for: YouTubeDiscoveryCache.key(scope: scope, streamKey: stream.streamName))
+        discoveryCache.setID(broadcast.id, kind: "createdBroadcast",
+                             for: YouTubeDiscoveryCache.key(scope: scope, streamKey: next.streamName))
+        return (rebound, next)
+    }
+
+    private func takeRandomKey(from free: inout [MatchKeyStream]) -> MatchKeyStream {
+        free.remove(at: min(max(randomIndex(free.count), 0), free.count - 1))
     }
 
     /// Start checks 2 and 3 for a planned pick or a Restart that reuses its
@@ -2108,6 +2150,7 @@ final class YouTubeService {
         let needing = Set(MatchKeys.matchesNeedingOwnKey(
             upcoming: listing.upcoming, streams: listing.streams, remembered: remembered).map(\.id))
         var free = listing.freeKeys
+        var moved: [String] = []
         for id in broadcastIDs {
             let broadcast = listing.upcoming.first { $0.id == id }
             guard let match = broadcast, MatchKeys.isPlannedMatch(match, remembered: remembered) else {
@@ -2115,6 +2158,37 @@ final class YouTubeService {
             }
             guard needing.contains(id) else { continue }
             try await moveToOwnKey(match, free: &free, streams: &listing.streams, token: token, scope: scope)
+            moved.append(id)
+        }
+        // Another phone may have picked the same free key at the same moment:
+        // list again and move once more; a key taken a second time ends it.
+        for attempt in 1...2 where !moved.isEmpty {
+            listing = try await matchKeyListing(token: token, scope: scope)
+            let taken = Self.movedMatchesOnTakenKeys(moved, listing: listing)
+            moved = []
+            guard let first = taken.first else { break }
+            guard attempt == 1 else {
+                diagnostics.log("YouTube match keys: \(taken.count) moved matches lost their key again", .warning)
+                throw YouTubeError.keyInUse(first.title)
+            }
+            diagnostics.log("YouTube match keys: \(taken.count) moved matches share their new key; moving again", .warning)
+            free = listing.freeKeys
+            for match in taken {
+                try await moveToOwnKey(match, free: &free, streams: &listing.streams, token: token, scope: scope)
+                moved.append(match.id)
+            }
+        }
+    }
+
+    /// Of the matches just moved, those whose new key has anything else bound
+    /// to it or is receiving video.
+    private static func movedMatchesOnTakenKeys(_ ids: [String], listing: MatchKeyListing) -> [YouTubeBroadcast] {
+        ids.compactMap { id in
+            guard let match = listing.upcoming.first(where: { $0.id == id }), let key = match.boundStreamId else {
+                return nil
+            }
+            let shared = (listing.upcoming + listing.active).contains { $0.id != id && $0.boundStreamId == key }
+            return shared || listing.receiving.contains(key) ? match : nil
         }
     }
 
@@ -2188,7 +2262,8 @@ final class YouTubeService {
                 number: MatchKeys.nextNumber(existingTitles: streams.map(\.title)), token: token, scope: scope)
             streams.append(key)
         } else {
-            key = free.removeFirst()
+            // At random, so two phones fixing at once rarely pick the same key.
+            key = takeRandomKey(from: &free)
         }
         do {
             _ = try await bind(broadcastID: match.id, to: key.id, token: token, scope: scope)
