@@ -463,7 +463,6 @@ struct SettingsView: View {
     var body: some View {
         NavigationView {
             settingsForm
-            .disabled(isSaving || isReadOnly)
             .toolbar {
                 // Text fields otherwise have no way to dismiss the keyboard,
                 // which in landscape covers roughly half the form.
@@ -670,182 +669,189 @@ struct SettingsView: View {
     }
 
     private var settingsForm: some View {
+        // Disabling the Form itself would also stop it scrolling, leaving
+        // read-only Settings stuck on its first screen. Lock the rows instead.
         Form {
-            if isReadOnly {
-                Section {
-                    Text("Settings are locked while streaming. Stop the stream to change them.")
-                        .foregroundStyle(.secondary)
-                }
-            }
+            settingsRows
+                .disabled(isSaving || isReadOnly)
+        }
+    }
 
-            if !Settings.hasCameraPermission() || !Settings.hasMicrophonePermission() {
-                Button("Click here and grant Camera and Microphone access in the settings to use the app") {
-                    Settings.openSystemSettings()
-                }
-                .frame(maxWidth: .infinity, alignment: .center)
-                .multilineTextAlignment(.center)
-                .foregroundColor(Color.red)
+    @ViewBuilder
+    private var settingsRows: some View {
+        if isReadOnly {
+            Section {
+                Text("Settings are locked while streaming. Stop the stream to change them.")
+                    .foregroundStyle(.secondary)
             }
+        }
 
-            streamingSettingsSection
-
-            Section(
-                header: Text("Highlights"),
-                footer: Text("Save a short clip with about 10 seconds before and 5 seconds after your tap, from the iPhone or Apple Watch. Highlights use additional memory and processing. Changes apply to the next stream or recording.")
-            ) {
-                Toggle("Enable Highlights", isOn: $highlightsEnabled)
-                    .accessibilityIdentifier("highlightsEnabledToggle")
+        if !Settings.hasCameraPermission() || !Settings.hasMicrophonePermission() {
+            Button("Click here and grant Camera and Microphone access in the settings to use the app") {
+                Settings.openSystemSettings()
             }
+            .frame(maxWidth: .infinity, alignment: .center)
+            .multilineTextAlignment(.center)
+            .foregroundColor(Color.red)
+        }
+
+        streamingSettingsSection
+
+        Section(
+            header: Text("Highlights"),
+            footer: Text("Save a short clip with about 10 seconds before and 5 seconds after your tap, from the iPhone or Apple Watch. Highlights use additional memory and processing. Changes apply to the next stream or recording.")
+        ) {
+            Toggle("Enable Highlights", isOn: $highlightsEnabled)
+                .accessibilityIdentifier("highlightsEnabledToggle")
+        }
 
 #if DEBUG
-            Section(
-                header: Text("YouTube HLS Development"),
-                footer: Text("Diagnostic recording saves upload events and the exact video segments and playlists in Tubeist’s Files folder, up to 512 MB per stream. Use it for short test streams and delete the files afterward. Stream keys are not saved. Fixture capture separately saves one remux sample set.")
-            ) {
-                Toggle("Capture fMP4 remux fixtures", isOn: $captureRemuxFixtures)
-                Toggle("Record YouTube HLS diagnostics", isOn: $recordHLSAcceptance)
-            }
-            Section(
-                header: Text("Stream Ending Test"),
-                footer: Text("Requires YouTube sign-in. Stop uploads all remaining media but leaves the broadcast open, with automatic ending disabled. Wait for the final words in the YouTube player, then end the broadcast manually in YouTube Studio. The YouTube indicator stays red until the broadcast ends. Diagnostics are recorded automatically. Turn this off for normal streams.")
-            ) {
-                Toggle("End broadcast manually in Studio", isOn: $manualHLSEndingTest)
-                    .accessibilityIdentifier("manualHLSEndingTestToggle")
-            }
+        Section(
+            header: Text("YouTube HLS Development"),
+            footer: Text("Diagnostic recording saves upload events and the exact video segments and playlists in Tubeist’s Files folder, up to 512 MB per stream. Use it for short test streams and delete the files afterward. Stream keys are not saved. Fixture capture separately saves one remux sample set.")
+        ) {
+            Toggle("Capture fMP4 remux fixtures", isOn: $captureRemuxFixtures)
+            Toggle("Record YouTube HLS diagnostics", isOn: $recordHLSAcceptance)
+        }
+        Section(
+            header: Text("Stream Ending Test"),
+            footer: Text("Requires YouTube sign-in. Stop uploads all remaining media but leaves the broadcast open, with automatic ending disabled. Wait for the final words in the YouTube player, then end the broadcast manually in YouTube Studio. The YouTube indicator stays red until the broadcast ends. Diagnostics are recorded automatically. Turn this off for normal streams.")
+        ) {
+            Toggle("End broadcast manually in Studio", isOn: $manualHLSEndingTest)
+                .accessibilityIdentifier("manualHLSEndingTestToggle")
+        }
 #endif
 
-            captureSettingsSections
+        captureSettingsSections
 
-            Section {
-                ForEach(overlayDraft) { overlay in
-                    Button {
-                        editingOverlay = overlay
-                    } label: {
-                        HStack {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(overlay.url)
-                                    .foregroundColor(.primary)
-                                    .multilineTextAlignment(.leading)
-                                if overlay.scale != 1 {
-                                    Text("Scale: \(Int((overlay.scale * 100).rounded()))%")
-                                        .font(.caption)
-                                        .foregroundColor(.secondary)
-                                }
-                            }
-                            Spacer()
-                            Image(systemName: "pencil")
-                                .foregroundColor(.secondary)
-                        }
-                    }
-                    .accessibilityIdentifier("edit-overlay-\(overlay.id)")
-                }
-                .onDelete { offsets in
-                    overlayDraft.remove(atOffsets: offsets)
-                }
-
-                HStack {
-                    TextField("New Overlay URL", text: $newOverlayURL)
-                        .keyboardType(.URL)
-                        .autocapitalization(.none)
-                        .disableAutocorrection(true)
-                        .onSubmit(addOverlay)
-                    Button(action: addOverlay) {
-                        Image(systemName: "plus.circle.fill")
-                            .frame(width: 44, height: 44)
-                    }
-                    .accessibilityLabel("Add overlay")
-                }
-                Button("Reorder overlays") { showingOverlayOrder = true }
-                    .disabled(overlayDraft.count < 2)
-                    .accessibilityIdentifier("reorder-overlays")
-            } header: {
-                Text("Overlays")
-            } footer: {
-                Text("The top overlay in this list appears in front in both INPUT and OUTPUT. New overlays are added on top. Tap an overlay to edit its URL or scale, or Reorder overlays to change the stack. Save to apply your changes. Audio is captured from the last playing overlay if audio from multiple overlays overlap.")
-            }
-
-            Section {
-                Picker("Maximum refresh rate", selection: $overlayRefreshRate) {
-                    ForEach(OverlayRefreshRate.allCases) { rate in
-                        Text(rate.label).tag(rate)
-                    }
-                }
-                .accessibilityIdentifier("overlay-refresh-rate")
-            } header: {
-                Text("Overlay Refresh")
-            } footer: {
-                Text("Applies to output, streaming, and recording. 1 update/second captures page changes and saves battery. 3, 10, and 30 updates/second also capture animations but use more power. Updates slow down if the phone cannot keep up. The input view renders the web page live.")
-            }
-
-            Section(header: Text("Monitoring")) {
-                Picker("System health bar position", selection: $areSystemMetricsAtTop) {
-                    Text("Bottom").tag(false)
-                    Text("Top").tag(true)
-                }
-            }
-
-            watchSettingsSections
-
-            Section(header: Text("Journal"), footer: Text("Configure which types of messages to record in the journal")) {
-                HStack {
-                    Toggle("Error", isOn: $journalError).labelsHidden()
-                        .accessibilityLabel("Error journal messages")
-                    Text("Error").font(.caption).multilineTextAlignment(.center)
-                    Spacer()
-                    Toggle("Warning", isOn: $journalWarning).labelsHidden()
-                        .accessibilityLabel("Warning journal messages")
-                    Text("Warning").font(.caption).multilineTextAlignment(.center)
-                    Spacer()
-                    Toggle("Info", isOn: $journalInfo).labelsHidden()
-                        .accessibilityLabel("Informational journal messages")
-                    Text("Info").font(.caption).multilineTextAlignment(.center)
-                    Spacer()
-                    Toggle("Debug", isOn: $journalDebug).labelsHidden()
-                        .accessibilityLabel("Debug journal messages")
-                    Text("Debug").font(.caption).multilineTextAlignment(.center)
-                }
-            }
-
-            Section(header: Text("Privacy and Credentials"), footer: Text("Tubeist stores the HLS stream key and optional Google authorization in the iOS Keychain. Removing them disables streaming until a new key is entered.")) {
-                Link(
-                    "Read the Tubeist Privacy Policy",
-                    destination: URL(string: "https://github.com/Roenbaeck/tubeist/blob/main/PRIVACY.md")!
-                )
-                if !isReadOnly, !streamKeyManager.currentKey.isEmpty || youtubeService.isSignedIn {
-                    Button("Remove YouTube Credentials", role: .destructive) {
-                        do {
-                            try Settings.setStreamKey(nil)
-                            streamKeyManager.updateKey("")
-                            // The saved key is gone even if sign-out fails.
-                            clearAppliedYouTubeStatus()
-                            clearYouTubeAccountState()
-                            if let errorMessage = youtubeService.errorMessage {
-                                appState.activeAlert = errorMessage
-                            }
-                        } catch {
-                            appState.activeAlert = "Could not remove the YouTube stream key: \(error.localizedDescription)"
-                            LOG("Could not remove the YouTube stream key from Keychain", level: .error)
-                        }
-                    }
-                }
-            }
-
-            if !Purchaser.shared.isProductPurchased("tubeist_lifetime_styling") {
-                if let product = appState.availableProducts["tubeist_lifetime_styling"] {
-                    Section(header: Text("In-App Purchases"), footer: Text("This set of styles and effects is the only unlockable content in this app, made available at the lowest price possible. Once unlocked you have lifetime access to all styles and effects. It is a small contribution going toward continued app development.")) {
-                        HStack {
-                            Text("Styles and Effects Lifetime Access")
-                            Spacer()
-                            Button(product.displayPrice) {
-                                Task {
-                                    await Purchaser.shared.purchase(product: product)
-                                }
+        Section {
+            ForEach(overlayDraft) { overlay in
+                Button {
+                    editingOverlay = overlay
+                } label: {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(overlay.url)
+                                .foregroundColor(.primary)
+                                .multilineTextAlignment(.leading)
+                            if overlay.scale != 1 {
+                                Text("Scale: \(Int((overlay.scale * 100).rounded()))%")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
                             }
                         }
+                        Spacer()
+                        Image(systemName: "pencil")
+                            .foregroundColor(.secondary)
+                    }
+                }
+                .accessibilityIdentifier("edit-overlay-\(overlay.id)")
+            }
+            .onDelete { offsets in
+                overlayDraft.remove(atOffsets: offsets)
+            }
+
+            HStack {
+                TextField("New Overlay URL", text: $newOverlayURL)
+                    .keyboardType(.URL)
+                    .autocapitalization(.none)
+                    .disableAutocorrection(true)
+                    .onSubmit(addOverlay)
+                Button(action: addOverlay) {
+                    Image(systemName: "plus.circle.fill")
+                        .frame(width: 44, height: 44)
+                }
+                .accessibilityLabel("Add overlay")
+            }
+            Button("Reorder overlays") { showingOverlayOrder = true }
+                .disabled(overlayDraft.count < 2)
+                .accessibilityIdentifier("reorder-overlays")
+        } header: {
+            Text("Overlays")
+        } footer: {
+            Text("The top overlay in this list appears in front in both INPUT and OUTPUT. New overlays are added on top. Tap an overlay to edit its URL or scale, or Reorder overlays to change the stack. Save to apply your changes. Audio is captured from the last playing overlay if audio from multiple overlays overlap.")
+        }
+
+        Section {
+            Picker("Maximum refresh rate", selection: $overlayRefreshRate) {
+                ForEach(OverlayRefreshRate.allCases) { rate in
+                    Text(rate.label).tag(rate)
+                }
+            }
+            .accessibilityIdentifier("overlay-refresh-rate")
+        } header: {
+            Text("Overlay Refresh")
+        } footer: {
+            Text("Applies to output, streaming, and recording. 1 update/second captures page changes and saves battery. 3, 10, and 30 updates/second also capture animations but use more power. Updates slow down if the phone cannot keep up. The input view renders the web page live.")
+        }
+
+        Section(header: Text("Monitoring")) {
+            Picker("System health bar position", selection: $areSystemMetricsAtTop) {
+                Text("Bottom").tag(false)
+                Text("Top").tag(true)
+            }
+        }
+
+        watchSettingsSections
+
+        Section(header: Text("Journal"), footer: Text("Configure which types of messages to record in the journal")) {
+            HStack {
+                Toggle("Error", isOn: $journalError).labelsHidden()
+                    .accessibilityLabel("Error journal messages")
+                Text("Error").font(.caption).multilineTextAlignment(.center)
+                Spacer()
+                Toggle("Warning", isOn: $journalWarning).labelsHidden()
+                    .accessibilityLabel("Warning journal messages")
+                Text("Warning").font(.caption).multilineTextAlignment(.center)
+                Spacer()
+                Toggle("Info", isOn: $journalInfo).labelsHidden()
+                    .accessibilityLabel("Informational journal messages")
+                Text("Info").font(.caption).multilineTextAlignment(.center)
+                Spacer()
+                Toggle("Debug", isOn: $journalDebug).labelsHidden()
+                    .accessibilityLabel("Debug journal messages")
+                Text("Debug").font(.caption).multilineTextAlignment(.center)
+            }
+        }
+
+        Section(header: Text("Privacy and Credentials"), footer: Text("Tubeist stores the HLS stream key and optional Google authorization in the iOS Keychain. Removing them disables streaming until a new key is entered.")) {
+            Link(
+                "Read the Tubeist Privacy Policy",
+                destination: URL(string: "https://github.com/Roenbaeck/tubeist/blob/main/PRIVACY.md")!
+            )
+            if !isReadOnly, !streamKeyManager.currentKey.isEmpty || youtubeService.isSignedIn {
+                Button("Remove YouTube Credentials", role: .destructive) {
+                    do {
+                        try Settings.setStreamKey(nil)
+                        streamKeyManager.updateKey("")
+                        // The saved key is gone even if sign-out fails.
+                        clearAppliedYouTubeStatus()
+                        clearYouTubeAccountState()
+                        if let errorMessage = youtubeService.errorMessage {
+                            appState.activeAlert = errorMessage
+                        }
+                    } catch {
+                        appState.activeAlert = "Could not remove the YouTube stream key: \(error.localizedDescription)"
+                        LOG("Could not remove the YouTube stream key from Keychain", level: .error)
                     }
                 }
             }
+        }
 
+        if !Purchaser.shared.isProductPurchased("tubeist_lifetime_styling") {
+            if let product = appState.availableProducts["tubeist_lifetime_styling"] {
+                Section(header: Text("In-App Purchases"), footer: Text("This set of styles and effects is the only unlockable content in this app, made available at the lowest price possible. Once unlocked you have lifetime access to all styles and effects. It is a small contribution going toward continued app development.")) {
+                    HStack {
+                        Text("Styles and Effects Lifetime Access")
+                        Spacer()
+                        Button(product.displayPrice) {
+                            Task {
+                                await Purchaser.shared.purchase(product: product)
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
