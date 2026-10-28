@@ -3105,13 +3105,16 @@ extension YouTubeServiceTests {
     }
 
     @Test @MainActor
-    func plannedPickBlockedByATubeistBroadcast() async throws {
+    func plannedPickSharingWithATubeistBroadcastOffersOwnKey() async throws {
+        // Moving the pick never rebinds the Tubeist broadcast.
         let fixture = PlannedStartFixture(upcoming: keyCheckPage([
             plannedM5(stream: "match-1"),
             keyCheckItem("manual", title: "Manual stream", stream: "match-1", tubeistOwn: true),
         ]))
 
-        await #expect(throws: YouTubeError.keyBlocked("Manual stream")) {
+        await #expect(throws: YouTubeError.keyConflict(YouTubeKeyConflict(
+            kind: .plannedNeedsOwnKey, matchTitle: "Match 5", otherTitle: "Manual stream",
+            broadcastIDsToMove: ["m5"]))) {
             _ = try await fixture.start(fixture.selection)
         }
         let methods = await fixture.transport.requests.map(\.httpMethod)
@@ -3303,6 +3306,44 @@ extension YouTubeServiceTests {
         let requests = await transport.requests
         try #require(requests.count == 6)
         #expect(queryItems(in: requests[4]).contains(.init(name: "pageToken", value: "p2")))
+    }
+
+    @Test @MainActor
+    func plannedPickOnAnRTMPStudioKeyOffersOwnKey() async throws {
+        let fixture = PlannedStartFixture(m5: plannedM5(stream: "studio-rtmp"))
+
+        await #expect(throws: YouTubeError.keyConflict(YouTubeKeyConflict(
+            kind: .plannedNeedsOwnKey, matchTitle: "Match 5", otherTitle: nil, broadcastIDsToMove: ["m5"]))) {
+            _ = try await fixture.start(fixture.selection)
+        }
+        let methods = await fixture.transport.requests.map(\.httpMethod)
+        #expect(!methods.contains { ["PUT", "POST", "DELETE"].contains($0) })
+    }
+
+    @Test @MainActor
+    func restartOnItsOwnReadyBroadcastOnThePhoneKeyStarts() async throws {
+        // An earlier version recreated Restart on the phone key; the pick is
+        // Tubeist's own, so it cannot be moved and needs no match key.
+        let fixture = PlannedStartFixture(m5: plannedM5(stream: "stream-1"), cache: createdBroadcastCache("m5"))
+
+        let preparation = try await fixture.start(fixture.selection.restarting())
+
+        #expect(preparation.broadcast.id == "m5")
+        #expect(preparation.healthTarget.streamID == "stream-1")
+        let methods = await fixture.transport.requests.map(\.httpMethod)
+        #expect(!methods.contains { ["POST", "DELETE"].contains($0) })
+    }
+
+    @Test @MainActor
+    func restartOnItsOwnReadyBroadcastStillRefusesAPlannedMatchOnTheKey() async throws {
+        let fixture = PlannedStartFixture(
+            m5: plannedM5(stream: "stream-1"), cache: createdBroadcastCache("m5"),
+            upcoming: keyCheckPage([keyCheckItem("m6", title: "Match 6", stream: "stream-1")]))
+
+        await #expect(throws: YouTubeError.keyConflict(YouTubeKeyConflict(
+            kind: .plannedNeedsOwnKey, matchTitle: "Match 5", otherTitle: "Match 6", broadcastIDsToMove: ["m5"]))) {
+            _ = try await fixture.start(fixture.selection.restarting())
+        }
     }
 
     @Test @MainActor

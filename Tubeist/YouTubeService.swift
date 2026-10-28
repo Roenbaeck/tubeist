@@ -1204,11 +1204,12 @@ final class YouTubeService {
                   let key = try await keyStream(id: keyID, token: token, scope: scope) else {
                 throw unavailable
             }
-            stream = key.stream
-            endpoint = try YouTubeStreamDiscovery.hlsEndpoint(for: stream)
+            // Key safety first: a pick on Studio's RTMP default key is offered its own key.
             try await checkKeySafety(
                 streamID: keyID, keyTitle: key.title, pick: fetched, matchTitle: edited.title,
                 token: token, scope: scope)
+            stream = key.stream
+            endpoint = try YouTubeStreamDiscovery.hlsEndpoint(for: stream)
             broadcast = fetched
             // Only what the user changed; Studio edits since the pick survive.
             let loaded = planned.loaded
@@ -1230,11 +1231,11 @@ final class YouTubeService {
                       let key = try await keyStream(id: keyID, token: token, scope: scope) else {
                     throw unavailable
                 }
-                stream = key.stream
-                endpoint = try YouTubeStreamDiscovery.hlsEndpoint(for: stream)
                 try await checkKeySafety(
                     streamID: keyID, keyTitle: key.title, pick: original, matchTitle: edited.title,
                     token: token, scope: scope)
+                stream = key.stream
+                endpoint = try YouTubeStreamDiscovery.hlsEndpoint(for: stream)
                 broadcast = original
                 prepared = original
                 Self.apply(edited, to: &prepared)
@@ -1445,17 +1446,19 @@ final class YouTubeService {
         let others = try await listBroadcasts("upcoming", token: token, scope: scope).filter {
             $0.boundStreamId == streamID && $0.id != pick.id && $0.enableAutoStart && !$0.isDefaultBroadcast
         }
-        if let own = others.first(where: { MatchKeys.isTubeistOwn($0, remembered: remembered) }) {
-            diagnostics.log("YouTube key check: a Tubeist broadcast waits on the key", .warning)
-            throw YouTubeError.keyBlocked(own.title)
+        // Tubeist broadcasts and planned matches alike: moving the pick
+        // never rebinds the other broadcast.
+        let sharing = others.filter {
+            MatchKeys.isTubeistOwn($0, remembered: remembered) || MatchKeys.isPlannedMatch($0, remembered: remembered)
         }
-        let planned = others.filter { MatchKeys.isPlannedMatch($0, remembered: remembered) }
-        // A pick must sit alone on a match key.
-        let needsMatchKey = !MatchKeys.isMatchKey(title: keyTitle)
-        guard !planned.isEmpty || needsMatchKey else { return }
-        diagnostics.log("YouTube key check: \(planned.count) other matches on the key; match key=\(!needsMatchKey)", .warning)
+        // A pick must sit alone on a match key. Tubeist's own pick (a Restart
+        // an earlier version left on the phone key) cannot be moved, so it
+        // keeps its key.
+        let needsMatchKey = !MatchKeys.isMatchKey(title: keyTitle) && !MatchKeys.isTubeistOwn(pick, remembered: remembered)
+        guard !sharing.isEmpty || needsMatchKey else { return }
+        diagnostics.log("YouTube key check: \(sharing.count) other broadcasts on the key; match key=\(!needsMatchKey)", .warning)
         throw YouTubeError.keyConflict(YouTubeKeyConflict(
-            kind: .plannedNeedsOwnKey, matchTitle: matchTitle, otherTitle: planned.first?.title,
+            kind: .plannedNeedsOwnKey, matchTitle: matchTitle, otherTitle: sharing.first?.title,
             broadcastIDsToMove: [pick.id]
         ))
     }
