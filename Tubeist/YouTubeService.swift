@@ -1221,19 +1221,9 @@ final class YouTubeService {
             }
             // The ended broadcast's key as YouTube reports it; the saved one
             // only when the original no longer exists.
-            guard let keyID = original == nil ? planned.streamId : original?.boundStreamId,
-                  let key = try await keyStream(id: keyID, token: token, scope: scope) else {
-                throw unavailable
-            }
-            stream = key.stream
+            stream = try await restartKey(
+                endedKeyID: original == nil ? planned.streamId : original?.boundStreamId, token: token, scope: scope)
             endpoint = try YouTubeStreamDiscovery.hlsEndpoint(for: stream)
-            // createOrResumeBroadcast resumes this phone's pending broadcast on
-            // the key; it is the one Restart will use, not a conflict.
-            let resumable = discoveryCache.id(
-                "createdBroadcast", for: YouTubeDiscoveryCache.key(scope: scope, streamKey: stream.streamName))
-            try await checkKeySafety(
-                streamID: keyID, keyTitle: key.title, pick: nil, matchTitle: edited.title,
-                ignoring: Set([resumable].compactMap { $0 }), token: token, scope: scope)
             var template = YouTubeBroadcast.draft(for: stream)
             Self.apply(edited, to: &template)
             template.enableAutoStop = endingPolicy.automaticallyEndsBroadcast
@@ -1339,12 +1329,43 @@ final class YouTubeService {
         return (try YouTubeStreamDiscovery.findStream(in: [resource], matchingStreamKey: name), resource.snippet?.title)
     }
 
-    /// Start checks 2 and 3 for a planned pick or Restart (`pick` nil when
-    /// Restart creates a new broadcast). Read-only: the fix is the UI's call to
+    /// The key for a recreated Restart broadcast, which never prompts: the
+    /// ended broadcast's key while it is still a free match key, otherwise the
+    /// first free match key, otherwise a new `Tubeist match N`. A free key has
+    /// nothing live or upcoming bound to it (checks 1 and 2 hold by choice).
+    private func restartKey(endedKeyID: String?, token: String, scope: String) async throws -> YouTubeStream {
+        let listing = try await matchKeyListing(token: token, scope: scope)
+        if let endedKeyID, let ended = try await keyStream(id: endedKeyID, token: token, scope: scope),
+           MatchKeys.isMatchKey(title: ended.title), !listing.receiving.contains(endedKeyID) {
+            // This phone's pending broadcast for the key is the one Restart resumes.
+            let resumable = discoveryCache.id(
+                "createdBroadcast", for: YouTubeDiscoveryCache.key(scope: scope, streamKey: ended.stream.streamName))
+            if !(listing.upcoming + listing.active).contains(where: {
+                $0.boundStreamId == endedKeyID && $0.id != resumable
+            }) {
+                return ended.stream
+            }
+        }
+        let chosen: MatchKeyStream
+        if let free = listing.freeKeys.first {
+            chosen = free
+        } else {
+            chosen = try await createMatchKey(
+                number: MatchKeys.nextNumber(existingTitles: listing.streams.map(\.title)), token: token, scope: scope)
+        }
+        diagnostics.log("YouTube restart: the ended broadcast's key is taken; using a free match key", .debug)
+        guard let key = try await keyStream(id: chosen.id, token: token, scope: scope) else {
+            throw YouTubeError.noStreamFound
+        }
+        return key.stream
+    }
+
+    /// Start checks 2 and 3 for a planned pick or a Restart that reuses its
+    /// still-ready original. Read-only: the fix is the UI's call to
     /// `moveToOwnMatchKeys`.
     private func checkKeySafety(
-        streamID: String, keyTitle: String?, pick: YouTubeBroadcast?, matchTitle: String,
-        ignoring: Set<String> = [], token: String, scope: String
+        streamID: String, keyTitle: String?, pick: YouTubeBroadcast, matchTitle: String,
+        token: String, scope: String
     ) async throws {
         let remembered = discoveryCache.rememberedCreatedBroadcastIDs(scope: scope)
         let active = try await listBroadcasts("active", token: token, scope: scope)
@@ -1358,22 +1379,20 @@ final class YouTubeService {
             throw YouTubeError.keyInUse(matchTitle)
         }
         let others = try await listBroadcasts("upcoming", token: token, scope: scope).filter {
-            $0.boundStreamId == streamID && $0.id != pick?.id && !ignoring.contains($0.id)
-                && $0.enableAutoStart && !$0.isDefaultBroadcast
+            $0.boundStreamId == streamID && $0.id != pick.id && $0.enableAutoStart && !$0.isDefaultBroadcast
         }
         if let own = others.first(where: { MatchKeys.isTubeistOwn($0, remembered: remembered) }) {
             diagnostics.log("YouTube key check: a Tubeist broadcast waits on the key", .warning)
             throw YouTubeError.keyBlocked(own.title)
         }
         let planned = others.filter { MatchKeys.isPlannedMatch($0, remembered: remembered) }
-        // A pick must sit alone on a match key; a new Restart broadcast only
-        // needs the key to itself.
-        let needsMatchKey = pick != nil && !MatchKeys.isMatchKey(title: keyTitle)
+        // A pick must sit alone on a match key.
+        let needsMatchKey = !MatchKeys.isMatchKey(title: keyTitle)
         guard !planned.isEmpty || needsMatchKey else { return }
         diagnostics.log("YouTube key check: \(planned.count) other matches on the key; match key=\(!needsMatchKey)", .warning)
         throw YouTubeError.keyConflict(YouTubeKeyConflict(
             kind: .plannedNeedsOwnKey, matchTitle: matchTitle, otherTitle: planned.first?.title,
-            broadcastIDsToMove: pick.map { [$0.id] } ?? planned.map(\.id)
+            broadcastIDsToMove: [pick.id]
         ))
     }
 
