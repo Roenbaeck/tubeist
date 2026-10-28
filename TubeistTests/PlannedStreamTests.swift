@@ -61,6 +61,8 @@ struct PlannedStreamTests {
             broadcast("b-other", stream: "stream-2", start: "2026-10-31T08:00:00Z"),
             broadcast("b-tomorrow", start: "2026-11-01T09:00:00Z"),
             broadcast("b-excluded", start: "2026-10-31T09:00:00Z"),
+            // Start refuses a broadcast that is not ready, so it is not listed.
+            broadcast("b-created", start: "2026-10-31T10:00:00Z", status: "created"),
         ]
         let result = PlannedStreams.today(input, streamId: "stream-1", excluding: ["b-excluded"],
                                           now: now, calendar: oslo)
@@ -81,6 +83,32 @@ struct PlannedStreamTests {
         #expect(restart.loadedMembership == nil)
         #expect(restart.thumbnailChanged == original.thumbnailChanged)
         #expect(PlannedStreams.restartLabel(for: restart) == "Restart: Edited title")
+    }
+
+    @Test func restartAfterStartCarriesTheDetailsAppliedAtStart() {
+        let original = selection()
+        // Studio changed visibility after the pick; the untouched field kept it at Start.
+        var applied = broadcast("b-1", title: "Edited title")
+        applied.privacyStatus = "private"
+        applied.enableDvr = false
+        let restart = original.restarting(after: applied)
+        #expect(restart.kind == .restart)
+        #expect(restart.broadcastId == "b-1")
+        #expect(restart.edited.privacyStatus == "private")
+        #expect(restart.edited.enableDvr == false)
+        #expect(restart.edited.title == "Edited title")
+        #expect(restart.edited.playlistId == original.edited.playlistId)
+        #expect(restart.loaded == restart.edited)
+        #expect(restart.loadedMembership == nil)
+        #expect(restart.scheduledStartTime == original.scheduledStartTime)
+        #expect(restart.thumbnailChanged == original.thumbnailChanged)
+    }
+
+    @Test func restartAfterARestartPointsAtTheBroadcastJustUsed() {
+        let restart = selection().restarting()
+        let again = restart.restarting(after: broadcast("new-event", title: "Edited title"))
+        #expect(again.broadcastId == "new-event")
+        #expect(again.streamId == restart.streamId)
     }
 
     @Test func selectionRoundTripsThroughJSON() throws {

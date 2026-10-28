@@ -1117,15 +1117,10 @@ final class YouTubeService {
         let edited = planned.edited
         var broadcast: YouTubeBroadcast
         var prepared: YouTubeBroadcast
+        var reusesOriginal = false
         switch planned.kind {
         case .planned:
-            let token = try await getValidAccessToken()
-            let url = try resourceURL("liveBroadcasts", query: [
-                .init(name: "id", value: planned.broadcastId), .init(name: "part", value: "snippet,status,contentDetails")
-            ])
-            let page: YouTubeListResponse<YouTubeBroadcastResource> = try await apiGet(url: url, token: token, operation: .broadcasts)
-            try checkAuthorization(scope)
-            guard let fetched = page.items.first(where: { $0.id == planned.broadcastId })?.broadcast,
+            guard let fetched = try await plannedBroadcast(id: planned.broadcastId, scope: scope),
                   fetched.boundStreamId == stream.id, fetched.lifeCycleStatus == "ready" else {
                 throw unavailable
             }
@@ -1142,6 +1137,21 @@ final class YouTubeService {
             if edited.enableEmbed != loaded.enableEmbed { prepared.enableEmbed = edited.enableEmbed }
             if edited.latencyPreference != loaded.latencyPreference { prepared.latencyPreference = edited.latencyPreference }
         case .restart:
+            // Start then a quick Stop leaves the broadcast ready, because
+            // auto-start waits for ingest. Reuse it instead of a duplicate.
+            let original = try await plannedBroadcast(id: planned.broadcastId, scope: scope)
+            if let original, original.lifeCycleStatus == "ready" {
+                guard original.boundStreamId == stream.id else { throw unavailable }
+                broadcast = original
+                prepared = original
+                Self.apply(edited, to: &prepared)
+                reusesOriginal = true
+                break
+            }
+            // Only an ended or deleted broadcast is recreated.
+            if let original, !["complete", "revoked"].contains(original.lifeCycleStatus ?? "") {
+                throw unavailable
+            }
             var template = YouTubeBroadcast.draft(for: stream)
             Self.apply(edited, to: &template)
             template.enableAutoStop = endingPolicy.automaticallyEndsBroadcast
@@ -1179,7 +1189,8 @@ final class YouTubeService {
         }
         var warnings: [String] = []
         // Optional extras must not block Start.
-        let uploadsThumbnail = planned.kind == .restart || planned.thumbnailChanged
+        let createdForRestart = planned.kind == .restart && !reusesOriginal
+        let uploadsThumbnail = createdForRestart || planned.thumbnailChanged
         if uploadsThumbnail, let thumbnail {
             do {
                 try await uploadThumbnail(videoId: broadcast.id, imageData: thumbnail)
@@ -1190,7 +1201,11 @@ final class YouTubeService {
                 diagnostics.log("YouTube thumbnail could not be set (\(YouTubeDiagnostics.failure(error))); starting without it", .warning)
             }
         }
-        let playlistChanged = planned.kind == .restart || edited.playlistId != planned.loaded.playlistId
+        let playlistChanged = createdForRestart || edited.playlistId != planned.loaded.playlistId
+        if reusesOriginal, playlistChanged, planned.loaded.playlistId != nil {
+            // The restart entry keeps no playlist item to remove.
+            warnings.append("'\(broadcast.title)' may still be in its previous playlist. Check it in YouTube Studio.")
+        }
         if planned.kind == .planned, playlistChanged, let membership = planned.loadedMembership {
             do {
                 try await removeFromPlaylist(itemId: membership.itemId)
@@ -1220,6 +1235,16 @@ final class YouTubeService {
                                               authorizationScope: scope),
             warnings: warnings
         )
+    }
+
+    private func plannedBroadcast(id: String, scope: String) async throws -> YouTubeBroadcast? {
+        let token = try await getValidAccessToken()
+        let url = try resourceURL("liveBroadcasts", query: [
+            .init(name: "id", value: id), .init(name: "part", value: "snippet,status,contentDetails")
+        ])
+        let page: YouTubeListResponse<YouTubeBroadcastResource> = try await apiGet(url: url, token: token, operation: .broadcasts)
+        try checkAuthorization(scope)
+        return page.items.first(where: { $0.id == id })?.broadcast
     }
 
     private static func apply(_ details: PlannedStreamDetails, to broadcast: inout YouTubeBroadcast) {

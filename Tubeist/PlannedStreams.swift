@@ -55,6 +55,16 @@ struct PlannedStreamSelection: Codable, Sendable, Equatable {
         copy.loadedMembership = nil
         return copy
     }
+
+    /// The Restart entry once Start has gone live on `applied`: it carries the
+    /// details actually in effect, including Studio changes made since the pick.
+    func restarting(after applied: YouTubeBroadcast) -> PlannedStreamSelection {
+        let details = PlannedStreamDetails(broadcast: applied, playlistId: edited.playlistId)
+        return PlannedStreamSelection(
+            kind: .restart, broadcastId: applied.id, streamId: streamId,
+            scheduledStartTime: scheduledStartTime, loaded: details, edited: details,
+            loadedMembership: nil, thumbnailChanged: thumbnailChanged)
+    }
 }
 
 enum PlannedStreams {
@@ -76,7 +86,8 @@ enum PlannedStreams {
         broadcasts
             .filter {
                 $0.boundStreamId == streamId
-                    && ($0.lifeCycleStatus == "ready" || $0.lifeCycleStatus == "created")
+                    // Start refuses anything else, so only ready broadcasts are listed.
+                    && $0.lifeCycleStatus == "ready"
                     && !excluding.contains($0.id)
                     && isScheduledToday($0.scheduledStartTime, now: now, calendar: calendar)
             }

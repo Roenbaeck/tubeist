@@ -544,10 +544,10 @@ final class Streamer: Sendable {
                 highlightsEnabled: Settings.highlightsEnabled
             )
             await streamingActor.setOutputPlan(outputPlan)
-            let serviceName = try await prepareEncodedOutput(streamID: streamID, sessionID: sessionID, plan: outputPlan)
+            let prepared = try await prepareEncodedOutput(streamID: streamID, sessionID: sessionID, plan: outputPlan)
             try await ContentPackager.shared.beginPackaging(
                 plan: outputPlan,
-                serviceName: serviceName,
+                serviceName: prepared.serviceName,
                 sessionID: await streamingActor.activitySessionID() ?? sessionID
             )
             packagingStarted = true
@@ -559,6 +559,10 @@ final class Streamer: Sendable {
             try await CaptureDirector.shared.startOutput()
             outputStarted = true
             try await streamingActor.markLive()
+            if let restart = prepared.restart {
+                // Only once live: a Start that fails before this keeps the pick.
+                Settings.plannedStreamSelection = restart
+            }
         } catch {
             if outputStarted {
                 await CaptureDirector.shared.stopOutput()
@@ -814,11 +818,14 @@ final class Streamer: Sendable {
         }
     }
 
-    private func prepareEncodedOutput(streamID: String, sessionID: UUID, plan: StreamOutputPlan) async throws -> String {
+    /// `restart` is the Restart entry to save once the stream is live, for a planned Start.
+    private func prepareEncodedOutput(
+        streamID: String, sessionID: UUID, plan: StreamOutputPlan
+    ) async throws -> (serviceName: String, restart: PlannedStreamSelection?) {
         var serviceName = Settings.youtubeBroadcastPreferences?.title ?? MPEGTransportStreamMuxer.defaultServiceName
         guard plan.streamsToYouTube else {
             await EncodedOutputRouter.shared.prepareForRecordingOnly()
-            return serviceName
+            return (serviceName, nil)
         }
 
 #if DEBUG
@@ -834,7 +841,7 @@ final class Streamer: Sendable {
                 serviceName: serviceName,
                 reportUploadsStopped: { [self] in await handleYouTubeUploadFailure($0, sessionID: sessionID) }
             )
-            return serviceName
+            return (serviceName, nil)
         }
 #endif
 
@@ -848,6 +855,7 @@ final class Streamer: Sendable {
             throw StreamStartError.endingTestRequiresSignIn
         }
         let endpoint: YouTubeHLSEndpoint
+        var restart: PlannedStreamSelection?
         if Settings.youtubeRefreshToken != nil {
             let service = await YouTubeService()
             let preferences = Settings.youtubeBroadcastPreferences
@@ -867,8 +875,8 @@ final class Streamer: Sendable {
                 plannedThumbnail: plannedThumbnail
             )
             if let plannedSelection {
-                // Next Start restarts this broadcast with the details just used.
-                Settings.plannedStreamSelection = plannedSelection.restarting()
+                // Next Start restarts this broadcast with the details just applied.
+                restart = plannedSelection.restarting(after: preparation.broadcast)
                 for warning in preparation.warnings {
                     await streamingActor.presentAlert(warning)
                 }
@@ -900,7 +908,7 @@ final class Streamer: Sendable {
         if endingPolicy == .manualDiagnostic {
             LOG("YouTube ending test: auto-stop disabled; no ENDLIST or automatic completion. End this broadcast manually in YouTube Studio.", level: .info)
         }
-        return serviceName
+        return (serviceName, restart)
     }
 }
 

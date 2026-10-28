@@ -2264,7 +2264,8 @@ extension YouTubeServiceTests {
 
     @Test @MainActor
     func restartCreatesANewBroadcastWithTheEditedDetails() async throws {
-        let fixture = PlannedStartFixture()
+        // The original broadcast has ended, so Restart needs a new one.
+        let fixture = PlannedStartFixture(m5: plannedM5(status: "complete"))
         var selection = fixture.selection
         selection.edited.title = "Match 5 – Part 2"
         selection.edited.privacyStatus = "public"
@@ -2284,7 +2285,10 @@ extension YouTubeServiceTests {
         #expect((body["status"] as? [String: Any])?["privacyStatus"] as? String == "public")
         let bind = try #require(requests.firstIndex { $0.url?.path.hasSuffix("/liveBroadcasts/bind") == true })
         #expect(insert < bind)
-        #expect(!requests.contains { queryItems(in: $0).contains(.init(name: "id", value: "m5")) })
+        // The ended original is only looked up, never written.
+        #expect(try requests.filter { $0.httpMethod == "PUT" }.allSatisfy {
+            try plannedJSONBody($0.httpBody)["id"] as? String != "m5"
+        })
         let playlistInsert = try #require(requests.first {
             $0.httpMethod == "POST" && $0.url?.path.hasSuffix("/playlistItems") == true
         })
@@ -2299,7 +2303,8 @@ extension YouTubeServiceTests {
     func restartReappliesEditedDetailsToAResumedTubeistBroadcast() async throws {
         // createOrResume returns the cached ready Tubeist broadcast ("Saved title")
         // and ignores the template, so the edited details must be PUT afterwards.
-        let fixture = PlannedStartFixture(cache: createdBroadcastCache("new-event"), upcoming: broadcastPageResponse(status: "ready", bound: true))
+        let fixture = PlannedStartFixture(m5: plannedM5(status: "complete"), cache: createdBroadcastCache("new-event"),
+                                          upcoming: broadcastPageResponse(status: "ready", bound: true))
         var selection = fixture.selection
         selection.edited.title = "Match 5 – Final"
         selection = selection.restarting()
@@ -2322,6 +2327,107 @@ extension YouTubeServiceTests {
         let monitor = try #require(details["monitorStream"] as? [String: Any])
         #expect(monitor["enableMonitorStream"] as? Bool == false)
         #expect(monitor["broadcastStreamDelayMs"] as? Int == 0)
+    }
+
+    @Test @MainActor
+    func plannedStartKeepsAStudioChangeToAnUneditedField() async throws {
+        // Picked as unlisted; Studio made it public afterwards. Only the title was edited.
+        let fixture = PlannedStartFixture(m5: plannedM5(privacy: "public"))
+        var selection = fixture.selection
+        selection.edited.title = "Match 5 – Final"
+
+        let preparation = try await fixture.start(selection)
+
+        let put = try #require(await fixture.transport.requests.first { $0.httpMethod == "PUT" })
+        let body = try plannedJSONBody(put.httpBody)
+        #expect((body["snippet"] as? [String: Any])?["title"] as? String == "Match 5 – Final")
+        #expect((body["status"] as? [String: Any])?["privacyStatus"] as? String == "public")
+        #expect(preparation.broadcast.privacyStatus == "public")
+        // Restart carries what was applied at Start, not the pick-time value.
+        let restart = selection.restarting(after: preparation.broadcast)
+        #expect(restart.edited.privacyStatus == "public")
+        #expect(restart.loaded.privacyStatus == "public")
+        #expect(restart.edited.title == "Match 5 – Final")
+    }
+
+    @Test @MainActor
+    func restartReusesTheOriginalWhileItIsStillReady() async throws {
+        // Start then a quick Stop leaves the planned broadcast ready (auto-start
+        // waits for ingest). Restart must use it rather than insert a duplicate.
+        let fixture = PlannedStartFixture(m5: plannedM5(enableAutoStart: false))
+        let selection = fixture.selection.restarting()
+
+        let preparation = try await fixture.start(selection, thumbnail: Data([0xFF, 0xD8, 0xFF, 0xD9]))
+
+        #expect(preparation.broadcast.id == "m5")
+        #expect(preparation.healthTarget.broadcastID == "m5")
+        let requests = await fixture.transport.requests
+        let lookup = try #require(requests.first { queryItems(in: $0).contains(.init(name: "id", value: "m5")) })
+        #expect(lookup.httpMethod == "GET")
+        #expect(!requests.contains { $0.httpMethod == "POST" })
+        #expect(!requests.contains { $0.httpMethod == "DELETE" })
+        let puts = requests.filter { $0.httpMethod == "PUT" }
+        #expect(puts.count == 1)
+        let body = try plannedJSONBody(puts.first?.httpBody)
+        #expect(body["id"] as? String == "m5")
+        #expect((body["status"] as? [String: Any])?["privacyStatus"] as? String == "unlisted")
+        #expect((body["contentDetails"] as? [String: Any])?["enableAutoStart"] as? Bool == true)
+    }
+
+    @Test @MainActor
+    func restartOnAStillReadyOriginalWithNothingToChangeSendsNoWrite() async throws {
+        let fixture = PlannedStartFixture()
+
+        let preparation = try await fixture.start(fixture.selection.restarting())
+
+        #expect(preparation.broadcast.id == "m5")
+        let methods = await fixture.transport.requests.map(\.httpMethod)
+        #expect(!methods.contains { ["PUT", "POST", "DELETE"].contains($0) })
+    }
+
+    @Test @MainActor
+    func restartOnAStillReadyOriginalAddsAChangedPlaylistAndWarnsAboutTheOldOne() async throws {
+        let fixture = PlannedStartFixture()
+        var selection = fixture.selection
+        selection.loaded.playlistId = "old-list"
+        selection.edited.playlistId = "old-list"
+        selection = selection.restarting()
+        selection.edited.playlistId = "new-list"
+
+        let preparation = try await fixture.start(selection)
+
+        #expect(preparation.broadcast.id == "m5")
+        #expect(preparation.warnings == [
+            "'Match 5' may still be in its previous playlist. Check it in YouTube Studio."
+        ])
+        let requests = await fixture.transport.requests
+        let inserts = requests.filter { $0.httpMethod == "POST" && $0.url?.path.hasSuffix("/playlistItems") == true }
+        #expect(inserts.count == 1)
+        #expect(inserts.first?.httpBody?.range(of: Data(#""videoId":"m5""#.utf8)) != nil)
+        #expect(!requests.contains { $0.httpMethod == "POST" && $0.url?.path.hasSuffix("/liveBroadcasts") == true })
+    }
+
+    @Test @MainActor
+    func restartCreatesANewBroadcastWhenTheOriginalIsGone() async throws {
+        let fixture = PlannedStartFixture(m5: nil)
+
+        let preparation = try await fixture.start(fixture.selection.restarting())
+
+        #expect(preparation.broadcast.id == "new-event")
+        #expect(await fixture.transport.requests.contains {
+            $0.httpMethod == "POST" && $0.url?.path.hasSuffix("/liveBroadcasts") == true
+        })
+    }
+
+    @Test @MainActor
+    func restartIsRefusedWhenTheReadyOriginalWasMovedToAnotherKey() async throws {
+        let fixture = PlannedStartFixture(m5: plannedM5(stream: "stream-2"))
+
+        await #expect(throws: YouTubeError.plannedBroadcastUnavailable("Match 5")) {
+            _ = try await fixture.start(fixture.selection.restarting())
+        }
+        let methods = await fixture.transport.requests.map(\.httpMethod)
+        #expect(!methods.contains { ["PUT", "POST", "DELETE"].contains($0) })
     }
 
     @Test @MainActor
@@ -2368,12 +2474,13 @@ private var plannedFixtureCalendar: Calendar {
 
 /// The Studio-planned "Match 5" broadcast as `liveBroadcasts.list` returns it.
 private func plannedM5(
-    status: String = "ready", stream: String = "stream-1", enableAutoStart: Bool = true
+    status: String = "ready", stream: String = "stream-1", enableAutoStart: Bool = true,
+    privacy: String = "unlisted"
 ) -> [String: Any] {
     [
         "id": "m5",
         "snippet": ["title": "Match 5", "scheduledStartTime": ISO8601DateFormatter().string(from: plannedFixtureNow)],
-        "status": ["privacyStatus": "unlisted", "lifeCycleStatus": status, "selfDeclaredMadeForKids": false],
+        "status": ["privacyStatus": privacy, "lifeCycleStatus": status, "selfDeclaredMadeForKids": false],
         "contentDetails": [
             "boundStreamId": stream, "enableDvr": true, "latencyPreference": "normal",
             "monitorStream": ["enableMonitorStream": false, "broadcastStreamDelayMs": 0],
