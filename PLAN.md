@@ -16,6 +16,27 @@
 
 ## Current verification status
 
+- The planned-streams feature (2026-10-28, branch `planned-streams`) lets
+  Settings pick a scheduled YouTube Studio match bound to this phone's key, or
+  "New stream", with a `Restart: <title>` entry after a stop. Save stays
+  local-only; YouTube is changed only in the Start preflight, and "New stream"
+  never adopts an upcoming broadcast Tubeist did not create. Settings opens
+  read-only while a stream runs. The unit suite ran 627 tests: 625 pass and 2
+  fail, both pre-existing OverlayRecoveryTests failures that also fail on main
+  (`scaleChangesLiveContent...`, `initialOverlayScaleIsApplied...`).
+  `Tools/check_youtube_only.sh` exits 0, but `rg` is not installed here so it
+  matched nothing; an equivalent grep of the same patterns found no hits. The
+  unsigned generic-device Release build succeeds. UI tests cannot launch in this
+  environment, so no UI-test count exists, and the simulator read-only check
+  could not run. Device acceptance is pending (user): (1) manual flow with "New
+  stream", Save, Start, Stop, then Watch Start, with title, visibility, playlist
+  and thumbnail matching the template; (2) planned flow with two matches today
+  in time order, edited title and playlist applied at Start, and `Restart:
+  <title>` creating a new broadcast; (3) never-hijack, where "New stream"
+  leaves a planned match untouched; (4) read-only mid-stream, opening and
+  closing Settings five times with no preview glitch, recording gap or overlay
+  change, Live Activity still updating, and the YouTube fields showing the live
+  broadcast.
 - Settings now uses explicit Cancel/Save draft semantics. Save persists the
   next-stream preferences locally and performs no YouTube mutation; signed-in
   Start reuses an existing `ready` broadcast before it creates and binds one.
