@@ -19,10 +19,11 @@ struct PlannedStreamTests {
     }
 
     private func broadcast(_ id: String, title: String = "Match", stream: String? = "stream-1",
-                           start: String? = "2026-10-31T09:00:00Z", status: String? = "ready") -> YouTubeBroadcast {
+                           start: String? = "2026-10-31T09:00:00Z", status: String? = "ready",
+                           published: String? = nil) -> YouTubeBroadcast {
         YouTubeBroadcast(
             id: id, title: title, privacyStatus: "unlisted", boundStreamId: stream,
-            scheduledStartTime: start, actualStartTime: nil, publishedAt: nil,
+            scheduledStartTime: start, actualStartTime: nil, publishedAt: published,
             lifeCycleStatus: status, enableDvr: true, latencyPreference: "low",
             enableMonitorStream: false, broadcastStreamDelayMs: 0, enableEmbed: false,
             recordFromStart: true, enableAutoStart: true, enableAutoStop: true,
@@ -52,21 +53,33 @@ struct PlannedStreamTests {
         #expect(!PlannedStreams.isScheduledToday(nil, now: now, calendar: oslo))
     }
 
-    @Test func todayFiltersBoundUpcomingAndSortsByTime() {
+    @Test func todayListsMatchesOnAnyKey() {
         let now = date("2026-10-31T10:00:00Z")
         let input = [
             broadcast("b-1300", start: "2026-10-31T12:00:00Z"),
-            broadcast("b-0800", start: "2026-10-31T07:00:00Z"),
+            broadcast("b-0800", stream: "stream-2", start: "2026-10-31T07:00:00Z"),
             broadcast("b-done", start: "2026-10-31T08:00:00Z", status: "complete"),
-            broadcast("b-other", stream: "stream-2", start: "2026-10-31T08:00:00Z"),
             broadcast("b-tomorrow", start: "2026-11-01T09:00:00Z"),
-            broadcast("b-excluded", start: "2026-10-31T09:00:00Z"),
             // Start refuses a broadcast that is not ready, so it is not listed.
             broadcast("b-created", start: "2026-10-31T10:00:00Z", status: "created"),
         ]
-        let result = PlannedStreams.today(input, streamId: "stream-1", excluding: ["b-excluded"],
-                                          now: now, calendar: oslo)
+        let result = PlannedStreams.today(input, remembered: [], now: now, calendar: oslo)
         #expect(result.map(\.id) == ["b-0800", "b-1300"])
+    }
+
+    @Test func todayExcludesTubeistsOwnByTiming() {
+        let now = date("2026-10-31T10:00:00Z")
+        let own = broadcast("b-own", start: "2026-10-31T09:00:10Z", published: "2026-10-31T09:00:00Z")
+        let remembered = broadcast("b-remembered", start: "2026-10-31T11:00:00Z")
+        let match = broadcast("b-match", start: "2026-10-31T12:00:00Z", published: "2026-10-30T09:00:00Z")
+        let result = PlannedStreams.today([own, remembered, match], remembered: ["b-remembered"],
+                                          now: now, calendar: oslo)
+        #expect(result.map(\.id) == ["b-match"])
+    }
+
+    @Test func labelMarksMatchesThatShareAKey() {
+        let b = broadcast("b-1", title: "Match 5", start: "2026-10-31T09:30:00Z")
+        #expect(PlannedStreams.label(for: b, calendar: oslo, needsOwnKey: true) == "10:30 – Match 5 · shares a key")
     }
 
     @Test func labelIsTwentyFourHourLocalTimeWithEnDash() {

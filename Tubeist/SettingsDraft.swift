@@ -84,6 +84,7 @@ final class YouTubeSettingsDraft {
 
     private(set) var plannedBroadcasts: [YouTubeBroadcast] = []
     private(set) var plannedStreamTitle: String?
+    private(set) var plannedNeedsOwnKey: Set<String> = []
     private(set) var restartSelection: PlannedStreamSelection?
     private(set) var plannedChoice: PlannedStreamChoice = .newStream
     let plannedThumbnail = SettingsThumbnailDraft()
@@ -149,6 +150,7 @@ final class YouTubeSettingsDraft {
                       now: Date, calendar: Calendar) {
         plannedBroadcasts = planned.broadcasts
         plannedStreamTitle = planned.streamTitle
+        plannedNeedsOwnKey = planned.needsOwnKey
         if case .planned(let id) = plannedChoice, !planned.broadcasts.contains(where: { $0.id == id }) {
             choose(.newStream)
         }
@@ -156,8 +158,8 @@ final class YouTubeSettingsDraft {
         let image = savedThumbnail.flatMap { UIImage(data: $0) }
         switch saved.kind {
         case .planned:
-            guard let match = planned.broadcasts.first(where: { $0.id == saved.broadcastId }),
-                  match.boundStreamId == saved.streamId else { return }
+            // By broadcast only: Start follows the match's current key.
+            guard planned.broadcasts.contains(where: { $0.id == saved.broadcastId }) else { return }
             enter(.planned(saved.broadcastId), selection: saved, image: image)
         case .restart:
             guard PlannedStreams.isScheduledToday(saved.scheduledStartTime, now: now, calendar: calendar),

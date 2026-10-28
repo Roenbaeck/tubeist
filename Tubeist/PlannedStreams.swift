@@ -81,14 +81,13 @@ enum PlannedStreams {
         return calendar.isDate(date, inSameDayAs: now)
     }
 
-    static func today(_ broadcasts: [YouTubeBroadcast], streamId: String, excluding: Set<String>,
+    static func today(_ broadcasts: [YouTubeBroadcast], remembered: Set<String>,
                       now: Date, calendar: Calendar) -> [YouTubeBroadcast] {
         broadcasts
             .filter {
-                $0.boundStreamId == streamId
-                    // Start refuses anything else, so only ready broadcasts are listed.
-                    && $0.lifeCycleStatus == "ready"
-                    && !excluding.contains($0.id)
+                // Start refuses anything else, so only ready broadcasts are listed.
+                $0.lifeCycleStatus == "ready"
+                    && MatchKeys.isPlannedMatch($0, remembered: remembered)
                     && isScheduledToday($0.scheduledStartTime, now: now, calendar: calendar)
             }
             .sorted {
@@ -98,13 +97,14 @@ enum PlannedStreams {
             }
     }
 
-    static func label(for broadcast: YouTubeBroadcast, calendar: Calendar) -> String {
+    static func label(for broadcast: YouTubeBroadcast, calendar: Calendar, needsOwnKey: Bool = false) -> String {
         let formatter = DateFormatter()
         formatter.dateFormat = "HH:mm"
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.timeZone = calendar.timeZone
-        guard let date = broadcast.scheduledStartTime.flatMap(parse) else { return broadcast.title }
-        return "\(formatter.string(from: date)) – \(broadcast.title)"
+        let suffix = needsOwnKey ? " · shares a key" : ""
+        guard let date = broadcast.scheduledStartTime.flatMap(parse) else { return broadcast.title + suffix }
+        return "\(formatter.string(from: date)) – \(broadcast.title)\(suffix)"
     }
 
     static func restartLabel(for selection: PlannedStreamSelection) -> String {

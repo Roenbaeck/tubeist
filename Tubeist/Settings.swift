@@ -1003,7 +1003,8 @@ struct SettingsView: View {
                                         .tag(PlannedStreamChoice.restart)
                                 }
                                 ForEach(youtubeDraft.plannedBroadcasts, id: \.id) { planned in
-                                    Text(PlannedStreams.label(for: planned, calendar: .current))
+                                    Text(PlannedStreams.label(for: planned, calendar: .current,
+                                                         needsOwnKey: youtubeDraft.plannedNeedsOwnKey.contains(planned.id)))
                                         .tag(PlannedStreamChoice.planned(planned.id))
                                 }
                             }

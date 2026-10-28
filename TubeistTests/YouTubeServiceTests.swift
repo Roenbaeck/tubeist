@@ -618,7 +618,7 @@ struct YouTubeServiceTests {
     }
 
     @Test @MainActor
-    func plannedListReturnsOnlyTodaysBroadcastsOnThisStreamAndNotTubeistsOwn() async throws {
+    func plannedListReturnsTodaysChannelMatchesButNotTubeistsOwn() async throws {
         let calendar = Calendar(identifier: .gregorian)
         let now = Date(timeIntervalSince1970: 1_800_000_000)
         let today = ISO8601DateFormatter().string(from: now)
@@ -635,17 +635,43 @@ struct YouTubeServiceTests {
             item("created", stream: "stream-1", start: today),
         ]]), statusCode: 200)
         let titled = YouTubeAPIResponse(data: Data(#"{"items":[{"id":"stream-1","snippet":{"title":"Court 1"},"cdn":{"ingestionType":"hls","ingestionInfo":{"streamName":"test-key","ingestionAddress":"https://a.upload.youtube.com/http_upload_hls?cid=test-key&file="}}}]}"#.utf8), statusCode: 200)
-        // selectedBroadcast: active, upcoming, stream lookup; then title lookup and the planned list.
-        let transport = MockYouTubeAPITransport(responses: [emptyYouTubePage(), page, titled, titled, page])
+        // selectedBroadcast: active, upcoming, stream lookup; then title lookup, key titles and the planned list.
+        let transport = MockYouTubeAPITransport(responses: [emptyYouTubePage(), page, titled, titled, titled, page])
         let service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore(),
                                      discoveryCache: createdBroadcastCache("created"), now: { now })
 
         let result = try await service.loadPlannedBroadcasts(forStreamKey: "test-key", calendar: calendar)
 
-        #expect(result.broadcasts.map(\.id) == ["match-today"])
+        #expect(result.broadcasts.map(\.id) == ["match-today", "other-stream"])
         #expect(result.streamTitle == "Court 1")
         let requests = await transport.requests
         #expect(queryItems(in: try #require(requests.last)).contains(URLQueryItem(name: "broadcastStatus", value: "upcoming")))
+    }
+
+    @Test @MainActor
+    func plannedListMarksMatchesThatNeedTheirOwnKey() async throws {
+        let calendar = Calendar(identifier: .gregorian)
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let today = ISO8601DateFormatter().string(from: now)
+        func item(_ id: String, stream: String) -> [String: Any] {
+            ["id": id, "snippet": ["title": id, "scheduledStartTime": today],
+             "status": ["privacyStatus": "unlisted", "lifeCycleStatus": "ready"],
+             "contentDetails": ["boundStreamId": stream]]
+        }
+        let page = YouTubeAPIResponse(data: try JSONSerialization.data(withJSONObject: ["items": [
+            item("created", stream: "stream-1"),
+            item("shared-a", stream: "stream-2"), item("shared-b", stream: "stream-2"),
+            item("alone", stream: "stream-3"),
+        ]]), statusCode: 200)
+        let titled = YouTubeAPIResponse(data: Data(#"{"items":[{"id":"stream-1","snippet":{"title":"Court 1"},"cdn":{"ingestionType":"hls","ingestionInfo":{"streamName":"test-key","ingestionAddress":"https://a.upload.youtube.com/http_upload_hls?cid=test-key&file="}}},{"id":"stream-2","snippet":{"title":"Tubeist match 1"},"cdn":{"ingestionType":"hls","ingestionInfo":{"streamName":"key-2","ingestionAddress":"https://a.upload.youtube.com/http_upload_hls?cid=key-2&file="}}},{"id":"stream-3","snippet":{"title":"Tubeist match 2"},"cdn":{"ingestionType":"hls","ingestionInfo":{"streamName":"key-3","ingestionAddress":"https://a.upload.youtube.com/http_upload_hls?cid=key-3&file="}}}]}"#.utf8), statusCode: 200)
+        let transport = MockYouTubeAPITransport(responses: [emptyYouTubePage(), page, titled, titled, titled, page])
+        let service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore(),
+                                     discoveryCache: createdBroadcastCache("created"), now: { now })
+
+        let result = try await service.loadPlannedBroadcasts(forStreamKey: "test-key", calendar: calendar)
+
+        #expect(result.needsOwnKey == ["shared-a", "shared-b"])
+        #expect(result.keyTitles == ["stream-1": "Court 1", "stream-2": "Tubeist match 1", "stream-3": "Tubeist match 2"])
     }
 
     @Test @MainActor

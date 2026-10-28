@@ -306,6 +306,12 @@ struct SettingsDraftTests {
                                       loadedMembership: nil, thumbnailChanged: false)
     }
 
+    @Test func savedPickIsMatchedByBroadcastIdOnly() {
+        let draft = plannedDraft(saved: savedSelection(broadcastId: "b1", streamId: "stream-1"),
+                                 broadcasts: [plannedBroadcast("b1", streamID: "match-7")])
+        #expect(draft.plannedChoice == .planned("b1"))
+    }
+
     @Test func choosingAPlannedMatchThenNewStreamRestoresTheTemplateExactly() {
         let draft = plannedDraft()
         let before = draft.preferences()
@@ -371,8 +377,9 @@ struct SettingsDraftTests {
         #expect(missing.plannedChoice == .newStream)
         #expect(missing.title == "Template title")
 
+        // A pick follows its match to whatever key it is on now.
         let otherStream = plannedDraft(saved: savedSelection(streamId: "stream-z"))
-        #expect(otherStream.plannedChoice == .newStream)
+        #expect(otherStream.plannedChoice == .planned("b1"))
     }
 
     @Test func savedRestartFromYesterdayIsNotOffered() {

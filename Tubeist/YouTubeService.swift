@@ -105,6 +105,18 @@ struct YouTubeStream: Sendable, Equatable {
 struct YouTubePlannedStreams: Sendable, Equatable {
     let streamTitle: String?
     let broadcasts: [YouTubeBroadcast]
+    /// Broadcast IDs of listed matches that share a key or sit on a non-match key.
+    let needsOwnKey: Set<String>
+    /// Stream ID to YouTube title, for read-only display and labels.
+    let keyTitles: [String: String]
+
+    init(streamTitle: String?, broadcasts: [YouTubeBroadcast],
+         needsOwnKey: Set<String> = [], keyTitles: [String: String] = [:]) {
+        self.streamTitle = streamTitle
+        self.broadcasts = broadcasts
+        self.needsOwnKey = needsOwnKey
+        self.keyTitles = keyTitles
+    }
 }
 
 struct MatchKeyFailure: Sendable, Equatable {
@@ -1791,8 +1803,8 @@ final class YouTubeService {
 
     // MARK: - YouTube API: Planned streams
 
-    /// Today's upcoming broadcasts bound to the stream behind `streamKey`,
-    /// excluding the one Tubeist created for "New stream".
+    /// Today's planned matches across the channel, whatever key they are bound
+    /// to, excluding Tubeist's own. `streamKey` only names the phone's stream.
     func loadPlannedBroadcasts(forStreamKey streamKey: String, calendar: Calendar = .current) async throws -> YouTubePlannedStreams {
         beginLoading()
         defer { endLoading() }
@@ -1803,16 +1815,21 @@ final class YouTubeService {
         let token = try await getValidAccessToken()
         let title = try await streamByID(stream.id, token: token)?.snippet?.title
         try checkAuthorization(scope)
+        let streams = try await listMatchKeyStreams(token: token, scope: scope).streams
         let items: [YouTubeBroadcastResource] = try await paginatedItems(
             url: "\(YOUTUBE_API_BASE)/liveBroadcasts?part=snippet,contentDetails,status&broadcastStatus=upcoming&broadcastType=all&maxResults=50",
             token: token, operation: .broadcasts
         )
         try checkAuthorization(scope)
-        let own = discoveryCache.id("createdBroadcast", for: key).map { Set([$0]) } ?? []
+        let upcoming = items.compactMap(\.broadcast)
+        let remembered = discoveryCache.rememberedCreatedBroadcastIDs(scope: scope)
+        let broadcasts = PlannedStreams.today(upcoming, remembered: remembered, now: now(), calendar: calendar)
+        let listed = Set(broadcasts.map(\.id))
+        let needing = MatchKeys.matchesNeedingOwnKey(upcoming: upcoming, streams: streams, remembered: remembered)
         return YouTubePlannedStreams(
-            streamTitle: title,
-            broadcasts: PlannedStreams.today(items.compactMap(\.broadcast), streamId: stream.id,
-                                             excluding: own, now: now(), calendar: calendar)
+            streamTitle: title, broadcasts: broadcasts,
+            needsOwnKey: Set(needing.map(\.id)).intersection(listed),
+            keyTitles: Dictionary(streams.map { ($0.id, $0.title) }, uniquingKeysWith: { first, _ in first })
         )
     }
 
@@ -1948,6 +1965,13 @@ final class YouTubeService {
     private func matchKeyListing(token: String, scope: String) async throws -> MatchKeyListing {
         let upcoming = try await listBroadcasts("upcoming", token: token, scope: scope)
         let active = try await listBroadcasts("active", token: token, scope: scope)
+        let (streams, receiving) = try await listMatchKeyStreams(token: token, scope: scope)
+        return MatchKeyListing(upcoming: upcoming, active: active, streams: streams, receiving: receiving)
+    }
+
+    /// The channel's reusable streams by ID and title, and which receive video now.
+    private func listMatchKeyStreams(token: String, scope: String) async throws
+        -> (streams: [MatchKeyStream], receiving: Set<String>) {
         let resources: [YouTubeLiveStreamResource] = try await paginatedItems(
             url: "\(YOUTUBE_API_BASE)/liveStreams?part=snippet,cdn,status&mine=true&maxResults=50",
             token: token, operation: .streams
@@ -1958,7 +1982,7 @@ final class YouTubeService {
             resource.id.map { MatchKeyStream(id: $0, title: resource.snippet?.title ?? "") }
         }
         let receiving = Set(resources.filter { $0.status?.streamStatus == "active" }.compactMap(\.id))
-        return MatchKeyListing(upcoming: upcoming, active: active, streams: streams, receiving: receiving)
+        return (streams, receiving)
     }
 
     private func listBroadcasts(_ status: String, token: String, scope: String) async throws -> [YouTubeBroadcast] {
