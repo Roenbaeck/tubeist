@@ -38,7 +38,8 @@ struct PlannedStreamSelection: Codable, Sendable, Equatable {
     var kind: Kind
     /// Planned: the target broadcast. Restart: the ended broadcast.
     let broadcastId: String
-    let streamId: String
+    /// May be absent until the user gives an unbound Studio broadcast its own key.
+    let streamId: String?
     /// ISO 8601 from YouTube; drives the same-day rule.
     let scheduledStartTime: String
     /// Values as loaded from YouTube.
@@ -61,7 +62,7 @@ struct PlannedStreamSelection: Codable, Sendable, Equatable {
     func restarting(after applied: YouTubeBroadcast) -> PlannedStreamSelection {
         let details = PlannedStreamDetails(broadcast: applied, playlistId: edited.playlistId)
         return PlannedStreamSelection(
-            kind: .restart, broadcastId: applied.id, streamId: streamId,
+            kind: .restart, broadcastId: applied.id, streamId: applied.boundStreamId ?? streamId,
             scheduledStartTime: scheduledStartTime, loaded: details, edited: details,
             loadedMembership: nil, thumbnailChanged: thumbnailChanged)
     }
@@ -85,9 +86,7 @@ enum PlannedStreams {
                       now: Date, calendar: Calendar) -> [YouTubeBroadcast] {
         broadcasts
             .filter {
-                // Start refuses anything else, so only ready broadcasts are listed.
-                $0.lifeCycleStatus == "ready"
-                    && MatchKeys.isPlannedMatch($0, remembered: remembered)
+                BroadcastKeys.isPlannedBroadcast($0, remembered: remembered)
                     && isScheduledToday($0.scheduledStartTime, now: now, calendar: calendar)
             }
             .sorted {

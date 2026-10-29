@@ -33,6 +33,7 @@ extension EnvironmentValues {
     @Entry var verticalBarEdge: HorizontalEdge? = nil
 }
 
+#if compiler(>=6.4)
 @available(iOS 27.1, *)
 private struct VerticalBarEdgeReader: ViewModifier {
     @Environment(\.toolbarVerticalEdge) private var toolbarVerticalEdge
@@ -41,17 +42,24 @@ private struct VerticalBarEdgeReader: ViewModifier {
         content.environment(\.verticalBarEdge, toolbarVerticalEdge)
     }
 }
+#endif
 
 extension View {
     /// Publishes the system's vertical bar edge as `verticalBarEdge` to this
     /// view, since the system value requires iOS 27.1.
     @ViewBuilder
     func readingVerticalBarEdge() -> some View {
+        // Xcode 26's SDK does not declare toolbarVerticalEdge. Availability
+        // checks alone cannot hide that symbol from its compiler.
+#if compiler(>=6.4)
         if #available(iOS 27.1, *) {
             modifier(VerticalBarEdgeReader())
         } else {
             self
         }
+#else
+        self
+#endif
     }
 }
 
@@ -181,15 +189,15 @@ struct TubeistView: View {
         }
     }
 
-    /// Confirmed fix: move the planned matches to their own keys, then Start
+    /// Confirmed fix: move the planned broadcasts to their own keys, then Start
     /// again through the same checks as the button.
     private func resolveKeyConflict(_ conflict: YouTubeKeyConflict) {
         Task {
             do {
-                try await YouTubeService().moveToOwnMatchKeys(broadcastIDs: conflict.broadcastIDsToMove)
+                try await YouTubeService().moveToOwnBroadcastKeys(broadcastIDs: conflict.broadcastIDsToMove)
             } catch {
                 fade(error.localizedDescription)
-                LOG("Could not move to own match keys: \(error.localizedDescription)", level: .error)
+                LOG("Could not move to dedicated stream keys: \(error.localizedDescription)", level: .error)
                 return
             }
             startStreamNow()

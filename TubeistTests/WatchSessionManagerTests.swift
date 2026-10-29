@@ -31,7 +31,7 @@ struct WatchSessionManagerTests {
     @Test @MainActor
     func keyConflictFromWatchStartAsksForThePhone() async {
         let conflict = YouTubeKeyConflict(
-            kind: .plannedNeedsOwnKey, matchTitle: "Match 5", otherTitle: "Match 6", broadcastIDsToMove: ["b5"]
+            kind: .plannedNeedsOwnKey, broadcastTitle: "Match 5", otherTitle: "Match 6", broadcastIDsToMove: ["b5"]
         )
         let manager = WatchSessionManager(isAppActive: { true }, startStream: { _ in
             throw YouTubeError.keyConflict(conflict)

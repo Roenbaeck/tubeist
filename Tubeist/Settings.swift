@@ -436,7 +436,7 @@ struct SettingsView: View {
     /// later choice, and until then "New stream" never clears it on Save.
     @State private var plannedListLoaded = false
     @State private var plannedListFailed = false
-    /// The playlist lookup for the picked match failed, so "None" may be wrong.
+    /// The playlist lookup for the picked broadcast failed, so "None" may be wrong.
     @State private var plannedMembershipFailed = false
     @State private var savedPlannedThumbnailData: Data?
     /// The image behind the current planned pick, kept so Save stores it as loaded.
@@ -444,8 +444,8 @@ struct SettingsView: View {
     @State private var plannedDetailsLoadID: UUID?
     @State private var isLoadingBroadcastInUse = false
     @State private var broadcastInUseKeyTitle: String?
-    @State private var isAssigningMatchKeys = false
-    @State private var matchKeysMessage: String?
+    @State private var isAssigningBroadcastKeys = false
+    @State private var broadcastKeysMessage: String?
     @State private var selectedPhotoItem: PhotosPickerItem? = nil
     @State private var isSettingUpYouTubeStream = false
     @State private var youtubeConfigLoaded: Bool = false
@@ -606,15 +606,15 @@ struct SettingsView: View {
                 Text(saveErrorMessage ?? "The settings could not be saved")
             }
             .alert(
-                "Match keys",
+                "Stream keys",
                 isPresented: Binding(
-                    get: { matchKeysMessage != nil },
-                    set: { if !$0 { matchKeysMessage = nil } }
+                    get: { broadcastKeysMessage != nil },
+                    set: { if !$0 { broadcastKeysMessage = nil } }
                 )
             ) {
-                Button("OK") { matchKeysMessage = nil }
+                Button("OK") { broadcastKeysMessage = nil }
             } message: {
-                Text(matchKeysMessage ?? "")
+                Text(broadcastKeysMessage ?? "")
             }
             .sheet(item: $editingOverlay) { overlay in
                 NavigationStack {
@@ -964,7 +964,7 @@ struct SettingsView: View {
                     .accessibilityIdentifier("YouTube channel")
 
                     if youtubeService.isLoading || isSettingUpYouTubeStream || isLoadingPlannedDetails
-                        || isLoadingBroadcastInUse || isAssigningMatchKeys {
+                        || isLoadingBroadcastInUse || isAssigningBroadcastKeys {
                         HStack {
                             ProgressView()
                             Text("Loading...")
@@ -1031,11 +1031,11 @@ struct SettingsView: View {
                                 }
                             }
                             .disabled(youtubeDraft.broadcast?.isActive == true)
-                            Button("Assign match keys") {
-                                Task { await assignMatchKeys() }
+                            Button("Assign stream keys") {
+                                Task { await assignBroadcastKeys() }
                             }
-                            .accessibilityIdentifier("Assign match keys")
-                            .disabled(youtubeService.isLoading || isAssigningMatchKeys)
+                            .accessibilityIdentifier("Assign stream keys")
+                            .disabled(youtubeService.isLoading || isAssigningBroadcastKeys)
                             if plannedListFailed && !plannedListLoaded {
                                 Text(Settings.plannedStreamSelection.map {
                                     "Couldn't load planned streams; Start will still use '\($0.edited.title)'."
@@ -1106,7 +1106,7 @@ struct SettingsView: View {
                             }
                         }
                         if plannedMembershipFailed, case .planned = youtubeDraft.plannedChoice {
-                            Text("Couldn't check this match's playlist. Check it in YouTube Studio.")
+                            Text("Couldn't check this stream's playlist. Check it in YouTube Studio.")
                                 .foregroundColor(.secondary)
                                 .font(.caption)
                         }
@@ -1374,21 +1374,21 @@ struct SettingsView: View {
     private var isLoadingPlannedDetails: Bool { plannedDetailsLoadID != nil }
 
     private var plannedStreamFooter: String {
-        "New match in Studio? Press Assign match keys, or Start will offer to set it up."
+        "New stream in Studio? Press Assign stream keys, or Start will offer to set it up."
     }
 
-    private func assignMatchKeys() async {
-        guard !isAssigningMatchKeys, !youtubeService.isLoading else { return }
-        isAssigningMatchKeys = true
-        defer { isAssigningMatchKeys = false }
+    private func assignBroadcastKeys() async {
+        guard !isAssigningBroadcastKeys, !youtubeService.isLoading else { return }
+        isAssigningBroadcastKeys = true
+        defer { isAssigningBroadcastKeys = false }
         do {
-            let result = try await youtubeService.assignMatchKeys()
-            matchKeysMessage = YouTubeDiagnostics.text(result.summary, secrets: [
+            let result = try await youtubeService.assignBroadcastKeys()
+            broadcastKeysMessage = YouTubeDiagnostics.text(result.summary, secrets: [
                 streamKeyManager.currentKey, Settings.youtubeAccessToken ?? "", Settings.youtubeRefreshToken ?? ""
             ])
             await loadYouTubeBroadcast()
         } catch {
-            matchKeysMessage = YouTubeDiagnostics.text(error.localizedDescription, secrets: [
+            broadcastKeysMessage = YouTubeDiagnostics.text(error.localizedDescription, secrets: [
                 streamKeyManager.currentKey, Settings.youtubeAccessToken ?? "", Settings.youtubeRefreshToken ?? ""
             ])
         }

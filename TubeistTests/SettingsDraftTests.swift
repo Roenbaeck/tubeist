@@ -264,7 +264,7 @@ struct SettingsDraftTests {
         return calendar
     }
 
-    private func plannedBroadcast(_ id: String, title: String = "Planned", streamID: String = "stream-a",
+    private func plannedBroadcast(_ id: String, title: String = "Planned", streamID: String? = "stream-a",
                                   start: String = "2026-10-28T18:00:00Z") -> YouTubeBroadcast {
         YouTubeBroadcast(
             id: id, title: title, privacyStatus: "unlisted",
@@ -326,6 +326,19 @@ struct SettingsDraftTests {
         let draft = plannedDraft(saved: savedSelection(broadcastId: "b1", streamId: "stream-1"),
                                  broadcasts: [plannedBroadcast("b1", streamID: "match-7")])
         #expect(draft.plannedChoice == .planned("b1"))
+    }
+
+    @Test func savedPickUsesTheBroadcastKeyAndAllowsAnUnboundMatch() throws {
+        for key: String? in ["match-7", nil] {
+            let draft = plannedDraft(broadcasts: [plannedBroadcast("b1", streamID: key)])
+            draft.choose(.planned("b1"))
+            draft.loadPlannedDetails(for: "b1", membership: nil, thumbnail: nil)
+            let selection = try #require(draft.plannedSelection())
+            #expect(selection.streamId == key)
+            let roundTrip = try JSONDecoder().decode(PlannedStreamSelection.self,
+                from: JSONEncoder().encode(selection))
+            #expect(roundTrip == selection)
+        }
     }
 
     @Test func choosingAPlannedMatchThenNewStreamRestoresTheTemplateExactly() {
@@ -408,6 +421,12 @@ struct SettingsDraftTests {
         #expect(today.plannedChoice == .restart)
         #expect(today.restartSelection?.broadcastId == "ended")
         #expect(today.title == "Edited")
+    }
+
+    @Test func savedRestartOnABroadcastKeyIsRestoredAlongsideThePhoneKey() {
+        let draft = plannedDraft(saved: savedSelection(kind: .restart, broadcastId: "ended", streamId: "match-7"))
+        #expect(draft.plannedChoice == .restart)
+        #expect(draft.restartSelection?.streamId == "match-7")
     }
 
     @Test func changingTheStreamKeyDropsThePlannedChoice() {

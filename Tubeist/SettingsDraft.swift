@@ -97,7 +97,7 @@ final class YouTubeSettingsDraft {
         var latencyPreference: String
         var playlistId: String?
     }
-    /// The template's fields while a planned match occupies them.
+    /// The template's fields while a planned broadcast occupies them.
     private var stashedTemplate: Fields?
     private var plannedLoaded: PlannedStreamDetails?
     private var plannedMembership: YouTubePlaylistMembership?
@@ -156,13 +156,11 @@ final class YouTubeSettingsDraft {
         let image = savedThumbnail.flatMap { UIImage(data: $0) }
         switch saved.kind {
         case .planned:
-            // By broadcast only: Start follows the match's current key.
+            // By broadcast only: Start follows the broadcast's current key.
             guard planned.broadcasts.contains(where: { $0.id == saved.broadcastId }) else { return }
             enter(.planned(saved.broadcastId), selection: saved, image: image)
         case .restart:
-            guard PlannedStreams.isScheduledToday(saved.scheduledStartTime, now: now, calendar: calendar),
-                  broadcast?.boundStreamId == nil || broadcast?.boundStreamId == saved.streamId
-            else { return }
+            guard PlannedStreams.isScheduledToday(saved.scheduledStartTime, now: now, calendar: calendar) else { return }
             restartSelection = saved
             enter(.restart, selection: saved, image: image)
         }
@@ -216,7 +214,7 @@ final class YouTubeSettingsDraft {
         plannedThumbnail.reset(image: thumbnail.flatMap { UIImage(data: $0) })
     }
 
-    /// Nil for "New stream" and while a planned match's details are still loading.
+    /// Nil for "New stream" and while a planned broadcast's details are still loading.
     func plannedSelection() -> PlannedStreamSelection? {
         let changed = plannedThumbnail.hasNewSelection || savedThumbnailChanged
         switch plannedChoice {
@@ -228,9 +226,8 @@ final class YouTubeSettingsDraft {
             selection.thumbnailChanged = changed
             return selection
         case .planned(let id):
-            guard let loaded = plannedLoaded, let streamId = broadcast?.boundStreamId
-                    ?? plannedBroadcasts.first(where: { $0.id == id })?.boundStreamId,
-                  let start = plannedStartTime else { return nil }
+            guard let loaded = plannedLoaded, let start = plannedStartTime else { return nil }
+            let streamId = plannedBroadcasts.first(where: { $0.id == id })?.boundStreamId
             return PlannedStreamSelection(
                 kind: .planned, broadcastId: id, streamId: streamId, scheduledStartTime: start,
                 loaded: loaded, edited: details(from: currentFields),

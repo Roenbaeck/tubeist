@@ -36,6 +36,7 @@ struct YouTubeBroadcast: Identifiable, Sendable, Equatable {
     var selfDeclaredMadeForKids: Bool? = nil
     var thumbnailURL: String? = nil
     var isDefaultBroadcast: Bool = false
+    var broadcastDescription: String? = nil
 
     /// A local template, never a remote broadcast ID or a status-polling target.
     static func draft(for stream: YouTubeStream) -> YouTubeBroadcast {
@@ -100,12 +101,13 @@ struct YouTubeStream: Sendable, Equatable {
     let ingestionType: String
     let ingestionAddress: String
     let backupIngestionAddress: String?
+    var isReceiving: Bool = false
 }
 
 struct YouTubePlannedStreams: Sendable, Equatable {
     let streamTitle: String?
     let broadcasts: [YouTubeBroadcast]
-    /// Broadcast IDs of listed matches that share a key or sit on a non-match key.
+    /// Broadcast IDs of listed streams that share a key or need a dedicated key.
     let needsOwnKey: Set<String>
     /// Stream ID to YouTube title, for read-only display and labels.
     let keyTitles: [String: String]
@@ -119,21 +121,21 @@ struct YouTubePlannedStreams: Sendable, Equatable {
     }
 }
 
-struct MatchKeyFailure: Sendable, Equatable {
+struct BroadcastKeyFailure: Sendable, Equatable {
     let title: String
     let reason: String
 }
 
-struct MatchKeyAssignmentResult: Sendable, Equatable {
+struct BroadcastKeyAssignmentResult: Sendable, Equatable {
     let total: Int
     let moved: Int
     let alreadySet: Int
-    let failures: [MatchKeyFailure]
+    let failures: [BroadcastKeyFailure]
 
     var summary: String {
         let headline = total == 0
-            ? "No upcoming matches to set up."
-            : "\(total) matches, each with its own key. \(moved) moved, \(alreadySet) already set up."
+            ? "No upcoming streams to set up."
+            : "\(total) planned streams, each with its own key. \(moved) moved, \(alreadySet) already set up."
         return ([headline]
             + failures.map { "Could not give '\($0.title)' its own key: \($0.reason)." })
             .joined(separator: "\n")
@@ -252,6 +254,7 @@ struct YouTubeBroadcastResource: Decodable, Sendable {
         let publishedAt: String?
         let thumbnails: Thumbnails?
         let isDefaultBroadcast: Bool?
+        let description: String?
     }
 
     struct Status: Decodable, Sendable {
@@ -315,7 +318,8 @@ struct YouTubeBroadcastResource: Decodable, Sendable {
             enableAutoStop: contentDetails?.enableAutoStop ?? true,
             selfDeclaredMadeForKids: status?.selfDeclaredMadeForKids,
             thumbnailURL: snippet.thumbnails?.bestURL,
-            isDefaultBroadcast: snippet.isDefaultBroadcast ?? false
+            isDefaultBroadcast: snippet.isDefaultBroadcast ?? false,
+            broadcastDescription: snippet.description
         )
     }
 }
@@ -420,7 +424,8 @@ enum YouTubeStreamDiscovery {
                 publishedAt: item.snippet?.publishedAt,
                 ingestionType: ingestionType,
                 ingestionAddress: ingestionAddress,
-                backupIngestionAddress: ingestionInfo.backupIngestionAddress
+                backupIngestionAddress: ingestionInfo.backupIngestionAddress,
+                isReceiving: item.status?.streamStatus == "active"
             ))
         }
 
@@ -661,7 +666,7 @@ final class YouTubeService {
         // Resolve only these streams, rather than enumerating the channel's history.
         var components = URLComponents(string: "\(YOUTUBE_API_BASE)/liveStreams")!
         components.queryItems = [
-            URLQueryItem(name: "part", value: "cdn,snippet"),
+            URLQueryItem(name: "part", value: "cdn,snippet,status"),
             URLQueryItem(name: "id", value: streamIDs.sorted().joined(separator: ",")),
             URLQueryItem(name: "maxResults", value: "50"),
         ]
@@ -1090,6 +1095,9 @@ final class YouTubeService {
         try checkAuthorization(scope)
         // An active broadcast on the phone key is handled as before (refused below).
         if selection.broadcast?.isActive != true {
+            guard !selection.stream.isReceiving else {
+                throw YouTubeError.keyInUse(selection.broadcast?.title ?? "this phone's key")
+            }
             try await checkPhoneKey(selection.stream, current: selection.broadcast, scan: scan, scope: scope)
         }
         var broadcast: YouTubeBroadcast
@@ -1135,7 +1143,8 @@ final class YouTubeService {
                 enableAutoStart: preparedBroadcast.enableAutoStart,
                 enableAutoStop: preparedBroadcast.enableAutoStop,
                 selfDeclaredMadeForKids: preparedBroadcast.selfDeclaredMadeForKids,
-                verifyAutoStop: endingPolicy == .manualDiagnostic
+                verifyAutoStop: endingPolicy == .manualDiagnostic,
+                broadcastDescription: broadcast.broadcastDescription
             )
             broadcast = preparedBroadcast
         }
@@ -1203,14 +1212,22 @@ final class YouTubeService {
         switch planned.kind {
         case .planned:
             guard let fetched = try await plannedBroadcast(id: planned.broadcastId, scope: scope),
-                  fetched.lifeCycleStatus == "ready", let keyID = fetched.boundStreamId,
+                  ["created", "ready"].contains(fetched.lifeCycleStatus ?? "") else {
+                throw unavailable
+            }
+            guard let keyID = fetched.boundStreamId else {
+                throw YouTubeError.keyConflict(YouTubeKeyConflict(
+                    kind: .plannedNeedsOwnKey, broadcastTitle: edited.title, otherTitle: nil,
+                    broadcastIDsToMove: [fetched.id]))
+            }
+            guard fetched.lifeCycleStatus == "ready",
                   let key = try await keyStream(id: keyID, token: token, scope: scope) else {
                 throw unavailable
             }
             // Key safety first: a pick on Studio's RTMP default key is offered its own key.
             try await checkKeySafety(
-                streamID: keyID, keyTitle: key.title, pick: fetched, matchTitle: edited.title,
-                token: token, scope: scope)
+                streamID: keyID, keyTitle: key.title, pick: fetched, broadcastTitle: edited.title,
+                receiving: key.stream.isReceiving, token: token, scope: scope)
             stream = key.stream
             endpoint = try YouTubeStreamDiscovery.hlsEndpoint(for: stream)
             broadcast = fetched
@@ -1235,8 +1252,8 @@ final class YouTubeService {
                     throw unavailable
                 }
                 try await checkKeySafety(
-                    streamID: keyID, keyTitle: key.title, pick: original, matchTitle: edited.title,
-                    token: token, scope: scope)
+                    streamID: keyID, keyTitle: key.title, pick: original, broadcastTitle: edited.title,
+                    receiving: key.stream.isReceiving, token: token, scope: scope)
                 stream = key.stream
                 endpoint = try YouTubeStreamDiscovery.hlsEndpoint(for: stream)
                 broadcast = original
@@ -1290,7 +1307,8 @@ final class YouTubeService {
                 enableAutoStart: prepared.enableAutoStart,
                 enableAutoStop: prepared.enableAutoStop,
                 selfDeclaredMadeForKids: prepared.selfDeclaredMadeForKids,
-                verifyAutoStop: endingPolicy == .manualDiagnostic
+                verifyAutoStop: endingPolicy == .manualDiagnostic,
+                broadcastDescription: broadcast.broadcastDescription
             )
             try checkAuthorization(scope)
             broadcast = prepared
@@ -1366,17 +1384,16 @@ final class YouTubeService {
     }
 
     /// The key for a recreated Restart broadcast, which never prompts: the
-    /// ended broadcast's key while it is still a free match key, otherwise the
-    /// first free match key, otherwise a new `Tubeist match N`. A free key has
+    /// ended broadcast's key while it is still a free broadcast key, otherwise the
+    /// first free broadcast key, otherwise a new `Tubeist stream N`. A free key has
     /// nothing live or upcoming bound to it (checks 1 and 2 hold by choice).
     private func restartKey(endedKeyID: String?, token: String, scope: String) async throws -> YouTubeStream {
-        let listing = try await matchKeyListing(token: token, scope: scope)
-        // Right after Stop the ended key still reports video arriving; that
-        // counts only while a live or testing broadcast is bound to it.
+        let listing = try await broadcastKeyListing(token: token, scope: scope)
+        // Receiving video may precede a broadcast going live. Even just after
+        // Stop, choose another free key until this one reports idle.
         if let endedKeyID, let ended = try await keyStream(id: endedKeyID, token: token, scope: scope),
-           MatchKeys.isMatchKey(title: ended.title),
-           !listing.receiving.contains(endedKeyID)
-            || !listing.active.contains(where: { $0.boundStreamId == endedKeyID && $0.isActive }) {
+           BroadcastKeys.isBroadcastKey(title: ended.title),
+           !listing.receiving.contains(endedKeyID) {
             // This phone's pending broadcast for the key is the one Restart resumes.
             let resumable = discoveryCache.id(
                 "createdBroadcast", for: YouTubeDiscoveryCache.key(scope: scope, streamKey: ended.stream.streamName))
@@ -1386,16 +1403,16 @@ final class YouTubeService {
                 return ended.stream
             }
         }
-        diagnostics.log("YouTube restart: the ended broadcast's key is taken; using a free match key", .debug)
-        return try await freeMatchKeyStream(listing, token: token, scope: scope)
+        diagnostics.log("YouTube restart: the ended broadcast's key is taken; using a free broadcast key", .debug)
+        return try await freeBroadcastKeyStream(listing, token: token, scope: scope)
     }
 
-    /// A random free match key, or a new `Tubeist match N` when none is free.
-    private func freeMatchKeyStream(_ listing: MatchKeyListing, token: String, scope: String) async throws -> YouTubeStream {
+    /// A random free broadcast key, or a new `Tubeist stream N` when none is free.
+    private func freeBroadcastKeyStream(_ listing: BroadcastKeyListing, token: String, scope: String) async throws -> YouTubeStream {
         var free = listing.freeKeys
         let chosen = free.isEmpty
-            ? try await createMatchKey(
-                number: MatchKeys.nextNumber(existingTitles: listing.streams.map(\.title)), token: token, scope: scope)
+            ? try await createBroadcastKey(
+                number: BroadcastKeys.nextNumber(existingTitles: listing.streams.map(\.title)), token: token, scope: scope)
             : takeRandomKey(from: &free)
         guard let key = try await keyStream(id: chosen.id, token: token, scope: scope) else {
             throw YouTubeError.noStreamFound
@@ -1409,12 +1426,12 @@ final class YouTubeService {
     private func moveRestartOffTakenKey(
         _ broadcast: YouTubeBroadcast, from stream: YouTubeStream, token: String, scope: String
     ) async throws -> (broadcast: YouTubeBroadcast, stream: YouTubeStream)? {
-        let listing = try await matchKeyListing(token: token, scope: scope)
-        guard (listing.upcoming + listing.active).contains(where: {
+        let listing = try await broadcastKeyListing(token: token, scope: scope)
+        guard listing.receiving.contains(stream.id) || (listing.upcoming + listing.active).contains(where: {
             $0.boundStreamId == stream.id && $0.id != broadcast.id
         }) else { return nil }
-        diagnostics.log("YouTube restart: another broadcast took the same key; moving to another free match key", .warning)
-        let next = try await freeMatchKeyStream(listing, token: token, scope: scope)
+        diagnostics.log("YouTube restart: another broadcast took the same key; moving to another free broadcast key", .warning)
+        let next = try await freeBroadcastKeyStream(listing, token: token, scope: scope)
         let rebound = try await bind(broadcastID: broadcast.id, to: next.id, token: token, scope: scope)
         // A later Restart resumes this broadcast on its new key.
         discoveryCache.setID(nil, kind: "createdBroadcast",
@@ -1424,16 +1441,16 @@ final class YouTubeService {
         return (rebound, next)
     }
 
-    private func takeRandomKey(from free: inout [MatchKeyStream]) -> MatchKeyStream {
+    private func takeRandomKey(from free: inout [BroadcastKeyStream]) -> BroadcastKeyStream {
         free.remove(at: min(max(randomIndex(free.count), 0), free.count - 1))
     }
 
     /// Start checks 2 and 3 for a planned pick or a Restart that reuses its
     /// still-ready original. Read-only: the fix is the UI's call to
-    /// `moveToOwnMatchKeys`.
+    /// `moveToOwnBroadcastKeys`.
     private func checkKeySafety(
-        streamID: String, keyTitle: String?, pick: YouTubeBroadcast, matchTitle: String,
-        token: String, scope: String
+        streamID: String, keyTitle: String?, pick: YouTubeBroadcast, broadcastTitle: String,
+        receiving: Bool, token: String, scope: String
     ) async throws {
         let remembered = discoveryCache.rememberedCreatedBroadcastIDs(scope: scope)
         let active = try await listBroadcasts("active", token: token, scope: scope)
@@ -1442,26 +1459,26 @@ final class YouTubeService {
             // This phone's previous broadcast is still finishing.
             throw YouTubeError.broadcastNotReady(own.statusLabel.lowercased())
         }
-        if !active.isEmpty {
-            diagnostics.log("YouTube key check: another broadcast is live on the key", .warning)
-            throw YouTubeError.keyInUse(matchTitle)
+        if receiving || !active.isEmpty {
+            diagnostics.log("YouTube key check: the key is receiving video or has an active broadcast", .warning)
+            throw YouTubeError.keyInUse(broadcastTitle)
         }
         let others = try await listBroadcasts("upcoming", token: token, scope: scope).filter {
-            $0.boundStreamId == streamID && $0.id != pick.id && $0.enableAutoStart && !$0.isDefaultBroadcast
+            $0.boundStreamId == streamID && $0.id != pick.id && !$0.isDefaultBroadcast
         }
-        // Tubeist broadcasts and planned matches alike: moving the pick
+        // Tubeist broadcasts and planned broadcasts alike: moving the pick
         // never rebinds the other broadcast.
         let sharing = others.filter {
-            MatchKeys.isTubeistOwn($0, remembered: remembered) || MatchKeys.isPlannedMatch($0, remembered: remembered)
+            BroadcastKeys.isTubeistOwn($0, remembered: remembered) || BroadcastKeys.isPlannedBroadcast($0, remembered: remembered)
         }
-        // A pick must sit alone on a match key. Tubeist's own pick (a Restart
+        // A pick must sit alone on a broadcast key. Tubeist's own pick (a Restart
         // an earlier version left on the phone key) cannot be moved, so it
         // keeps its key.
-        let needsMatchKey = !MatchKeys.isMatchKey(title: keyTitle) && !MatchKeys.isTubeistOwn(pick, remembered: remembered)
-        guard !sharing.isEmpty || needsMatchKey else { return }
-        diagnostics.log("YouTube key check: \(sharing.count) other broadcasts on the key; match key=\(!needsMatchKey)", .warning)
+        let needsBroadcastKey = !BroadcastKeys.isBroadcastKey(title: keyTitle) && !BroadcastKeys.isTubeistOwn(pick, remembered: remembered)
+        guard !sharing.isEmpty || needsBroadcastKey else { return }
+        diagnostics.log("YouTube key check: \(sharing.count) other broadcasts on the key; broadcast key=\(!needsBroadcastKey)", .warning)
         throw YouTubeError.keyConflict(YouTubeKeyConflict(
-            kind: .plannedNeedsOwnKey, matchTitle: matchTitle, otherTitle: sharing.first?.title,
+            kind: .plannedNeedsOwnKey, broadcastTitle: broadcastTitle, otherTitle: sharing.first?.title,
             broadcastIDsToMove: [pick.id]
         ))
     }
@@ -1478,20 +1495,20 @@ final class YouTubeService {
         }
         let remembered = discoveryCache.rememberedCreatedBroadcastIDs(scope: scope)
         var seen: Set<String> = []
-        // Any planned match on the phone key counts, auto-start or not.
+        // Any planned broadcast on the phone key counts, auto-start or not.
         let others = upcoming.filter {
             $0.boundStreamId == stream.id && $0.id != current?.id
                 && !$0.isDefaultBroadcast && seen.insert($0.id).inserted
         }
         if let foreign = others.first(where: {
-            $0.enableAutoStart && !remembered.contains($0.id) && MatchKeys.isTubeistOwn($0, remembered: remembered)
+            $0.enableAutoStart && !remembered.contains($0.id) && BroadcastKeys.isTubeistOwn($0, remembered: remembered)
         }) {
             diagnostics.log("YouTube key check: another Tubeist broadcast waits on this phone's key", .warning)
             throw YouTubeError.keyBlocked(foreign.title)
         }
-        let planned = others.filter { MatchKeys.isPlannedMatch($0, remembered: remembered) }
+        let planned = others.filter { BroadcastKeys.isPlannedBroadcast($0, remembered: remembered) }
         guard let first = planned.first else { return }
-        diagnostics.log("YouTube key check: \(planned.count) planned matches on this phone's key", .warning)
+        diagnostics.log("YouTube key check: \(planned.count) planned broadcasts on this phone's key", .warning)
         // The title is only for the prompt; never the secret key.
         var title: String?
         if let token = try? await getValidAccessToken() {
@@ -1499,7 +1516,7 @@ final class YouTubeService {
         }
         try checkAuthorization(scope)
         throw YouTubeError.keyConflict(YouTubeKeyConflict(
-            kind: .newStreamKeyTaken, matchTitle: title.flatMap { $0.isEmpty ? nil : $0 } ?? "this phone's key",
+            kind: .newStreamKeyTaken, broadcastTitle: title.flatMap { $0.isEmpty ? nil : $0 } ?? "this phone's key",
             otherTitle: first.title, broadcastIDsToMove: planned.map(\.id)
         ))
     }
@@ -1536,7 +1553,7 @@ final class YouTubeService {
 
     private func streamByID(_ id: String, token: String) async throws -> YouTubeLiveStreamResource? {
         let url = try resourceURL("liveStreams", query: [
-            .init(name: "part", value: "cdn,snippet"), .init(name: "id", value: id)
+            .init(name: "part", value: "cdn,snippet,status"), .init(name: "id", value: id)
         ])
         let page: YouTubeListResponse<YouTubeLiveStreamResource> = try await apiGet(url: url, token: token, operation: .streams)
         return page.items.first { $0.id == id }
@@ -1561,7 +1578,7 @@ final class YouTubeService {
         }
         // New stream adopts only a broadcast Tubeist created for this key.
         let upcomingPolicy = YouTubeUpcomingPolicy.only(discoveryCache.id("createdBroadcast", for: key))
-        // Never enumerate completed broadcasts. Active matches take precedence.
+        // Never enumerate completed broadcasts. Active broadcasts take precedence.
         for status in ["active", "upcoming"] {
             diagnostics.log("YouTube broadcast discovery: searching \(status) broadcasts", .debug)
             let url = "\(YOUTUBE_API_BASE)/liveBroadcasts?part=snippet,contentDetails,status&broadcastStatus=\(status)&broadcastType=all&maxResults=50"
@@ -1597,7 +1614,7 @@ final class YouTubeService {
         if knownStream == nil {
             var found: YouTubeStream?
             let _: [YouTubeLiveStreamResource] = try await paginatedItems(
-                url: "\(YOUTUBE_API_BASE)/liveStreams?part=cdn,snippet&mine=true&maxResults=50",
+                url: "\(YOUTUBE_API_BASE)/liveStreams?part=cdn,snippet,status&mine=true&maxResults=50",
                 token: token, operation: .streams, stopAfterPage: { page in
                     guard page.contains(where: { $0.cdn?.ingestionInfo?.streamName == streamKey }) else { return false }
                     found = try YouTubeStreamDiscovery.findStream(in: page, matchingStreamKey: streamKey)
@@ -1694,7 +1711,8 @@ final class YouTubeService {
             let inserted: YouTubeBroadcastResource = try await apiPost(
                 url: "\(YOUTUBE_API_BASE)/liveBroadcasts?part=snippet,status,contentDetails", token: token,
                 jsonBody: JSONSerialization.data(withJSONObject: [
-                    "snippet": ["title": template.title, "scheduledStartTime": ISO8601DateFormatter().string(from: now().addingTimeInterval(10))],
+                    "snippet": ["title": template.title, "description": BroadcastKeys.broadcastDescription,
+                                "scheduledStartTime": ISO8601DateFormatter().string(from: now().addingTimeInterval(10))],
                     "status": status,
                     "contentDetails": [
                         "enableDvr": template.enableDvr, "latencyPreference": template.latencyPreference,
@@ -1733,7 +1751,7 @@ final class YouTubeService {
 
     // MARK: - YouTube API: Update Broadcast
 
-    func updateBroadcast(id: String, title: String, privacyStatus: String, scheduledStartTime: String?, enableDvr: Bool, latencyPreference: String, enableMonitorStream: Bool, broadcastStreamDelayMs: Int, enableEmbed: Bool, recordFromStart: Bool, enableAutoStart: Bool, enableAutoStop: Bool, selfDeclaredMadeForKids: Bool? = nil, verifyAutoStop: Bool = false) async throws {
+    func updateBroadcast(id: String, title: String, privacyStatus: String, scheduledStartTime: String?, enableDvr: Bool, latencyPreference: String, enableMonitorStream: Bool, broadcastStreamDelayMs: Int, enableEmbed: Bool, recordFromStart: Bool, enableAutoStart: Bool, enableAutoStop: Bool, selfDeclaredMadeForKids: Bool? = nil, verifyAutoStop: Bool = false, broadcastDescription: String? = nil) async throws {
         beginLoading()
         defer { endLoading() }
 
@@ -1741,6 +1759,7 @@ final class YouTubeService {
         let url = "\(YOUTUBE_API_BASE)/liveBroadcasts?part=snippet,status,contentDetails"
 
         var snippet: [String: Any] = ["title": title]
+        if let broadcastDescription { snippet["description"] = broadcastDescription }
         if let scheduledStartTime {
             snippet["scheduledStartTime"] = scheduledStartTime
         }
@@ -2020,7 +2039,7 @@ final class YouTubeService {
 
     // MARK: - YouTube API: Planned streams
 
-    /// Today's planned matches across the channel, whatever key they are bound
+    /// Today's planned broadcasts across the channel, whatever key they are bound
     /// to, excluding Tubeist's own. `streamKey` only names the phone's stream.
     func loadPlannedBroadcasts(forStreamKey streamKey: String, calendar: Calendar = .current) async throws -> YouTubePlannedStreams {
         beginLoading()
@@ -2031,7 +2050,7 @@ final class YouTubeService {
         let token = try await getValidAccessToken()
         let title = try await streamByID(stream.id, token: token)?.snippet?.title
         try checkAuthorization(scope)
-        let streams = try await listMatchKeyStreams(token: token, scope: scope).streams
+        let streams = try await listBroadcastKeyStreams(token: token, scope: scope).streams
         let items: [YouTubeBroadcastResource] = try await paginatedItems(
             url: "\(YOUTUBE_API_BASE)/liveBroadcasts?part=snippet,contentDetails,status&broadcastStatus=upcoming&broadcastType=all&maxResults=50",
             token: token, operation: .broadcasts
@@ -2041,7 +2060,7 @@ final class YouTubeService {
         let remembered = discoveryCache.rememberedCreatedBroadcastIDs(scope: scope)
         let broadcasts = PlannedStreams.today(upcoming, remembered: remembered, now: now(), calendar: calendar)
         let listed = Set(broadcasts.map(\.id))
-        let needing = MatchKeys.matchesNeedingOwnKey(upcoming: upcoming, streams: streams, remembered: remembered)
+        let needing = BroadcastKeys.broadcastsNeedingOwnKey(upcoming: upcoming, streams: streams, remembered: remembered)
         return YouTubePlannedStreams(
             streamTitle: title, broadcasts: broadcasts,
             needsOwnKey: Set(needing.map(\.id)).intersection(listed),
@@ -2097,11 +2116,11 @@ final class YouTubeService {
         try checkAuthorization(scope)
     }
 
-    // MARK: - YouTube API: Match keys
+    // MARK: - YouTube API: Broadcast keys
 
-    /// Settings action: gives every upcoming planned match its own match key,
+    /// Settings action: gives every upcoming planned broadcast its own broadcast key,
     /// then lists again to verify, with one more pass for anything still sharing.
-    func assignMatchKeys() async throws -> MatchKeyAssignmentResult {
+    func assignBroadcastKeys() async throws -> BroadcastKeyAssignmentResult {
         beginLoading()
         defer { endLoading() }
 
@@ -2109,45 +2128,45 @@ final class YouTubeService {
         let remembered = discoveryCache.rememberedCreatedBroadcastIDs(scope: scope)
         let token = try await getValidAccessToken()
         try checkAuthorization(scope)
-        var listing = try await matchKeyListing(token: token, scope: scope)
-        var pending = Self.matchesToMove(listing, remembered: remembered)
-        diagnostics.log("YouTube match keys: \(listing.upcoming.count) upcoming broadcasts; \(pending.count) matches need their own key", .debug)
+        var listing = try await broadcastKeyListing(token: token, scope: scope)
+        var pending = Self.broadcastsToMove(listing, remembered: remembered)
+        diagnostics.log("YouTube stream keys: \(listing.upcoming.count) upcoming broadcasts; \(pending.count) broadcasts need their own key", .debug)
         var moved: Set<String> = []
         var reasons: [String: String] = [:]
         for _ in 1...2 where !pending.isEmpty {
             var free = listing.freeKeys
-            for match in pending {
+            for broadcast in pending {
                 do {
-                    try await moveToOwnKey(match, free: &free, streams: &listing.streams, token: token, scope: scope)
-                    moved.insert(match.id)
-                    reasons[match.id] = nil
-                } catch where !Self.endsMatchKeyAssignment(error) {
+                    try await moveToOwnKey(broadcast, free: &free, streams: &listing.streams, token: token, scope: scope)
+                    moved.insert(broadcast.id)
+                    reasons[broadcast.id] = nil
+                } catch where !Self.endsBroadcastKeyAssignment(error) {
                     let failure = YouTubeDiagnostics.failure(error)
-                    diagnostics.log("YouTube match keys: could not move a match; \(failure)", .warning)
-                    reasons[match.id] = failure
+                    diagnostics.log("YouTube stream keys: could not move a broadcast; \(failure)", .warning)
+                    reasons[broadcast.id] = failure
                 }
             }
             listing.upcoming = try await listBroadcasts("upcoming", token: token, scope: scope)
-            pending = Self.matchesToMove(listing, remembered: remembered)
+            pending = Self.broadcastsToMove(listing, remembered: remembered)
         }
 
-        let planned = Set(listing.upcoming.filter { MatchKeys.isPlannedMatch($0, remembered: remembered) }.map(\.id))
+        let planned = Set(listing.upcoming.filter { BroadcastKeys.isPlannedBroadcast($0, remembered: remembered) }.map(\.id))
         // Never moved: someone may be streaming to that key right now.
-        let held = Self.matchesOnReceivingKeys(listing, remembered: remembered)
-        let failures = pending.map { MatchKeyFailure(title: $0.title, reason: reasons[$0.id] ?? "still shares a key") }
-            + held.map { MatchKeyFailure(title: $0.title, reason: "its key is receiving video") }
+        let held = Self.broadcastsOnReceivingKeys(listing, remembered: remembered)
+        let failures = pending.map { BroadcastKeyFailure(title: $0.title, reason: reasons[$0.id] ?? "still shares a key") }
+            + held.map { BroadcastKeyFailure(title: $0.title, reason: "its key is receiving video") }
         let failed = Set((pending + held).map(\.id))
         let movedCount = planned.intersection(moved).subtracting(failed).count
-        diagnostics.log("YouTube match keys: \(planned.count) matches; \(movedCount) moved; \(failures.count) failed", .debug)
-        return MatchKeyAssignmentResult(
+        diagnostics.log("YouTube stream keys: \(planned.count) broadcasts; \(movedCount) moved; \(failures.count) failed", .debug)
+        return BroadcastKeyAssignmentResult(
             total: planned.count, moved: movedCount,
             alreadySet: planned.count - movedCount - planned.intersection(failed).count, failures: failures
         )
     }
 
-    /// Start fixes: moves the given planned matches off a shared or non-match
-    /// key. A match already alone on a match key is left as it is.
-    func moveToOwnMatchKeys(broadcastIDs: [String]) async throws {
+    /// Start fixes: moves the given planned broadcasts off a shared or non-broadcast
+    /// key. A broadcast already alone on a broadcast key is left as it is.
+    func moveToOwnBroadcastKeys(broadcastIDs: [String]) async throws {
         beginLoading()
         defer { endLoading() }
 
@@ -2155,74 +2174,78 @@ final class YouTubeService {
         let remembered = discoveryCache.rememberedCreatedBroadcastIDs(scope: scope)
         let token = try await getValidAccessToken()
         try checkAuthorization(scope)
-        var listing = try await matchKeyListing(token: token, scope: scope)
-        let needing = Set(MatchKeys.matchesNeedingOwnKey(
+        var listing = try await broadcastKeyListing(token: token, scope: scope)
+        let needing = Set(BroadcastKeys.broadcastsNeedingOwnKey(
             upcoming: listing.upcoming, streams: listing.streams, remembered: remembered).map(\.id))
         var free = listing.freeKeys
         var moved: [String] = []
         for id in broadcastIDs {
             let broadcast = listing.upcoming.first { $0.id == id }
-            guard let match = broadcast, MatchKeys.isPlannedMatch(match, remembered: remembered) else {
+            guard let broadcast = broadcast, BroadcastKeys.isPlannedBroadcast(broadcast, remembered: remembered) else {
                 throw YouTubeError.plannedBroadcastUnavailable(broadcast?.title ?? id)
             }
+            guard !listing.receiving.contains(broadcast.boundStreamId ?? ""),
+                  !listing.active.contains(where: { $0.boundStreamId == broadcast.boundStreamId && broadcast.boundStreamId != nil }) else {
+                throw YouTubeError.keyInUse(broadcast.title)
+            }
             guard needing.contains(id) else { continue }
-            try await moveToOwnKey(match, free: &free, streams: &listing.streams, token: token, scope: scope)
+            try await moveToOwnKey(broadcast, free: &free, streams: &listing.streams, token: token, scope: scope)
             moved.append(id)
         }
         // Another phone may have picked the same free key at the same moment:
         // list again and move once more; a key taken a second time ends it.
         for attempt in 1...2 where !moved.isEmpty {
-            listing = try await matchKeyListing(token: token, scope: scope)
-            let taken = Self.movedMatchesOnTakenKeys(moved, listing: listing)
+            listing = try await broadcastKeyListing(token: token, scope: scope)
+            let taken = Self.movedBroadcastsOnTakenKeys(moved, listing: listing)
             moved = []
             guard let first = taken.first else { break }
             guard attempt == 1 else {
-                diagnostics.log("YouTube match keys: \(taken.count) moved matches lost their key again", .warning)
+                diagnostics.log("YouTube stream keys: \(taken.count) moved broadcasts lost their key again", .warning)
                 throw YouTubeError.keyInUse(first.title)
             }
-            diagnostics.log("YouTube match keys: \(taken.count) moved matches share their new key; moving again", .warning)
+            diagnostics.log("YouTube stream keys: \(taken.count) moved broadcasts share their new key; moving again", .warning)
             free = listing.freeKeys
-            for match in taken {
-                try await moveToOwnKey(match, free: &free, streams: &listing.streams, token: token, scope: scope)
-                moved.append(match.id)
+            for broadcast in taken {
+                try await moveToOwnKey(broadcast, free: &free, streams: &listing.streams, token: token, scope: scope)
+                moved.append(broadcast.id)
             }
         }
     }
 
-    /// Of the matches just moved, those whose new key has anything else bound
+    /// Of the broadcasts just moved, those whose new key has anything else bound
     /// to it or is receiving video.
-    private static func movedMatchesOnTakenKeys(_ ids: [String], listing: MatchKeyListing) -> [YouTubeBroadcast] {
+    private static func movedBroadcastsOnTakenKeys(_ ids: [String], listing: BroadcastKeyListing) -> [YouTubeBroadcast] {
         ids.compactMap { id in
-            guard let match = listing.upcoming.first(where: { $0.id == id }), let key = match.boundStreamId else {
+            guard let broadcast = listing.upcoming.first(where: { $0.id == id }), let key = broadcast.boundStreamId else {
                 return nil
             }
             let shared = (listing.upcoming + listing.active).contains { $0.id != id && $0.boundStreamId == key }
-            return shared || listing.receiving.contains(key) ? match : nil
+            return shared || listing.receiving.contains(key) ? broadcast : nil
         }
     }
 
-    private struct MatchKeyListing {
+    private struct BroadcastKeyListing {
         var upcoming: [YouTubeBroadcast]
         let active: [YouTubeBroadcast]
-        var streams: [MatchKeyStream]
+        var streams: [BroadcastKeyStream]
         /// Streams receiving video are never free, whatever is bound to them.
         let receiving: Set<String>
 
-        var freeKeys: [MatchKeyStream] {
-            MatchKeys.freeKeys(streams.filter { !receiving.contains($0.id) }, upcoming: upcoming, active: active)
+        var freeKeys: [BroadcastKeyStream] {
+            BroadcastKeys.freeKeys(streams.filter { !receiving.contains($0.id) }, upcoming: upcoming, active: active)
         }
     }
 
-    private func matchKeyListing(token: String, scope: String) async throws -> MatchKeyListing {
+    private func broadcastKeyListing(token: String, scope: String) async throws -> BroadcastKeyListing {
         let upcoming = try await listBroadcasts("upcoming", token: token, scope: scope)
         let active = try await listBroadcasts("active", token: token, scope: scope)
-        let (streams, receiving) = try await listMatchKeyStreams(token: token, scope: scope)
-        return MatchKeyListing(upcoming: upcoming, active: active, streams: streams, receiving: receiving)
+        let (streams, receiving) = try await listBroadcastKeyStreams(token: token, scope: scope)
+        return BroadcastKeyListing(upcoming: upcoming, active: active, streams: streams, receiving: receiving)
     }
 
     /// The channel's reusable streams by ID and title, and which receive video now.
-    private func listMatchKeyStreams(token: String, scope: String) async throws
-        -> (streams: [MatchKeyStream], receiving: Set<String>) {
+    private func listBroadcastKeyStreams(token: String, scope: String) async throws
+        -> (streams: [BroadcastKeyStream], receiving: Set<String>) {
         let resources: [YouTubeLiveStreamResource] = try await paginatedItems(
             url: "\(YOUTUBE_API_BASE)/liveStreams?part=snippet,status&mine=true&maxResults=50",
             token: token, operation: .streams
@@ -2230,7 +2253,7 @@ final class YouTubeService {
         try checkAuthorization(scope)
         // Only IDs, titles and status; the secret ingestion key is never fetched.
         let streams = resources.compactMap { resource in
-            resource.id.map { MatchKeyStream(id: $0, title: resource.snippet?.title ?? "") }
+            resource.id.map { BroadcastKeyStream(id: $0, title: resource.snippet?.title ?? "") }
         }
         let receiving = Set(resources.filter { $0.status?.streamStatus == "active" }.compactMap(\.id))
         return (streams, receiving)
@@ -2245,19 +2268,19 @@ final class YouTubeService {
         return items.compactMap(\.broadcast)
     }
 
-    /// Matches that need their own key, except any whose key receives video.
-    /// Where only planned matches share a match key, one of them stays (the
+    /// Broadcasts that need their own key, except any whose key receives video.
+    /// Where only planned broadcasts share a broadcast key, one of them stays (the
     /// one with auto-start on), so the others' moves leave it alone there.
-    private static func matchesToMove(_ listing: MatchKeyListing, remembered: Set<String>) -> [YouTubeBroadcast] {
-        let needing = MatchKeys.matchesNeedingOwnKey(
+    private static func broadcastsToMove(_ listing: BroadcastKeyListing, remembered: Set<String>) -> [YouTubeBroadcast] {
+        let needing = BroadcastKeys.broadcastsNeedingOwnKey(
             upcoming: listing.upcoming, streams: listing.streams, remembered: remembered)
             .filter { !listing.receiving.contains($0.boundStreamId ?? "") }
         let needingIDs = Set(needing.map(\.id))
-        let matchKeyIDs = Set(listing.streams.filter { MatchKeys.isMatchKey(title: $0.title) }.map(\.id))
+        let broadcastKeyIDs = Set(listing.streams.filter { BroadcastKeys.isBroadcastKey(title: $0.title) }.map(\.id))
         var staying: Set<String> = []
         var seenKeys: Set<String> = []
-        for match in needing {
-            guard let key = match.boundStreamId, matchKeyIDs.contains(key), seenKeys.insert(key).inserted else { continue }
+        for broadcast in needing {
+            guard let key = broadcast.boundStreamId, broadcastKeyIDs.contains(key), seenKeys.insert(key).inserted else { continue }
             let onKey = listing.upcoming.filter { $0.boundStreamId == key }
             guard onKey.allSatisfy({ needingIDs.contains($0.id) }) else { continue }
             if let keep = onKey.first(where: \.enableAutoStart) ?? onKey.first { staying.insert(keep.id) }
@@ -2265,49 +2288,49 @@ final class YouTubeService {
         return needing.filter { !staying.contains($0.id) }
     }
 
-    /// Matches needing their own key that Assign leaves alone because their
+    /// Broadcasts needing their own key that Assign leaves alone because their
     /// key is receiving video.
-    private static func matchesOnReceivingKeys(_ listing: MatchKeyListing, remembered: Set<String>) -> [YouTubeBroadcast] {
-        MatchKeys.matchesNeedingOwnKey(upcoming: listing.upcoming, streams: listing.streams, remembered: remembered)
+    private static func broadcastsOnReceivingKeys(_ listing: BroadcastKeyListing, remembered: Set<String>) -> [YouTubeBroadcast] {
+        BroadcastKeys.broadcastsNeedingOwnKey(upcoming: listing.upcoming, streams: listing.streams, remembered: remembered)
             .filter { listing.receiving.contains($0.boundStreamId ?? "") }
     }
 
     private func moveToOwnKey(
-        _ match: YouTubeBroadcast, free: inout [MatchKeyStream], streams: inout [MatchKeyStream],
+        _ broadcast: YouTubeBroadcast, free: inout [BroadcastKeyStream], streams: inout [BroadcastKeyStream],
         token: String, scope: String
     ) async throws {
-        let key: MatchKeyStream
+        let key: BroadcastKeyStream
         if free.isEmpty {
-            key = try await createMatchKey(
-                number: MatchKeys.nextNumber(existingTitles: streams.map(\.title)), token: token, scope: scope)
+            key = try await createBroadcastKey(
+                number: BroadcastKeys.nextNumber(existingTitles: streams.map(\.title)), token: token, scope: scope)
             streams.append(key)
         } else {
             // At random, so two phones fixing at once rarely pick the same key.
             key = takeRandomKey(from: &free)
         }
         do {
-            _ = try await bind(broadcastID: match.id, to: key.id, token: token, scope: scope)
+            _ = try await bind(broadcastID: broadcast.id, to: key.id, token: token, scope: scope)
         } catch {
-            // The key is still free; offer it to the next match.
+            // The key is still free; offer it to the next broadcast.
             free.insert(key, at: 0)
             throw error
         }
-        diagnostics.log("YouTube match keys: moved a match to its own key", .debug)
+        diagnostics.log("YouTube stream keys: moved a broadcast to its own key", .debug)
     }
 
-    private func createMatchKey(number: Int, token: String, scope: String) async throws -> MatchKeyStream {
-        let title = MatchKeys.title(number: number)
+    private func createBroadcastKey(number: Int, token: String, scope: String) async throws -> BroadcastKeyStream {
+        let title = BroadcastKeys.title(number: number)
         try checkAuthorization(scope)
         let resource = try await insertReusableHLSStream(title: title, token: token)
         try checkAuthorization(scope)
         guard let id = resource.id, !id.isEmpty else { throw YouTubeError.invalidResponse }
-        diagnostics.log("YouTube match keys: created a reusable HLS match key", .debug)
-        return MatchKeyStream(id: id, title: title)
+        diagnostics.log("YouTube stream keys: created a reusable HLS broadcast key", .debug)
+        return BroadcastKeyStream(id: id, title: title)
     }
 
     /// Sign-in problems and cancellation end the whole action; anything else
-    /// is reported against the one match.
-    private static func endsMatchKeyAssignment(_ error: Error) -> Bool {
+    /// is reported against the one broadcast.
+    private static func endsBroadcastKeyAssignment(_ error: Error) -> Bool {
         if YouTubeDiagnostics.isCancellation(error) { return true }
         switch error as? YouTubeError {
         case .notSignedIn, .noClientId, .authFailed, .tokenRefreshFailed, .apiError(401, _): return true

@@ -60,21 +60,23 @@ struct PlannedStreamTests {
             broadcast("b-0800", stream: "stream-2", start: "2026-10-31T07:00:00Z"),
             broadcast("b-done", start: "2026-10-31T08:00:00Z", status: "complete"),
             broadcast("b-tomorrow", start: "2026-11-01T09:00:00Z"),
-            // Start refuses a broadcast that is not ready, so it is not listed.
-            broadcast("b-created", start: "2026-10-31T10:00:00Z", status: "created"),
+            // An unbound match can be selected, then given its own key at Start.
+            broadcast("b-created", stream: nil, start: "2026-10-31T10:00:00Z", status: "created"),
         ]
         let result = PlannedStreams.today(input, remembered: [], now: now, calendar: oslo)
-        #expect(result.map(\.id) == ["b-0800", "b-1300"])
+        #expect(result.map(\.id) == ["b-0800", "b-created", "b-1300"])
     }
 
-    @Test func todayExcludesTubeistsOwnByTiming() {
+    @Test func todayExcludesOnlyConfirmedTubeistBroadcasts() {
         let now = date("2026-10-31T10:00:00Z")
-        let own = broadcast("b-own", start: "2026-10-31T09:00:10Z", published: "2026-10-31T09:00:00Z")
+        var own = broadcast("b-own", start: "2026-10-31T09:00:10Z", published: "2026-10-31T09:00:00Z")
+        own.broadcastDescription = BroadcastKeys.broadcastDescription
+        let immediate = broadcast("b-now", start: "2026-10-31T10:00:10Z", published: "2026-10-31T10:00:00Z")
         let remembered = broadcast("b-remembered", start: "2026-10-31T11:00:00Z")
         let match = broadcast("b-match", start: "2026-10-31T12:00:00Z", published: "2026-10-30T09:00:00Z")
-        let result = PlannedStreams.today([own, remembered, match], remembered: ["b-remembered"],
+        let result = PlannedStreams.today([own, remembered, match, immediate], remembered: ["b-remembered"],
                                           now: now, calendar: oslo)
-        #expect(result.map(\.id) == ["b-match"])
+        #expect(result.map(\.id) == ["b-now", "b-match"])
     }
 
     @Test func labelMarksMatchesThatShareAKey() {
@@ -96,6 +98,12 @@ struct PlannedStreamTests {
         #expect(restart.loadedMembership == nil)
         #expect(restart.thumbnailChanged == original.thumbnailChanged)
         #expect(PlannedStreams.restartLabel(for: restart) == "Restart: Edited title")
+    }
+
+    @Test func restartingRemembersTheKeyActuallyUsedAtStart() {
+        let original = selection()
+        let applied = broadcast("recreated", stream: "match-7")
+        #expect(original.restarting(after: applied).streamId == "match-7")
     }
 
     @Test func restartAfterStartCarriesTheDetailsAppliedAtStart() {

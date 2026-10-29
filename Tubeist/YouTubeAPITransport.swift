@@ -53,15 +53,15 @@ enum YouTubeError: LocalizedError, Equatable {
 }
 
 /// Start found other broadcasts that could take over the stream key. Fixed
-/// only by `YouTubeService.moveToOwnMatchKeys(broadcastIDs:)`, which the UI
+/// only by `YouTubeService.moveToOwnBroadcastKeys(broadcastIDs:)`, which the UI
 /// calls after the user confirms `prompt`. Titles only, never secret keys.
 struct YouTubeKeyConflict: Sendable, Equatable {
     enum Kind: Sendable, Equatable { case plannedNeedsOwnKey, newStreamKeyTaken }
 
     let kind: Kind
     /// The pick, or the phone key's title for "New stream".
-    let matchTitle: String
-    /// nil when the pick is alone on a non-match key.
+    let broadcastTitle: String
+    /// nil when the pick is alone on a non-broadcast key.
     let otherTitle: String?
     let broadcastIDsToMove: [String]
 
@@ -69,19 +69,19 @@ struct YouTubeKeyConflict: Sendable, Equatable {
         switch kind {
         case .plannedNeedsOwnKey:
             if let otherTitle {
-                "'\(matchTitle)' shares its key with '\(otherTitle)'. Give this match its own key?"
+                "'\(broadcastTitle)' shares its key with '\(otherTitle)'. Give this stream its own key?"
             } else {
-                "'\(matchTitle)' is not on its own key. Give this match its own key?"
+                "'\(broadcastTitle)' is not on its own key. Give this stream its own key?"
             }
         case .newStreamKeyTaken:
-            "'\(otherTitle ?? matchTitle)' is planned on this phone's key and could take over this stream. Move it to its own key?"
+            "'\(otherTitle ?? broadcastTitle)' is planned on this phone's key and could take over this stream. Move it to its own key?"
         }
     }
 
-    /// Names the match to set up: the pick, or the match planned on the phone key.
+    /// Names the broadcast to set up: the pick, or the broadcast planned on the phone key.
     var watchMessage: String {
-        let match = kind == .newStreamKeyTaken ? otherTitle ?? matchTitle : matchTitle
-        return "Open Tubeist on the phone to set up '\(match)'."
+        let broadcast = kind == .newStreamKeyTaken ? otherTitle ?? broadcastTitle : broadcastTitle
+        return "Open Tubeist on the phone to set up '\(broadcast)'."
     }
 }
 
