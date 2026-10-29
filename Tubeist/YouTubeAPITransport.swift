@@ -18,6 +18,13 @@ enum YouTubeError: LocalizedError, Equatable {
     case thumbnailTooLarge
     case invalidResponse
     case tokenRefreshFailed
+    case plannedBroadcastUnavailable(String)
+    /// A broadcast on the stream key is already live or testing.
+    case keyInUse(String)
+    /// A fixable conflict on the stream key; the phone offers the fix.
+    case keyConflict(YouTubeKeyConflict)
+    /// Another Tubeist broadcast waits on the key; Tubeist never rebinds it.
+    case keyBlocked(String)
 
     var errorDescription: String? {
         switch self {
@@ -35,7 +42,46 @@ enum YouTubeError: LocalizedError, Equatable {
         case .thumbnailTooLarge: "The selected thumbnail cannot be compressed below YouTube's 2 MB limit"
         case .invalidResponse: "Invalid response from YouTube API"
         case .tokenRefreshFailed: "Failed to refresh access token"
+        case .plannedBroadcastUnavailable(let title):
+            "The planned stream '\(title)' is no longer available. Choose another in Settings."
+        case .keyInUse(let title): "Another device is already streaming to '\(title)'."
+        case .keyConflict(let conflict): conflict.prompt
+        case .keyBlocked(let other):
+            "'\(other)' is waiting on this key. End or delete it in YouTube Studio, then try again."
         }
+    }
+}
+
+/// Start found other broadcasts that could take over the stream key. Fixed
+/// only by `YouTubeService.moveToOwnBroadcastKeys(broadcastIDs:)`, which the UI
+/// calls after the user confirms `prompt`. Titles only, never secret keys.
+struct YouTubeKeyConflict: Sendable, Equatable {
+    enum Kind: Sendable, Equatable { case plannedNeedsOwnKey, newStreamKeyTaken }
+
+    let kind: Kind
+    /// The pick, or the phone key's title for "New stream".
+    let broadcastTitle: String
+    /// nil when the pick is alone on a non-broadcast key.
+    let otherTitle: String?
+    let broadcastIDsToMove: [String]
+
+    var prompt: String {
+        switch kind {
+        case .plannedNeedsOwnKey:
+            if let otherTitle {
+                "'\(broadcastTitle)' shares its key with '\(otherTitle)'. Give this stream its own key?"
+            } else {
+                "'\(broadcastTitle)' is not on its own key. Give this stream its own key?"
+            }
+        case .newStreamKeyTaken:
+            "'\(otherTitle ?? broadcastTitle)' is planned on this phone's key and could take over this stream. Move it to its own key?"
+        }
+    }
+
+    /// Names the broadcast to set up: the pick, or the broadcast planned on the phone key.
+    var watchMessage: String {
+        let broadcast = kind == .newStreamKeyTaken ? otherTitle ?? broadcastTitle : broadcastTitle
+        return "Open Tubeist on the phone to set up '\(broadcast)'."
     }
 }
 
@@ -65,13 +111,16 @@ enum YouTubeAPIOperation: String, Sendable {
     case playlists = "playlists.list"
     case playlistItems = "playlistItems.list"
     case insertPlaylistItem = "playlistItems.insert"
+    case deletePlaylistItem = "playlistItems.delete"
+    case thumbnailDownload = "thumbnail download"
 
     var successLevel: LogLevel { .debug }
     var failureLevel: LogLevel {
         if self == .videoLiveDetails { return .debug }
         switch self {
         // These operations are optional and cannot prevent media delivery.
-        case .channels, .streamHealth, .thumbnail, .playlistItems, .insertPlaylistItem:
+        case .channels, .streamHealth, .thumbnail, .playlistItems, .insertPlaylistItem,
+             .deletePlaylistItem, .thumbnailDownload:
             return .warning
         default:
             return .error

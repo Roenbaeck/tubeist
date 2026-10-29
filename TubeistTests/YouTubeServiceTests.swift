@@ -617,6 +617,116 @@ struct YouTubeServiceTests {
             .queryItems?.contains(URLQueryItem(name: "pageToken", value: "page-2")) == true)
     }
 
+    @Test @MainActor
+    func plannedListReturnsTodaysChannelMatchesButNotTubeistsOwn() async throws {
+        let calendar = Calendar(identifier: .gregorian)
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let today = ISO8601DateFormatter().string(from: now)
+        let tomorrow = ISO8601DateFormatter().string(from: now.addingTimeInterval(86_400))
+        func item(_ id: String, stream: String, start: String) -> [String: Any] {
+            ["id": id, "snippet": ["title": id, "scheduledStartTime": start],
+             "status": ["privacyStatus": "unlisted", "lifeCycleStatus": "ready"],
+             "contentDetails": ["boundStreamId": stream]]
+        }
+        let page = YouTubeAPIResponse(data: try JSONSerialization.data(withJSONObject: ["items": [
+            item("match-today", stream: "stream-1", start: today),
+            item("other-stream", stream: "stream-2", start: today),
+            item("match-tomorrow", stream: "stream-1", start: tomorrow),
+            item("created", stream: "stream-1", start: today),
+        ]]), statusCode: 200)
+        let titled = YouTubeAPIResponse(data: Data(#"{"items":[{"id":"stream-1","snippet":{"title":"Court 1"},"cdn":{"ingestionType":"hls","ingestionInfo":{"streamName":"test-key","ingestionAddress":"https://a.upload.youtube.com/http_upload_hls?cid=test-key&file="}}}]}"#.utf8), statusCode: 200)
+        // selectedBroadcast: active, upcoming, stream lookup; then title lookup, key titles and the planned list.
+        let transport = MockYouTubeAPITransport(responses: [emptyYouTubePage(), page, titled, titled, titled, page])
+        let service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore(),
+                                     discoveryCache: createdBroadcastCache("created"), now: { now })
+
+        let result = try await service.loadPlannedBroadcasts(forStreamKey: "test-key", calendar: calendar)
+
+        #expect(result.broadcasts.map(\.id) == ["match-today", "other-stream"])
+        #expect(result.streamTitle == "Court 1")
+        let requests = await transport.requests
+        #expect(queryItems(in: try #require(requests.last)).contains(URLQueryItem(name: "broadcastStatus", value: "upcoming")))
+    }
+
+    @Test @MainActor
+    func plannedListMarksMatchesThatNeedTheirOwnKey() async throws {
+        let calendar = Calendar(identifier: .gregorian)
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let today = ISO8601DateFormatter().string(from: now)
+        func item(_ id: String, stream: String) -> [String: Any] {
+            ["id": id, "snippet": ["title": id, "scheduledStartTime": today],
+             "status": ["privacyStatus": "unlisted", "lifeCycleStatus": "ready"],
+             "contentDetails": ["boundStreamId": stream]]
+        }
+        let page = YouTubeAPIResponse(data: try JSONSerialization.data(withJSONObject: ["items": [
+            item("created", stream: "stream-1"),
+            item("shared-a", stream: "stream-2"), item("shared-b", stream: "stream-2"),
+            item("alone", stream: "stream-3"),
+        ]]), statusCode: 200)
+        let titled = YouTubeAPIResponse(data: Data(#"{"items":[{"id":"stream-1","snippet":{"title":"Court 1"},"cdn":{"ingestionType":"hls","ingestionInfo":{"streamName":"test-key","ingestionAddress":"https://a.upload.youtube.com/http_upload_hls?cid=test-key&file="}}},{"id":"stream-2","snippet":{"title":"Tubeist stream 1"},"cdn":{"ingestionType":"hls","ingestionInfo":{"streamName":"key-2","ingestionAddress":"https://a.upload.youtube.com/http_upload_hls?cid=key-2&file="}}},{"id":"stream-3","snippet":{"title":"Tubeist stream 2"},"cdn":{"ingestionType":"hls","ingestionInfo":{"streamName":"key-3","ingestionAddress":"https://a.upload.youtube.com/http_upload_hls?cid=key-3&file="}}}]}"#.utf8), statusCode: 200)
+        let transport = MockYouTubeAPITransport(responses: [emptyYouTubePage(), page, titled, titled, titled, page])
+        let service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore(),
+                                     discoveryCache: createdBroadcastCache("created"), now: { now })
+
+        let result = try await service.loadPlannedBroadcasts(forStreamKey: "test-key", calendar: calendar)
+
+        #expect(result.needsOwnKey == ["shared-a", "shared-b"])
+        #expect(result.keyTitles == ["stream-1": "Court 1", "stream-2": "Tubeist stream 1", "stream-3": "Tubeist stream 2"])
+    }
+
+    @Test @MainActor
+    func membershipReturnsFirstPlaylistContainingTheBroadcast() async throws {
+        let playlists = ["p1", "p2", "p3"].map { YouTubePlaylist(id: $0, title: $0) }
+        let hit = YouTubeAPIResponse(data: Data(#"{"items":[{"id":"item-9"}]}"#.utf8), statusCode: 200)
+        let transport = MockYouTubeAPITransport(responses: [emptyYouTubePage(), hit, emptyYouTubePage()])
+        let service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore(), discoveryCache: YouTubeDiscoveryCache())
+
+        let found = try await service.playlistMembership(videoId: "video", among: playlists)
+
+        #expect(found == YouTubePlaylistMembership(playlistId: "p2", itemId: "item-9"))
+        let requests = await transport.requests
+        #expect(requests.count == 2)
+        #expect(queryItems(in: requests[1]).contains(URLQueryItem(name: "videoId", value: "video")))
+
+        let none = MockYouTubeAPITransport(responses: [emptyYouTubePage(), emptyYouTubePage(), emptyYouTubePage()])
+        let other = YouTubeService(transport: none, tokenStore: validMemoryTokenStore(), discoveryCache: YouTubeDiscoveryCache())
+        #expect(try await other.playlistMembership(videoId: "video", among: playlists) == nil)
+        #expect(await none.requests.count == 3)
+    }
+
+    @Test @MainActor
+    func removeFromPlaylistSendsDeleteWithItemID() async throws {
+        let transport = MockYouTubeAPITransport(responses: [.init(data: Data(), statusCode: 204)])
+        let service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore(), discoveryCache: YouTubeDiscoveryCache())
+
+        try await service.removeFromPlaylist(itemId: "item-9")
+
+        let request = try #require(await transport.requests.first)
+        #expect(request.httpMethod == "DELETE")
+        #expect(request.url?.path == "/youtube/v3/playlistItems")
+        #expect(queryItems(in: request) == [URLQueryItem(name: "id", value: "item-9")])
+    }
+
+    @Test @MainActor
+    func thumbnailDownloadSendsNoAuthorizationHeader() async throws {
+        let body = Data([1, 2, 3])
+        let transport = MockYouTubeAPITransport(responses: [
+            .init(data: body, statusCode: 200),
+            .init(data: Data(count: 2_000_001), statusCode: 200),
+        ])
+        let service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore(), discoveryCache: YouTubeDiscoveryCache())
+
+        let data = try await service.downloadThumbnail(from: "https://i.ytimg.com/vi/x/maxres.jpg")
+
+        #expect(data == body)
+        let request = try #require(await transport.requests.first)
+        #expect(request.value(forHTTPHeaderField: "Authorization") == nil)
+        #expect(request.httpMethod == "GET")
+        await #expect(throws: YouTubeError.thumbnailTooLarge) {
+            _ = try await service.downloadThumbnail(from: "https://i.ytimg.com/vi/x/maxres.jpg")
+        }
+    }
+
     @Test(arguments: [200, 500]) @MainActor
     func broadcastLookupPreservesOpaqueTokensThroughFourPages(_ lastStatus: Int) async throws {
         let pageTokens = ["page-2", "page/3%2B=", "page+4&part=bad#? é"]
@@ -634,7 +744,7 @@ struct YouTubeServiceTests {
         if lastStatus == 200 { responses.append(matchingStreamPage()) }
         let captured = CapturedYouTubeDiagnostics()
         let transport = MockYouTubeAPITransport(responses: responses)
-        let service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore(), discoveryCache: YouTubeDiscoveryCache(), diagnostics: captured.diagnostics)
+        let service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore(), discoveryCache: createdBroadcastCache("ready"), diagnostics: captured.diagnostics)
 
         if lastStatus == 200 {
             let endpoint = try await service.findHLSIngestionEndpoint(forStreamKey: "test-key")
@@ -688,7 +798,7 @@ struct YouTubeServiceTests {
             .init(data: Data(), statusCode: 500),
         ]
         let transport = MockYouTubeAPITransport(responses: responses)
-        let service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore(), discoveryCache: YouTubeDiscoveryCache())
+        let service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore(), discoveryCache: createdBroadcastCache("ready"))
         let found = try await service.findBroadcastForStreamKey("test-key")
         #expect(found.id == "ready")
         #expect(found.lifeCycleStatus == lifecycle)
@@ -715,7 +825,7 @@ struct YouTubeServiceTests {
             currentBroadcastPage(nextPageToken: "must-not-fetch"), matchingStreamPage(),
             .init(data: Data(), statusCode: 500),
         ])
-        let service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore(), discoveryCache: YouTubeDiscoveryCache())
+        let service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore(), discoveryCache: createdBroadcastCache("ready"))
         #expect(try await service.findBroadcastForStreamKey("test-key").id == "ready")
         let requests = await transport.requests
         #expect(requests.count == 5)
@@ -856,6 +966,7 @@ struct YouTubeServiceTests {
         let key = YouTubeDiscoveryCache.key(scope: scope, streamKey: "test-key")
         let cache = YouTubeDiscoveryCache(defaults: defaults)
         cache.setID("stream-1", kind: "stream", for: key)
+        cache.setID("ready", kind: "createdBroadcast", for: key)
         let restored = YouTubeDiscoveryCache(defaults: defaults)
         let transport = MockYouTubeAPITransport(responses: [matchingStreamPage(), emptyYouTubePage(), currentBroadcastPage()])
         let service = YouTubeService(transport: transport, tokenStore: store, discoveryCache: restored)
@@ -878,6 +989,7 @@ struct YouTubeServiceTests {
         let cache = YouTubeDiscoveryCache()
         let key = YouTubeDiscoveryCache.key(scope: YouTubeDiscoveryCache.scope(refreshToken: "refresh-token"), streamKey: "test-key")
         cache.setID("stale-id", kind: "stream", for: key)
+        cache.setID("ready", kind: "createdBroadcast", for: key)
         let stale = wrongKey ? YouTubeAPIResponse(data: try streamsResponse([streamItem(id: "stale-id", key: "wrong-key", type: "hls", address: "https://a.upload.youtube.com/http_upload_hls?cid=wrong-key&file=")]), statusCode: 200) : emptyYouTubePage()
         let transport = MockYouTubeAPITransport(responses: [stale, emptyYouTubePage(), currentBroadcastPage(), matchingStreamPage()])
         let service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore(), discoveryCache: cache)
@@ -905,7 +1017,7 @@ struct YouTubeServiceTests {
             emptyYouTubePage(), broadcastPageResponse(status: "ready", bound: true, autoStop: true),
             matchingStreamPage(), broadcastResourceResponse(status: "ready", bound: true, autoStop: false)
         ])
-        let service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore(), discoveryCache: YouTubeDiscoveryCache())
+        let service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore(), discoveryCache: createdBroadcastCache("new-event"))
         let result = try await service.prepareForStreaming(
             streamKey: "test-key", preferences: setupPreferences(), endingPolicy: .manualDiagnostic
         )
@@ -964,6 +1076,7 @@ struct YouTubeServiceTests {
         let body = try #require(JSONSerialization.jsonObject(with: requests[3].httpBody!) as? [String: Any])
         let snippet = try #require(body["snippet"] as? [String: String])
         #expect(snippet["title"] == preferences.title)
+        #expect(snippet["description"] == BroadcastKeys.broadcastDescription)
         #expect(ISO8601DateFormatter().date(from: snippet["scheduledStartTime"]!) == fixedNow.addingTimeInterval(10))
         let status = try #require(body["status"] as? [String: Any])
         #expect(status["privacyStatus"] as? String == "private")
@@ -973,6 +1086,41 @@ struct YouTubeServiceTests {
         #expect(details["enableAutoStop"] as? Bool == true)
         #expect(queryItems(in: requests[4]).contains(.init(name: "streamId", value: "stream-1")))
         #expect(requests[4].httpBody?.isEmpty == true)
+    }
+
+    @Test @MainActor
+    func newStreamStartStillReusesTheBroadcastTubeistCreated() async throws {
+        let cache = createdBroadcastCache("new-event")
+        let transport = MockYouTubeAPITransport(responses: [
+            emptyYouTubePage(), studioPlannedPage(status: "ready", id: "new-event"), matchingStreamPage(),
+            broadcastResourceResponse(status: "ready", bound: true)
+        ])
+        let service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore(), discoveryCache: cache)
+        let preparation = try await service.prepareForStreaming(streamKey: "test-key", preferences: setupPreferences())
+        #expect(preparation.broadcast.id == "new-event")
+        let requests = await transport.requests
+        #expect(!requests.contains { $0.httpMethod == "POST" && $0.url?.path.hasSuffix("/liveBroadcasts") == true })
+    }
+
+    @Test @MainActor
+    func liveBroadcastIsStillResumedRegardlessOfOrigin() async throws {
+        let transport = MockYouTubeAPITransport(responses: [
+            studioPlannedPage(status: "liveStarting", id: "active"), matchingStreamPage(),
+        ])
+        let service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore(), discoveryCache: YouTubeDiscoveryCache())
+        await #expect(throws: YouTubeError.broadcastNotReady("starting live stream")) {
+            _ = try await service.prepareForStreaming(streamKey: "test-key", preferences: setupPreferences())
+        }
+    }
+
+    @Test
+    func upcomingPolicyOnlyAdmitsTheNamedUpcomingBroadcast() {
+        let ready = broadcast(id: "a", title: "A", status: "ready")
+        let live = broadcast(id: "b", title: "B", status: "live")
+        #expect(YouTubeBroadcastDiscovery.selectCurrentOrUpcoming(from: [ready], upcoming: .only(nil)) == nil)
+        #expect(YouTubeBroadcastDiscovery.selectCurrentOrUpcoming(from: [ready], upcoming: .only("x")) == nil)
+        #expect(YouTubeBroadcastDiscovery.selectCurrentOrUpcoming(from: [ready], upcoming: .only("a"))?.id == "a")
+        #expect(YouTubeBroadcastDiscovery.selectCurrentOrUpcoming(from: [ready, live], upcoming: .only(nil))?.id == "b")
     }
 
     @Test @MainActor
@@ -1108,7 +1256,7 @@ struct YouTubeServiceTests {
         ])
         let readyService = YouTubeService(
             transport: readyTransport,
-            tokenStore: validMemoryTokenStore(), discoveryCache: YouTubeDiscoveryCache()
+            tokenStore: validMemoryTokenStore(), discoveryCache: createdBroadcastCache("ready")
         )
 
         let preparation = try await readyService.prepareForStreaming(streamKey: "test-key")
@@ -1160,7 +1308,7 @@ struct YouTubeServiceTests {
         ])
         let service = YouTubeService(
             transport: transport,
-            tokenStore: validMemoryTokenStore(), discoveryCache: YouTubeDiscoveryCache()
+            tokenStore: validMemoryTokenStore(), discoveryCache: createdBroadcastCache("ready")
         )
         let preferences = YouTubeBroadcastPreferences(
             streamId: "stream-1",
@@ -1222,7 +1370,7 @@ struct YouTubeServiceTests {
             .init(data: Data(#"{"error":{"message":"Playlist not found"}}"#.utf8), statusCode: 404),
         ])
         let service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore(),
-                                     discoveryCache: YouTubeDiscoveryCache(), diagnostics: captured.diagnostics)
+                                     discoveryCache: createdBroadcastCache("new-event"), diagnostics: captured.diagnostics)
         var preferences = setupPreferences()
         preferences.playlistId = "deleted-playlist"
         let preparation = try await service.prepareForStreaming(
@@ -1244,7 +1392,7 @@ struct YouTubeServiceTests {
     func accountChangeDuringAnOptionalStartStepStillStopsStart() async throws {
         let transport = DeferredYouTubeChannelTransport()
         let store = validMemoryTokenStore()
-        let service = YouTubeService(transport: transport, tokenStore: store, discoveryCache: YouTubeDiscoveryCache())
+        let service = YouTubeService(transport: transport, tokenStore: store, discoveryCache: createdBroadcastCache("new-event"))
         let start = Task {
             try await service.prepareForStreaming(
                 streamKey: "test-key", preferences: setupPreferences(), thumbnailData: Data([0xFF, 0xD8, 0xFF, 0xD9])
@@ -1263,7 +1411,7 @@ struct YouTubeServiceTests {
 
     @Test @MainActor
     func aReusedBroadcastReceivesEachThumbnailOnlyOnce() async throws {
-        let cache = YouTubeDiscoveryCache()
+        let cache = createdBroadcastCache("new-event")
         let transport = MockYouTubeAPITransport(responses: [
             emptyYouTubePage(), broadcastPageResponse(status: "ready", bound: true), matchingStreamPage(),
             .init(data: Data(), statusCode: 200),
@@ -1291,7 +1439,7 @@ struct YouTubeServiceTests {
             emptyYouTubePage(), broadcastPageResponse(status: "ready", bound: true), matchingStreamPage(),
             broadcastResourceResponse(status: "ready", bound: true),
         ])
-        let service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore(), discoveryCache: YouTubeDiscoveryCache())
+        let service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore(), discoveryCache: createdBroadcastCache("new-event"))
         var preferences = setupPreferences()
         preferences.enableEmbed = true
         let preparation = try await service.prepareForStreaming(streamKey: "test-key", preferences: preferences)
@@ -1621,7 +1769,7 @@ struct YouTubeServiceTests {
     func settingsDiagnosticsIdentifyAuthorizedChannelAndSuccessfulDiscovery() async throws {
         let captured = CapturedYouTubeDiagnostics()
         let transport = MockYouTubeAPITransport(responses: settingsDiagnosticResponses())
-        let service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore(), discoveryCache: YouTubeDiscoveryCache(), diagnostics: captured.diagnostics)
+        let service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore(), discoveryCache: createdBroadcastCache("ready"), diagnostics: captured.diagnostics)
         let settings = try await service.loadSettingsConfiguration(forStreamKey: "test-key")
         #expect(settings.broadcast.id == "ready")
         #expect(settings.playlists.isEmpty)
@@ -1647,7 +1795,7 @@ struct YouTubeServiceTests {
         var responses = Array(settingsDiagnosticResponses().prefix(stage + 1))
         responses[stage] = .init(data: Data(#"{"error":{"message":"Internal error encountered.","errors":[{"reason":"backendError"}]}}"#.utf8), statusCode: 500)
         let transport = MockYouTubeAPITransport(responses: responses)
-        let service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore(), discoveryCache: YouTubeDiscoveryCache(), diagnostics: captured.diagnostics)
+        let service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore(), discoveryCache: createdBroadcastCache("ready"), diagnostics: captured.diagnostics)
         await #expect(throws: YouTubeError.apiError(500, "Internal error encountered.")) {
             _ = try await service.loadSettingsConfiguration(forStreamKey: "test-key")
         }
@@ -1667,7 +1815,7 @@ struct YouTubeServiceTests {
         var responses = settingsDiagnosticResponses()
         responses[0] = .init(data: Data(#"{"error":{"message":"Channel check failed"}}"#.utf8), statusCode: status)
         let transport = MockYouTubeAPITransport(responses: responses)
-        let service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore(), discoveryCache: YouTubeDiscoveryCache(), diagnostics: captured.diagnostics)
+        let service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore(), discoveryCache: createdBroadcastCache("ready"), diagnostics: captured.diagnostics)
         let settings = try await service.loadSettingsConfiguration(forStreamKey: "test-key")
         #expect(settings.broadcast.id == "ready")
         #expect(captured.text.contains("authorized channel check unavailable (HTTP \(status)); continuing"))
@@ -1742,6 +1890,15 @@ private struct FailingYouTubeAPITransport: YouTubeAPITransport {
     }
 }
 
+/// A cache that remembers `id` as the broadcast Tubeist created for "test-key",
+/// the only upcoming broadcast "New stream" may reuse.
+@MainActor private func createdBroadcastCache(_ id: String) -> YouTubeDiscoveryCache {
+    let cache = YouTubeDiscoveryCache()
+    cache.setID(id, kind: "createdBroadcast", for: YouTubeDiscoveryCache.key(
+        scope: YouTubeDiscoveryCache.scope(refreshToken: "refresh-token"), streamKey: "test-key"))
+    return cache
+}
+
 private func streamResourceResponse() -> YouTubeAPIResponse {
     let object = try! JSONSerialization.jsonObject(with: matchingStreamPage().data) as! [String: Any]
     let resource = (object["items"] as! [[String: Any]])[0]
@@ -1786,6 +1943,17 @@ private func currentBroadcastPage(status: String = "ready", nextPageToken: Strin
         "contentDetails": ["boundStreamId": "stream-1"],
     ]]]
     page["nextPageToken"] = nextPageToken
+    return .init(data: try! JSONSerialization.data(withJSONObject: page), statusCode: 200)
+}
+
+private func studioPlannedPage(
+    status: String, id: String = "planned-1", title: String = "Planned match", stream: String = "stream-1"
+) -> YouTubeAPIResponse {
+    let page: [String: Any] = ["items": [[
+        "id": id, "snippet": ["title": title],
+        "status": ["privacyStatus": "unlisted", "lifeCycleStatus": status],
+        "contentDetails": ["boundStreamId": stream],
+    ]]]
     return .init(data: try! JSONSerialization.data(withJSONObject: page), statusCode: 200)
 }
 
@@ -1954,4 +2122,1615 @@ private func streamItem(
 
 private func streamsResponse(_ items: [[String: Any]]) throws -> Data {
     try JSONSerialization.data(withJSONObject: ["items": items], options: [.sortedKeys])
+}
+
+// MARK: - Start on a planned or restart selection
+
+extension YouTubeServiceTests {
+    @Test @MainActor
+    func plannedStartSendsOnlyChangedFieldsAndForcesGoLive() async throws {
+        let fixture = PlannedStartFixture(m5: plannedM5(stream: "match-1", enableAutoStart: false))
+        var selection = fixture.selection
+        selection.edited.title = "Match 5 – Final"
+
+        let preparation = try await fixture.start(selection)
+
+        #expect(preparation.broadcast.id == "m5")
+        #expect(preparation.broadcast.title == "Match 5 – Final")
+        #expect(preparation.warnings.isEmpty)
+        let requests = await fixture.transport.requests
+        let lookup = try #require(requests.first { queryItems(in: $0).contains(.init(name: "id", value: "m5")) })
+        #expect(lookup.httpMethod == "GET")
+        #expect(queryItems(in: lookup).contains(.init(name: "part", value: "snippet,status,contentDetails")))
+        let puts = requests.filter { $0.httpMethod == "PUT" }
+        #expect(puts.count == 1)
+        let body = try plannedJSONBody(puts.first?.httpBody)
+        #expect(body["id"] as? String == "m5")
+        #expect((body["snippet"] as? [String: Any])?["title"] as? String == "Match 5 – Final")
+        #expect((body["snippet"] as? [String: Any])?["scheduledStartTime"] as? String == fixture.today)
+        #expect((body["status"] as? [String: Any])?["privacyStatus"] as? String == "unlisted")
+        let details = try #require(body["contentDetails"] as? [String: Any])
+        #expect(details["enableAutoStart"] as? Bool == true)
+        #expect(details["enableAutoStop"] as? Bool == true)
+        let monitor = try #require(details["monitorStream"] as? [String: Any])
+        #expect(monitor["enableMonitorStream"] as? Bool == false)
+        #expect(monitor["broadcastStreamDelayMs"] as? Int == 0)
+        #expect(!requests.contains { $0.httpMethod == "POST" })
+        #expect(!requests.contains { $0.url?.path.contains("thumbnails") == true })
+        #expect(!requests.contains { $0.url?.path.hasSuffix("/playlistItems") == true })
+    }
+
+    @Test @MainActor
+    func plannedStartWithNoChangesAndGoLiveAlreadySetSendsNoWrite() async throws {
+        let fixture = PlannedStartFixture()
+
+        let preparation = try await fixture.start(fixture.selection)
+
+        #expect(preparation.broadcast.id == "m5")
+        #expect(preparation.healthTarget.broadcastID == "m5")
+        #expect(preparation.completionTarget?.id == "m5")
+        let methods = await fixture.transport.requests.map(\.httpMethod)
+        #expect(!methods.contains("PUT"))
+        #expect(!methods.contains("POST"))
+        #expect(!methods.contains("DELETE"))
+    }
+
+    enum PlannedRefusal: String, CaseIterable, Sendable {
+        case missing, complete, scheduledYesterday
+    }
+
+    @Test(arguments: PlannedRefusal.allCases) @MainActor
+    func plannedStartIsRefusedWithoutAnyWrite(_ refusal: PlannedRefusal) async throws {
+        let yesterday = plannedFixtureNow.addingTimeInterval(-86_400)
+        let fixture = PlannedStartFixture(m5: {
+            switch refusal {
+            case .missing: return nil
+            case .complete: return plannedM5(status: "complete")
+            default: return plannedM5()
+            }
+        }())
+        let selection = PlannedStreamSelection(
+            kind: .planned, broadcastId: "m5",
+            streamId: "stream-1",
+            scheduledStartTime: refusal == .scheduledYesterday
+                ? ISO8601DateFormatter().string(from: yesterday) : fixture.today,
+            loaded: fixture.selection.loaded, edited: fixture.selection.edited,
+            loadedMembership: nil, thumbnailChanged: true
+        )
+
+        await #expect(throws: YouTubeError.plannedBroadcastUnavailable("Match 5")) {
+            _ = try await fixture.start(selection, thumbnail: Data([0xFF, 0xD8, 0xFF, 0xD9]))
+        }
+        let methods = await fixture.transport.requests.map(\.httpMethod)
+        #expect(!methods.contains { ["PUT", "POST", "DELETE"].contains($0) })
+    }
+
+    @Test func plannedUnavailableErrorNamesTheStream() {
+        #expect(YouTubeError.plannedBroadcastUnavailable("Match 5").errorDescription
+            == "The planned stream 'Match 5' is no longer available. Choose another in Settings.")
+    }
+
+    @Test @MainActor
+    func changingPlaylistRemovesTheOldItemThenAdds() async throws {
+        let fixture = PlannedStartFixture()
+        var selection = fixture.selection
+        selection.loaded.playlistId = "old-list"
+        selection.edited.playlistId = "new-list"
+        selection.loadedMembership = YouTubePlaylistMembership(playlistId: "old-list", itemId: "item-1")
+
+        let preparation = try await fixture.start(selection)
+
+        #expect(preparation.warnings.isEmpty)
+        let requests = await fixture.transport.requests
+        let delete = try #require(requests.firstIndex { $0.httpMethod == "DELETE" })
+        #expect(queryItems(in: requests[delete]) == [URLQueryItem(name: "id", value: "item-1")])
+        let insert = try #require(requests.firstIndex {
+            $0.httpMethod == "POST" && $0.url?.path.hasSuffix("/playlistItems") == true
+        })
+        #expect(delete < insert)
+        #expect(requests[insert].httpBody?.range(of: Data(#""playlistId":"new-list""#.utf8)) != nil)
+    }
+
+    @Test @MainActor
+    func failedRemovalWarnsButStillStarts() async throws {
+        let fixture = PlannedStartFixture(deleteStatus: 500)
+        var selection = fixture.selection
+        selection.loaded.playlistId = "old-list"
+        selection.edited.playlistId = nil
+        selection.loadedMembership = YouTubePlaylistMembership(playlistId: "old-list", itemId: "item-1")
+
+        let preparation = try await fixture.start(selection)
+
+        #expect(preparation.broadcast.id == "m5")
+        #expect(preparation.warnings == [
+            "Could not remove 'Match 5' from its previous playlist. Check it in YouTube Studio."
+        ])
+        #expect(!(await fixture.transport.requests).contains { $0.httpMethod == "POST" })
+    }
+
+    @Test @MainActor
+    func unchangedThumbnailIsNotUploaded() async throws {
+        let fixture = PlannedStartFixture()
+        var selection = fixture.selection
+        selection.thumbnailChanged = false
+
+        _ = try await fixture.start(selection, thumbnail: Data([0xFF, 0xD8, 0xFF, 0xD9]))
+
+        #expect(!(await fixture.transport.requests).contains { $0.url?.path.hasSuffix("/thumbnails/set") == true })
+    }
+
+    @Test @MainActor
+    func changedThumbnailIsUploaded() async throws {
+        let fixture = PlannedStartFixture()
+        var selection = fixture.selection
+        selection.thumbnailChanged = true
+        let image = Data([0xFF, 0xD8, 0xFF, 0xD9])
+
+        _ = try await fixture.start(selection, thumbnail: image)
+
+        let upload = try #require(await fixture.transport.requests.first { $0.url?.path.hasSuffix("/thumbnails/set") == true })
+        #expect(queryItems(in: upload).contains(.init(name: "videoId", value: "m5")))
+        #expect(upload.httpBody == image)
+    }
+
+    @Test @MainActor
+    func restartCreatesANewBroadcastWithTheEditedDetails() async throws {
+        // The original broadcast has ended, so Restart needs a new one.
+        let fixture = PlannedStartFixture(m5: plannedM5(status: "complete"))
+        var selection = fixture.selection
+        selection.edited.title = "Match 5 – Part 2"
+        selection.edited.privacyStatus = "public"
+        selection.edited.playlistId = "season"
+        selection = selection.restarting()
+        let image = Data([0xFF, 0xD8, 0xFF, 0xD9])
+
+        let preparation = try await fixture.start(selection, thumbnail: image)
+
+        #expect(preparation.broadcast.id == "new-event")
+        let requests = await fixture.transport.requests
+        let insert = try #require(requests.firstIndex {
+            $0.httpMethod == "POST" && $0.url?.path.hasSuffix("/liveBroadcasts") == true
+        })
+        let body = try plannedJSONBody(requests[insert].httpBody)
+        #expect((body["snippet"] as? [String: Any])?["title"] as? String == "Match 5 – Part 2")
+        #expect((body["status"] as? [String: Any])?["privacyStatus"] as? String == "public")
+        let bind = try #require(requests.firstIndex { $0.url?.path.hasSuffix("/liveBroadcasts/bind") == true })
+        #expect(insert < bind)
+        // The ended original is only looked up, never written.
+        #expect(try requests.filter { $0.httpMethod == "PUT" }.allSatisfy {
+            try plannedJSONBody($0.httpBody)["id"] as? String != "m5"
+        })
+        let playlistInsert = try #require(requests.first {
+            $0.httpMethod == "POST" && $0.url?.path.hasSuffix("/playlistItems") == true
+        })
+        #expect(playlistInsert.httpBody?.range(of: Data(#""playlistId":"season""#.utf8)) != nil)
+        #expect(playlistInsert.httpBody?.range(of: Data(#""videoId":"new-event""#.utf8)) != nil)
+        let upload = try #require(requests.first { $0.url?.path.hasSuffix("/thumbnails/set") == true })
+        #expect(queryItems(in: upload).contains(.init(name: "videoId", value: "new-event")))
+        #expect(!requests.contains { $0.httpMethod == "DELETE" })
+    }
+
+    @Test @MainActor
+    func restartReappliesEditedDetailsToAResumedTubeistBroadcast() async throws {
+        // createOrResume returns the cached ready Tubeist broadcast ("Saved title")
+        // and ignores the template, so the edited details must be PUT afterwards.
+        let cache = YouTubeDiscoveryCache()
+        cache.setID("new-event", kind: "createdBroadcast", for: YouTubeDiscoveryCache.key(
+            scope: YouTubeDiscoveryCache.scope(refreshToken: "refresh-token"), streamKey: "match-key-1"))
+        let fixture = PlannedStartFixture(m5: plannedM5(status: "complete", stream: "match-1"), cache: cache,
+                                          upcoming: newEventPage(boundTo: "match-1"), pendingKey: "match-1")
+        var selection = fixture.selection
+        selection.edited.title = "Match 5 – Final"
+        selection = selection.restarting()
+
+        let preparation = try await fixture.start(selection)
+
+        #expect(preparation.broadcast.id == "new-event")
+        #expect(preparation.broadcast.title == "Match 5 – Final")
+        let requests = await fixture.transport.requests
+        #expect(!requests.contains { $0.httpMethod == "POST" && $0.url?.path.hasSuffix("/liveBroadcasts") == true })
+        let put = try #require(requests.first { $0.httpMethod == "PUT" })
+        let body = try plannedJSONBody(put.httpBody)
+        #expect(body["id"] as? String == "new-event")
+        #expect((body["snippet"] as? [String: Any])?["title"] as? String == "Match 5 – Final")
+        #expect((body["status"] as? [String: Any])?["privacyStatus"] as? String == "unlisted")
+        let details = try #require(body["contentDetails"] as? [String: Any])
+        #expect(details["enableEmbed"] as? Bool == true)
+        #expect(details["enableAutoStart"] as? Bool == true)
+        #expect(details["enableAutoStop"] as? Bool == true)
+        let monitor = try #require(details["monitorStream"] as? [String: Any])
+        #expect(monitor["enableMonitorStream"] as? Bool == false)
+        #expect(monitor["broadcastStreamDelayMs"] as? Int == 0)
+    }
+
+    @Test @MainActor
+    func plannedStartKeepsAStudioChangeToAnUneditedField() async throws {
+        // Picked as unlisted; Studio made it public afterwards. Only the title was edited.
+        let fixture = PlannedStartFixture(m5: plannedM5(stream: "match-1", privacy: "public"))
+        var selection = fixture.selection
+        selection.edited.title = "Match 5 – Final"
+
+        let preparation = try await fixture.start(selection)
+
+        let put = try #require(await fixture.transport.requests.first { $0.httpMethod == "PUT" })
+        let body = try plannedJSONBody(put.httpBody)
+        #expect((body["snippet"] as? [String: Any])?["title"] as? String == "Match 5 – Final")
+        #expect((body["status"] as? [String: Any])?["privacyStatus"] as? String == "public")
+        #expect(preparation.broadcast.privacyStatus == "public")
+        // Restart carries what was applied at Start, not the pick-time value.
+        let restart = selection.restarting(after: preparation.broadcast)
+        #expect(restart.edited.privacyStatus == "public")
+        #expect(restart.loaded.privacyStatus == "public")
+        #expect(restart.edited.title == "Match 5 – Final")
+    }
+
+    @Test @MainActor
+    func restartReusesTheOriginalWhileItIsStillReady() async throws {
+        // Start then a quick Stop leaves the planned broadcast ready (auto-start
+        // waits for ingest). Restart must use it rather than insert a duplicate.
+        let fixture = PlannedStartFixture(m5: plannedM5(stream: "match-1", enableAutoStart: false))
+        let selection = fixture.selection.restarting()
+
+        let preparation = try await fixture.start(selection, thumbnail: Data([0xFF, 0xD8, 0xFF, 0xD9]))
+
+        #expect(preparation.broadcast.id == "m5")
+        #expect(preparation.healthTarget.broadcastID == "m5")
+        let requests = await fixture.transport.requests
+        let lookup = try #require(requests.first { queryItems(in: $0).contains(.init(name: "id", value: "m5")) })
+        #expect(lookup.httpMethod == "GET")
+        #expect(!requests.contains { $0.httpMethod == "POST" })
+        #expect(!requests.contains { $0.httpMethod == "DELETE" })
+        let puts = requests.filter { $0.httpMethod == "PUT" }
+        #expect(puts.count == 1)
+        let body = try plannedJSONBody(puts.first?.httpBody)
+        #expect(body["id"] as? String == "m5")
+        #expect((body["status"] as? [String: Any])?["privacyStatus"] as? String == "unlisted")
+        #expect((body["contentDetails"] as? [String: Any])?["enableAutoStart"] as? Bool == true)
+    }
+
+    @Test @MainActor
+    func restartOnAStillReadyOriginalWithNothingToChangeSendsNoWrite() async throws {
+        let fixture = PlannedStartFixture()
+
+        let preparation = try await fixture.start(fixture.selection.restarting())
+
+        #expect(preparation.broadcast.id == "m5")
+        let methods = await fixture.transport.requests.map(\.httpMethod)
+        #expect(!methods.contains { ["PUT", "POST", "DELETE"].contains($0) })
+    }
+
+    @Test @MainActor
+    func restartOnAStillReadyOriginalAddsAChangedPlaylistAndWarnsAboutTheOldOne() async throws {
+        let fixture = PlannedStartFixture()
+        var selection = fixture.selection
+        selection.loaded.playlistId = "old-list"
+        selection.edited.playlistId = "old-list"
+        selection = selection.restarting()
+        selection.edited.playlistId = "new-list"
+
+        let preparation = try await fixture.start(selection)
+
+        #expect(preparation.broadcast.id == "m5")
+        #expect(preparation.warnings == [
+            "'Match 5' may still be in its previous playlist. Check it in YouTube Studio."
+        ])
+        let requests = await fixture.transport.requests
+        let inserts = requests.filter { $0.httpMethod == "POST" && $0.url?.path.hasSuffix("/playlistItems") == true }
+        #expect(inserts.count == 1)
+        #expect(inserts.first?.httpBody?.range(of: Data(#""videoId":"m5""#.utf8)) != nil)
+        #expect(!requests.contains { $0.httpMethod == "POST" && $0.url?.path.hasSuffix("/liveBroadcasts") == true })
+    }
+
+    @Test @MainActor
+    func restartCreatesANewBroadcastWhenTheOriginalIsGone() async throws {
+        let fixture = PlannedStartFixture(m5: nil)
+
+        let preparation = try await fixture.start(fixture.selection.restarting())
+
+        #expect(preparation.broadcast.id == "new-event")
+        #expect(await fixture.transport.requests.contains {
+            $0.httpMethod == "POST" && $0.url?.path.hasSuffix("/liveBroadcasts") == true
+        })
+    }
+
+    @Test @MainActor
+    func restartFollowsTheReadyOriginalToItsNewKey() async throws {
+        // Saved on stream-1; Assign has since moved it to `Tubeist stream 2`.
+        let fixture = PlannedStartFixture(m5: plannedM5(stream: "match-2"))
+        #expect(fixture.selection.streamId == "stream-1")
+
+        let preparation = try await fixture.start(fixture.selection.restarting())
+
+        #expect(preparation.broadcast.id == "m5")
+        #expect(preparation.endpoint == (try YouTubeHLSEndpoint(URL(string: broadcastKeyAddress(2))!)))
+        #expect(preparation.healthTarget.streamID == "match-2")
+        let methods = await fixture.transport.requests.map(\.httpMethod)
+        #expect(!methods.contains { ["PUT", "POST", "DELETE"].contains($0) })
+    }
+
+    @Test @MainActor
+    func restartFromAnEarlierDayIsRefused() async throws {
+        let fixture = PlannedStartFixture()
+        let earlier = PlannedStreamSelection(
+            kind: .restart, broadcastId: "m5", streamId: "stream-1",
+            scheduledStartTime: ISO8601DateFormatter().string(from: plannedFixtureNow.addingTimeInterval(-86_400)),
+            loaded: fixture.selection.loaded, edited: fixture.selection.edited,
+            loadedMembership: nil, thumbnailChanged: false
+        )
+
+        await #expect(throws: YouTubeError.plannedBroadcastUnavailable("Match 5")) {
+            _ = try await fixture.start(earlier)
+        }
+        let methods = await fixture.transport.requests.map(\.httpMethod)
+        #expect(!methods.contains { ["PUT", "POST", "DELETE"].contains($0) })
+    }
+
+    @Test @MainActor
+    func plannedStartStillRefusesWhileABroadcastIsActive() async throws {
+        let fixture = PlannedStartFixture(active: studioPlannedPage(status: "live", id: "active", stream: "match-1"))
+
+        await #expect(throws: YouTubeError.keyInUse("Match 5")) {
+            _ = try await fixture.start(fixture.selection)
+        }
+        let methods = await fixture.transport.requests.map(\.httpMethod)
+        #expect(!methods.contains { ["PUT", "POST", "DELETE"].contains($0) })
+    }
+}
+
+private func plannedJSONBody(_ body: Data?) throws -> [String: Any] {
+    let data = try #require(body)
+    return try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+}
+
+private let plannedFixtureNow = Date(timeIntervalSince1970: 1_800_000_000)
+
+private var plannedFixtureCalendar: Calendar {
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = TimeZone(identifier: "UTC")!
+    return calendar
+}
+
+/// The Studio-planned "Match 5" broadcast as `liveBroadcasts.list` returns it.
+private func plannedM5(
+    status: String = "ready", stream: String = "stream-1", enableAutoStart: Bool = true,
+    privacy: String = "unlisted"
+) -> [String: Any] {
+    [
+        "id": "m5",
+        "snippet": ["title": "Match 5", "scheduledStartTime": ISO8601DateFormatter().string(from: plannedFixtureNow)],
+        "status": ["privacyStatus": privacy, "lifeCycleStatus": status, "selfDeclaredMadeForKids": false],
+        "contentDetails": [
+            "boundStreamId": stream, "enableDvr": true, "latencyPreference": "normal",
+            "monitorStream": ["enableMonitorStream": false, "broadcastStreamDelayMs": 0],
+            "enableEmbed": true, "recordFromStart": true,
+            "enableAutoStart": enableAutoStart, "enableAutoStop": true,
+        ],
+    ]
+}
+
+/// Routes each request by method and path so tests do not depend on call order.
+@MainActor private struct PlannedStartFixture {
+    let transport: RoutingYouTubeAPITransport
+    let service: YouTubeService
+    let today = ISO8601DateFormatter().string(from: plannedFixtureNow)
+    let selection: PlannedStreamSelection
+
+    init(
+        m5: [String: Any]? = plannedM5(stream: "match-1"), deleteStatus: Int = 204,
+        cache: YouTubeDiscoveryCache = YouTubeDiscoveryCache(),
+        active: YouTubeAPIResponse = emptyYouTubePage(), upcoming: YouTubeAPIResponse = emptyYouTubePage(),
+        broadcastKeys: [Int] = [1, 2], pendingKey: String = "stream-1",
+        receivingKeys: Set<Int> = [], upcomingAfterBind: YouTubeAPIResponse? = nil
+    ) {
+        let m5Page = YouTubeAPIResponse(
+            data: try! JSONSerialization.data(withJSONObject: ["items": m5.map { [$0] } ?? []]), statusCode: 200)
+        let bindSeen = PlannedBindFlag()
+        transport = RoutingYouTubeAPITransport { request in
+            let path = request.url?.path ?? ""
+            let query = queryItems(in: request)
+            switch (request.httpMethod ?? "GET", path) {
+            case ("GET", let p) where p.hasSuffix("/liveStreams"):
+                if let id = query.first(where: { $0.name == "id" })?.value, id.hasPrefix("match-") {
+                    let number = Int(id.dropFirst("match-".count))!
+                    return broadcastKeyPage(number, receiving: receivingKeys.contains(number))
+                }
+                if query.contains(.init(name: "id", value: "studio-rtmp")) { return studioRTMPStreamPage() }
+                if query.contains(.init(name: "mine", value: "true")) {
+                    return channelStreamsPage(broadcastKeys, receiving: receivingKeys)
+                }
+                return matchingStreamPage()
+            case ("POST", let p) where p.hasSuffix("/liveStreams"):
+                return .init(data: try! JSONSerialization.data(
+                    withJSONObject: broadcastKeyItem(broadcastKeys.max().map { $0 + 1 } ?? 1)), statusCode: 200)
+            case ("GET", let p) where p.hasSuffix("/liveBroadcasts"):
+                if query.contains(.init(name: "broadcastStatus", value: "active")) { return active }
+                if query.contains(.init(name: "broadcastStatus", value: "upcoming")) {
+                    return bindSeen.value ? upcomingAfterBind ?? upcoming : upcoming
+                }
+                if query.contains(.init(name: "id", value: "m5")) { return m5Page }
+                if query.contains(.init(name: "id", value: "new-event")) {
+                    return newEventPage(boundTo: pendingKey)
+                }
+                return emptyYouTubePage()
+            case ("PUT", let p) where p.hasSuffix("/liveBroadcasts"):
+                // Echo the update; it already has the resource's shape.
+                return .init(data: request.httpBody ?? Data(), statusCode: 200)
+            case ("POST", let p) where p.hasSuffix("/liveBroadcasts"):
+                return broadcastResourceResponse(status: "created", bound: false)
+            case ("POST", let p) where p.hasSuffix("/liveBroadcasts/bind"):
+                // Bound to the requested key (always stream-1 before match keys).
+                let key = query.first { $0.name == "streamId" }?.value ?? "stream-1"
+                bindSeen.value = true
+                var object = try! JSONSerialization.jsonObject(
+                    with: broadcastResourceResponse(status: "ready", bound: true).data) as! [String: Any]
+                var details = object["contentDetails"] as! [String: Any]
+                details["boundStreamId"] = key
+                object["contentDetails"] = details
+                return .init(data: try! JSONSerialization.data(withJSONObject: object), statusCode: 200)
+            case ("POST", let p) where p.hasSuffix("/thumbnails/set"):
+                return .init(data: Data(), statusCode: 200)
+            case ("GET", let p) where p.hasSuffix("/playlistItems"):
+                return emptyYouTubePage()
+            case ("POST", let p) where p.hasSuffix("/playlistItems"):
+                return .init(data: Data(#"{"id":"playlist-item"}"#.utf8), statusCode: 200)
+            case ("DELETE", let p) where p.hasSuffix("/playlistItems"):
+                return .init(data: Data(), statusCode: deleteStatus)
+            default:
+                return .init(data: Data(), statusCode: 418)
+            }
+        }
+        service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore(),
+                                 discoveryCache: cache, now: { plannedFixtureNow }, randomIndex: { _ in 0 })
+        let resource = try! JSONDecoder().decode(
+            YouTubeBroadcastResource.self, from: JSONSerialization.data(withJSONObject: plannedM5()))
+        let details = PlannedStreamDetails(broadcast: resource.broadcast!, playlistId: nil)
+        selection = PlannedStreamSelection(
+            kind: .planned, broadcastId: "m5", streamId: "stream-1", scheduledStartTime: today,
+            loaded: details, edited: details, loadedMembership: nil, thumbnailChanged: false
+        )
+    }
+
+    func start(_ selection: PlannedStreamSelection, thumbnail: Data? = nil) async throws -> YouTubeStreamingPreparation {
+        try await service.prepareForStreaming(
+            streamKey: "test-key", preferences: setupPreferences(), thumbnailData: Data([0x01]),
+            plannedSelection: selection, plannedThumbnail: thumbnail, calendar: plannedFixtureCalendar
+        )
+    }
+}
+
+/// Set once the fixture has answered a bind.
+private final class PlannedBindFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var bound = false
+    var value: Bool {
+        get { lock.withLock { bound } }
+        set { lock.withLock { bound = newValue } }
+    }
+}
+
+private actor RoutingYouTubeAPITransport: YouTubeAPITransport {
+    private let route: @Sendable (URLRequest) -> YouTubeAPIResponse
+    private(set) var requests: [URLRequest] = []
+
+    init(route: @escaping @Sendable (URLRequest) -> YouTubeAPIResponse) {
+        self.route = route
+    }
+
+    func response(for request: URLRequest) async throws -> YouTubeAPIResponse {
+        requests.append(request)
+        return route(request)
+    }
+}
+
+// MARK: - Match keys
+
+extension YouTubeServiceTests {
+    @Test @MainActor
+    func assignMovesSharedAndUnboundMatchesAndKeepsAloneOnes() async throws {
+        let fixture = BroadcastKeyFixture(upcoming: [
+            broadcastKeyBroadcast("m1", stream: "studio-default"),
+            broadcastKeyBroadcast("m2", stream: "studio-default"),
+            broadcastKeyBroadcast("m3", stream: "key-1"),
+            broadcastKeyBroadcast("m4", stream: nil),
+        ], streams: [
+            broadcastKeyStream("studio-default", title: "Default stream key"),
+            broadcastKeyStream("key-1", title: "Tubeist stream 1"),
+            broadcastKeyStream("key-2", title: "Tubeist stream 2"),
+        ])
+
+        let result = try await fixture.service.assignBroadcastKeys()
+
+        #expect(result == BroadcastKeyAssignmentResult(total: 4, moved: 3, alreadySet: 1, failures: []))
+        let binds = await fixture.binds()
+        #expect(binds.map(\.broadcast) == ["m1", "m2", "m4"])
+        #expect(binds[0].stream == "key-2")
+        let created = await fixture.createdStreams()
+        #expect(created.map(\.title) == ["Tubeist stream 3", "Tubeist stream 4"])
+        for body in created.map(\.body) {
+            #expect((body["cdn"] as? [String: Any])?["ingestionType"] as? String == "hls")
+            #expect((body["contentDetails"] as? [String: Any])?["isReusable"] as? Bool == true)
+        }
+        #expect(binds[1].stream == created[0].id)
+        #expect(binds[2].stream == created[1].id)
+        let streamPosts = await fixture.transport.requests.filter {
+            $0.httpMethod == "POST" && $0.url?.path.hasSuffix("/liveStreams") == true
+        }
+        #expect(streamPosts.allSatisfy { queryItems(in: $0).contains(.init(name: "part", value: "snippet,cdn,contentDetails")) })
+        let lists = await fixture.transport.requests.filter { $0.httpMethod == "GET" }.map(queryItems(in:))
+        #expect(lists.contains { $0.contains(.init(name: "broadcastStatus", value: "upcoming")) && $0.contains(.init(name: "broadcastType", value: "all")) })
+        #expect(lists.contains { $0.contains(.init(name: "mine", value: "true")) && $0.contains(.init(name: "part", value: "snippet,status")) })
+    }
+
+    @Test @MainActor
+    func assignReusesFreeKeysAcrossPagesBeforeCreatingOne() async throws {
+        let fixture = BroadcastKeyFixture(upcoming: [
+            broadcastKeyBroadcast("m1", stream: "studio-default"),
+            broadcastKeyBroadcast("m2", stream: "key-1"),
+        ], streams: [
+            broadcastKeyStream("studio-default", title: "Default stream key"),
+            broadcastKeyStream("key-1", title: "Tubeist stream 1"),
+            broadcastKeyStream("key-3", title: "Tubeist stream 3"),
+            broadcastKeyStream("key-2", title: "Tubeist stream 2", streamStatus: "active"),
+        ], pageSize: 2)
+
+        let result = try await fixture.service.assignBroadcastKeys()
+
+        #expect(result.failures.isEmpty)
+        // key-2 is still receiving video, so the free key is key-3 (on page 2).
+        #expect(await fixture.binds().map(\.stream) == ["key-3"])
+        #expect(await fixture.createdStreams().isEmpty)
+    }
+
+    @Test @MainActor
+    func assignNeverRebindsTubeistsPersistentOrActiveBroadcasts() async throws {
+        let scope = YouTubeDiscoveryCache.scope(refreshToken: "refresh-token")
+        let cache = YouTubeDiscoveryCache()
+        cache.setID("remembered", kind: "createdBroadcast", for: YouTubeDiscoveryCache.key(scope: scope, streamKey: "phone-key"))
+        let fixture = BroadcastKeyFixture(upcoming: [
+            broadcastKeyBroadcast("own", stream: "studio-default",
+                              published: "2026-11-01T11:59:50Z", scheduled: "2026-11-01T12:00:00Z", tubeistOwn: true),
+            broadcastKeyBroadcast("remembered", stream: "studio-default"),
+            broadcastKeyBroadcast("persistent", stream: "studio-default", persistent: true),
+            broadcastKeyBroadcast("ended", stream: "studio-default", status: "complete"),
+            broadcastKeyBroadcast("m1", stream: "studio-default"),
+        ], active: [
+            broadcastKeyBroadcast("live", stream: "studio-default", status: "live"),
+        ], streams: [
+            broadcastKeyStream("studio-default", title: "Default stream key"),
+        ], cache: cache)
+
+        let result = try await fixture.service.assignBroadcastKeys()
+
+        #expect(await fixture.binds().map(\.broadcast) == ["m1"])
+        #expect(result == BroadcastKeyAssignmentResult(total: 1, moved: 1, alreadySet: 0, failures: []))
+    }
+
+    @Test @MainActor
+    func verificationMovesAMatchThatEndedUpSharingAKey() async throws {
+        let fixture = BroadcastKeyFixture(upcoming: [
+            broadcastKeyBroadcast("m1", stream: "studio-default"),
+        ], streams: [
+            broadcastKeyStream("studio-default", title: "Default stream key"),
+            broadcastKeyStream("key-2", title: "Tubeist stream 2"),
+        ], onRelist: { listing, upcoming in
+            // Another phone put m9 on the same key at the same moment.
+            guard listing == 2 else { return upcoming }
+            return upcoming + [broadcastKeyBroadcast("m9", stream: "key-2")]
+        })
+
+        let result = try await fixture.service.assignBroadcastKeys()
+
+        let binds = await fixture.binds()
+        #expect(binds.count == 2)
+        #expect(binds[0].broadcast == "m1" && binds[0].stream == "key-2")
+        #expect(["m1", "m9"].contains(binds[1].broadcast))
+        #expect(binds[1].stream != "key-2")
+        #expect(result.failures.isEmpty)
+        #expect(await fixture.upcomingListings() == 3)
+    }
+
+    @Test @MainActor
+    func assignReportsPerMatchFailureAndContinues() async throws {
+        let fixture = BroadcastKeyFixture(upcoming: [
+            broadcastKeyBroadcast("m1", stream: "studio-default"),
+            broadcastKeyBroadcast("m2", stream: "studio-default"),
+        ], streams: [
+            broadcastKeyStream("studio-default", title: "Default stream key"),
+            broadcastKeyStream("key-1", title: "Tubeist stream 1"),
+        ], bindStatus: ["m2": 403])
+
+        let result = try await fixture.service.assignBroadcastKeys()
+
+        #expect(result.failures == [BroadcastKeyFailure(title: "m2 title", reason: "HTTP 403")])
+        #expect(await fixture.boundStream(of: "m1") == "key-1")
+        #expect(result.moved == 1)
+        #expect(result.summary.contains("Could not give 'm2 title' its own key:"))
+        #expect(result.summary.split(separator: "\n").last == "Could not give 'm2 title' its own key: HTTP 403.")
+    }
+
+    @Test @MainActor
+    func assignThrowsWhenSignedOut() async throws {
+        let fixture = BroadcastKeyFixture(upcoming: [], streams: [], tokenStore: MemoryYouTubeTokenStore(
+            accessToken: nil, refreshToken: nil, expiry: nil))
+
+        await #expect(throws: YouTubeError.notSignedIn) {
+            _ = try await fixture.service.assignBroadcastKeys()
+        }
+        #expect(await fixture.transport.requests.isEmpty)
+    }
+
+    @Test
+    func summaryCopy() {
+        #expect(BroadcastKeyAssignmentResult(total: 12, moved: 3, alreadySet: 9, failures: []).summary
+                == "12 planned streams, each with its own key. 3 moved, 9 already set up.")
+    }
+
+    @Test
+    func summaryWithNoMatches() {
+        #expect(BroadcastKeyAssignmentResult(total: 0, moved: 0, alreadySet: 0, failures: []).summary
+                == "No upcoming streams to set up.")
+    }
+
+    @Test @MainActor
+    func assignNeverMovesAMatchWhoseKeyIsReceivingVideo() async throws {
+        let fixture = BroadcastKeyFixture(upcoming: [
+            broadcastKeyBroadcast("m1", stream: "studio-default"),
+            broadcastKeyBroadcast("m2", stream: "studio-default"),
+        ], streams: [
+            broadcastKeyStream("studio-default", title: "Default stream key", streamStatus: "active"),
+            broadcastKeyStream("key-1", title: "Tubeist stream 1"),
+            broadcastKeyStream("key-2", title: "Tubeist stream 2"),
+        ])
+
+        let result = try await fixture.service.assignBroadcastKeys()
+
+        #expect(await fixture.binds().isEmpty)
+        #expect(result == BroadcastKeyAssignmentResult(total: 2, moved: 0, alreadySet: 0, failures: [
+            BroadcastKeyFailure(title: "m1 title", reason: "its key is receiving video"),
+            BroadcastKeyFailure(title: "m2 title", reason: "its key is receiving video"),
+        ]))
+    }
+
+    @Test @MainActor
+    func assignKeepsTheAutoStartMatchOnASharedBroadcastKey() async throws {
+        let fixture = BroadcastKeyFixture(upcoming: [
+            broadcastKeyBroadcast("m1", stream: "key-1", autoStart: false),
+            broadcastKeyBroadcast("m2", stream: "key-1"),
+        ], streams: [
+            broadcastKeyStream("key-1", title: "Tubeist stream 1"),
+            broadcastKeyStream("key-2", title: "Tubeist stream 2"),
+        ])
+
+        let result = try await fixture.service.assignBroadcastKeys()
+
+        let binds = await fixture.binds()
+        #expect(binds.map(\.broadcast) == ["m1"])
+        #expect(binds.map(\.stream) == ["key-2"])
+        #expect(result == BroadcastKeyAssignmentResult(total: 2, moved: 1, alreadySet: 1, failures: []))
+    }
+
+    @Test @MainActor
+    func broadcastKeyListingsNeverFetchSecretKeys() async throws {
+        let fixture = BroadcastKeyFixture(upcoming: [
+            broadcastKeyBroadcast("m1", stream: "studio-default"),
+        ], streams: [
+            broadcastKeyStream("studio-default", title: "Default stream key"),
+            broadcastKeyStream("key-1", title: "Tubeist stream 1"),
+        ])
+
+        _ = try await fixture.service.assignBroadcastKeys()
+        try await fixture.service.moveToOwnBroadcastKeys(broadcastIDs: ["m1"])
+
+        let listings = await fixture.transport.requests.map(queryItems(in:)).filter {
+            $0.contains(.init(name: "mine", value: "true"))
+        }
+        #expect(!listings.isEmpty)
+        #expect(listings.allSatisfy { $0.contains(.init(name: "part", value: "snippet,status")) })
+    }
+
+    @Test @MainActor
+    func moveToOwnBroadcastKeysPicksAFreeKeyAtRandom() async throws {
+        let fixture = BroadcastKeyFixture(upcoming: [
+            broadcastKeyBroadcast("m1", stream: "studio-default"),
+        ], streams: [
+            broadcastKeyStream("studio-default", title: "Default stream key"),
+            broadcastKeyStream("key-1", title: "Tubeist stream 1"),
+            broadcastKeyStream("key-2", title: "Tubeist stream 2"),
+            broadcastKeyStream("key-3", title: "Tubeist stream 3"),
+        ], randomIndex: { $0 - 1 })
+
+        try await fixture.service.moveToOwnBroadcastKeys(broadcastIDs: ["m1"])
+
+        #expect(await fixture.binds().map(\.stream) == ["key-3"])
+    }
+
+    @Test @MainActor
+    func moveToOwnBroadcastKeysNeverPicksAKeyWithAnActiveBroadcast() async throws {
+        let fixture = BroadcastKeyFixture(upcoming: [
+            broadcastKeyBroadcast("m1", stream: "studio-default"),
+        ], active: [
+            broadcastKeyBroadcast("live", stream: "key-1", status: "live"),
+        ], streams: [
+            broadcastKeyStream("studio-default", title: "Default stream key"),
+            broadcastKeyStream("key-1", title: "Tubeist stream 1"),
+            broadcastKeyStream("key-2", title: "Tubeist stream 2"),
+        ])
+
+        try await fixture.service.moveToOwnBroadcastKeys(broadcastIDs: ["m1"])
+
+        #expect(await fixture.binds().map(\.stream) == ["key-2"])
+    }
+
+    @Test @MainActor
+    func moveToOwnBroadcastKeysMovesAgainWhenAnotherPhoneTookTheSameKey() async throws {
+        let fixture = BroadcastKeyFixture(upcoming: [
+            broadcastKeyBroadcast("m1", stream: "studio-default"),
+        ], streams: [
+            broadcastKeyStream("studio-default", title: "Default stream key"),
+            broadcastKeyStream("key-1", title: "Tubeist stream 1"),
+            broadcastKeyStream("key-2", title: "Tubeist stream 2"),
+        ], onRelist: { listing, upcoming in
+            // Another phone moved m9 to key-1 at the same moment.
+            guard listing == 2 else { return upcoming }
+            return upcoming + [broadcastKeyBroadcast("m9", stream: "key-1")]
+        })
+
+        try await fixture.service.moveToOwnBroadcastKeys(broadcastIDs: ["m1"])
+
+        let binds = await fixture.binds()
+        #expect(binds.map(\.broadcast) == ["m1", "m1"])
+        #expect(binds.map(\.stream) == ["key-1", "key-2"])
+        #expect(await fixture.boundStream(of: "m1") == "key-2")
+        #expect(await fixture.boundStream(of: "m9") == "key-1")
+    }
+
+    @Test @MainActor
+    func moveToOwnBroadcastKeysGivesUpWhenItsKeyIsTakenAgain() async throws {
+        let fixture = BroadcastKeyFixture(upcoming: [
+            broadcastKeyBroadcast("m1", stream: "studio-default"),
+        ], streams: [
+            broadcastKeyStream("studio-default", title: "Default stream key"),
+            broadcastKeyStream("key-1", title: "Tubeist stream 1"),
+            broadcastKeyStream("key-2", title: "Tubeist stream 2"),
+            broadcastKeyStream("key-3", title: "Tubeist stream 3"),
+        ], onRelist: { listing, upcoming in
+            // Every check finds another phone's match on m1's new key.
+            guard listing >= 2,
+                  let m1 = upcoming.first(where: { $0["id"] as? String == "m1" }),
+                  let key = (m1["contentDetails"] as? [String: Any])?["boundStreamId"] as? String else { return upcoming }
+            return upcoming + [broadcastKeyBroadcast("other-\(listing)", stream: key)]
+        })
+
+        await #expect(throws: YouTubeError.keyInUse("m1 title")) {
+            try await fixture.service.moveToOwnBroadcastKeys(broadcastIDs: ["m1"])
+        }
+        #expect(await fixture.binds().count == 2)
+    }
+
+    @Test @MainActor
+    func assignNeverLogsOrReturnsSecretKeys() async throws {
+        let captured = CapturedYouTubeDiagnostics()
+        let fixture = BroadcastKeyFixture(upcoming: [
+            broadcastKeyBroadcast("m1", stream: "studio-default"),
+            broadcastKeyBroadcast("m2", stream: "studio-default"),
+            broadcastKeyBroadcast("m3", stream: nil),
+        ], streams: [
+            broadcastKeyStream("studio-default", title: "Default stream key"),
+            broadcastKeyStream("key-1", title: "Tubeist stream 1"),
+        ], bindStatus: ["m2": 500], diagnostics: captured.diagnostics)
+
+        let result = try await fixture.service.assignBroadcastKeys()
+
+        #expect(!result.failures.isEmpty)
+        let texts = [result.summary, captured.text] + result.failures.map(\.reason)
+        #expect(!captured.text.isEmpty)
+        #expect(texts.allSatisfy { !$0.contains("secret-") })
+    }
+
+    @Test @MainActor
+    func moveToOwnBroadcastKeysMovesOnlyTheGivenMatches() async throws {
+        let fixture = BroadcastKeyFixture(upcoming: [
+            broadcastKeyBroadcast("m1", stream: "studio-default"),
+            broadcastKeyBroadcast("m2", stream: "studio-default"),
+        ], streams: [
+            broadcastKeyStream("studio-default", title: "Default stream key"),
+            broadcastKeyStream("key-1", title: "Tubeist stream 1"),
+        ])
+
+        try await fixture.service.moveToOwnBroadcastKeys(broadcastIDs: ["m2"])
+
+        #expect(await fixture.binds().map(\.broadcast) == ["m2"])
+        #expect(await fixture.boundStream(of: "m2") == "key-1")
+    }
+
+    @Test @MainActor
+    func moveToOwnBroadcastKeysThrowsOnFirstFailure() async throws {
+        let fixture = BroadcastKeyFixture(upcoming: [
+            broadcastKeyBroadcast("m1", stream: "studio-default"),
+            broadcastKeyBroadcast("m2", stream: "studio-default"),
+        ], streams: [
+            broadcastKeyStream("studio-default", title: "Default stream key"),
+            broadcastKeyStream("key-1", title: "Tubeist stream 1"),
+            broadcastKeyStream("key-2", title: "Tubeist stream 2"),
+        ], bindStatus: ["m1": 403])
+
+        await #expect(throws: YouTubeError.self) {
+            try await fixture.service.moveToOwnBroadcastKeys(broadcastIDs: ["m1", "m2"])
+        }
+        #expect(await fixture.binds().map(\.broadcast) == ["m1"])
+    }
+
+    @Test @MainActor
+    func rememberedCreatedBroadcastIDsCoverEveryKeyInTheScope() {
+        let cache = YouTubeDiscoveryCache()
+        let scope = YouTubeDiscoveryCache.scope(refreshToken: "refresh-token")
+        let other = YouTubeDiscoveryCache.scope(refreshToken: "other-token")
+        cache.setID("a", kind: "createdBroadcast", for: YouTubeDiscoveryCache.key(scope: scope, streamKey: "key-a"))
+        cache.setID("b", kind: "createdBroadcast", for: YouTubeDiscoveryCache.key(scope: scope, streamKey: "key-b"))
+        cache.setID("s", kind: "stream", for: YouTubeDiscoveryCache.key(scope: scope, streamKey: "key-a"))
+        cache.setID("c", kind: "createdBroadcast", for: YouTubeDiscoveryCache.key(scope: other, streamKey: "key-a"))
+
+        #expect(cache.rememberedCreatedBroadcastIDs(scope: scope) == ["a", "b"])
+    }
+}
+
+/// A planned broadcast as `liveBroadcasts.list` returns it; title is "<id> title".
+private func broadcastKeyBroadcast(
+    _ id: String, stream: String?, status: String = "ready",
+    published: String = "2026-10-20T10:00:00Z", scheduled: String = "2026-11-01T12:00:00Z",
+    persistent: Bool = false, autoStart: Bool = true, tubeistOwn: Bool = false
+) -> [String: Any] {
+    var details: [String: Any] = ["enableAutoStart": autoStart, "enableAutoStop": true]
+    details["boundStreamId"] = stream
+    return [
+        "id": id,
+        "snippet": ["title": "\(id) title", "publishedAt": published, "scheduledStartTime": scheduled,
+                    "description": tubeistOwn ? BroadcastKeys.broadcastDescription : "",
+                    "isDefaultBroadcast": persistent],
+        "status": ["privacyStatus": "unlisted", "lifeCycleStatus": status],
+        "contentDetails": details,
+    ]
+}
+
+/// A `liveStreams.list` item whose secret key is "secret-<id>".
+private func broadcastKeyStream(_ id: String, title: String, streamStatus: String = "ready") -> [String: Any] {
+    [
+        "id": id,
+        "snippet": ["title": title],
+        "cdn": ["ingestionType": "hls", "ingestionInfo": [
+            "streamName": "secret-\(id)",
+            "ingestionAddress": "https://a.upload.youtube.com/http_upload_hls?cid=secret-\(id)&file=",
+        ]],
+        "status": ["streamStatus": streamStatus],
+    ]
+}
+
+/// A small in-memory channel: binds and stream inserts change what later lists return.
+private final class BroadcastKeyChannel: @unchecked Sendable {
+    private let lock = NSLock()
+    private var upcoming: [[String: Any]]
+    private let active: [[String: Any]]
+    private var streams: [[String: Any]]
+    private let pageSize: Int
+    private let bindStatus: [String: Int]
+    private let onRelist: @Sendable (Int, [[String: Any]]) -> [[String: Any]]
+    private var listings = 0
+    private var created = 0
+
+    init(upcoming: [[String: Any]], active: [[String: Any]], streams: [[String: Any]], pageSize: Int,
+         bindStatus: [String: Int], onRelist: @escaping @Sendable (Int, [[String: Any]]) -> [[String: Any]]) {
+        self.upcoming = upcoming
+        self.active = active
+        self.streams = streams
+        self.pageSize = pageSize
+        self.bindStatus = bindStatus
+        self.onRelist = onRelist
+    }
+
+    var upcomingListings: Int { lock.withLock { listings } }
+
+    func boundStream(of id: String) -> String? {
+        lock.withLock {
+            (upcoming.first { $0["id"] as? String == id }?["contentDetails"] as? [String: Any])?["boundStreamId"] as? String
+        }
+    }
+
+    func respond(to request: URLRequest) -> YouTubeAPIResponse {
+        lock.withLock {
+            let path = request.url?.path ?? ""
+            let query = queryItems(in: request)
+            func value(_ name: String) -> String? { query.first { $0.name == name }?.value }
+            switch (request.httpMethod ?? "GET", path) {
+            case ("GET", let p) where p.hasSuffix("/liveStreams"):
+                if let id = value("id") { return page(streams.filter { $0["id"] as? String == id }, token: nil) }
+                return page(streams, token: value("pageToken"))
+            case ("GET", let p) where p.hasSuffix("/liveBroadcasts"):
+                if value("broadcastStatus") == "active" { return page(active, token: nil) }
+                if value("broadcastStatus") == "upcoming" {
+                    if value("pageToken") == nil {
+                        listings += 1
+                        upcoming = onRelist(listings, upcoming)
+                    }
+                    return page(upcoming, token: value("pageToken"))
+                }
+                if let id = value("id") { return page(upcoming.filter { $0["id"] as? String == id }, token: nil) }
+                return page([], token: nil)
+            case ("POST", let p) where p.hasSuffix("/liveStreams"):
+                created += 1
+                let body = (try? JSONSerialization.jsonObject(with: request.httpBody ?? Data())) as? [String: Any]
+                let title = (body?["snippet"] as? [String: Any])?["title"] as? String ?? ""
+                let stream = broadcastKeyStream("created-\(created)", title: title)
+                streams.append(stream)
+                return .init(data: try! JSONSerialization.data(withJSONObject: stream), statusCode: 200)
+            case ("POST", let p) where p.hasSuffix("/liveBroadcasts/bind"):
+                guard let id = value("id"), let streamId = value("streamId"),
+                      let index = upcoming.firstIndex(where: { $0["id"] as? String == id }) else {
+                    return .init(data: Data(), statusCode: 404)
+                }
+                if let status = bindStatus[id] {
+                    return .init(data: Data(#"{"error":{"message":"denied"}}"#.utf8), statusCode: status)
+                }
+                var details = upcoming[index]["contentDetails"] as? [String: Any] ?? [:]
+                details["boundStreamId"] = streamId
+                upcoming[index]["contentDetails"] = details
+                var status = upcoming[index]["status"] as? [String: Any] ?? [:]
+                status["lifeCycleStatus"] = "ready"
+                upcoming[index]["status"] = status
+                return .init(data: try! JSONSerialization.data(withJSONObject: upcoming[index]), statusCode: 200)
+            default:
+                return .init(data: Data(), statusCode: 418)
+            }
+        }
+    }
+
+    private func page(_ items: [[String: Any]], token: String?) -> YouTubeAPIResponse {
+        let start = token.flatMap(Int.init) ?? 0
+        let end = min(items.count, start + pageSize)
+        var object: [String: Any] = ["items": Array(items[start..<end])]
+        if end < items.count { object["nextPageToken"] = String(end) }
+        return .init(data: try! JSONSerialization.data(withJSONObject: object), statusCode: 200)
+    }
+}
+
+@MainActor private struct BroadcastKeyFixture {
+    let channel: BroadcastKeyChannel
+    let transport: RoutingYouTubeAPITransport
+    let service: YouTubeService
+
+    init(
+        upcoming: [[String: Any]], active: [[String: Any]] = [], streams: [[String: Any]],
+        pageSize: Int = 50, bindStatus: [String: Int] = [:], cache: YouTubeDiscoveryCache = YouTubeDiscoveryCache(),
+        tokenStore: MemoryYouTubeTokenStore = validMemoryTokenStore(),
+        diagnostics: YouTubeDiagnostics = YouTubeDiagnostics(),
+        randomIndex: @escaping @Sendable (Int) -> Int = { _ in 0 },
+        onRelist: @escaping @Sendable (Int, [[String: Any]]) -> [[String: Any]] = { $1 }
+    ) {
+        let channel = BroadcastKeyChannel(upcoming: upcoming, active: active, streams: streams, pageSize: pageSize,
+                                      bindStatus: bindStatus, onRelist: onRelist)
+        self.channel = channel
+        transport = RoutingYouTubeAPITransport { channel.respond(to: $0) }
+        service = YouTubeService(transport: transport, tokenStore: tokenStore, discoveryCache: cache,
+                                 now: { plannedFixtureNow }, diagnostics: diagnostics, randomIndex: randomIndex)
+    }
+
+    func binds() async -> [(broadcast: String, stream: String)] {
+        await transport.requests.filter { $0.url?.path.hasSuffix("/liveBroadcasts/bind") == true }.map { request in
+            let query = queryItems(in: request)
+            return (query.first { $0.name == "id" }?.value ?? "", query.first { $0.name == "streamId" }?.value ?? "")
+        }
+    }
+
+    func createdStreams() async -> [(id: String, title: String, body: [String: Any])] {
+        let posts = await transport.requests.filter {
+            $0.httpMethod == "POST" && $0.url?.path.hasSuffix("/liveStreams") == true
+        }
+        return posts.enumerated().map { index, request in
+            let body = (try? JSONSerialization.jsonObject(with: request.httpBody ?? Data())) as? [String: Any] ?? [:]
+            return ("created-\(index + 1)", (body["snippet"] as? [String: Any])?["title"] as? String ?? "", body)
+        }
+    }
+
+    func boundStream(of id: String) async -> String? { channel.boundStream(of: id) }
+    func upcomingListings() async -> Int { channel.upcomingListings }
+}
+
+// MARK: - Start safety checks
+
+extension YouTubeServiceTests {
+    @Test @MainActor
+    func plannedPickFollowsTheMatchToItsNewKey() async throws {
+        let fixture = PlannedStartFixture()
+        #expect(fixture.selection.streamId == "stream-1")
+
+        let preparation = try await fixture.start(fixture.selection)
+
+        #expect(preparation.endpoint == (try YouTubeHLSEndpoint(URL(string: broadcastKeyOneAddress)!)))
+        #expect(preparation.healthTarget.streamID == "match-1")
+        let methods = await fixture.transport.requests.map(\.httpMethod)
+        #expect(!methods.contains { ["PUT", "POST", "DELETE"].contains($0) })
+    }
+
+    @Test @MainActor
+    func plannedPickOnThePhoneKeyOffersOwnKey() async throws {
+        let fixture = PlannedStartFixture(m5: plannedM5())
+
+        await #expect(throws: YouTubeError.keyConflict(YouTubeKeyConflict(
+            kind: .plannedNeedsOwnKey, broadcastTitle: "Match 5", otherTitle: nil, broadcastIDsToMove: ["m5"]))) {
+            _ = try await fixture.start(fixture.selection)
+        }
+        let methods = await fixture.transport.requests.map(\.httpMethod)
+        #expect(!methods.contains { ["PUT", "POST", "DELETE"].contains($0) })
+    }
+
+    @Test(arguments: [true, false]) @MainActor
+    func plannedPickSharingAKeyOffersOwnKey(autoStart: Bool) async throws {
+        let fixture = PlannedStartFixture(upcoming: keyCheckPage([
+            plannedM5(stream: "match-1"), keyCheckItem("m6", title: "Match 6", stream: "match-1", autoStart: autoStart),
+        ]))
+        let conflict = YouTubeKeyConflict(
+            kind: .plannedNeedsOwnKey, broadcastTitle: "Match 5", otherTitle: "Match 6", broadcastIDsToMove: ["m5"])
+
+        await #expect(throws: YouTubeError.keyConflict(conflict)) {
+            _ = try await fixture.start(fixture.selection)
+        }
+        #expect(conflict.prompt == "'Match 5' shares its key with 'Match 6'. Give this stream its own key?")
+        #expect(YouTubeError.keyConflict(conflict).errorDescription == conflict.prompt)
+        let methods = await fixture.transport.requests.map(\.httpMethod)
+        #expect(!methods.contains { ["PUT", "POST", "DELETE"].contains($0) })
+    }
+
+    @Test @MainActor
+    func plannedPickSharingWithATubeistBroadcastOffersOwnKey() async throws {
+        // Moving the pick never rebinds the Tubeist broadcast.
+        let fixture = PlannedStartFixture(upcoming: keyCheckPage([
+            plannedM5(stream: "match-1"),
+            keyCheckItem("manual", title: "Manual stream", stream: "match-1", tubeistOwn: true),
+        ]))
+
+        await #expect(throws: YouTubeError.keyConflict(YouTubeKeyConflict(
+            kind: .plannedNeedsOwnKey, broadcastTitle: "Match 5", otherTitle: "Manual stream",
+            broadcastIDsToMove: ["m5"]))) {
+            _ = try await fixture.start(fixture.selection)
+        }
+        let methods = await fixture.transport.requests.map(\.httpMethod)
+        #expect(!methods.contains { ["PUT", "POST", "DELETE"].contains($0) })
+    }
+
+    @Test(arguments: [PlannedStreamSelection.Kind.planned, .restart]) @MainActor
+    func readyPlannedPickRefusesAReceivingKeyBeforeBroadcastAutoStart(kind: PlannedStreamSelection.Kind) async throws {
+        let fixture = PlannedStartFixture(receivingKeys: [1])
+        var selection = fixture.selection
+        selection.kind = kind
+        await #expect(throws: YouTubeError.keyInUse("Match 5")) {
+            _ = try await fixture.start(selection)
+        }
+        let requests = await fixture.transport.requests
+        #expect(requests.allSatisfy { $0.httpMethod == "GET" })
+        #expect(requests.contains {
+            queryItems(in: $0).contains(.init(name: "part", value: "cdn,snippet,status"))
+        })
+    }
+
+    @Test(arguments: ["created", "ready"]) @MainActor
+    func unboundPlannedMatchOffersItsOwnKey(status: String) async throws {
+        var item = plannedM5(status: status)
+        var details = item["contentDetails"] as! [String: Any]
+        details["boundStreamId"] = nil
+        item["contentDetails"] = details
+        let fixture = PlannedStartFixture(m5: item)
+        await #expect(throws: YouTubeError.keyConflict(YouTubeKeyConflict(
+            kind: .plannedNeedsOwnKey, broadcastTitle: "Match 5", otherTitle: nil, broadcastIDsToMove: ["m5"]))) {
+            _ = try await fixture.start(fixture.selection)
+        }
+        #expect(await fixture.transport.requests.allSatisfy { $0.httpMethod == "GET" })
+    }
+
+    @Test(arguments: [true, false]) @MainActor
+    func newStreamRefusesAReceivingKeyBeforeBroadcastAutoStart(resumesBroadcast: Bool) async throws {
+        var page = try #require(JSONSerialization.jsonObject(with: matchingStreamPage().data) as? [String: Any])
+        var items = try #require(page["items"] as? [[String: Any]])
+        items[0]["status"] = ["streamStatus": "active"]
+        page["items"] = items
+        let transport = MockYouTubeAPITransport(responses: [
+            emptyYouTubePage(), resumesBroadcast ? currentBroadcastPage() : emptyYouTubePage(),
+            .init(data: try JSONSerialization.data(withJSONObject: page), statusCode: 200),
+        ])
+        let service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore(),
+                                     discoveryCache: resumesBroadcast ? createdBroadcastCache("ready") : YouTubeDiscoveryCache())
+        await #expect(throws: YouTubeError.keyInUse(resumesBroadcast ? "Next" : "this phone's key")) {
+            _ = try await service.prepareForStreaming(streamKey: "test-key")
+        }
+        #expect(await transport.requests.allSatisfy { $0.httpMethod == "GET" })
+        #expect(await transport.requests.contains {
+            queryItems(in: $0).contains(.init(name: "part", value: "cdn,snippet,status"))
+        })
+    }
+
+    @Test @MainActor
+    func immediateStudioMatchStillGetsAssignedAKey() async throws {
+        let fixture = BroadcastKeyFixture(upcoming: [
+            broadcastKeyBroadcast("now", stream: nil, status: "created",
+                              published: "2026-11-01T11:59:50Z", scheduled: "2026-11-01T12:00:00Z"),
+        ], streams: [broadcastKeyStream("key-1", title: "Tubeist stream 1")])
+        let result = try await fixture.service.assignBroadcastKeys()
+        #expect(result == BroadcastKeyAssignmentResult(total: 1, moved: 1, alreadySet: 0, failures: []))
+        #expect(await fixture.binds().map(\.broadcast) == ["now"])
+    }
+
+    @Test @MainActor
+    func unboundMatchStartsOnItsExactBroadcastAfterTheKeyFix() async throws {
+        let scheduled = ISO8601DateFormatter().string(from: plannedFixtureNow)
+        let item = broadcastKeyBroadcast("m1", stream: nil, status: "created", scheduled: scheduled)
+        let fixture = BroadcastKeyFixture(upcoming: [item],
+            streams: [broadcastKeyStream("key-1", title: "Tubeist stream 1")])
+        let broadcast = try #require(try JSONDecoder().decode(YouTubeBroadcastResource.self,
+            from: JSONSerialization.data(withJSONObject: item)).broadcast)
+        let details = PlannedStreamDetails(broadcast: broadcast, playlistId: nil)
+        let selection = PlannedStreamSelection(kind: .planned, broadcastId: "m1", streamId: nil,
+            scheduledStartTime: scheduled, loaded: details, edited: details,
+            loadedMembership: nil, thumbnailChanged: false)
+        await #expect(throws: YouTubeError.keyConflict(YouTubeKeyConflict(
+            kind: .plannedNeedsOwnKey, broadcastTitle: "m1 title", otherTitle: nil, broadcastIDsToMove: ["m1"]))) {
+            _ = try await fixture.service.prepareForStreaming(streamKey: "phone-key", plannedSelection: selection)
+        }
+        try await fixture.service.moveToOwnBroadcastKeys(broadcastIDs: ["m1"])
+        let preparation = try await fixture.service.prepareForStreaming(streamKey: "phone-key", plannedSelection: selection)
+        #expect(preparation.broadcast.id == "m1")
+        #expect(preparation.healthTarget.streamID == "key-1")
+        #expect(await fixture.binds().map(\.broadcast) == ["m1"])
+    }
+
+    @Test @MainActor
+    func keyFixRefusesToRebindAMatchThatStartedReceivingVideo() async throws {
+        let fixture = BroadcastKeyFixture(upcoming: [broadcastKeyBroadcast("m1", stream: "studio-default")],
+            streams: [broadcastKeyStream("studio-default", title: "Default stream key", streamStatus: "active"),
+                      broadcastKeyStream("key-1", title: "Tubeist stream 1")])
+        await #expect(throws: YouTubeError.keyInUse("m1 title")) {
+            try await fixture.service.moveToOwnBroadcastKeys(broadcastIDs: ["m1"])
+        }
+        #expect(await fixture.binds().isEmpty)
+    }
+
+    @Test @MainActor
+    func plannedUpdatePreservesTheBroadcastDescription() async throws {
+        var item = plannedM5(stream: "match-1")
+        var snippet = item["snippet"] as! [String: Any]
+        snippet["description"] = "Match details and tournament links."
+        item["snippet"] = snippet
+        let fixture = PlannedStartFixture(m5: item)
+        var selection = fixture.selection
+        selection.edited.title = "New match title"
+        _ = try await fixture.start(selection)
+        let update = try #require(await fixture.transport.requests.first { $0.httpMethod == "PUT" })
+        let body = try plannedJSONBody(update.httpBody)
+        #expect((body["snippet"] as? [String: Any])?["description"] as? String == "Match details and tournament links.")
+    }
+
+    @Test @MainActor
+    func plannedPickRefusedWhileAnotherDeviceStreams() async throws {
+        let fixture = PlannedStartFixture(active: keyCheckPage([
+            keyCheckItem("elsewhere", title: "Match 5 (phone B)", stream: "match-1", status: "live"),
+        ]))
+
+        await #expect(throws: YouTubeError.keyInUse("Match 5")) {
+            _ = try await fixture.start(fixture.selection)
+        }
+        let methods = await fixture.transport.requests.map(\.httpMethod)
+        #expect(!methods.contains { ["PUT", "POST", "DELETE"].contains($0) })
+    }
+
+    @Test @MainActor
+    func plannedPickIgnoresALiveBroadcastOnAnotherKey() async throws {
+        let fixture = PlannedStartFixture(active: keyCheckPage([
+            keyCheckItem("elsewhere", title: "Other match", stream: "match-2", status: "live"),
+        ]))
+
+        let preparation = try await fixture.start(fixture.selection)
+
+        #expect(preparation.broadcast.id == "m5")
+    }
+
+    @Test @MainActor
+    func recreatedRestartMovesToAFreeKeyWhenItsOldKeyIsTaken() async throws {
+        // Match 6 was assigned the ended Match 5's key; Restart must not prompt.
+        let fixture = PlannedStartFixture(
+            m5: plannedM5(status: "complete", stream: "match-1"),
+            upcoming: keyCheckPage([keyCheckItem("m6", title: "Match 6", stream: "match-1")]))
+
+        let preparation = try await fixture.start(fixture.selection.restarting())
+
+        #expect(preparation.broadcast.id == "new-event")
+        #expect(preparation.endpoint == (try YouTubeHLSEndpoint(URL(string: broadcastKeyAddress(2))!)))
+        let requests = await fixture.transport.requests
+        let bind = try #require(requests.first { $0.url?.path.hasSuffix("/liveBroadcasts/bind") == true })
+        #expect(queryItems(in: bind).contains(.init(name: "streamId", value: "match-2")))
+        #expect(queryItems(in: bind).contains(.init(name: "id", value: "new-event")))
+        #expect(!requests.contains { $0.httpMethod == "POST" && $0.url?.path.hasSuffix("/liveStreams") == true })
+    }
+
+    @Test @MainActor
+    func recreatedRestartCreatesABroadcastKeyWhenNoneIsFree() async throws {
+        let fixture = PlannedStartFixture(
+            m5: plannedM5(status: "complete", stream: "match-1"),
+            upcoming: keyCheckPage([keyCheckItem("m6", title: "Match 6", stream: "match-1")]), broadcastKeys: [1])
+
+        _ = try await fixture.start(fixture.selection.restarting())
+
+        let requests = await fixture.transport.requests
+        let create = try #require(requests.first {
+            $0.httpMethod == "POST" && $0.url?.path.hasSuffix("/liveStreams") == true
+        })
+        #expect(try plannedJSONBody(create.httpBody)["snippet"] as? [String: String] == ["title": "Tubeist stream 2"])
+        let bind = try #require(requests.first { $0.url?.path.hasSuffix("/liveBroadcasts/bind") == true })
+        #expect(queryItems(in: bind).contains(.init(name: "streamId", value: "match-2")))
+    }
+
+    @Test @MainActor
+    func restartRecreatesOnTheEndedBroadcastsBroadcastKey() async throws {
+        let fixture = PlannedStartFixture(m5: plannedM5(status: "complete", stream: "match-1"))
+
+        let preparation = try await fixture.start(fixture.selection.restarting())
+
+        #expect(preparation.endpoint == (try YouTubeHLSEndpoint(URL(string: broadcastKeyOneAddress)!)))
+        let bind = try #require(await fixture.transport.requests.first {
+            $0.url?.path.hasSuffix("/liveBroadcasts/bind") == true
+        })
+        #expect(queryItems(in: bind).contains(.init(name: "streamId", value: "match-1")))
+    }
+
+    @Test @MainActor
+    func restartOnAStillReadyOriginalDoesNotCountItselfAsAConflict() async throws {
+        let fixture = PlannedStartFixture(upcoming: keyCheckPage([plannedM5(stream: "match-1")]))
+
+        let preparation = try await fixture.start(fixture.selection.restarting())
+
+        #expect(preparation.broadcast.id == "m5")
+    }
+
+    @Test @MainActor
+    func newStreamOffersToMovePlannedMatchesOffThePhoneKey() async throws {
+        // The 15:00 scenario: a Studio match with auto-start waits on this phone's key.
+        let transport = MockYouTubeAPITransport(responses: [
+            emptyYouTubePage(), studioPlannedPage(status: "ready", title: "15:00 match"),
+            matchingStreamPage(), matchingStreamPage(), titledPhoneStreamPage(),
+        ])
+        let service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore(), discoveryCache: YouTubeDiscoveryCache())
+        let conflict = YouTubeKeyConflict(
+            kind: .newStreamKeyTaken, broadcastTitle: "Phone A", otherTitle: "15:00 match", broadcastIDsToMove: ["planned-1"])
+
+        await #expect(throws: YouTubeError.keyConflict(conflict)) {
+            _ = try await service.prepareForStreaming(streamKey: "test-key", preferences: setupPreferences())
+        }
+        #expect(conflict.prompt
+            == "'15:00 match' is planned on this phone's key and could take over this stream. Move it to its own key?")
+        let requests = await transport.requests
+        #expect(requests.count == 5)
+        #expect(!requests.contains { $0.httpMethod != "GET" })
+        #expect(!requests.contains { queryItems(in: $0).contains(.init(name: "id", value: "planned-1")) })
+        #expect(!requests.contains { $0.httpBody?.range(of: Data("planned-1".utf8)) != nil })
+    }
+
+    @Test @MainActor
+    func newStreamConflictNamesThePhoneKeyGenericallyWhenItsTitleIsUnavailable() async throws {
+        let transport = MockYouTubeAPITransport(responses: [
+            emptyYouTubePage(), studioPlannedPage(status: "ready", title: "15:00 match"),
+            matchingStreamPage(), matchingStreamPage(), .init(data: Data(), statusCode: 500),
+        ])
+        let service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore(), discoveryCache: YouTubeDiscoveryCache())
+
+        await #expect(throws: YouTubeError.keyConflict(YouTubeKeyConflict(
+            kind: .newStreamKeyTaken, broadcastTitle: "this phone's key", otherTitle: "15:00 match",
+            broadcastIDsToMove: ["planned-1"]))) {
+            _ = try await service.prepareForStreaming(streamKey: "test-key", preferences: setupPreferences())
+        }
+    }
+
+    @Test @MainActor
+    func newStreamIsBlockedByAnotherPhonesTubeistBroadcast() async throws {
+        let transport = MockYouTubeAPITransport(responses: [
+            emptyYouTubePage(),
+            keyCheckPage([keyCheckItem("foreign", title: "Tubeist live stream", stream: "stream-1", tubeistOwn: true)]),
+            matchingStreamPage(), matchingStreamPage(),
+        ])
+        let service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore(), discoveryCache: YouTubeDiscoveryCache())
+
+        await #expect(throws: YouTubeError.keyBlocked("Tubeist live stream")) {
+            _ = try await service.prepareForStreaming(streamKey: "test-key", preferences: setupPreferences())
+        }
+        #expect(!(await transport.requests).contains { $0.httpMethod != "GET" })
+    }
+
+    @Test @MainActor
+    func newStreamStillRefusesItsOwnLiveBroadcastAsToday() async throws {
+        let transport = MockYouTubeAPITransport(responses: [
+            studioPlannedPage(status: "live", id: "active"), matchingStreamPage(),
+        ])
+        let service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore(),
+                                     discoveryCache: createdBroadcastCache("active"))
+
+        await #expect(throws: YouTubeError.broadcastNotReady("live")) {
+            _ = try await service.prepareForStreaming(streamKey: "test-key", preferences: setupPreferences())
+        }
+        // The same two lookups as before the key checks; nothing else.
+        #expect(await transport.requests.map(\.httpMethod) == ["GET", "GET"])
+    }
+
+    @Test @MainActor
+    func newStreamWithACleanKeyIsUnchanged() async throws {
+        // A planned match on another key is not a conflict, and the checks reuse
+        // the broadcast pages discovery already fetched.
+        let transport = MockYouTubeAPITransport(responses: [
+            emptyYouTubePage(), studioPlannedPage(status: "ready", stream: "stream-2"), otherKeyStreamPage(),
+            matchingStreamPage(),
+            broadcastResourceResponse(status: "created", bound: false), broadcastResourceResponse(status: "ready", bound: true),
+        ])
+        let service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore(), discoveryCache: YouTubeDiscoveryCache())
+
+        let preparation = try await service.prepareForStreaming(streamKey: "test-key", preferences: setupPreferences())
+
+        #expect(preparation.broadcast.id == "new-event")
+        let requests = await transport.requests
+        try #require(requests.map(\.httpMethod) == ["GET", "GET", "GET", "GET", "POST", "POST"])
+        #expect(queryItems(in: requests[5]).contains(.init(name: "streamId", value: "stream-1")))
+    }
+
+    @Test @MainActor
+    func newStreamListsUpcomingAgainWhenDiscoveryStoppedBeforeTheLastPage() async throws {
+        let transport = MockYouTubeAPITransport(responses: [
+            emptyYouTubePage(), currentBroadcastPage(nextPageToken: "p2"), matchingStreamPage(),
+            currentBroadcastPage(nextPageToken: "p2"), studioPlannedPage(status: "ready", title: "15:00 match"),
+            titledPhoneStreamPage(),
+        ])
+        let service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore(),
+                                     discoveryCache: createdBroadcastCache("ready"))
+
+        await #expect(throws: YouTubeError.keyConflict(YouTubeKeyConflict(
+            kind: .newStreamKeyTaken, broadcastTitle: "Phone A", otherTitle: "15:00 match", broadcastIDsToMove: ["planned-1"]))) {
+            _ = try await service.prepareForStreaming(streamKey: "test-key", preferences: setupPreferences())
+        }
+        let requests = await transport.requests
+        try #require(requests.count == 6)
+        #expect(queryItems(in: requests[4]).contains(.init(name: "pageToken", value: "p2")))
+    }
+
+    @Test @MainActor
+    func plannedPickOnAnRTMPStudioKeyOffersOwnKey() async throws {
+        let fixture = PlannedStartFixture(m5: plannedM5(stream: "studio-rtmp"))
+
+        await #expect(throws: YouTubeError.keyConflict(YouTubeKeyConflict(
+            kind: .plannedNeedsOwnKey, broadcastTitle: "Match 5", otherTitle: nil, broadcastIDsToMove: ["m5"]))) {
+            _ = try await fixture.start(fixture.selection)
+        }
+        let methods = await fixture.transport.requests.map(\.httpMethod)
+        #expect(!methods.contains { ["PUT", "POST", "DELETE"].contains($0) })
+    }
+
+    @Test @MainActor
+    func restartOnItsOwnReadyBroadcastOnThePhoneKeyStarts() async throws {
+        // An earlier version recreated Restart on the phone key; the pick is
+        // Tubeist's own, so it cannot be moved and needs no match key.
+        let fixture = PlannedStartFixture(m5: plannedM5(stream: "stream-1"), cache: createdBroadcastCache("m5"))
+
+        let preparation = try await fixture.start(fixture.selection.restarting())
+
+        #expect(preparation.broadcast.id == "m5")
+        #expect(preparation.healthTarget.streamID == "stream-1")
+        let methods = await fixture.transport.requests.map(\.httpMethod)
+        #expect(!methods.contains { ["POST", "DELETE"].contains($0) })
+    }
+
+    @Test @MainActor
+    func restartOnItsOwnReadyBroadcastStillRefusesAPlannedMatchOnTheKey() async throws {
+        let fixture = PlannedStartFixture(
+            m5: plannedM5(stream: "stream-1"), cache: createdBroadcastCache("m5"),
+            upcoming: keyCheckPage([keyCheckItem("m6", title: "Match 6", stream: "stream-1")]))
+
+        await #expect(throws: YouTubeError.keyConflict(YouTubeKeyConflict(
+            kind: .plannedNeedsOwnKey, broadcastTitle: "Match 5", otherTitle: "Match 6", broadcastIDsToMove: ["m5"]))) {
+            _ = try await fixture.start(fixture.selection.restarting())
+        }
+    }
+
+    @Test @MainActor
+    func restartAvoidsItsEndedBroadcastKeyWhileItStillReportsVideo() async throws {
+        // Right after Stop the ended key still reports streamStatus active.
+        let fixture = PlannedStartFixture(m5: plannedM5(status: "complete", stream: "match-1"), receivingKeys: [1])
+
+        let preparation = try await fixture.start(fixture.selection.restarting())
+
+        #expect(preparation.healthTarget.streamID == "match-2")
+        let bind = try #require(await fixture.transport.requests.first {
+            $0.url?.path.hasSuffix("/liveBroadcasts/bind") == true
+        })
+        #expect(queryItems(in: bind).contains(.init(name: "streamId", value: "match-2")))
+    }
+
+    @Test @MainActor
+    func restartLeavesItsEndedBroadcastKeyWhileAnotherBroadcastIsLiveOnIt() async throws {
+        let fixture = PlannedStartFixture(
+            m5: plannedM5(status: "complete", stream: "match-1"),
+            active: keyCheckPage([keyCheckItem("elsewhere", title: "Other", stream: "match-1", status: "live")]),
+            receivingKeys: [1])
+
+        let preparation = try await fixture.start(fixture.selection.restarting())
+
+        #expect(preparation.healthTarget.streamID == "match-2")
+    }
+
+    @Test @MainActor
+    func recreatedRestartMovesAgainWhenAnotherPhoneTookTheSameKey() async throws {
+        // Match 6 holds the ended key; another phone takes match-2 at the same moment.
+        let cache = YouTubeDiscoveryCache()
+        let scope = YouTubeDiscoveryCache.scope(refreshToken: "refresh-token")
+        let fixture = PlannedStartFixture(
+            m5: plannedM5(status: "complete", stream: "match-1"), cache: cache,
+            upcoming: keyCheckPage([keyCheckItem("m6", title: "Match 6", stream: "match-1")]),
+            broadcastKeys: [1, 2, 3],
+            upcomingAfterBind: keyCheckPage([
+                keyCheckItem("m6", title: "Match 6", stream: "match-1"),
+                keyCheckItem("m9", title: "Match 9", stream: "match-2"),
+            ]))
+
+        let preparation = try await fixture.start(fixture.selection.restarting())
+
+        #expect(preparation.broadcast.id == "new-event")
+        #expect(preparation.endpoint == (try YouTubeHLSEndpoint(URL(string: broadcastKeyAddress(3))!)))
+        #expect(preparation.healthTarget.streamID == "match-3")
+        let binds = await fixture.transport.requests.filter { $0.url?.path.hasSuffix("/liveBroadcasts/bind") == true }
+        #expect(binds.compactMap { queryItems(in: $0).first { $0.name == "streamId" }?.value } == ["match-2", "match-3"])
+        #expect(binds.allSatisfy { queryItems(in: $0).contains(.init(name: "id", value: "new-event")) })
+        // A later Restart resumes it on its new key.
+        #expect(cache.id("createdBroadcast", for: YouTubeDiscoveryCache.key(scope: scope, streamKey: "match-key-3"))
+            == "new-event")
+        #expect(cache.id("createdBroadcast", for: YouTubeDiscoveryCache.key(scope: scope, streamKey: "match-key-2")) == nil)
+    }
+
+    @Test @MainActor
+    func newStreamOffersToMoveAPlannedMatchWithoutAutoStart() async throws {
+        let transport = MockYouTubeAPITransport(responses: [
+            emptyYouTubePage(),
+            keyCheckPage([keyCheckItem("planned-1", title: "15:00 match", stream: "stream-1", autoStart: false)]),
+            matchingStreamPage(), matchingStreamPage(), titledPhoneStreamPage(),
+        ])
+        let service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore(), discoveryCache: YouTubeDiscoveryCache())
+
+        await #expect(throws: YouTubeError.keyConflict(YouTubeKeyConflict(
+            kind: .newStreamKeyTaken, broadcastTitle: "Phone A", otherTitle: "15:00 match",
+            broadcastIDsToMove: ["planned-1"]))) {
+            _ = try await service.prepareForStreaming(streamKey: "test-key", preferences: setupPreferences())
+        }
+        #expect(!(await transport.requests).contains { $0.httpMethod != "GET" })
+    }
+
+    @Test
+    func newStreamWatchMessageNamesThePlannedMatch() {
+        let conflict = YouTubeKeyConflict(
+            kind: .newStreamKeyTaken, broadcastTitle: "Phone A", otherTitle: "15:00 match", broadcastIDsToMove: ["planned-1"])
+        #expect(conflict.watchMessage == "Open Tubeist on the phone to set up '15:00 match'.")
+    }
+
+    @Test
+    func keyErrorCopy() {
+        let alone = YouTubeKeyConflict(
+            kind: .plannedNeedsOwnKey, broadcastTitle: "Match 5", otherTitle: nil, broadcastIDsToMove: ["m5"])
+        #expect(YouTubeError.keyInUse("Match 5").errorDescription == "Another device is already streaming to 'Match 5'.")
+        #expect(YouTubeError.keyBlocked("Manual stream").errorDescription
+            == "'Manual stream' is waiting on this key. End or delete it in YouTube Studio, then try again.")
+        #expect(alone.watchMessage == "Open Tubeist on the phone to set up 'Match 5'.")
+        #expect(YouTubeError.keyConflict(alone).errorDescription == alone.prompt)
+    }
+
+    @Test @MainActor
+    func keyErrorsNeverContainSecretKeys() async throws {
+        var errors: [Error] = []
+        for fixture in [
+            PlannedStartFixture(m5: plannedM5()),
+            PlannedStartFixture(upcoming: keyCheckPage([
+                plannedM5(stream: "match-1"), keyCheckItem("m6", title: "Match 6", stream: "match-1")])),
+            PlannedStartFixture(upcoming: keyCheckPage([
+                plannedM5(stream: "match-1"),
+                keyCheckItem("manual", title: "Manual stream", stream: "match-1", tubeistOwn: true)])),
+            PlannedStartFixture(active: keyCheckPage([
+                keyCheckItem("elsewhere", title: "Match 5", stream: "match-1", status: "live")])),
+        ] {
+            do { _ = try await fixture.start(fixture.selection) } catch { errors.append(error) }
+        }
+        let transport = MockYouTubeAPITransport(responses: [
+            emptyYouTubePage(), studioPlannedPage(status: "ready", title: "15:00 match"),
+            matchingStreamPage(), matchingStreamPage(), titledPhoneStreamPage(),
+        ])
+        let service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore(), discoveryCache: YouTubeDiscoveryCache())
+        do { _ = try await service.prepareForStreaming(streamKey: "test-key") } catch { errors.append(error) }
+
+        #expect(errors.count == 5)
+        for error in errors {
+            var texts = [String(describing: error), error.localizedDescription]
+            if case YouTubeError.keyConflict(let conflict)? = error as? YouTubeError {
+                texts += [conflict.prompt, conflict.watchMessage]
+            }
+            for text in texts {
+                #expect(!text.contains("test-key"))
+                #expect(!text.contains("match-key-1"))
+            }
+        }
+    }
+}
+
+private let broadcastKeyOneAddress = broadcastKeyAddress(1)
+
+private func broadcastKeyAddress(_ number: Int) -> String {
+    "https://a.upload.youtube.com/http_upload_hls?cid=match-key-\(number)&file="
+}
+
+/// `Tubeist stream N` (ID `match-N`) with its own secret key `match-key-N`.
+private func broadcastKeyItem(_ number: Int) -> [String: Any] {
+    [
+        "id": "match-\(number)", "snippet": ["title": "Tubeist stream \(number)"],
+        "cdn": ["ingestionType": "hls", "ingestionInfo": [
+            "streamName": "match-key-\(number)", "ingestionAddress": broadcastKeyAddress(number),
+        ]],
+    ]
+}
+
+private func broadcastKeyPage(_ number: Int, receiving: Bool = false) -> YouTubeAPIResponse {
+    var item = broadcastKeyItem(number)
+    item["status"] = ["streamStatus": receiving ? "active" : "ready"]
+    return .init(data: try! JSONSerialization.data(withJSONObject: ["items": [item]]), statusCode: 200)
+}
+
+/// `liveStreams.list?mine=true`: the phone key plus the given match keys;
+/// `receiving` keys report video arriving.
+private func channelStreamsPage(_ broadcastKeys: [Int], receiving: Set<Int> = []) -> YouTubeAPIResponse {
+    let phone = (try! JSONSerialization.jsonObject(with: matchingStreamPage().data) as! [String: Any])["items"] as! [Any]
+    let keys: [Any] = broadcastKeys.map { number in
+        var item = broadcastKeyItem(number)
+        item["status"] = ["streamStatus": receiving.contains(number) ? "active" : "ready"]
+        return item
+    }
+    return .init(data: try! JSONSerialization.data(withJSONObject: ["items": phone + keys]), statusCode: 200)
+}
+
+/// Studio's default key: RTMP, not a match key.
+private func studioRTMPStreamPage() -> YouTubeAPIResponse {
+    .init(data: Data(#"{"items":[{"id":"studio-rtmp","snippet":{"title":"Default stream key"},"cdn":{"ingestionType":"rtmp","ingestionInfo":{"streamName":"studio-secret","ingestionAddress":"rtmp://a.rtmp.youtube.com/live2"}}}]}"#.utf8), statusCode: 200)
+}
+
+/// Tubeist's pending "new-event" broadcast, bound to `key`.
+private func newEventPage(boundTo key: String) -> YouTubeAPIResponse {
+    var object = try! JSONSerialization.jsonObject(
+        with: broadcastResourceResponse(status: "ready", bound: true).data) as! [String: Any]
+    var details = object["contentDetails"] as! [String: Any]
+    details["boundStreamId"] = key
+    object["contentDetails"] = details
+    return .init(data: try! JSONSerialization.data(withJSONObject: ["items": [object]]), statusCode: 200)
+}
+
+private func titledPhoneStreamPage() -> YouTubeAPIResponse {
+    .init(data: Data(#"{"items":[{"id":"stream-1","snippet":{"title":"Phone A"},"cdn":{"ingestionType":"hls","ingestionInfo":{"streamName":"test-key","ingestionAddress":"https://a.upload.youtube.com/http_upload_hls?cid=test-key&file="}}}]}"#.utf8), statusCode: 200)
+}
+
+private func otherKeyStreamPage() -> YouTubeAPIResponse {
+    .init(data: Data(#"{"items":[{"id":"stream-2","cdn":{"ingestionType":"hls","ingestionInfo":{"streamName":"other-key","ingestionAddress":"https://a.upload.youtube.com/http_upload_hls?cid=other-key&file="}}}]}"#.utf8), statusCode: 200)
+}
+
+/// An upcoming broadcast with auto-start on. Tubeist broadcasts carry an
+/// explicit marker; their creation time alone is not proof of ownership.
+private func keyCheckItem(
+    _ id: String, title: String, stream: String, status: String = "ready", tubeistOwn: Bool = false,
+    autoStart: Bool = true
+) -> [String: Any] {
+    var snippet: [String: Any] = ["title": title, "scheduledStartTime": ISO8601DateFormatter().string(from: plannedFixtureNow)]
+    if tubeistOwn {
+        snippet["description"] = BroadcastKeys.broadcastDescription
+        snippet["publishedAt"] = ISO8601DateFormatter().string(from: plannedFixtureNow.addingTimeInterval(-10))
+    }
+    return [
+        "id": id, "snippet": snippet,
+        "status": ["privacyStatus": "unlisted", "lifeCycleStatus": status],
+        "contentDetails": ["boundStreamId": stream, "enableAutoStart": autoStart],
+    ]
+}
+
+private func keyCheckPage(_ items: [[String: Any]]) -> YouTubeAPIResponse {
+    .init(data: try! JSONSerialization.data(withJSONObject: ["items": items]), statusCode: 200)
 }

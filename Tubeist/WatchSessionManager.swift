@@ -27,10 +27,13 @@ final class WatchSessionManager: NSObject, WCSessionDelegate {
     private let isAppActive: @MainActor () -> Bool
     private var lifecycleObservers: [NSObjectProtocol] = []
 
+    private let startStream: (String) async throws -> Void
+
     init(isAppActive: @escaping @MainActor () -> Bool = {
         UIApplication.shared.applicationState == .active
-    }) {
+    }, startStream: @escaping (String) async throws -> Void = { try await Streamer.shared.startStream(streamID: $0) }) {
         self.isAppActive = isAppActive
+        self.startStream = startStream
         super.init()
     }
 
@@ -228,7 +231,10 @@ final class WatchSessionManager: NSObject, WCSessionDelegate {
         Task {
             guard isAppActive(), !appState.soonGoingToBackground, !appState.isSettingsPresented else { return }
             do {
-                try await Streamer.shared.startStream(streamID: streamID)
+                try await startStream(streamID)
+            } catch YouTubeError.keyConflict(let conflict) {
+                // The fix needs a decision; that happens on the phone.
+                appState.activeAlert = conflict.watchMessage
             } catch {
                 appState.activeAlert = error.localizedDescription
             }

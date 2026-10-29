@@ -16,6 +16,27 @@
 
 ## Current verification status
 
+- The planned-streams feature (2026-10-28, branch `planned-streams`) lets
+  Settings pick a scheduled YouTube Studio stream bound to this phone's key, or
+  "New stream", with a `Restart: <title>` entry after a stop. Save stays
+  local-only; YouTube is changed only in the Start preflight, and "New stream"
+  never adopts an upcoming broadcast Tubeist did not create. Settings opens
+  read-only while a stream runs. The unit suite ran 627 tests: 625 pass and 2
+  fail, both pre-existing OverlayRecoveryTests failures that also fail on main
+  (`scaleChangesLiveContent...`, `initialOverlayScaleIsApplied...`).
+  `Tools/check_youtube_only.sh` exits 0, but `rg` is not installed here so it
+  matched nothing; an equivalent grep of the same patterns found no hits. The
+  unsigned generic-device Release build succeeds. UI tests cannot launch in this
+  environment, so no UI-test count exists, and the simulator read-only check
+  could not run. Device acceptance is pending (user): (1) manual flow with "New
+  stream", Save, Start, Stop, then Watch Start, with title, visibility, playlist
+  and thumbnail matching the template; (2) planned flow with two streams today
+  in time order, edited title and playlist applied at Start, and `Restart:
+  <title>` creating a new broadcast; (3) never-hijack, where "New stream"
+  leaves a planned stream untouched; (4) read-only mid-stream, opening and
+  closing Settings five times with no preview glitch, recording gap or overlay
+  change, Live Activity still updating, and the YouTube fields showing the live
+  broadcast.
 - Settings now uses explicit Cancel/Save draft semantics. Save persists the
   next-stream preferences locally and performs no YouTube mutation; signed-in
   Start reuses an existing `ready` broadcast before it creates and binds one.
@@ -568,3 +589,25 @@ tracking. Gate each feature on the active device, route, and format capabilities
 Spatial audio and Cinematic capture remain lower priority because they require
 more changes to capture and recording. Low-latency stabilization is already
 exposed in Tubeist.
+
+## Planned stream keys — device acceptance
+
+Pending (user), in this order:
+
+- [ ] Manual flow on each phone with no planned streams: Save, Start, Stop, then
+  Watch Start.
+- [ ] Schedule 3 streams in YouTube Studio on the default key and press Assign.
+  The summary reads "3 planned streams, each with its own key. 3 moved, 0 already set
+  up." and Studio shows three `Tubeist stream N` keys.
+- [ ] Pick stream 1 on phone A, Start, Stop. Only stream 1 is used.
+- [ ] Bug-2 repro: leave one planned auto-start stream on phone B's key and
+  choose "New stream" on B. Start shows the prompt; "Move it" streams to B's
+  new broadcast and the stream stays upcoming on its own key.
+- [ ] Phone A streams stream 2, then phone B picks stream 2 and Starts. B shows
+  "Another device is already streaming to 'Stream 2'."
+- [ ] Create a new stream in Studio after Assign, pick it and Start. The "shares
+  its key…" prompt appears and the stream lands in that stream.
+- [ ] Watch Start with a conflict: the phone shows "Open Tubeist on the phone to
+  set up '<stream>'."
+- [ ] Open read-only Settings mid-stream: it shows "Stream key: Tubeist stream N"
+  and scrolls.

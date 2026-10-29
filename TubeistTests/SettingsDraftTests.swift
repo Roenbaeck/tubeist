@@ -255,6 +255,190 @@ struct SettingsDraftTests {
         }
     }
 
+    // MARK: Planned streams
+
+    private static let now = ISO8601DateFormatter().date(from: "2026-10-28T12:00:00Z")!
+    private static var utc: Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC")!
+        return calendar
+    }
+
+    private func plannedBroadcast(_ id: String, title: String = "Planned", streamID: String? = "stream-a",
+                                  start: String = "2026-10-28T18:00:00Z") -> YouTubeBroadcast {
+        YouTubeBroadcast(
+            id: id, title: title, privacyStatus: "unlisted",
+            boundStreamId: streamID, scheduledStartTime: start, actualStartTime: nil,
+            publishedAt: nil, lifeCycleStatus: "ready", enableDvr: false,
+            latencyPreference: "low", enableMonitorStream: false,
+            broadcastStreamDelayMs: 0, enableEmbed: true, recordFromStart: true,
+            enableAutoStart: true, enableAutoStop: true, selfDeclaredMadeForKids: true
+        )
+    }
+
+    private func plannedDraft(saved: PlannedStreamSelection? = nil,
+                              broadcasts: [YouTubeBroadcast]? = nil) -> YouTubeSettingsDraft {
+        let draft = YouTubeSettingsDraft()
+        draft.useStreamKey("key-a")
+        draft.apply(broadcast: makeBroadcast(), playlists: [YouTubePlaylist(id: "pl", title: "Matches")],
+                    savedPreferences: nil, savedThumbnail: nil)
+        draft.title = "Template title"
+        draft.visibility = "private"
+        draft.enableDvr = true
+        draft.enableEmbed = false
+        draft.madeForKids = false
+        draft.latencyPreference = "normal"
+        draft.playlistId = "pl"
+        draft.applyPlanned(
+            YouTubePlannedStreams(streamTitle: "Phone", broadcasts: broadcasts ?? [plannedBroadcast("b1")]),
+            saved: saved, savedThumbnail: nil, now: Self.now, calendar: Self.utc)
+        return draft
+    }
+
+    private func savedSelection(kind: PlannedStreamSelection.Kind = .planned, broadcastId: String = "b1",
+                                streamId: String = "stream-a",
+                                start: String = "2026-10-28T18:00:00Z") -> PlannedStreamSelection {
+        let loaded = PlannedStreamDetails(broadcast: plannedBroadcast(broadcastId), playlistId: nil)
+        var edited = loaded
+        edited.title = "Edited"
+        return PlannedStreamSelection(kind: kind, broadcastId: broadcastId, streamId: streamId,
+                                      scheduledStartTime: start, loaded: loaded, edited: edited,
+                                      loadedMembership: nil, thumbnailChanged: false)
+    }
+
+    @Test func plannedLabelsMarkSharedKeys() {
+        let draft = YouTubeSettingsDraft()
+        draft.useStreamKey("key-a")
+        draft.apply(broadcast: makeBroadcast(), playlists: [], savedPreferences: nil, savedThumbnail: nil)
+        let m1 = plannedBroadcast("m1"), m2 = plannedBroadcast("m2")
+        draft.applyPlanned(
+            YouTubePlannedStreams(streamTitle: "Phone", broadcasts: [m1, m2], needsOwnKey: ["m2"]),
+            saved: nil, savedThumbnail: nil, now: Self.now, calendar: Self.utc)
+        func label(_ b: YouTubeBroadcast) -> String {
+            PlannedStreams.label(for: b, calendar: Self.utc,
+                                 needsOwnKey: draft.plannedNeedsOwnKey.contains(b.id))
+        }
+        #expect(label(m2).hasSuffix(" · shares a key"))
+        #expect(!label(m1).hasSuffix(" · shares a key"))
+    }
+
+    @Test func savedPickIsMatchedByBroadcastIdOnly() {
+        let draft = plannedDraft(saved: savedSelection(broadcastId: "b1", streamId: "stream-1"),
+                                 broadcasts: [plannedBroadcast("b1", streamID: "match-7")])
+        #expect(draft.plannedChoice == .planned("b1"))
+    }
+
+    @Test func savedPickUsesTheBroadcastKeyAndAllowsAnUnboundMatch() throws {
+        for key: String? in ["match-7", nil] {
+            let draft = plannedDraft(broadcasts: [plannedBroadcast("b1", streamID: key)])
+            draft.choose(.planned("b1"))
+            draft.loadPlannedDetails(for: "b1", membership: nil, thumbnail: nil)
+            let selection = try #require(draft.plannedSelection())
+            #expect(selection.streamId == key)
+            let roundTrip = try JSONDecoder().decode(PlannedStreamSelection.self,
+                from: JSONEncoder().encode(selection))
+            #expect(roundTrip == selection)
+        }
+    }
+
+    @Test func choosingAPlannedMatchThenNewStreamRestoresTheTemplateExactly() {
+        let draft = plannedDraft()
+        let before = draft.preferences()
+        draft.choose(.planned("b1"))
+        draft.loadPlannedDetails(for: "b1", membership: YouTubePlaylistMembership(playlistId: "other", itemId: "i"),
+                                 thumbnail: nil)
+        #expect(draft.title == "Planned")
+        #expect(draft.visibility == "unlisted")
+        #expect(draft.madeForKids)
+        #expect(draft.playlistId == "other")
+        draft.choose(.newStream)
+        #expect(draft.preferences() == before)
+        #expect(draft.playlistId == "pl")
+        #expect(draft.latencyPreference == "normal")
+        #expect(draft.plannedSelection() == nil)
+    }
+
+    @Test func plannedEditsDoNotChangeTemplatePreferences() {
+        let draft = plannedDraft()
+        let before = draft.preferences()
+        draft.choose(.planned("b1"))
+        draft.loadPlannedDetails(for: "b1", membership: nil, thumbnail: nil)
+        draft.title = "Edited planned"
+        draft.choose(.newStream)
+        #expect(draft.preferences() == before)
+    }
+
+    @Test func plannedSelectionRecordsLoadedAndEditedSeparately() {
+        let draft = plannedDraft()
+        let membership = YouTubePlaylistMembership(playlistId: "pl", itemId: "item")
+        draft.choose(.planned("b1"))
+        draft.loadPlannedDetails(for: "b1", membership: membership, thumbnail: nil)
+        draft.title = "Edited"
+        let selection = draft.plannedSelection()
+        #expect(selection?.kind == .planned)
+        #expect(selection?.broadcastId == "b1")
+        #expect(selection?.streamId == "stream-a")
+        #expect(selection?.loaded.title == "Planned")
+        #expect(selection?.loaded.playlistId == "pl")
+        #expect(selection?.edited.title == "Edited")
+        #expect(selection?.loadedMembership == membership)
+        #expect(selection?.thumbnailChanged == false)
+    }
+
+    @Test func lateDetailsForAPreviousChoiceAreIgnored() {
+        let draft = plannedDraft(broadcasts: [plannedBroadcast("b1"), plannedBroadcast("b2", title: "Second")])
+        draft.choose(.planned("b1"))
+        draft.choose(.planned("b2"))
+        draft.loadPlannedDetails(for: "b1", membership: nil, thumbnail: nil)
+        #expect(draft.title != "Planned")
+        draft.choose(.newStream)
+        draft.loadPlannedDetails(for: "b2", membership: nil, thumbnail: nil)
+        #expect(draft.title == "Template title")
+    }
+
+    @Test func savedChoiceIsRestoredOnlyIfStillInTodaysList() {
+        let restored = plannedDraft(saved: savedSelection())
+        #expect(restored.plannedChoice == .planned("b1"))
+        #expect(restored.title == "Edited")
+        #expect(restored.plannedSelection()?.loaded.title == "Planned")
+
+        let missing = plannedDraft(saved: savedSelection(broadcastId: "gone"))
+        #expect(missing.plannedChoice == .newStream)
+        #expect(missing.title == "Template title")
+
+        // A pick follows its match to whatever key it is on now.
+        let otherStream = plannedDraft(saved: savedSelection(streamId: "stream-z"))
+        #expect(otherStream.plannedChoice == .planned("b1"))
+    }
+
+    @Test func savedRestartFromYesterdayIsNotOffered() {
+        let old = plannedDraft(saved: savedSelection(kind: .restart, broadcastId: "ended",
+                                                     start: "2026-10-27T18:00:00Z"))
+        #expect(old.plannedChoice == .newStream)
+        #expect(old.restartSelection == nil)
+
+        let today = plannedDraft(saved: savedSelection(kind: .restart, broadcastId: "ended"))
+        #expect(today.plannedChoice == .restart)
+        #expect(today.restartSelection?.broadcastId == "ended")
+        #expect(today.title == "Edited")
+    }
+
+    @Test func savedRestartOnABroadcastKeyIsRestoredAlongsideThePhoneKey() {
+        let draft = plannedDraft(saved: savedSelection(kind: .restart, broadcastId: "ended", streamId: "match-7"))
+        #expect(draft.plannedChoice == .restart)
+        #expect(draft.restartSelection?.streamId == "match-7")
+    }
+
+    @Test func changingTheStreamKeyDropsThePlannedChoice() {
+        let draft = plannedDraft(saved: savedSelection())
+        #expect(draft.plannedChoice == .planned("b1"))
+        draft.useStreamKey("key-b")
+        #expect(draft.plannedChoice == .newStream)
+        #expect(draft.plannedBroadcasts.isEmpty)
+        #expect(draft.restartSelection == nil)
+        #expect(draft.plannedSelection() == nil)
+    }
+
     private func makeBroadcast(streamID: String = "stream-a") -> YouTubeBroadcast {
         .draft(for: YouTubeStream(id: streamID, streamName: "key", publishedAt: nil,
                                  ingestionType: "hls", ingestionAddress: "https://example.invalid/",

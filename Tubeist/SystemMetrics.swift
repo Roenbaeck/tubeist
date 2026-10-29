@@ -77,10 +77,18 @@ struct SystemMetricsView: View {
     var body: some View {
         ViewThatFits(in: .horizontal) {
             HStack(spacing: 10) {
-                metricLabels
+                deviceLabels
+                outputLabels
+            }
+            // Narrower content areas (e.g. the iPhone Duo's outer screen)
+            // keep the line compact before falling back to one metric per line.
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 10) { deviceLabels }
+                HStack(spacing: 10) { outputLabels }
             }
             VStack(alignment: .leading, spacing: 2) {
-                metricLabels
+                deviceLabels
+                outputLabels
             }
         }
         .font(.caption)
@@ -114,12 +122,16 @@ struct SystemMetricsView: View {
     }
 
     @ViewBuilder
-    private var metricLabels: some View {
+    private var deviceLabels: some View {
         if !appState.isBatterySavingOn {
             Text("CPU: \(String(format: "%.1f", cpuUsage))%")
         }
         Text("Battery: \(batteryPercentage.map { "\($0)%" } ?? "—")")
         Text("Temp: \(thermalLevel)")
+    }
+
+    @ViewBuilder
+    private var outputLabels: some View {
         Text("\(networkMbps) Mbps | \(networkUtilization)% utilization | \(fragmentBufferCount) buffered")
         if let videoBitrate {
             Text("Target: \(Double(videoBitrate) / 1_000_000, specifier: "%.1f") Mbps")

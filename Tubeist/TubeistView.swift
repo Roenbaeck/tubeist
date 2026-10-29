@@ -27,6 +27,42 @@ class Interaction {
     }
 }
 
+extension EnvironmentValues {
+    /// The edge holding the system's vertical bar (status bar, Dynamic Island) on
+    /// devices like the foldable iPhone Duo. `nil` where no vertical bar is used.
+    @Entry var verticalBarEdge: HorizontalEdge? = nil
+}
+
+#if compiler(>=6.4)
+@available(iOS 27.1, *)
+private struct VerticalBarEdgeReader: ViewModifier {
+    @Environment(\.toolbarVerticalEdge) private var toolbarVerticalEdge
+
+    func body(content: Content) -> some View {
+        content.environment(\.verticalBarEdge, toolbarVerticalEdge)
+    }
+}
+#endif
+
+extension View {
+    /// Publishes the system's vertical bar edge as `verticalBarEdge` to this
+    /// view, since the system value requires iOS 27.1.
+    @ViewBuilder
+    func readingVerticalBarEdge() -> some View {
+        // Xcode 26's SDK does not declare toolbarVerticalEdge. Availability
+        // checks alone cannot hide that symbol from its compiler.
+#if compiler(>=6.4)
+        if #available(iOS 27.1, *) {
+            modifier(VerticalBarEdgeReader())
+        } else {
+            self
+        }
+#else
+        self
+#endif
+    }
+}
+
 // different views for the iPhone display
 enum Monitor {
     case camera
@@ -36,11 +72,20 @@ enum Monitor {
 struct TubeistView: View {
     @Environment(AppState.self) var appState
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.verticalBarEdge) private var verticalBarEdge
     @State private var showHorizonLevel = Settings.showHorizonLevel
     @State private var areSystemMetricsAtTop = Settings.areSystemMetricsAtTop
     @State private var overlayManager = OverlaySettingsManager()
+    /// Read-only Settings while a stream runs. It never sets
+    /// `appState.isSettingsPresented`, so the running pipeline, Start and the
+    /// Watch behave as if Settings were closed.
+    @State private var showReadOnlySettings = false
+    /// Fixed when Settings opens: a running stream gets a read-only sheet whose
+    /// opening and closing leave the camera, overlays and YouTube status alone.
+    @State private var settingsReadOnly = false
     @State private var showStabilizationConfirmation = false
     @State private var showBatterySavingConfirmation = false
+    @State private var pendingKeyConflict: YouTubeKeyConflict?
     @State private var showFocusAndExposureArea = false
     @State private var showCameraPicker = false
     @State private var showStylingPicker = false
@@ -90,7 +135,11 @@ struct TubeistView: View {
     private var showSettings: Bool { appState.isSettingsPresented }
 
     private var settingsPresentation: Binding<Bool> {
-        Binding(get: { appState.isSettingsPresented }, set: { appState.isSettingsPresented = $0 })
+        Binding(get: { appState.isSettingsPresented || showReadOnlySettings }, set: { isPresented in
+            guard !isPresented else { return }
+            appState.isSettingsPresented = false
+            showReadOnlySettings = false
+        })
     }
 
     private var isUITesting: Bool {
@@ -120,6 +169,39 @@ struct TubeistView: View {
         let factor = cameraZoom.clamped(initial * magnification)
         let deviceID = cameraZoom.deviceID
         Task { await CaptureDirector.shared.setZoomFactor(factor, deviceID: deviceID) }
+    }
+
+    /// Starts a stream with a fresh stream ID. A key conflict opens the
+    /// confirmation dialog instead of failing; other errors fade as before.
+    private func startStreamNow() {
+        let streamID = Streamer.makeStreamID()
+        Task {
+            showCameraPicker = false
+            do {
+                try await Streamer.shared.startStream(streamID: streamID)
+                LOG("Started streaming engine", level: .info)
+            } catch YouTubeError.keyConflict(let conflict) {
+                pendingKeyConflict = conflict
+            } catch {
+                fade(error.localizedDescription)
+                LOG("Could not start streaming engine: \(error.localizedDescription)", level: .error)
+            }
+        }
+    }
+
+    /// Confirmed fix: move the planned broadcasts to their own keys, then Start
+    /// again through the same checks as the button.
+    private func resolveKeyConflict(_ conflict: YouTubeKeyConflict) {
+        Task {
+            do {
+                try await YouTubeService().moveToOwnBroadcastKeys(broadcastIDs: conflict.broadcastIDsToMove)
+            } catch {
+                fade(error.localizedDescription)
+                LOG("Could not move to dedicated stream keys: \(error.localizedDescription)", level: .error)
+                return
+            }
+            startStreamNow()
+        }
     }
 
     func fade(_ message: String) {
@@ -192,6 +274,15 @@ struct TubeistView: View {
             splashOpacity = 0
             return
         }
+#if targetEnvironment(simulator)
+        // The simulator has no camera. Skip capture startup so the controls
+        // and layout can still be exercised instead of ending on an error alert.
+        isCameraReady = true
+        showSplashScreen = false
+        splashOpacity = 0
+        LOG("Simulator has no camera; skipping capture startup", level: .info)
+        return
+#else
         do {
             // An active stream still owns its capture graph. Brief system UI
             // interruptions resume automatically; don't restart it on return.
@@ -230,6 +321,7 @@ struct TubeistView: View {
             appState.activeAlert = error.localizedDescription
             LOG("Could not start camera monitoring: \(error.localizedDescription)", level: .error)
         }
+#endif
     }
     
     func focusAndExposureTap(_ location: CGPoint) {
@@ -434,13 +526,117 @@ struct TubeistView: View {
         }
     }
     
+    /// Exposure, focus, style and effect sliders. Must be 64 or wider to
+    /// register the drag gesture.
+    private func sliderColumn(height: CGFloat) -> some View {
+        VStack {
+            if appState.isExposureLocked {
+                CameraControlSlider(
+                    value: $exposureBias,
+                    range: -2.0...2.0,
+                    step: 0.1,
+                    format: "%+.1f\u{202F}EV"
+                )
+                .frame(height: height * 0.50)
+                .padding(.leading, 10)
+                .onChange(of: exposureBias) { _, newValue in
+                    Task {
+                        await CaptureDirector.shared.setExposureBias(to: newValue)
+                    }
+                }
+            }
+            else if appState.isFocusLocked {
+                CameraControlSlider(
+                    value: $lensPosition,
+                    range: 0...1.0,
+                    step: 0.02,
+                    format: "%+.2f"
+                )
+                .frame(height: height * 0.50)
+                .padding(.leading, 10)
+                .onChange(of: lensPosition) { _, newValue in
+                    Task {
+                        await CaptureDirector.shared.setLensPosition(to: newValue)
+                    }
+                }
+            }
+            else if style != NO_STYLE || effect != NO_EFFECT {
+                VStack {
+                    HStack {
+                        Image(systemName: "camera.filters")
+                            .resizable()
+                            .frame(width: 20, height: 20)
+                            .padding(.leading, 15)
+                            .foregroundColor(.yellow)
+                        Spacer()
+                    }
+                    if style != NO_STYLE {
+                        CameraControlSlider(
+                            value: $styleStrength,
+                            range: -1.0...1.0,
+                            step: 0.1,
+                            format: "%+.1f\u{202F}ST"
+                        )
+                        .frame(height: height * 0.33)
+                        .padding(.leading, 10)
+                        .padding(.bottom, 15)
+                        .onChange(of: styleStrength) { _, newValue in
+                            Task {
+                                await FrameGrabber.shared.setStyleStrength(to: newValue)
+                            }
+                        }
+                    }
+                    if effect != NO_EFFECT {
+                        CameraControlSlider(
+                            value: $effectStrength,
+                            range: -1.0...1.0,
+                            step: 0.1,
+                            format: "%+.1f\u{202F}EF"
+                        )
+                        .frame(height: height * 0.33)
+                        .padding(.leading, 10)
+                        .padding(.bottom, 15)
+                        .onChange(of: effectStrength) { _, newValue in
+                            Task {
+                                await FrameGrabber.shared.setEffectStrength(to: newValue)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .frame(width: 64) // Must be 64 or larger to register drag gesture
+        .opacity(1 - splashOpacity) // Invert opacity of the splash screen
+        .disabled(showSplashScreen)
+    }
+
     var body: some View {
         GeometryReader { geometry in
-            let height = geometry.size.height
-            let width = height * (16.0/9.0)
+            // The small button column (30 + 10 leading) and the slider column (64)
+            // sit beside the 16:9 content area.
+            let sideColumnsWidth: CGFloat = 104
+            // The small button column plus trailing room for its wider symbols.
+            let buttonColumnWidth: CGFloat = 50
+            // Phones are wider than 16:9, so the content area is as tall as the
+            // screen. Squarer screens (e.g. the foldable iPhone Duo) must fit
+            // the width instead, otherwise the 16:9 area overflows the screen.
+            // With a vertical bar the safe area already excludes the bar, and
+            // the side columns must fit in what remains.
+            // If the content area is still limited by width (the Duo's outer
+            // screen), it also takes the slider column's space and the space
+            // under the vertical bar: sliders then float over the content and
+            // the stats sit in the empty band below it.
+            let isWidthLimited = verticalBarEdge != nil
+                && geometry.size.width - sideColumnsWidth < geometry.size.height * (16.0/9.0)
+            let availableWidth = verticalBarEdge == nil
+                ? geometry.size.width
+                : max(geometry.size.width - (isWidthLimited ? buttonColumnWidth : sideColumnsWidth), 0)
+            let width = min(availableWidth, geometry.size.height * (16.0/9.0))
+            let height = width * (9.0/16.0)
             
             HStack(spacing: 0) {
-                Spacer()
+                // No minimum: a width-limited content area leaves no slack.
+                Spacer(minLength: 0)
                 // 16:9 Content Area
                 ZStack {
                     CameraMonitorView(isPreviewEnabled: appState.activeMonitor == .camera
@@ -528,7 +724,9 @@ struct TubeistView: View {
                             if areSystemMetricsAtTop {
                                 AudioMonitorView(width: width, height: AUDIO_METER_HEIGHT)
                                     .frame(width: width, height: AUDIO_METER_HEIGHT)
-                                systemMetrics
+                                if !isWidthLimited {
+                                    systemMetrics
+                                }
                                 fadingMessage
                                 Spacer()
                             }
@@ -537,7 +735,9 @@ struct TubeistView: View {
                             }
                             if !areSystemMetricsAtTop {
                                 fadingMessage
-                                systemMetrics
+                                if !isWidthLimited {
+                                    systemMetrics
+                                }
                                 AudioMonitorView(width: width, height: AUDIO_METER_HEIGHT)
                                     .frame(width: width, height: AUDIO_METER_HEIGHT)
                             }
@@ -653,7 +853,10 @@ struct TubeistView: View {
                         VStack(alignment: .center, spacing: 0) {
                             
                             Button(action: {
-                                if !appState.isStreamSessionRunning {
+                                settingsReadOnly = appState.isStreamSessionRunning
+                                if settingsReadOnly {
+                                    showReadOnlySettings = true
+                                } else {
                                     appState.isSettingsPresented = true
                                 }
                             }) {
@@ -667,6 +870,9 @@ struct TubeistView: View {
                             .accessibilityLabel("Settings")
                             .accessibilityHint("Opens streaming, recording, camera, and overlay settings")
                             .sheet(isPresented: settingsPresentation, onDismiss: {
+                                // Nothing can change in read-only Settings, so
+                                // nothing running is reloaded or recreated.
+                                guard !settingsReadOnly else { return }
                                 youtubeStatusGeneration = UUID()
                                 areSystemMetricsAtTop = Settings.areSystemMetricsAtTop
                                 // Overlay views remount using the applied URLs
@@ -680,7 +886,7 @@ struct TubeistView: View {
                                     appState.youtubeBroadcastId = nil
                                 }
                             }) {
-                                SettingsView(overlayManager: overlayManager)
+                                SettingsView(overlayManager: overlayManager, isReadOnly: settingsReadOnly)
                             }
                             .padding(.bottom, 10)
                             
@@ -769,17 +975,7 @@ struct TubeistView: View {
                                         fade("YouTube is still finishing the previous stream")
                                     }
                                     else if isCameraReady && Settings.hasCameraPermission() && Settings.hasMicrophonePermission() {
-                                        let streamID = Streamer.makeStreamID()
-                                        Task {
-                                            showCameraPicker = false
-                                            do {
-                                                try await Streamer.shared.startStream(streamID: streamID)
-                                                LOG("Started streaming engine", level: .info)
-                                            } catch {
-                                                fade(error.localizedDescription)
-                                                LOG("Could not start streaming engine: \(error.localizedDescription)", level: .error)
-                                            }
-                                        }
+                                        startStreamNow()
                                     }
                                     else if !Settings.hasCameraPermission() || !Settings.hasMicrophonePermission() {
                                         Settings.openSystemSettings()
@@ -804,6 +1000,22 @@ struct TubeistView: View {
                             .disabled(appState.streamSessionState == .stopping)
                             .background(Color.black.opacity(0.5))
                             .cornerRadius(25)
+                            .confirmationDialog(
+                                "Stream key",
+                                isPresented: Binding(
+                                    get: { pendingKeyConflict != nil },
+                                    set: { if !$0 { pendingKeyConflict = nil } }
+                                ),
+                                titleVisibility: .hidden,
+                                presenting: pendingKeyConflict
+                            ) { conflict in
+                                Button(conflict.kind == .plannedNeedsOwnKey ? "Give it its own key" : "Move it") {
+                                    resolveKeyConflict(conflict)
+                                }
+                                Button("Cancel", role: .cancel) {}
+                            } message: { conflict in
+                                Text(conflict.prompt)
+                            }
                             .accessibilityLabel(appState.isStreamSessionRunning ? "Stop stream" : "Start stream")
                             .accessibilityValue(appState.streamSessionState.statusDescription)
                             .accessibilityHint(appState.isStreamSessionRunning ? "Finalizes recording and YouTube uploads" : "Starts the selected streaming and recording outputs")
@@ -814,6 +1026,20 @@ struct TubeistView: View {
                     .disabled(showSplashScreen)
                 }
                 .frame(width: width, height: height)
+                .overlay(alignment: .top) {
+                    // Hang the stats below the content area, in the empty band.
+                    if isWidthLimited, !appState.isBatterySavingOn, !showSettings {
+                        systemMetrics
+                            .padding(.top, height + 8)
+                    }
+                }
+                .overlay(alignment: .trailing) {
+                    if isWidthLimited {
+                        sliderColumn(height: height)
+                            // Clear the controls column (50 wide plus padding).
+                            .padding(.trailing, 82)
+                    }
+                }
                 .overlay(alignment: .bottomLeading) {
                     if appState.isStreamActive && appState.activitySession?.highlightsEnabled == true {
                         Button {
@@ -970,89 +1196,17 @@ struct TubeistView: View {
                 }
                 .frame(width: 30) // Width based on button size and padding
                 .padding(.leading, 10)
+                .padding(.trailing, isWidthLimited ? 10 : 0)
                 .opacity(1 - splashOpacity) // Invert opacity of the splash screen
                 .disabled(showSplashScreen)
 
-                VStack {
-                    if appState.isExposureLocked {
-                        CameraControlSlider(
-                            value: $exposureBias,
-                            range: -2.0...2.0,
-                            step: 0.1,
-                            format: "%+.1f\u{202F}EV"
-                        )
-                        .frame(height: geometry.size.height * 0.50)
-                        .padding(.leading, 10)
-                        .onChange(of: exposureBias) { _, newValue in
-                            Task {
-                                await CaptureDirector.shared.setExposureBias(to: newValue)
-                            }
-                        }
-                    }
-                    else if appState.isFocusLocked {
-                        CameraControlSlider(
-                            value: $lensPosition,
-                            range: 0...1.0,
-                            step: 0.02,
-                            format: "%+.2f"
-                        )
-                        .frame(height: geometry.size.height * 0.50)
-                        .padding(.leading, 10)
-                        .onChange(of: lensPosition) { _, newValue in
-                            Task {
-                                await CaptureDirector.shared.setLensPosition(to: newValue)
-                            }
-                        }
-                    }
-                    else if style != NO_STYLE || effect != NO_EFFECT {
-                        VStack {
-                            HStack {
-                                Image(systemName: "camera.filters")
-                                    .resizable()
-                                    .frame(width: 20, height: 20)
-                                    .padding(.leading, 15)
-                                    .foregroundColor(.yellow)
-                                Spacer()
-                            }
-                            if style != NO_STYLE {
-                                CameraControlSlider(
-                                    value: $styleStrength,
-                                    range: -1.0...1.0,
-                                    step: 0.1,
-                                    format: "%+.1f\u{202F}ST"
-                                )
-                                .frame(height: geometry.size.height * 0.33)
-                                .padding(.leading, 10)
-                                .padding(.bottom, 15)
-                                .onChange(of: styleStrength) { _, newValue in
-                                    Task {
-                                        await FrameGrabber.shared.setStyleStrength(to: newValue)
-                                    }
-                                }
-                            }
-                            if effect != NO_EFFECT {
-                                CameraControlSlider(
-                                    value: $effectStrength,
-                                    range: -1.0...1.0,
-                                    step: 0.1,
-                                    format: "%+.1f\u{202F}EF"
-                                )
-                                .frame(height: geometry.size.height * 0.33)
-                                .padding(.leading, 10)
-                                .padding(.bottom, 15)
-                                .onChange(of: effectStrength) { _, newValue in
-                                    Task {
-                                        await FrameGrabber.shared.setEffectStrength(to: newValue)
-                                    }
-                                }
-                            }
-                        }
-                    }
+                if !isWidthLimited {
+                    sliderColumn(height: geometry.size.height)
                 }
-                .frame(width: 64) // Must be 64 or larger to register drag gesture
-                .opacity(1 - splashOpacity) // Invert opacity of the splash screen
-                .disabled(showSplashScreen)
             }
+            // On squarer screens the content area is shorter than the screen
+            // (and than the button column), so center it vertically.
+            .frame(width: geometry.size.width, height: geometry.size.height)
         }
         // Keep the overlay web views mounted underneath this opaque screen:
         // removing or hiding them can suspend pages needed by the broadcast.
@@ -1074,7 +1228,16 @@ struct TubeistView: View {
                 Task { await Streamer.shared.toggleBatterySaving() }
             }
         }
-        .edgesIgnoringSafeArea(.all)
+        // Where the system places a vertical bar (iPhone Duo), keep the controls
+        // inside the safe area so the status bar and Command Center don't cover
+        // them, and let a black backdrop fill the screen behind them. Only the
+        // content area extends under a leading bar; the button column stays clear.
+        .background {
+            if verticalBarEdge != nil {
+                Color.black.ignoresSafeArea()
+            }
+        }
+        .ignoresSafeArea(edges: verticalBarEdge == nil ? .all : verticalBarEdge == .leading ? .leading : [])
         .persistentSystemOverlays(.hidden)
         .task(id: canPrepareCamera) {
             if showSettings {

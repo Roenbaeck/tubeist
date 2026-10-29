@@ -29,6 +29,36 @@ struct WatchSessionManagerTests {
     }
 
     @Test @MainActor
+    func keyConflictFromWatchStartAsksForThePhone() async {
+        let conflict = YouTubeKeyConflict(
+            kind: .plannedNeedsOwnKey, broadcastTitle: "Match 5", otherTitle: "Match 6", broadcastIDsToMove: ["b5"]
+        )
+        let manager = WatchSessionManager(isAppActive: { true }, startStream: { _ in
+            throw YouTubeError.keyConflict(conflict)
+        })
+        let app = AppState()
+        app.isAppInitialization = false
+        manager.appState = app
+        let reply = await manager.handle(rawCommand: WatchCommand.start.rawValue)
+        #expect(reply.success)
+        for _ in 0..<200 where app.activeAlert == nil { await Task.yield() }
+        #expect(app.activeAlert == "Open Tubeist on the phone to set up 'Match 5'.")
+    }
+
+    @Test @MainActor
+    func otherWatchStartErrorsKeepTheirOwnMessage() async {
+        let manager = WatchSessionManager(isAppActive: { true }, startStream: { _ in
+            throw YouTubeError.keyBlocked("Match 5")
+        })
+        let app = AppState()
+        app.isAppInitialization = false
+        manager.appState = app
+        _ = await manager.handle(rawCommand: WatchCommand.start.rawValue)
+        for _ in 0..<200 where app.activeAlert == nil { await Task.yield() }
+        #expect(app.activeAlert == YouTubeError.keyBlocked("Match 5").localizedDescription)
+    }
+
+    @Test @MainActor
     func startIsRejectedWhenPhoneIsInactive() async {
         let manager = WatchSessionManager(isAppActive: { false })
         let appState = AppState()

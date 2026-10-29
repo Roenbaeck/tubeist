@@ -282,6 +282,7 @@ struct TubeistApp: App {
 
     private var applicationView: some View {
             TubeistView().environment(appState)
+                .readingVerticalBarEdge()
                 .onReceive(NotificationCenter.default.publisher(for: UIApplication.userDidTakeScreenshotNotification)) { _ in
                     backgroundStreamPolicy.didTakeScreenshot()
                 }
