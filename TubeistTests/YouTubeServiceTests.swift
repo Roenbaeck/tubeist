@@ -2520,7 +2520,8 @@ private func plannedM5(
         cache: YouTubeDiscoveryCache = YouTubeDiscoveryCache(),
         active: YouTubeAPIResponse = emptyYouTubePage(), upcoming: YouTubeAPIResponse = emptyYouTubePage(),
         broadcastKeys: [Int] = [1, 2], pendingKey: String = "stream-1",
-        receivingKeys: Set<Int> = [], upcomingAfterBind: YouTubeAPIResponse? = nil
+        receivingKeys: Set<Int> = [], upcomingAfterBind: YouTubeAPIResponse? = nil,
+        diagnostics: YouTubeDiagnostics = YouTubeDiagnostics()
     ) {
         let m5Page = YouTubeAPIResponse(
             data: try! JSONSerialization.data(withJSONObject: ["items": m5.map { [$0] } ?? []]), statusCode: 200)
@@ -2580,7 +2581,8 @@ private func plannedM5(
             }
         }
         service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore(),
-                                 discoveryCache: cache, now: { plannedFixtureNow }, randomIndex: { _ in 0 })
+                                 discoveryCache: cache, now: { plannedFixtureNow }, diagnostics: diagnostics,
+                                 randomIndex: { _ in 0 })
         let resource = try! JSONDecoder().decode(
             YouTubeBroadcastResource.self, from: JSONSerialization.data(withJSONObject: plannedM5()))
         let details = PlannedStreamDetails(broadcast: resource.broadcast!, playlistId: nil)
@@ -2908,6 +2910,52 @@ extension YouTubeServiceTests {
     }
 
     @Test @MainActor
+    func moveToOwnBroadcastKeysWaitsUntilYouTubeReportsTheNewKey() async throws {
+        let sleeps = RecordedSleeps()
+        let captured = CapturedYouTubeDiagnostics()
+        let fixture = BroadcastKeyFixture(upcoming: [
+            broadcastKeyBroadcast("m1", stream: "key-4"),
+            broadcastKeyBroadcast("m2", stream: "key-4", autoStart: false),
+        ], streams: [
+            broadcastKeyStream("key-4", title: "Tubeist match 4"),
+            broadcastKeyStream("key-1", title: "Tubeist stream 1"),
+        ], diagnostics: captured.diagnostics, sleep: { sleeps.record($0) }, onRelist: { listing, upcoming in
+            // The first two reads after the bind still show m1 on its old key.
+            [2, 3].contains(listing) ? rebound(upcoming, "m1", to: "key-4")
+                : listing == 4 ? rebound(upcoming, "m1", to: "key-1") : upcoming
+        })
+
+        try await fixture.service.moveToOwnBroadcastKeys(broadcastIDs: ["m1"])
+
+        // One move only: the stale read is neither a conflict nor a reason to move again.
+        #expect(await fixture.binds().map(\.stream) == ["key-1"])
+        #expect(await fixture.boundStream(of: "m1") == "key-1")
+        #expect(sleeps.all == [.seconds(2), .seconds(2)])
+        #expect(captured.text.contains("moved 'm1 title' from 'Tubeist match 4' to 'Tubeist stream 1'"))
+    }
+
+    @Test @MainActor
+    func moveToOwnBroadcastKeysReportsAMoveYouTubeNeverConfirms() async throws {
+        let sleeps = RecordedSleeps()
+        let fixture = BroadcastKeyFixture(upcoming: [
+            broadcastKeyBroadcast("m1", stream: "studio-default"),
+        ], streams: [
+            broadcastKeyStream("studio-default", title: "Default stream key"),
+            broadcastKeyStream("key-1", title: "Tubeist stream 1"),
+        ], sleep: { sleeps.record($0) }, onRelist: { listing, upcoming in
+            listing >= 2 ? rebound(upcoming, "m1", to: "studio-default") : upcoming
+        })
+
+        await #expect(throws: YouTubeError.keyMoveUnconfirmed("m1 title")) {
+            try await fixture.service.moveToOwnBroadcastKeys(broadcastIDs: ["m1"])
+        }
+        #expect(await fixture.binds().count == 1)
+        #expect(sleeps.all.count == YouTubeService.keyMoveConfirmationAttempts - 1)
+        #expect(YouTubeError.keyMoveUnconfirmed("Match 5").errorDescription
+                == "YouTube has not yet confirmed 'Match 5' on its own key. Wait a moment, then press Start again.")
+    }
+
+    @Test @MainActor
     func assignNeverLogsOrReturnsSecretKeys() async throws {
         let captured = CapturedYouTubeDiagnostics()
         let fixture = BroadcastKeyFixture(upcoming: [
@@ -2990,6 +3038,24 @@ private func broadcastKeyBroadcast(
         "status": ["privacyStatus": "unlisted", "lifeCycleStatus": status],
         "contentDetails": details,
     ]
+}
+
+private func rebound(_ upcoming: [[String: Any]], _ id: String, to stream: String) -> [[String: Any]] {
+    upcoming.map { item in
+        guard item["id"] as? String == id else { return item }
+        var item = item
+        var details = item["contentDetails"] as? [String: Any] ?? [:]
+        details["boundStreamId"] = stream
+        item["contentDetails"] = details
+        return item
+    }
+}
+
+private final class RecordedSleeps: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [Duration] = []
+    func record(_ duration: Duration) { lock.withLock { storage.append(duration) } }
+    var all: [Duration] { lock.withLock { storage } }
 }
 
 /// A `liveStreams.list` item whose secret key is "secret-<id>".
@@ -3103,6 +3169,7 @@ private final class BroadcastKeyChannel: @unchecked Sendable {
         tokenStore: MemoryYouTubeTokenStore = validMemoryTokenStore(),
         diagnostics: YouTubeDiagnostics = YouTubeDiagnostics(),
         randomIndex: @escaping @Sendable (Int) -> Int = { _ in 0 },
+        sleep: @escaping @Sendable (Duration) async throws -> Void = { _ in },
         onRelist: @escaping @Sendable (Int, [[String: Any]]) -> [[String: Any]] = { $1 }
     ) {
         let channel = BroadcastKeyChannel(upcoming: upcoming, active: active, streams: streams, pageSize: pageSize,
@@ -3110,7 +3177,8 @@ private final class BroadcastKeyChannel: @unchecked Sendable {
         self.channel = channel
         transport = RoutingYouTubeAPITransport { channel.respond(to: $0) }
         service = YouTubeService(transport: transport, tokenStore: tokenStore, discoveryCache: cache,
-                                 now: { plannedFixtureNow }, diagnostics: diagnostics, randomIndex: randomIndex)
+                                 now: { plannedFixtureNow }, diagnostics: diagnostics, randomIndex: randomIndex,
+                                 sleep: sleep)
     }
 
     func binds() async -> [(broadcast: String, stream: String)] {
@@ -3160,6 +3228,21 @@ extension YouTubeServiceTests {
         }
         let methods = await fixture.transport.requests.map(\.httpMethod)
         #expect(!methods.contains { ["PUT", "POST", "DELETE"].contains($0) })
+    }
+
+    @Test @MainActor
+    func keyConflictLogsWhatStartSawOnTheKey() async throws {
+        let captured = CapturedYouTubeDiagnostics()
+        let fixture = PlannedStartFixture(upcoming: keyCheckPage([
+            plannedM5(stream: "match-1"), keyCheckItem("m6", title: "Match 6", stream: "match-1"),
+        ]), diagnostics: captured.diagnostics)
+
+        _ = try? await fixture.start(fixture.selection)
+
+        #expect(captured.text.contains(
+            "YouTube key check: 'Match 5' is on key 'Tubeist stream 1'; Tubeist key: yes; "
+                + "Tubeist broadcast: no; also on the key: 'Match 6' (ready)"))
+        #expect(!captured.text.contains("secret-"))
     }
 
     @Test(arguments: [true, false]) @MainActor

@@ -192,11 +192,14 @@ struct TubeistView: View {
     /// Confirmed fix: move the planned broadcasts to their own keys, then Start
     /// again through the same checks as the button.
     private func resolveKeyConflict(_ conflict: YouTubeKeyConflict) {
+        // The move waits until YouTube confirms the new key, which can take a few seconds.
+        fade("Setting up '\(conflict.broadcastToSetUp)'…")
         Task {
             do {
                 try await YouTubeService().moveToOwnBroadcastKeys(broadcastIDs: conflict.broadcastIDsToMove)
             } catch {
-                fade(error.localizedDescription)
+                // An alert, not a fade: a missed message looked like nothing happened.
+                appState.activeAlert = error.localizedDescription
                 LOG("Could not move to dedicated stream keys: \(error.localizedDescription)", level: .error)
                 return
             }
