@@ -72,11 +72,11 @@ struct PlannedStreamTests {
         func reason(_ b: YouTubeBroadcast, remembered: Set<String> = []) -> String {
             PlannedStreams.exclusionReason(b, remembered: remembered, now: now, calendar: oslo)
         }
-        var copied = broadcast("b-copied")
+        var copied = broadcast("b-copied", start: "2026-10-31T09:00:10Z", published: "2026-10-31T09:00:00Z")
         copied.broadcastDescription = BroadcastKeys.broadcastDescription
         var persistent = broadcast("b-default")
         persistent.isDefaultBroadcast = true
-        #expect(reason(copied) == "its description is 'Created with Tubeist.'")
+        #expect(reason(copied) == "created by Tubeist (description 'Created with Tubeist.')")
         #expect(reason(persistent) == "Studio's default stream")
         #expect(reason(broadcast("b-own"), remembered: ["b-own"]) == "created by Tubeist on this phone")
         #expect(reason(broadcast("b-none", start: nil)) == "no scheduled start time")
@@ -94,6 +94,15 @@ struct PlannedStreamTests {
         let result = PlannedStreams.today([own, remembered, match, immediate], remembered: ["b-remembered"],
                                           now: now, calendar: oslo)
         #expect(result.map(\.id) == ["b-now", "b-match"])
+    }
+
+    @Test func todayListsAStudioCopyOfATubeistBroadcast() {
+        // Studio's "copy settings" copied the description of a stream Tubeist created.
+        let now = date("2026-10-31T10:00:00Z")
+        var copy = broadcast("b-copy", start: "2026-10-31T15:00:00Z", published: "2026-10-31T10:30:00Z")
+        copy.broadcastDescription = BroadcastKeys.broadcastDescription
+        #expect(PlannedStreams.today([copy], remembered: [], now: now, calendar: oslo).map(\.id) == ["b-copy"])
+        #expect(!BroadcastKeys.isTubeistOwn(copy, remembered: []))
     }
 
     @Test func labelMarksMatchesThatShareAKey() {

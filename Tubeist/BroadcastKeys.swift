@@ -34,7 +34,16 @@ enum BroadcastKeys {
     }
 
     static func isTubeistOwn(_ b: YouTubeBroadcast, remembered: Set<String>) -> Bool {
-        remembered.contains(b.id) || b.broadcastDescription == broadcastDescription
+        remembered.contains(b.id) || (b.broadcastDescription == broadcastDescription && startsAsCreated(b))
+    }
+
+    /// Tubeist schedules its broadcasts 10 s after creating them. Studio's
+    /// "copy settings" copies the description, not this: a copy planned for a
+    /// later match is not Tubeist's.
+    static func startsAsCreated(_ b: YouTubeBroadcast) -> Bool {
+        guard let scheduled = b.scheduledStartTime.flatMap(YouTubeTimestamp.parse),
+              let published = b.publishedAt.flatMap(YouTubeTimestamp.parse) else { return false }
+        return abs(scheduled.timeIntervalSince(published)) <= 60
     }
 
     static func isPlannedBroadcast(_ b: YouTubeBroadcast, remembered: Set<String>) -> Bool {
