@@ -2071,6 +2071,10 @@ final class YouTubeService {
         let remembered = discoveryCache.rememberedCreatedBroadcastIDs(scope: scope)
         let broadcasts = PlannedStreams.today(upcoming, remembered: remembered, now: now(), calendar: calendar)
         let listed = Set(broadcasts.map(\.id))
+        for broadcast in upcoming where !listed.contains(broadcast.id) {
+            let reason = PlannedStreams.exclusionReason(broadcast, remembered: remembered, now: now(), calendar: calendar)
+            diagnostics.log("YouTube planned streams: '\(broadcast.title)' not listed: \(reason)", .warning)
+        }
         let needing = BroadcastKeys.broadcastsNeedingOwnKey(upcoming: upcoming, streams: streams, remembered: remembered)
         return YouTubePlannedStreams(
             streamTitle: title, broadcasts: broadcasts,

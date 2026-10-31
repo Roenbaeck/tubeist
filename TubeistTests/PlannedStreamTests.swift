@@ -67,6 +67,23 @@ struct PlannedStreamTests {
         #expect(result.map(\.id) == ["b-0800", "b-created", "b-1300"])
     }
 
+    @Test func exclusionReasonNamesWhyAStreamIsNotListed() {
+        let now = date("2026-10-31T10:00:00Z")
+        func reason(_ b: YouTubeBroadcast, remembered: Set<String> = []) -> String {
+            PlannedStreams.exclusionReason(b, remembered: remembered, now: now, calendar: oslo)
+        }
+        var copied = broadcast("b-copied")
+        copied.broadcastDescription = BroadcastKeys.broadcastDescription
+        var persistent = broadcast("b-default")
+        persistent.isDefaultBroadcast = true
+        #expect(reason(copied) == "its description is 'Created with Tubeist.'")
+        #expect(reason(persistent) == "Studio's default stream")
+        #expect(reason(broadcast("b-own"), remembered: ["b-own"]) == "created by Tubeist on this phone")
+        #expect(reason(broadcast("b-none", start: nil)) == "no scheduled start time")
+        #expect(reason(broadcast("b-tomorrow", start: "2026-11-01T09:00:00Z")) == "scheduled for 2026-11-01 10:00")
+        #expect(reason(broadcast("b-live", status: "live")) == "status live")
+    }
+
     @Test func todayExcludesOnlyConfirmedTubeistBroadcasts() {
         let now = date("2026-10-31T10:00:00Z")
         var own = broadcast("b-own", start: "2026-10-31T09:00:10Z", published: "2026-10-31T09:00:00Z")
