@@ -106,7 +106,7 @@ final class WatchSessionManager: NSObject, WCSessionDelegate {
         var snapshot = WatchStateSnapshot.idle
         snapshot.generatedAt = Date()
         snapshot.isAppActive = isAppActive() && !appState.soonGoingToBackground
-            && !appState.isAppInitialization && !appState.isSettingsPresented
+            && !appState.isAppInitialization && !appState.isSettingsPresented && !appState.streamKeySetup.isActive
         snapshot.externalStatusConfigured = ExternalStatusClient.endpoint(Settings.externalStatusURL) != nil
         if let activity = appState.activitySnapshot(preferences: appState.activityPreferences) {
             let content = activity.content
@@ -218,6 +218,9 @@ final class WatchSessionManager: NSObject, WCSessionDelegate {
     /// Watch learns the real outcome from the periodic WatchStateSnapshot
     /// push (phase) instead of the message reply.
     private func handleStart(appState: AppState) async -> WatchCommandReply {
+        guard !appState.streamKeySetup.isActive else {
+            return .failure(StreamStartError.keySetupInProgress.localizedDescription)
+        }
         guard !appState.isSettingsPresented else {
             return .failure("Close Settings on your iPhone before starting")
         }
@@ -229,7 +232,8 @@ final class WatchSessionManager: NSObject, WCSessionDelegate {
         }
         let streamID = Streamer.makeStreamID()
         Task {
-            guard isAppActive(), !appState.soonGoingToBackground, !appState.isSettingsPresented else { return }
+            guard isAppActive(), !appState.soonGoingToBackground, !appState.isSettingsPresented,
+                  !appState.streamKeySetup.isActive else { return }
             do {
                 try await startStream(streamID)
             } catch YouTubeError.keyConflict(let conflict) {
