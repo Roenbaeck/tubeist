@@ -102,7 +102,7 @@ enum PlannedStreams {
         if b.isDefaultBroadcast { return "Studio's default stream" }
         if remembered.contains(b.id) { return "created by Tubeist on this phone" }
         if BroadcastKeys.isTubeistOwn(b, remembered: remembered) {
-            return "created by Tubeist (description '\(BroadcastKeys.broadcastDescription)')"
+            return "created by Tubeist (broadcast identity confirmed)"
         }
         if !["created", "ready"].contains(b.lifeCycleStatus ?? "") { return "status \(b.lifeCycleStatus ?? "unknown")" }
         guard let iso = b.scheduledStartTime, let date = parse(iso) else { return "no scheduled start time" }

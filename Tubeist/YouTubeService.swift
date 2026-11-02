@@ -1132,6 +1132,7 @@ final class YouTubeService {
         // Normal streams keep auto-stop as a fallback. The ending experiment
         // must disable it, including on a reused event or saved preferences.
         preparedBroadcast.enableAutoStop = endingPolicy.automaticallyEndsBroadcast
+        stampOwnership(on: &preparedBroadcast, scope: scope)
         if preparedBroadcast != broadcast {
             try await updateBroadcast(
                 id: broadcast.id,
@@ -1148,7 +1149,7 @@ final class YouTubeService {
                 enableAutoStop: preparedBroadcast.enableAutoStop,
                 selfDeclaredMadeForKids: preparedBroadcast.selfDeclaredMadeForKids,
                 verifyAutoStop: endingPolicy == .manualDiagnostic,
-                broadcastDescription: broadcast.broadcastDescription
+                broadcastDescription: preparedBroadcast.broadcastDescription
             )
             broadcast = preparedBroadcast
         }
@@ -1297,6 +1298,7 @@ final class YouTubeService {
         prepared.enableMonitorStream = false
         prepared.broadcastStreamDelayMs = 0
         prepared.enableAutoStop = endingPolicy.automaticallyEndsBroadcast
+        stampOwnership(on: &prepared, scope: scope)
         if prepared != broadcast {
             try await updateBroadcast(
                 id: broadcast.id,
@@ -1313,7 +1315,7 @@ final class YouTubeService {
                 enableAutoStop: prepared.enableAutoStop,
                 selfDeclaredMadeForKids: prepared.selfDeclaredMadeForKids,
                 verifyAutoStop: endingPolicy == .manualDiagnostic,
-                broadcastDescription: broadcast.broadcastDescription
+                broadcastDescription: prepared.broadcastDescription
             )
             try checkAuthorization(scope)
             broadcast = prepared
@@ -1530,6 +1532,14 @@ final class YouTubeService {
             kind: .newStreamKeyTaken, broadcastTitle: title.flatMap { $0.isEmpty ? nil : $0 } ?? "this phone's key",
             otherTitle: first.title, broadcastIDsToMove: planned.map(\.id)
         ))
+    }
+
+    /// The returned ID is available after insertion/binding. Reuse the Start
+    /// update to stamp it, including retries and broadcasts from older builds.
+    private func stampOwnership(on broadcast: inout YouTubeBroadcast, scope: String) {
+        guard discoveryCache.rememberedCreatedBroadcastIDs(scope: scope).contains(broadcast.id),
+              broadcast.broadcastDescription == nil || broadcast.broadcastDescription == BroadcastKeys.broadcastDescription else { return }
+        broadcast.broadcastDescription = BroadcastKeys.ownershipDescription(broadcastID: broadcast.id)
     }
 
     private static func apply(_ details: PlannedStreamDetails, to broadcast: inout YouTubeBroadcast) {

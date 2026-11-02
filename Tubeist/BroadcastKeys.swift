@@ -17,9 +17,12 @@ enum BroadcastKeys {
     // Recognize keys from early builds without creating more under that name.
     private static let legacyTitlePrefix = "Tubeist match "
 
-    /// Shared between phones through YouTube. Creation and schedule times
-    /// cannot distinguish a Studio broadcast scheduled for now from our broadcasts.
+    /// Legacy descriptions are not ownership proof: Studio copies them verbatim.
     static let broadcastDescription = "Created with Tubeist."
+
+    static func ownershipDescription(broadcastID: String) -> String {
+        "\(broadcastDescription)\nhttps://youtu.be/\(broadcastID)"
+    }
 
     static func isBroadcastKey(title: String?) -> Bool {
         number(in: title) != nil
@@ -34,16 +37,7 @@ enum BroadcastKeys {
     }
 
     static func isTubeistOwn(_ b: YouTubeBroadcast, remembered: Set<String>) -> Bool {
-        remembered.contains(b.id) || (b.broadcastDescription == broadcastDescription && startsAsCreated(b))
-    }
-
-    /// Tubeist schedules its broadcasts 10 s after creating them. Studio's
-    /// "copy settings" copies the description, not this: a copy planned for a
-    /// later match is not Tubeist's.
-    static func startsAsCreated(_ b: YouTubeBroadcast) -> Bool {
-        guard let scheduled = b.scheduledStartTime.flatMap(YouTubeTimestamp.parse),
-              let published = b.publishedAt.flatMap(YouTubeTimestamp.parse) else { return false }
-        return abs(scheduled.timeIntervalSince(published)) <= 60
+        remembered.contains(b.id) || b.broadcastDescription == ownershipDescription(broadcastID: b.id)
     }
 
     static func isPlannedBroadcast(_ b: YouTubeBroadcast, remembered: Set<String>) -> Bool {
