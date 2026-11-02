@@ -1220,7 +1220,7 @@ final class YouTubeService {
                 throw unavailable
             }
             guard let keyID = fetched.boundStreamId else {
-                diagnostics.log("YouTube key check: '\(edited.title)' (\(fetched.lifeCycleStatus ?? "unknown")) has no stream key bound", .warning)
+                diagnostics.log("YouTube key check: '\(edited.title)' (\(fetched.lifeCycleStatus ?? "unknown")) has no stream key bound", .debug)
                 throw YouTubeError.keyConflict(YouTubeKeyConflict(
                     kind: .plannedNeedsOwnKey, broadcastTitle: edited.title, otherTitle: nil,
                     broadcastIDsToMove: [fetched.id]))
@@ -2073,7 +2073,7 @@ final class YouTubeService {
         let listed = Set(broadcasts.map(\.id))
         for broadcast in upcoming where !listed.contains(broadcast.id) {
             let reason = PlannedStreams.exclusionReason(broadcast, remembered: remembered, now: now(), calendar: calendar)
-            diagnostics.log("YouTube planned streams: '\(broadcast.title)' not listed: \(reason)", .warning)
+            diagnostics.log("YouTube planned streams: '\(broadcast.title)' not listed: \(reason)", .debug)
         }
         let needing = BroadcastKeys.broadcastsNeedingOwnKey(upcoming: upcoming, streams: streams, remembered: remembered)
         return YouTubePlannedStreams(
@@ -2205,7 +2205,7 @@ final class YouTubeService {
                 throw YouTubeError.keyInUse(broadcast.title)
             }
             guard needing.contains(id) else {
-                diagnostics.log("YouTube stream keys: '\(broadcast.title)' is already alone on a Tubeist key", .warning)
+                diagnostics.log("YouTube stream keys: '\(broadcast.title)' is already alone on a Tubeist key", .debug)
                 continue
             }
             targets[id] = try await moveToOwnKey(broadcast, free: &free, streams: &listing.streams, token: token, scope: scope)
@@ -2251,10 +2251,10 @@ final class YouTubeService {
             }
             guard let first = stale.first else { return listing }
             guard attempt < Self.keyMoveConfirmationAttempts else {
-                diagnostics.log("YouTube stream keys: YouTube still reports '\(first)' on its old key", .warning)
+                diagnostics.log("YouTube stream keys: YouTube still reports '\(first)' on its old key", .debug)
                 throw YouTubeError.keyMoveUnconfirmed(first)
             }
-            diagnostics.log("YouTube stream keys: '\(first)' not yet reported on its new key; checking again", .warning)
+            diagnostics.log("YouTube stream keys: '\(first)' not yet reported on its new key; checking again", .debug)
             attempt += 1
             try await sleep(.seconds(2))
         }
@@ -2364,7 +2364,7 @@ final class YouTubeService {
             throw error
         }
         let from = streams.first { $0.id == broadcast.boundStreamId }?.title ?? "no key"
-        diagnostics.log("YouTube stream keys: moved '\(broadcast.title)' from '\(from)' to '\(key.title)'", .warning)
+        diagnostics.log("YouTube stream keys: moved '\(broadcast.title)' from '\(from)' to '\(key.title)'", .debug)
         return key.id
     }
 
