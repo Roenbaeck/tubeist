@@ -25,6 +25,8 @@ enum YouTubeError: LocalizedError, Equatable {
     case keyConflict(YouTubeKeyConflict)
     /// Another Tubeist broadcast waits on the key; Tubeist never rebinds it.
     case keyBlocked(String)
+    /// YouTube still reports a just-moved broadcast on its old key.
+    case keyMoveUnconfirmed(String)
 
     var errorDescription: String? {
         switch self {
@@ -48,6 +50,8 @@ enum YouTubeError: LocalizedError, Equatable {
         case .keyConflict(let conflict): conflict.prompt
         case .keyBlocked(let other):
             "'\(other)' is waiting on this key. End or delete it in YouTube Studio, then try again."
+        case .keyMoveUnconfirmed(let title):
+            "YouTube has not yet confirmed '\(title)' on its own key. Wait a moment, then press Start again."
         }
     }
 }
@@ -79,9 +83,13 @@ struct YouTubeKeyConflict: Sendable, Equatable {
     }
 
     /// Names the broadcast to set up: the pick, or the broadcast planned on the phone key.
+    /// The broadcast the fix moves: the pick, or the one planned on the phone key.
+    var broadcastToSetUp: String {
+        kind == .newStreamKeyTaken ? otherTitle ?? broadcastTitle : broadcastTitle
+    }
+
     var watchMessage: String {
-        let broadcast = kind == .newStreamKeyTaken ? otherTitle ?? broadcastTitle : broadcastTitle
-        return "Open Tubeist on the phone to set up '\(broadcast)'."
+        "Open Tubeist on the phone to set up '\(broadcastToSetUp)'."
     }
 }
 

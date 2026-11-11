@@ -96,6 +96,26 @@ enum PlannedStreams {
             }
     }
 
+    /// Why `today` leaves out an upcoming broadcast, for the Journal.
+    static func exclusionReason(_ b: YouTubeBroadcast, remembered: Set<String>,
+                                now: Date, calendar: Calendar) -> String {
+        if b.isDefaultBroadcast { return "Studio's default stream" }
+        if remembered.contains(b.id) { return "created by Tubeist on this phone" }
+        if BroadcastKeys.isTubeistOwn(b, remembered: remembered) {
+            return "created by Tubeist (broadcast identity confirmed)"
+        }
+        if !["created", "ready"].contains(b.lifeCycleStatus ?? "") { return "status \(b.lifeCycleStatus ?? "unknown")" }
+        guard let iso = b.scheduledStartTime, let date = parse(iso) else { return "no scheduled start time" }
+        guard calendar.isDate(date, inSameDayAs: now) else {
+            let formatter = DateFormatter()
+            formatter.dateFormat = "yyyy-MM-dd HH:mm"
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.timeZone = calendar.timeZone
+            return "scheduled for \(formatter.string(from: date))"
+        }
+        return "unknown"
+    }
+
     static func label(for broadcast: YouTubeBroadcast, calendar: Calendar, needsOwnKey: Bool = false) -> String {
         let formatter = DateFormatter()
         formatter.dateFormat = "HH:mm"

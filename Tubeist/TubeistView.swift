@@ -174,6 +174,7 @@ struct TubeistView: View {
     /// Starts a stream with a fresh stream ID. A key conflict opens the
     /// confirmation dialog instead of failing; other errors fade as before.
     private func startStreamNow() {
+        guard !appState.streamKeySetup.isActive else { return }
         let streamID = Streamer.makeStreamID()
         Task {
             showCameraPicker = false
@@ -192,15 +193,13 @@ struct TubeistView: View {
     /// Confirmed fix: move the planned broadcasts to their own keys, then Start
     /// again through the same checks as the button.
     private func resolveKeyConflict(_ conflict: YouTubeKeyConflict) {
-        Task {
-            do {
-                try await YouTubeService().moveToOwnBroadcastKeys(broadcastIDs: conflict.broadcastIDsToMove)
-            } catch {
-                fade(error.localizedDescription)
-                LOG("Could not move to dedicated stream keys: \(error.localizedDescription)", level: .error)
-                return
-            }
+        appState.streamKeySetup.begin(title: conflict.broadcastToSetUp) {
+            try await YouTubeService().moveToOwnBroadcastKeys(broadcastIDs: conflict.broadcastIDsToMove)
+        } start: {
             startStreamNow()
+        } failure: { error in
+            appState.activeAlert = error.localizedDescription
+            LOG("Could not move to dedicated stream keys: \(error.localizedDescription)", level: .error)
         }
     }
 
@@ -229,9 +228,13 @@ struct TubeistView: View {
         }
     }
 
+    private var setupMessage: String? {
+        appState.streamKeySetup.title.map { "Setting up '\($0)'…" }
+    }
+
     @ViewBuilder
     private var fadingMessage: some View {
-        if let message = fadeMessage {
+        if let message = setupMessage ?? fadeMessage {
             Text(message)
                 .fontWeight(.bold)
                 .font(.system(size: 24))
@@ -239,7 +242,7 @@ struct TubeistView: View {
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: .infinity)
                 .padding(.horizontal, 12)
-                .opacity(fading ? 0 : 1)
+                .opacity(appState.streamKeySetup.isActive ? 1 : (fading ? 0 : 1))
                 .allowsHitTesting(false)
         }
     }
@@ -867,6 +870,7 @@ struct TubeistView: View {
                             }
                             .background(Color.black.opacity(0.5))
                             .cornerRadius(25)
+                            .disabled(appState.streamKeySetup.isActive)
                             .accessibilityLabel("Settings")
                             .accessibilityHint("Opens streaming, recording, camera, and overlay settings")
                             .sheet(isPresented: settingsPresentation, onDismiss: {
@@ -997,7 +1001,7 @@ struct TubeistView: View {
                                     )
                                     .frame(width: 50, height: 50)
                             }
-                            .disabled(appState.streamSessionState == .stopping)
+                            .disabled(appState.streamSessionState == .stopping || appState.streamKeySetup.isActive)
                             .background(Color.black.opacity(0.5))
                             .cornerRadius(25)
                             .confirmationDialog(
@@ -1219,7 +1223,7 @@ struct TubeistView: View {
                         Task { await Streamer.shared.toggleBatterySaving() }
                     },
                     onBandwidthWarning: { fade("Bandwidth too low for selected quality") },
-                    message: fadeMessage
+                    message: setupMessage ?? fadeMessage
                 )
             }
         }
@@ -1270,6 +1274,10 @@ struct TubeistView: View {
         }
         .onDisappear {
             fadeTask?.cancel()
+            appState.streamKeySetup.cancel()
+        }
+        .onChange(of: appState.soonGoingToBackground) { _, background in
+            if background { appState.streamKeySetup.cancel() }
         }
         .onChange(of: overlayManager.overlays) {
             // Reordering existing views does not take a new WebKit snapshot.

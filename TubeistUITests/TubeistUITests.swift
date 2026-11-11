@@ -14,6 +14,23 @@ final class TubeistUITests: XCTestCase {
     }
 
     @MainActor
+    func testKeySetupKeepsProgressAndLocksControlsUntilCancellation() async throws {
+        let app = launchForUITesting(additionalArguments: ["-ui-testing-key-setup", "-Overlays", "[]"])
+        let progress = app.staticTexts["Setting up 'Planned stream'…"]
+        XCTAssertTrue(progress.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["Start stream"].isEnabled)
+        XCTAssertFalse(app.buttons["Settings"].isEnabled)
+        try await Task.sleep(for: .seconds(4)) // Longer than the old message's fade.
+        XCTAssertTrue(progress.exists)
+        XCTAssertFalse(app.buttons["Start stream"].isEnabled)
+        XCUIDevice.shared.press(.home)
+        app.activate()
+        XCTAssertTrue(progress.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["Settings"].isEnabled)
+        XCTAssertTrue(app.buttons["Start stream"].isEnabled)
+    }
+
+    @MainActor
     func testSettingsReturnsToOutputPreviewAfterCancelSaveAndBackground() throws {
         let app = launchForUITesting(additionalArguments: ["-Overlays", "[]"])
         let monitor = app.buttons["Monitor selection"]

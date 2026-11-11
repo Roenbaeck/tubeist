@@ -139,6 +139,7 @@ struct BackgroundStreamPolicy {
 // these are my shared variables
 @Observable @MainActor
 final class AppState {
+    let streamKeySetup = StreamKeySetup()
     var isBatterySavingOn = false
     var isSettingsPresented = false
     var streamSessionState: StreamSessionState = .idle
@@ -294,7 +295,16 @@ struct TubeistApp: App {
                     if let startupAlert { appState.activeAlert = startupAlert }
                     // scenePhase triggers on app init - distinguish this from backgrounding the app
                     appState.isAppInitialization = false
-                    guard !CommandLine.arguments.contains("-ui-testing") else { return }
+                    if CommandLine.arguments.contains("-ui-testing") {
+#if DEBUG
+                        if CommandLine.arguments.contains("-ui-testing-key-setup") {
+                            appState.streamKeySetup.begin(title: "Planned stream", operation: {
+                                try await Task.sleep(for: .seconds(60))
+                            }, start: {}, failure: { _ in })
+                        }
+#endif
+                        return
+                    }
                     Task { await appState.configureHighlightControls() }
                     WatchSessionManager.shared.start(appState: appState)
                     Task { [appState] in

@@ -181,14 +181,15 @@ actor StreamingActor {
             let appState = self.appState
             // Reserve the media pipeline and check Settings in the same UI
             // turn, closing the race between a queued Watch Start and the gear.
-            let accepted = await MainActor.run {
-                guard appState?.isSettingsPresented != true else { return false }
+            let rejection: StreamStartError? = await MainActor.run {
+                if appState?.streamKeySetup.isActive == true { return .keySetupInProgress }
+                if appState?.isSettingsPresented == true { return .settingsPresented }
                 appState?.setStreamSessionState(.preparing)
-                return true
+                return nil
             }
-            guard accepted else {
+            if let rejection {
                 state = previousState
-                throw StreamStartError.settingsPresented
+                throw rejection
             }
             self.sessionID = sessionID
             mediaIntakeActive = false
@@ -959,6 +960,7 @@ final class Streamer: Sendable {
 }
 
 enum StreamStartError: LocalizedError, Equatable {
+    case keySetupInProgress
     case missingStreamKey
     case noOutputSelected
     case endingTestRequiresSignIn
@@ -966,6 +968,7 @@ enum StreamStartError: LocalizedError, Equatable {
 
     var errorDescription: String? {
         switch self {
+        case .keySetupInProgress: "Stream key setup is still in progress on your iPhone"
         case .missingStreamKey: "Enter a YouTube HLS stream key before starting"
         case .noOutputSelected: "Enable YouTube streaming, local recording, or both"
         case .endingTestRequiresSignIn: "Sign in to YouTube before using the stream ending test, or turn the test off in Settings"

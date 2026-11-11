@@ -26,7 +26,7 @@ struct BroadcastKeysTests {
     private func tubeists(_ id: String, stream: String?) -> YouTubeBroadcast {
         var own = broadcast(id, title: "Manual stream", stream: stream,
                   scheduled: "2026-10-28T10:00:10Z", published: "2026-10-28T10:00:00Z")
-        own.broadcastDescription = BroadcastKeys.broadcastDescription
+        own.broadcastDescription = BroadcastKeys.ownershipDescription(broadcastID: id)
         return own
     }
 
@@ -73,6 +73,27 @@ struct BroadcastKeysTests {
     @Test func missingTimestampsAreNotTubeistsOwn() {
         #expect(!BroadcastKeys.isTubeistOwn(broadcast("a", published: nil), remembered: []))
         #expect(!BroadcastKeys.isTubeistOwn(broadcast("a", scheduled: nil), remembered: []))
+    }
+
+    @Test func copiedDescriptionsNeverProveOwnershipOfAnotherID() {
+        for start in ["2026-10-28T10:00:00Z", "2026-10-28T10:00:10Z", "2026-10-28T13:00:00Z"] {
+            for description in [BroadcastKeys.broadcastDescription,
+                                BroadcastKeys.ownershipDescription(broadcastID: "original")] {
+                var copy = broadcast("copy", scheduled: start, published: "2026-10-28T10:00:00Z")
+                copy.broadcastDescription = description
+                #expect(!BroadcastKeys.isTubeistOwn(copy, remembered: []))
+                #expect(BroadcastKeys.isPlannedBroadcast(copy, remembered: []))
+            }
+        }
+    }
+
+    @Test func identitySurvivesScheduleEditsAndLegacyOwnershipUsesRememberedIDs() {
+        var original = broadcast("original", scheduled: nil, published: nil)
+        original.broadcastDescription = BroadcastKeys.ownershipDescription(broadcastID: "original")
+        #expect(BroadcastKeys.isTubeistOwn(original, remembered: []))
+        original.broadcastDescription = BroadcastKeys.broadcastDescription
+        #expect(!BroadcastKeys.isTubeistOwn(original, remembered: []))
+        #expect(BroadcastKeys.isTubeistOwn(original, remembered: ["original"]))
     }
 
     @Test func plannedMatchExcludesPersistentLiveAndTubeists() {
