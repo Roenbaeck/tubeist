@@ -10,14 +10,14 @@ query.
 
 The setting defaults to on and is read once, when streaming or recording starts.
 Turning it off skips the Main42210 attempt entirely, so no hardware session is
-created for that profile; the log records `turned off in Settings` at Debug
+created for that profile; the log records `turned off in Settings` at Info
 level. This is the supported way out for an account or playback device that
 does not accept 4:2:2, given YouTube's documented 4:2:0 requirement below.
 
 Selection is fixed for the entire stream/recording, including capture recovery,
 so the MP4 track cannot unexpectedly change profile. A new session re-evaluates
 the camera, the setting, and the hardware. The log reports the chosen sampling
-at Info level and any fallback reason at Debug level. Changing the setting while
+at Info level, together with any fallback reason. Changing the setting while
 live has no effect until the next start.
 
 YouTube's

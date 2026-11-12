@@ -635,7 +635,7 @@ private class DeviceActor {
         guard let videoOutput = videoOutput else {
             throw CaptureSetupError.videoOutputUnavailable
         }
-        videoOutput.setSampleBufferDelegate(FrameGrabber.shared, queue: PipelineActor.queue)
+        videoOutput.setSampleBufferDelegate(FrameGrabber.shared, queue: PipelineActor.captureCallbackQueue)
         LOG("Starting video output", level: .debug)
     }
     
@@ -656,7 +656,7 @@ private class DeviceActor {
             throw CaptureSetupError.audioOutputUnavailable
         }
         if audioOutput.sampleBufferDelegate == nil {
-            audioOutput.setSampleBufferDelegate(SoundGrabber.shared, queue: PipelineActor.queue)
+            audioOutput.setSampleBufferDelegate(SoundGrabber.shared, queue: PipelineActor.captureCallbackQueue)
             LOG("Starting audio output", level: .debug)
         }
         else {
@@ -1147,12 +1147,14 @@ extension AVCaptureDevice {
         LOG("Searching for best capture format with resolution \(width)x\(height) and \(frameRate) FPS.", level: .debug)
         var candidates: [CaptureFormatCandidate] = []
         let pixelFormats = [
-            // Prefer 'x422' for HDR capture, since 4:2:2 gives the best possible color fidelity on current phones
-            kCVPixelFormatType_422YpCbCr10BiPlanarFullRange,
+            // Prefer 'x422' for HDR capture, since 4:2:2 gives the best possible color fidelity on current phones.
+            // Within each sampling, prefer video range: the encoder takes video-range input, so a
+            // full-range source would be range-converted on every frame.
             kCVPixelFormatType_422YpCbCr10BiPlanarVideoRange,
+            kCVPixelFormatType_422YpCbCr10BiPlanarFullRange,
             // Fall back to 'x420' for HDR capture, which has less fidelity due to 4:2:0 chroma subsampling
-            kCVPixelFormatType_420YpCbCr10BiPlanarFullRange,
-            kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
+            kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
+            kCVPixelFormatType_420YpCbCr10BiPlanarFullRange
         ]
         for pixelFormat in pixelFormats {
             for captureFormat in formats {
@@ -1161,8 +1163,10 @@ extension AVCaptureDevice {
                     let dimensions = CMVideoFormatDescriptionGetDimensions(description)
                     if dimensions.width >= width && dimensions.height >= height,
                        dimensions.width * 9 == dimensions.height * 16,
-                       let frameRateRange = captureFormat.videoSupportedFrameRateRanges.first,
-                       frameRateRange.maxFrameRate >= frameRate,
+                       // A format may list several ranges; any that contains the rate will do.
+                       let frameRateRange = captureFormat.videoSupportedFrameRateRanges
+                           .filter({ $0.minFrameRate <= frameRate && $0.maxFrameRate >= frameRate })
+                           .min(by: { $0.maxFrameRate < $1.maxFrameRate }),
                        captureFormat.supportedColorSpaces.contains(AV_COLOR_SPACE) {
                         candidates.append(
                             CaptureFormatCandidate(
@@ -1177,6 +1181,8 @@ extension AVCaptureDevice {
             }
             if !candidates.isEmpty {
                 LOG("Found \(candidates.count) pixel format candidates", level: .debug)
+                // The smallest format that satisfies the request: no larger
+                // sensor readout or higher maximum rate than the preset needs.
                 candidates.sort {
                     if $0.width != $1.width {
                         return $0.width < $1.width          // Sort by width primarily

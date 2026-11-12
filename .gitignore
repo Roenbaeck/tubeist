@@ -45,3 +45,7 @@ fastlane/sign&cert
 /tubeist-watch-live-activity.zip
 
 .superpowers/
+
+# Python
+__pycache__/
+*.pyc

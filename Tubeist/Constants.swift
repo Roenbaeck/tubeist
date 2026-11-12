@@ -20,7 +20,9 @@ let CAMERA_CONTROL_QUEUE = DispatchQueue(label: "com.subside.Tubeist.CameraContr
 
 @globalActor actor PipelineActor: GlobalActor {
     static let shared = PipelineActor()
-    static let queue = DispatchQueue(label: "com.subside.Tubeist.PipelineQueue", qos: .userInitiated)
+    /// Where AVFoundation delivers camera and microphone callbacks. This is
+    /// not the actor's executor: callbacks only hand samples to a mailbox.
+    static let captureCallbackQueue = DispatchQueue(label: "com.subside.Tubeist.CaptureCallbackQueue", qos: .userInitiated)
 }
 // YouTube Data API v3 settings
 let YOUTUBE_CLIENT_ID = "417360709076-6golrsu19ipsvdbsgce4e9fml9bru8dr.apps.googleusercontent.com"

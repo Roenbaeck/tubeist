@@ -118,6 +118,28 @@ struct HEVCEncoderConfigurationTests {
         #expect(chosen == .yuv420)
     }
 
+    @Test func keyframeIntervalDividesTheTwoSecondSegment() {
+        #expect(HEVCEncoderConfiguration.alignedKeyframeInterval(2) == 2)
+        #expect(HEVCEncoderConfiguration.alignedKeyframeInterval(1) == 1)
+        #expect(HEVCEncoderConfiguration.alignedKeyframeInterval(0.5) == 0.5)
+        // 1.5 s would add a keyframe half a second before every forced one.
+        #expect(HEVCEncoderConfiguration.alignedKeyframeInterval(1.5) == 2)
+        #expect(HEVCEncoderConfiguration.alignedKeyframeInterval(5) == 2)
+        #expect(abs(HEVCEncoderConfiguration.alignedKeyframeInterval(0.7) - 2.0 / 3) < 1e-9)
+        #expect(HEVCEncoderConfiguration.alignedKeyframeInterval(0) == 2)
+    }
+
+    @Test func encoderKeyframeLimitsFollowTheAlignedInterval() throws {
+        var applied: [String: AnyObject] = [:]
+        try HEVCEncoderConfiguration.apply(frameRate: 30, bitrate: 8_000_000, keyframeInterval: 0.7) { key, value in
+            applied[key as String] = value
+            return noErr
+        }
+        #expect(applied[kVTCompressionPropertyKey_MaxKeyFrameInterval as String] as? Int == 20)
+        let duration = applied[kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration as String] as? Double
+        #expect(duration.map { abs($0 - 2.0 / 3) < 1e-9 } == true)
+    }
+
     @Test func unsupportedDelayLimitStillAppliesHDRAndClosedGOPSettings() throws {
         var applied: [String: AnyObject] = [:]
         try HEVCEncoderConfiguration.apply(frameRate: 60, bitrate: 20_000_000, keyframeInterval: 2) { key, value in

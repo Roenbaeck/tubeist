@@ -73,15 +73,17 @@ private final class VideoEncoderOutput: @unchecked Sendable {
     enum Event {
         case encoded(frame: Int, CMSampleBuffer)
         case dropped(frame: Int)
+        case failed(frame: Int, OSStatus)
     }
 
     private let lock = NSLock()
     private var events: [Event] = []
-    private var failure: MediaEncodingError?
 
     func receive(status: OSStatus, flags: VTEncodeInfoFlags, frame: Int, sample: CMSampleBuffer?) {
         lock.withLock {
-            if status != noErr { failure = .operation("HEVC encoding", status) }
+            // One frame's error is not yet the session's: the encoder decides
+            // how many in a row end the stream.
+            if status != noErr { events.append(.failed(frame: frame, status)) }
             // Real-time encoding may drop a frame under load or thermal pressure,
             // delivering no sample. Its timing is retired; the stream continues.
             else if flags.contains(.frameDropped) || sample == nil { events.append(.dropped(frame: frame)) }
@@ -89,9 +91,8 @@ private final class VideoEncoderOutput: @unchecked Sendable {
         }
     }
 
-    func take() throws -> [Event] {
-        try lock.withLock {
-            if let failure { throw failure }
+    func take() -> [Event] {
+        lock.withLock {
             let result = events
             events.removeAll(keepingCapacity: true)
             return result
@@ -240,16 +241,28 @@ enum HEVCEncoderConfiguration {
         }
     }
 
+    /// Segments are cut at keyframes forced every `segmentDuration`. The
+    /// encoder's own keyframes must land on those same frames, or it emits a
+    /// second keyframe shortly before or after each forced one. Use the nearest
+    /// interval that divides a segment; longer intervals become one segment.
+    static func alignedKeyframeInterval(_ interval: Double, segmentDuration: Double = 2) -> Double {
+        guard interval.isFinite, interval > 0, segmentDuration.isFinite, segmentDuration > 0 else {
+            return segmentDuration
+        }
+        return segmentDuration / max(1, (segmentDuration / interval).rounded())
+    }
+
     static func apply(frameRate: Double, bitrate: Int, keyframeInterval: Double,
                       chroma: HEVCChromaSampling = .yuv420,
                       setProperty: (CFString, CFTypeRef) -> OSStatus) throws {
+        let keyframeInterval = alignedKeyframeInterval(keyframeInterval)
         let properties: [(CFString, Any)] = [
             (kVTCompressionPropertyKey_ProfileLevel, chroma.profile),
             (kVTCompressionPropertyKey_RealTime, true),
             (kVTCompressionPropertyKey_AverageBitRate, bitrate),
             (kVTCompressionPropertyKey_ExpectedFrameRate, frameRate),
-            (kVTCompressionPropertyKey_MaxKeyFrameInterval, Int(ceil(frameRate * min(2, keyframeInterval)))),
-            (kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration, min(2, keyframeInterval)),
+            (kVTCompressionPropertyKey_MaxKeyFrameInterval, max(1, Int((frameRate * keyframeInterval).rounded()))),
+            (kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration, keyframeInterval),
             (kVTCompressionPropertyKey_AllowFrameReordering, true),
             (kVTCompressionPropertyKey_AllowOpenGOP, false),
             (kVTCompressionPropertyKey_MaxFrameDelayCount, 8),
@@ -281,6 +294,13 @@ final class HEVCVideoEncoder {
     private var submittedFrames = 0
     private var emittedFrames = 0
     private(set) var droppedFrames = 0
+    /// Frames the encoder returned an error for. Each is retired like a drop
+    /// and the next submitted frame becomes a keyframe, since later frames
+    /// may have referred to the missing picture.
+    private(set) var failedFrames = 0
+    private var consecutiveFailures = 0
+    private var needsKeyframe = false
+    static let maximumConsecutiveFailures = 5
     /// Keyed by the frame number passed through VideoToolbox's frame refcon,
     /// which identifies a dropped frame that has no output sample.
     private var pendingPTS: [Int: CMTime] = [:]
@@ -346,12 +366,14 @@ final class HEVCVideoEncoder {
             throw MediaEncodingError.invalid("HEVC input timestamps must increase")
         }
         // Submit the pipeline's original HLG pixel buffer; no RGB intermediate.
-        let properties = forceKeyframe ? [kVTEncodeFrameOptionKey_ForceKeyFrame: true] as CFDictionary : nil
+        let properties = forceKeyframe || needsKeyframe
+            ? [kVTEncodeFrameOptionKey_ForceKeyFrame: true] as CFDictionary : nil
         let frame = submittedFrames + 1 // nonzero, so the refcon is never nil
         try checkMediaStatus(VTCompressionSessionEncodeFrame(
             session, imageBuffer: pixels, presentationTimeStamp: presentationTime, duration: frameDuration,
             frameProperties: properties, sourceFrameRefcon: UnsafeMutableRawPointer(bitPattern: frame), infoFlagsOut: nil
         ), "Submitting HEVC frame")
+        needsKeyframe = false
         decodeTimeline.submitted(presentationTime)
         pendingPTS[frame] = presentationTime
         submittedFrames += 1
@@ -360,10 +382,11 @@ final class HEVCVideoEncoder {
 
     func takeOutput() throws -> [CMSampleBuffer] {
         var samples: [CMSampleBuffer] = []
-        for event in try output.take() {
+        for event in output.take() {
             switch event {
             case .encoded(let frame, let sample):
                 pendingPTS[frame] = nil
+                consecutiveFailures = 0
                 samples.append(try normalizeDecodeTime(sample))
                 emittedFrames += 1
             case .dropped(let frame):
@@ -372,6 +395,17 @@ final class HEVCVideoEncoder {
                 }
                 try decodeTimeline.dropped(presentationTime: pts)
                 droppedFrames += 1
+            case .failed(let frame, let status):
+                consecutiveFailures += 1
+                // A persistent error, or one for a frame that cannot be
+                // retired, still ends the session.
+                guard consecutiveFailures < Self.maximumConsecutiveFailures,
+                      let pts = pendingPTS.removeValue(forKey: frame) else {
+                    throw MediaEncodingError.operation("HEVC encoding", status)
+                }
+                try decodeTimeline.dropped(presentationTime: pts)
+                failedFrames += 1
+                needsKeyframe = true
             }
         }
         return samples
@@ -383,7 +417,7 @@ final class HEVCVideoEncoder {
         try checkMediaStatus(VTCompressionSessionCompleteFrames(session, untilPresentationTimeStamp: .invalid),
                              "Draining HEVC encoder")
         let samples = try takeOutput()
-        guard emittedFrames + droppedFrames == submittedFrames else {
+        guard emittedFrames + droppedFrames + failedFrames == submittedFrames else {
             throw MediaEncodingError.invalid("The HEVC encoder did not return every submitted frame")
         }
         return samples

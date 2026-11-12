@@ -25,6 +25,90 @@ struct KernelSettings {
     var args: MTLBuffer // of type KernelArguments
 }
 
+/// A rendered overlay texture crossing actors. Metal textures are thread-safe
+/// to hand over; only one owner reads or writes a texture at a time.
+private struct OverlayTexture: @unchecked Sendable {
+    let texture: MTLTexture
+    let seconds: TimeInterval
+}
+
+/// Renders overlay snapshots away from the camera frame path. Core Image's
+/// bitmap upload and the GPU render used to block FrameTinkerer, and with it
+/// every camera frame, for the whole update. Frames now keep imprinting the
+/// previous texture until the new one has completed.
+private actor OverlayTextureUploader {
+    private let device: MTLDevice
+    private let commandQueue: MTLCommandQueue
+    private let context: CIContext
+    // Textures no frame can still be waiting to read; see recycle().
+    private var free: [MTLTexture] = []
+
+    init(device: MTLDevice, commandQueue: MTLCommandQueue) {
+        self.device = device
+        self.commandQueue = commandQueue
+        context = CIContext(
+            mtlDevice: device,
+            options: [
+                .useSoftwareRenderer: false,
+                .workingColorSpace: CG_COLOR_SPACE,
+                .cacheIntermediates: true,
+                .memoryTarget: 512
+            ])
+    }
+
+    func upload(_ image: CIImage) async -> OverlayTexture? {
+        let started = ProcessInfo.processInfo.systemUptime
+        let width = Int(image.extent.width)
+        let height = Int(image.extent.height)
+        guard width > 0, height > 0 else { return nil }
+        let texture: MTLTexture
+        if let index = free.firstIndex(where: { $0.width == width && $0.height == height }) {
+            texture = free.remove(at: index)
+        } else {
+            let descriptor = MTLTextureDescriptor()
+            descriptor.pixelFormat = .rgba16Unorm
+            descriptor.width = width
+            descriptor.height = height
+            descriptor.usage = [.shaderRead, .shaderWrite, .renderTarget]
+            guard let created = device.makeTexture(descriptor: descriptor) else {
+                LOG("Could not create Metal texture from the combined overlay", level: .error)
+                return nil
+            }
+            texture = created
+        }
+        guard let commandBuffer = commandQueue.makeCommandBuffer() else {
+            LOG("Could not create command buffer to render the combined overlay", level: .error)
+            free.append(texture)
+            return nil
+        }
+        // The imprint kernel expects HLG/BT.2020 RGB, regardless of the overlay's source color space.
+        context.render(image, to: texture, commandBuffer: commandBuffer, bounds: image.extent, colorSpace: CG_COLOR_SPACE)
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            commandBuffer.addCompletedHandler { _ in continuation.resume() }
+            commandBuffer.commit()
+        }
+        return OverlayTexture(texture: texture, seconds: ProcessInfo.processInfo.systemUptime - started)
+    }
+
+    /// Accepts a texture that frames have stopped selecting. Frames that did
+    /// select it were committed earlier to this same command queue, which runs
+    /// command buffers in commit order, so a later render cannot overtake them.
+    func recycle(_ recycled: OverlayTexture) {
+        // One spare is enough for alternating updates; a 4K texture is 66 MB.
+        free = [recycled.texture]
+    }
+}
+
+/// Counts frames the capture system discarded before delivering them.
+private final class CaptureDropCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var total = 0
+
+    func increment() -> Int { lock.withLock { total += 1; return total } }
+    func reset() { lock.withLock { total = 0 } }
+    func count() -> Int { lock.withLock { total } }
+}
+
 private actor FrameTinkerer {
     // GPU work and hardware encoding overlap, sharing the same bounded
     // arrival-age budget as the capture queue. No pixel copies or retiming.
@@ -58,7 +142,6 @@ private actor FrameTinkerer {
     private var effectStrength: Float = 1.0
 
     // metal stuff
-    private let context: CIContext
     private var metalDevice: MTLDevice?
     private var library: MTLLibrary?
     private var commandQueue: MTLCommandQueue?
@@ -72,6 +155,9 @@ private actor FrameTinkerer {
 
     // overlay imprinting
     private var overlayTexture: MTLTexture?
+    private var overlayUploader: OverlayTextureUploader?
+    private var overlayGeneration: UInt64 = 0
+    private var lastSlowOverlayReport = -TimeInterval.infinity
     private var imprintPipeline: MTLComputePipelineState?
     private var boundingBoxData: [(MTLBuffer, MTLSize, MTLSize)] = []
     private var overlayRegions: [CGRect] = []
@@ -163,27 +249,16 @@ private actor FrameTinkerer {
     init() {
         guard let metalDevice = MTLCreateSystemDefaultDevice(),
               let commandQueue = metalDevice.makeCommandQueue() else {
-            context = CIContext(
-                options: [
-                    .useSoftwareRenderer: true,
-                    .workingColorSpace: CG_COLOR_SPACE,
-                    .cacheIntermediates: true
-                ])
-            LOG("Created rendering context without Metal support", level: .warning)
+            LOG("Metal is unavailable; styles, effects and overlays cannot be rendered", level: .warning)
             return
         }
-        context = CIContext(
-            mtlDevice: metalDevice,
-            options: [
-                .useSoftwareRenderer: false,
-                .workingColorSpace: CG_COLOR_SPACE,
-                .cacheIntermediates: true,
-                .memoryTarget: 512
-            ])
         LOG("Created rendering context with Metal support", level: .debug)
         commandQueue.label = "FrameTinkerer"
         self.metalDevice = metalDevice
         self.commandQueue = commandQueue
+        // Shares the frame command queue: its ordering is what makes it safe
+        // to render into a texture earlier frames have finished selecting.
+        overlayUploader = OverlayTextureUploader(device: metalDevice, commandQueue: commandQueue)
         var textureCache: CVMetalTextureCache?
         let textureCacheStatus = CVMetalTextureCacheCreate(
             kCFAllocatorDefault,
@@ -279,14 +354,19 @@ private actor FrameTinkerer {
         currentPresentationTimestamp
     }
     
-    func setCombinedOverlay(_ combinedOverlay: CombinedOverlay?) {
+    func setCombinedOverlay(_ combinedOverlay: CombinedOverlay?) async {
+        // This actor is re-entered while an upload is awaited. The newest
+        // request wins; an older upload that finishes later is discarded.
+        overlayGeneration &+= 1
+        let generation = overlayGeneration
         guard let combinedOverlay else {
-            self.overlayTexture = nil
+            // Clear before suspending: a newer request may run meanwhile.
             boundingBoxData = []
             overlayRegions = []
+            await replaceOverlayTexture(with: nil)
             return
         }
-        guard let metalDevice else {
+        guard let metalDevice, let overlayUploader else {
             logOnce(
                 key: "overlay-metal-device",
                 message: "Overlay rendering is unavailable because Metal could not be initialized"
@@ -301,6 +381,15 @@ private actor FrameTinkerer {
             return
         }
 
+        // Camera frames continue with the previous overlay during this await.
+        guard let uploaded = await overlayUploader.upload(combinedOverlay.image) else { return }
+        guard generation == overlayGeneration else {
+            // No frame ever selected this texture, so it is free immediately.
+            await overlayUploader.recycle(uploaded)
+            return
+        }
+        reportSlowOverlayUpload(uploaded.seconds)
+
         let w = imprintPipeline.threadExecutionWidth
         let h = imprintPipeline.maxTotalThreadsPerThreadgroup / w
         let threadsPerThreadgroup = MTLSizeMake(w, h, 1)
@@ -311,7 +400,7 @@ private actor FrameTinkerer {
             coverage: combinedOverlay.coverage
         )
         if regions != overlayRegions {
-            boundingBoxData = []
+            var regionData: [(MTLBuffer, MTLSize, MTLSize)] = []
             for box in regions {
                 var imprintArguments = self.imprintArguments
                 imprintArguments.offsetX = UInt32(box.origin.x)
@@ -325,46 +414,36 @@ private actor FrameTinkerer {
                     width: Int(box.size.width), height: Int(box.size.height), depth: 1
                 )
                 if let imprintArgumentBuffer {
-                    boundingBoxData.append((imprintArgumentBuffer, threadsPerGrid, threadsPerThreadgroup))
+                    regionData.append((imprintArgumentBuffer, threadsPerGrid, threadsPerThreadgroup))
                 }
             }
-            overlayRegions = boundingBoxData.count == regions.count ? regions : []
+            boundingBoxData = regionData
+            overlayRegions = regionData.count == regions.count ? regions : []
         }
-
-        let image = combinedOverlay.image
-        
-        // create a texture from the CIImage
-        let width = Int(image.extent.width)
-        let height = Int(image.extent.height)
-
-        // 3. Create a MTLTextureDescriptor
-        let textureDescriptor = MTLTextureDescriptor()
-        textureDescriptor.pixelFormat = .rgba16Unorm // Or choose the appropriate format based on your CIImage
-        textureDescriptor.width = width
-        textureDescriptor.height = height
-        textureDescriptor.usage = [.shaderRead, .shaderWrite, .renderTarget] // Adjust usage as needed
-
-        // All overlay uploads and camera imprints use this same command queue.
-        // Its ordering lets us reuse the texture after earlier frame reads,
-        // instead of allocating a full 4K texture for every snapshot.
-        let reusable = overlayTexture.flatMap { existing in
-            existing.width == width && existing.height == height ? existing : nil
+        // The texture and its regions change together, between two frames:
+        // nothing suspends from here to the end of this function's swap.
+        let previous = overlayTexture
+        overlayTexture = uploaded.texture
+        if let previous {
+            await overlayUploader.recycle(OverlayTexture(texture: previous, seconds: 0))
         }
-        guard let texture = reusable ?? metalDevice.makeTexture(descriptor: textureDescriptor) else {
-            LOG("Could not create Metal texture from the combined overlay", level: .error)
-            return
-        }
-        guard let commandQueue, let commandBuffer = commandQueue.makeCommandBuffer() else {
-            LOG("Could not create command buffer to render the combined overlay", level: .error)
-            return
-        }
-        // The imprint kernel expects HLG/BT.2020 RGB, regardless of the overlay's source color space.
-        context.render(image, to: texture, commandBuffer: commandBuffer, bounds: image.extent, colorSpace: CG_COLOR_SPACE)
+    }
 
-        commandBuffer.commit()
-        commandBuffer.waitUntilCompleted()
+    private func replaceOverlayTexture(with texture: MTLTexture?) async {
+        let previous = overlayTexture
+        overlayTexture = texture
+        if let previous {
+            await overlayUploader?.recycle(OverlayTexture(texture: previous, seconds: 0))
+        }
+    }
 
-        self.overlayTexture = texture
+    /// An upload no longer delays camera frames, but a slow one still limits
+    /// how fresh the overlay can be and competes for the GPU.
+    private func reportSlowOverlayUpload(_ seconds: TimeInterval) {
+        let now = ProcessInfo.processInfo.systemUptime
+        guard seconds >= 0.05, now - lastSlowOverlayReport >= 30 else { return }
+        lastSlowOverlayReport = now
+        LOG(String(format: "Overlay texture upload took %.0f ms", seconds * 1000), level: .debug)
     }
     
     func createTextures(from sampleBuffer: CMSampleBuffer) -> Bool {
@@ -626,6 +705,7 @@ final class FrameGrabber: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
     @PipelineActor public static let shared = FrameGrabber()
     private let frameTinkerer: FrameTinkerer
     private let frameMailbox: BoundedAsyncMailbox<SendableSampleBuffer>
+    private let captureDrops = CaptureDropCounter()
 
     override init() {
         let frameTinkerer = FrameTinkerer()
@@ -693,11 +773,13 @@ final class FrameGrabber: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
         // leaving its queued and in-flight frames untouched.
         frameMailbox.resetDropCount()
         frameTinkerer.resetEncodingDropCount()
+        captureDrops.reset()
     }
     func logDroppedFrameCount() {
         let processingDrops = frameMailbox.snapshot().totalDropped
         let encodingDrops = frameTinkerer.encodingDropCount()
-        LOG("Stream frame processing: \(processingDrops + encodingDrops) video frames dropped before encoding (processing queue: \(processingDrops), encoder queue: \(encodingDrops))", level: .info)
+        let cameraDrops = captureDrops.count()
+        LOG("Stream frame processing: \(cameraDrops + processingDrops + encodingDrops) video frames dropped before encoding (camera: \(cameraDrops), processing queue: \(processingDrops), encoder queue: \(encodingDrops))", level: .info)
     }
     func drainSubmittedFrames() async {
         await frameMailbox.waitUntilIdle()
@@ -714,5 +796,17 @@ final class FrameGrabber: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
                        from connection: AVCaptureConnection) {
         nonisolated(unsafe) let sendableSampleBuffer = sampleBuffer
         frameMailbox.submit(SendableSampleBuffer(value: sendableSampleBuffer))
+    }
+
+    /// The capture system discarded a frame before delivering it, e.g. because
+    /// its buffer pool was exhausted or an earlier callback was still running.
+    nonisolated func captureOutput(_ output: AVCaptureOutput,
+                       didDrop sampleBuffer: CMSampleBuffer,
+                       from connection: AVCaptureConnection) {
+        let total = captureDrops.increment()
+        guard total == 1 || total.isMultiple(of: 120) else { return }
+        let reason = CMGetAttachment(sampleBuffer, key: kCMSampleBufferAttachmentKey_DroppedFrameReason,
+                                     attachmentModeOut: nil) as? String ?? "unknown reason"
+        LOG("The camera has discarded \(total) frame\(total == 1 ? "" : "s") before delivery (\(reason))", level: .warning)
     }
 }

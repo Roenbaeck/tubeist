@@ -12,6 +12,7 @@ final class LiveEncodingPipeline {
     private(set) var recordingFailure: String?
     private var videoDrops = 0
     private var encoderDropsSeen = 0
+    private var encoderFailuresSeen = 0
     private var streams = false
     private var basePTS: CMTime?
     private var startupAudio: [CMSampleBuffer] = []
@@ -187,10 +188,11 @@ final class LiveEncodingPipeline {
         }
         repair = VideoCaptureRepair(frameDuration: videoEncoder!.frameDuration)
         encoderDropsSeen = 0
+        encoderFailuresSeen = 0
         if firstSetup, let chroma = encoderSelection.chroma {
             LOG("HEVC hardware encoding: 10-bit \(chroma.rawValue) HLG", level: .info)
             if let reason = encoderSelection.fallbackReason {
-                LOG("HEVC 4:2:2 not used: \(reason)", level: .debug)
+                LOG("HEVC 4:2:2 not used: \(reason)", level: .info)
             }
         }
     }
@@ -335,6 +337,11 @@ final class LiveEncodingPipeline {
     /// VideoToolbox may drop a frame under real-time load or thermal pressure.
     /// The encoder already retired its timing; report the first drop and every 30th.
     private func reportVideoDrops() {
+        if let failed = videoEncoder?.failedFrames, failed > encoderFailuresSeen {
+            let count = failed - encoderFailuresSeen
+            encoderFailuresSeen = failed
+            LOG("The HEVC encoder returned an error for \(count) frame\(count == 1 ? "" : "s"); skipped, and the next frame is a keyframe", level: .warning)
+        }
         guard let dropped = videoEncoder?.droppedFrames, dropped > encoderDropsSeen else { return }
         let previous = videoDrops
         videoDrops += dropped - encoderDropsSeen
