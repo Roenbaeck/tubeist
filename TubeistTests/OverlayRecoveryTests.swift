@@ -18,7 +18,7 @@ struct OverlayRecoveryTests {
         let webView = overlay.createWebView(width: 320, height: 180)
         let window = display(webView)
         defer { window.isHidden = true; overlay.prepareForRemoval() }
-        try await waitUntil { overlay.getOverlayImage() != nil }
+        try await waitForInitialSnapshot(of: overlay)
         _ = try await webView.evaluateJavaScript("document.querySelector('div').animate([{opacity: 0.2}, {opacity: 1}], {duration: 200, iterations: Infinity}); true")
         OverlayView.dismantleUIView(webView, coordinator: overlay)
         #expect(overlay.getWebView() == nil)
@@ -41,7 +41,7 @@ struct OverlayRecoveryTests {
         let webView = overlay.createWebView(width: 320, height: 180)
         let window = display(webView)
         defer { window.isHidden = true; overlay.prepareForRemoval() }
-        try await waitUntil { overlay.getOverlayImage() != nil }
+        try await waitForInitialSnapshot(of: overlay)
         _ = try await webView.evaluateJavaScript("document.body.style.margin='0'; document.querySelector('div').textContent=''; true")
         overlay.captureWebViewImageOrSchedule()
         try await waitUntil {
@@ -90,7 +90,7 @@ struct OverlayRecoveryTests {
         let webView = overlay.createWebView(width: 320, height: 180)
         let window = display(webView)
         defer { window.isHidden = true; overlay.prepareForRemoval() }
-        try await waitUntil { overlay.getOverlayImage() != nil }
+        try await waitForInitialSnapshot(of: overlay)
         #expect(webView.pageZoom == 1)
         let image = try #require(overlay.getOverlayImage())
         let bounds = try #require(image.roughBoundingBox(scaledWidth: 320))
@@ -133,7 +133,7 @@ struct OverlayRecoveryTests {
         let webView = overlay.createWebView(width: 640, height: 360)
         let window = display(webView)
         defer { window.isHidden = true; overlay.prepareForRemoval() }
-        try await waitUntil { overlay.getOverlayImage() != nil }
+        try await waitForInitialSnapshot(of: overlay)
         let original = try #require(overlay.getOverlayImage())
         let originalBoxes = try #require(colorBounds(original, channel: 2))
         let originalText = try #require(colorBounds(original, channel: 0))
@@ -181,7 +181,7 @@ struct OverlayRecoveryTests {
         let overlay = Overlay(url: server.url, bundler: OverlayBundler(), retryPolicy: retryPolicy)
         let window = display(overlay.createWebView(width: 320, height: 180))
         defer { window.isHidden = true; overlay.prepareForRemoval() }
-        try await waitUntil { overlay.getOverlayImage() != nil }
+        try await waitForInitialSnapshot(of: overlay)
         let original = try #require(overlay.getOverlayImage())
         let originalBounds = try #require(colorBounds(original, channel: 2))
         overlay.setScale(0.5)
@@ -234,7 +234,7 @@ struct OverlayRecoveryTests {
         let webView = overlay.createWebView(width: 320, height: 180)
         let window = display(webView)
         defer { window.isHidden = true; overlay.prepareForRemoval() }
-        try await waitUntil { overlay.getOverlayImage() != nil }
+        try await waitForInitialSnapshot(of: overlay)
         let original = try #require(overlay.getOverlayImage())
         let originalBounds = try #require(original.roughBoundingBox(scaledWidth: 320))
         overlay.setScale(0.6)
@@ -273,7 +273,7 @@ struct OverlayRecoveryTests {
         let window = display(webView)
         defer { window.isHidden = true }
         defer { overlay.prepareForRemoval() }
-        try await waitUntil { overlay.getOverlayImage() != nil }
+        try await waitForInitialSnapshot(of: overlay)
         let initialImage = try #require(overlay.getOverlayImage())
         // CSS animation changes pixels without mutating the DOM each frame.
         _ = try await webView.evaluateJavaScript("document.querySelector('div').animate([{opacity: 0.2}, {opacity: 1}], {duration: 200, iterations: Infinity}); true")
@@ -306,7 +306,7 @@ struct OverlayRecoveryTests {
         let window = display(webView)
         defer { window.isHidden = true }
         defer { overlay.prepareForRemoval() }
-        try await waitUntil { overlay.getOverlayImage() != nil }
+        try await waitForInitialSnapshot(of: overlay)
         // Drain the initial page capture and the observer's initial dirty bit.
         try await Task.sleep(for: .seconds(1))
         let idle = try #require(overlay.getOverlayImage())
@@ -344,7 +344,7 @@ struct OverlayRecoveryTests {
         let window = display(webView)
         defer { window.isHidden = true }
         defer { overlay.prepareForRemoval() }
-        try await waitUntil { overlay.getOverlayImage() != nil }
+        try await waitForInitialSnapshot(of: overlay)
         let initialImage = try #require(overlay.getOverlayImage())
         let initialPixels = try #require(initialImage.pngData())
 
@@ -495,7 +495,7 @@ struct OverlayRecoveryTests {
         defer { window.isHidden = true }
         defer { overlay.prepareForRemoval() }
 
-        try await waitUntil { overlay.getOverlayImage() != nil }
+        try await waitForInitialSnapshot(of: overlay)
         let goodSnapshot = try #require(overlay.getOverlayImage())
         webView.reload()
         try await waitUntil { server.requests.count >= 2 && !webView.isLoading }
@@ -569,8 +569,16 @@ struct OverlayRecoveryTests {
         return window
     }
 
-    private func waitUntil(_ condition: @MainActor () async throws -> Bool) async throws {
-        let deadline = ContinuousClock().now.advanced(by: .seconds(15))
+    private func waitForInitialSnapshot(of overlay: Overlay) async throws {
+        // Each fixture starts fresh WebKit processes. Hosted simulators can
+        // take longer than 15s to produce the first snapshot under load. Keep
+        // that startup allowance separate from the live-change/retry deadlines.
+        try await waitUntil(timeout: .seconds(60)) { overlay.getOverlayImage() != nil }
+    }
+
+    private func waitUntil(timeout: Duration = .seconds(15),
+                           _ condition: @MainActor () async throws -> Bool) async throws {
+        let deadline = ContinuousClock().now.advanced(by: timeout)
         while ContinuousClock().now < deadline {
             // Evaluating JS while the initial document is unavailable may fail.
             if (try? await condition()) == true { return }
