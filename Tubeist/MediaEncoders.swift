@@ -110,6 +110,10 @@ struct HEVCFrameRecovery {
     private var waitingFrames = 0
     static let maximumFailures = 5
 
+    init(maximumWaitingFrames: Int) {
+        self.maximumWaitingFrames = maximumWaitingFrames
+    }
+
     mutating func failed(_ status: OSStatus) throws {
         failures += 1
         guard failures < Self.maximumFailures else {
