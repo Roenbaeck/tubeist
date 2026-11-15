@@ -19,6 +19,7 @@ Tubeist is designed for events, sports, education, performances, and other long-
 - Local and external monitoring options
 - Live bandwidth, buffer, CPU, battery, and thermal information
 - Gradual bitrate reduction for sustained congestion, with a quality floor and prompt recovery
+- Optional 15-, 30-, or 60-second disk buffering to preserve more footage during slow uploads
 - Web overlays for graphics and live information
 - Apple Watch stream controls and an optional separate, centered status page
   with bold, italic, and monospaced Markdown from any compatible HTTP/HTTPS
@@ -44,9 +45,9 @@ Tubeist requires iOS 18 or later and a physical iPhone with an HDR-capable captu
 The selected video bitrate is a ceiling. During sustained congestion, Tubeist
 adjusts it at two-second segment boundaries and restores quality as soon as the
 connection improves. Simultaneous recordings follow these bitrate changes;
-recording-only sessions keep the selected bitrate. If bandwidth cannot support
-the quality floor, the monitor warns that a lower-resolution preset is needed.
-See the [controller design and offline validation](Tools/VideoToolboxProbe/README.md)
+recording-only sessions keep the selected bitrate target. Preservation mode can
+temporarily reduce quality further when bandwidth cannot sustain the normal floor.
+See the [controller design and validation](Docs/AdaptiveBitrate.md)
 for tuning assumptions and limitations.
 
 In Tubeist Settings, **Sign in with Google**, then choose **Create stream key**. Tubeist creates a reusable HLS stream and fills in the key. Set your title, visibility, audience, and other broadcast preferences, then Save. Your first broadcast is created and attached to the stream when you tap Start. New broadcast drafts default to private. Your YouTube channel must already be eligible and enabled for live streaming; Google account verification and channel activation cannot be performed through the streaming API.
@@ -81,6 +82,15 @@ Before starting, confirm that Tubeist has Camera and Microphone access, the sele
 
 Stopping is complete when enabled outputs have finalized. Keep Tubeist open while the control shows the orange stopping state so the recording can close cleanly and the accepted streaming tail can finish uploading.
 
+In **Settings → Upload Buffering**, choose **Stay live** (the default) or preserve
+up to **15, 30, or 60 seconds** of waiting footage on disk. Uploads start immediately.
+Preservation allows extra delay during network trouble, removes only the oldest
+excess when the buffer fills, and drains the remaining footage on Stop within the
+shutdown time limit. On weak links, the emergency video rate adapts to measured
+bandwidth after reserving room for audio, overhead and draining queued footage.
+This can also lower quality in simultaneous recordings. Tap **Save** to apply the choice to the next stream. Temporary
+buffer files are cleaned up automatically; they are not a saved recording.
+
 ## Camera interface
 
 Tubeist uses a fixed landscape interface with a central 16:9 preview and a compact control rail. Pinch the preview to zoom, tap to position focus or exposure, and use the rail for camera selection, stabilization, monitoring, styles, focus, exposure, white balance, overlays, and streaming.
@@ -95,7 +105,7 @@ The interface displays operational information—including current throughput, u
 
 Choose **Settings → Monitoring → System health bar position** to place the bar at the top or bottom, then tap **Save**. At the top, the order is audio meter, system health, and fading messages; at the bottom, the order is reversed. The adaptive video bitrate appears yellow whenever it is below the selected preset's target. Bandwidth below the quality threshold produces a fading warning instead of widening the health bar.
 
-Tubeist derives a bitrate ladder from the selected preset. It reduces quality when uploads fall behind, holds that target while the queue drains, and restores a recently proven bitrate faster than it explores new capacity. Uploads drain continuously. If waiting media exceeds ten seconds, Tubeist skips older queued segments and signals a discontinuity while preserving the active upload and local recording. See [adaptive delivery](Docs/AdaptiveBitrate.md) for the controller, recovery policy, and verification details.
+Tubeist derives a bitrate ladder from the selected preset. It reduces quality when uploads fall behind, holds that target while the queue drains, and restores a recently proven bitrate faster than it explores new capacity. Uploads drain continuously. Stay live mode skips older waiting segments when its ten-second allowance is exceeded; preservation mode retains footage up to its chosen limit. Connectivity recovery can wake a waiting network retry immediately. Encoder feedback corrects sustained bitrate overshoot while retaining pictures. See [adaptive delivery](Docs/AdaptiveBitrate.md) for the controller, recovery policy, and verification details.
 
 
 ## Overlays, styles, and effects

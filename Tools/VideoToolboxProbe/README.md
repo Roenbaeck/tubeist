@@ -50,49 +50,44 @@ aligned to the capture clock rather than accumulating drift over a long event.
 Playlist durations follow video segment boundaries rather than overlapping
 AAC packet extents.
 
-## Congestion policy
+## Congestion policy and encoder overshoot
 
-The selected bitrate is a ceiling. Decisions occur no more often than once
-per two seconds and are applied at the next video segment boundary.
+The current [adaptive delivery design](../../Docs/AdaptiveBitrate.md) describes
+startup, congestion, preservation-mode emergency rates, retry wake-ups, and
+quality recovery. The network controller measures actual uploaded bytes;
+encoder feedback separately corrects sustained output above the requested rate.
+Feedback uses average-bitrate requests, not hard DataRateLimits, because the
+hardware can enforce hard limits by dropping pictures.
 
-- Effective throughput includes playlist upload, segment upload, and retries.
-  A five-sample median and exponential smoothing reject isolated outliers.
-- Queue accounting includes waiting TS bytes and the in-flight segment once.
-  One normal segment is excluded from backlog. For backlog Q, capacity C,
-  and catch-up horizon T, the intended wire rate is `0.92*C - Q/T`; audio
-  and an overhead allowance are then removed to obtain a video target.
-- Normal reductions require three congested observations and are limited to
-  10% per decision. Recovery immediately selects the sustainable bitrate, up
-  to the selected ceiling, without an additional hold or gradual upward steps.
-  It requires a fresh completed upload and uses the lower of its throughput
-  and the filtered estimate. Old measurements and unfinished uploads cannot
-  trigger recovery. The same capacity margin and backlog calculation applies
-  in both directions, so quality can recover while the queue is still draining.
-- If projected lag exhausts the allowance within six seconds, two observations
-  permit a larger correction. Even before the first ACK, a long unfinished
-  upload supplies an optimistic capacity bound (`segment bits / elapsed`).
-  This guards against a vastly excessive starting preset without a separate
-  bandwidth-test upload. It cannot shrink already encoded segments.
-- The quality floor is the smaller of the selected bitrate and
-  `max(250 kbps, width * height * fps * 0.015)`. This is a tuning guardrail,
-  not a guarantee for every scene. The monitor and journal report when
-  capacity falls below it; choose a lower resolution for the next stream.
+Run `TUBEIST_PROBE_OVERSHOOT=1 zsh Tools/VideoToolboxProbe/validate.sh`
+to exercise changing bitrate targets with deterministic spatial/temporal noise.
+The probe requires feedback correction to occur and every input frame to survive,
+then performs the same independent decode, timing, HDR and audio checks as the
+normal probe. Add `TUBEIST_PROBE_NOISE_RANGE=877` for full-range noise; such
+incompressible content can exceed a requested bitrate even at maximum compression.
+`TUBEIST_PROBE_UNREGULATED=1` disables feedback in the offline probe for comparison.
+An optional scenario argument, e.g. `30:2:44100`, runs only that configuration.
+Per-frame sizes/timestamps and correction counts are saved with the artifacts.
+After matching regulated/unregulated runs, use
+`python3 Tools/VideoToolboxProbe/verify_overshoot_comparison.py <regulated-media-directory> <unregulated-media-directory>`
+to check measured reduction after correction and a later bitrate increase,
+without losing frames or excessively reducing output.
 
-The default buffer allowance assumes 12 seconds and reserves four. This is
-an explicit engineering assumption, **not measured YouTube buffer credit**.
-YouTube's public HLS ingestion API does not give the encoder an exact server
-or viewer buffer level. The controller therefore cannot promise gap-free
-playback through arbitrary outages. It never drops camera frames to regulate
-bandwidth. The existing bounded queue may still discard a whole segment as a
-last resort during a prolonged outage, and marks that discontinuity.
+Physical phone/YouTube acceptance remains necessary for network handovers and
+playback behavior. An ingest acknowledgement does not establish playback health.
+The probe does not stream externally.
 
-Unit tests replay isolated delays, sustained congestion, an excessive initial
-preset before its first ACK, the quality floor, and immediate recovery with
-capacity and backlog limits. Physical
-phone/YouTube acceptance remains necessary to tune the allowance and floor
-against real networks. Native HEVC hardware is not assumed to exist on hosted
-CI runners; deterministic controller/assembler/muxer tests run in the unit suite.
+## Encoder-error recovery
 
-References: [Apple's bitrate target](https://developer.apple.com/documentation/videotoolbox/kvtcompressionpropertykey_averagebitrate),
-[YouTube HLS requirements](https://developers.google.com/youtube/v3/live/guides/hls-ingestion),
-[Apple's segmented writer discussion](https://developer.apple.com/videos/play/wwdc2020/10011/).
+Run `zsh Tools/VideoToolboxProbe/validate_recovery.sh` to inject failed
+VideoToolbox callbacks at the initial keyframe, a reordered reference picture,
+a regular GOP boundary, during recovery, and at Stop. The script instruments
+only the callback boundary in a temporary source copy; the production app has
+no failure-injection option. It exercises the real hardware encoder and the
+production recovery gate, decode timeline, TS muxer and MP4 writer.
+
+Every emitted segment and recording must decode without error-level FFmpeg
+diagnostics, even if FFmpeg exits successfully. Emitted frame counts must
+account for failed and deliberately withheld pictures, and TS/MP4 pixels must
+match. The ordinary `validate.sh` still requires every healthy input frame.
+Simulator tests separately check bounded recovery and persistent failures.

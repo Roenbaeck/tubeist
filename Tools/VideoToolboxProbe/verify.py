@@ -9,6 +9,10 @@ from check_hevc_timing import DecodeSchedule, read_ordering_limits
 
 folder = pathlib.Path(sys.argv[1])
 expected = json.loads((folder / "expected.json").read_text())
+if expected.get('overshootProbe') and expected['regulatesBitrate']:
+    assert expected['bitrateCorrections'] > 0, 'Overshoot did not exercise feedback correction'
+    assert expected['appliedBitrate'] < 700_000, expected
+    print(f'PASS: overshoot feedback made {expected["bitrateCorrections"]} corrections, all input frames retained')
 for name in ("stream.ts", "recording.mp4"):
     streams = json.loads((folder / f"{name}.json").read_text())["streams"]
     video = next(s for s in streams if s["codec_name"] == "hevc")
@@ -30,7 +34,7 @@ for name in ("stream.ts", "recording.mp4"):
         track = [p for p in packets if p["stream_index"] == index]
         start = min(float(p["pts_time"]) for p in track)
         end = max(float(p["pts_time"]) + float(p["duration_time"]) for p in track)
-        assert abs(end - start - 12.4) < (0.04 if index == 0 else 0.1), (name, index, start, end)
+        assert abs(end - start - expected.get('duration', 12.4)) < (0.04 if index == 0 else 0.1), (name, index, start, end)
         if index == 0:
             assert all(float(p["dts_time"]) <= float(p["pts_time"]) for p in track), name
     # Encoder/SRC priming precedes the first real microphone sample.

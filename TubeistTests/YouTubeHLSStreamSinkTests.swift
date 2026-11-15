@@ -10,6 +10,116 @@ import Testing
 private let successfulSinkShutdownTimeout: TimeInterval = 10
 
 struct YouTubeHLSStreamSinkTests {
+    @Test(arguments: [StreamBuffering.preserve15, .preserve30, .preserve60])
+    func preservationDrainsAllSavedMediaOnStopDespiteLongUploadEstimates(buffering: StreamBuffering) async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let clock = SinkUploadClock()
+        let transport = SerialSinkTransport(clock: clock, uploadSeconds: 20)
+        let sink = YouTubeHLSStreamSink()
+        try await sink.prepare(endpoint: .manualPrimary(streamKey: "test"),
+            sessionIdentifier: "preserve_stop", userAgent: "Tubeist/Test", transport: transport,
+            bitrateController: AdaptiveBitrateController(maximumBitrate: 6_000_000,
+                minimumBitrate: 1_000_000, audioBitrate: 128_000),
+            buffering: buffering, bufferDirectory: root, sleeper: { _ in }, uploadNow: { clock.now() })
+        await sink.enqueue(Fragment(sequence: 0, segment: directSentinel(0), duration: 1, container: .mpegTransportStream))
+        try await transport.waitUntilRequested() // No prebuffering delay.
+        let count = buffering.rawValue
+        for sequence in 1...count {
+            await sink.enqueue(Fragment(sequence: sequence, segment: directSentinel(UInt8(sequence)),
+                                        duration: 1, container: .mpegTransportStream))
+        }
+        let folder = try #require(FileManager.default.contentsOfDirectory(at: root,
+            includingPropertiesForKeys: nil).first)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: folder.path).count == count)
+        clock.transfer(90) // Elapsed stall alone must not jump to live.
+        #expect(await sink.metrics().droppedFragments == 0)
+        await transport.releaseFirstRequest()
+        #expect(try await sink.finish(timeout: successfulSinkShutdownTimeout))
+        #expect(await transport.media.map(\.body) == (0...count).map { directSentinel(UInt8($0)) })
+        #expect(await sink.metrics().droppedFragments == 0)
+        #expect(await transport.endListReceived)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: root.path).isEmpty)
+    }
+
+    @Test(arguments: [StreamBuffering.preserve15, .preserve30, .preserve60])
+    func preservationOverflowDiscardsOnlyTheOldestExcessAndSignalsTheGap(buffering: StreamBuffering) async throws {
+        let clock = SinkUploadClock()
+        let transport = SerialSinkTransport(clock: clock, uploadSeconds: 0.1)
+        let sink = YouTubeHLSStreamSink()
+        try await sink.prepare(endpoint: .manualPrimary(streamKey: "test"),
+            sessionIdentifier: "preserve_overflow", userAgent: "Tubeist/Test", transport: transport,
+            buffering: buffering, sleeper: { _ in }, uploadNow: { clock.now() })
+        await sink.enqueue(Fragment(sequence: 0, segment: directSentinel(0), duration: 1, container: .mpegTransportStream))
+        try await transport.waitUntilRequested()
+        let count = buffering.rawValue + 2
+        for sequence in 1...count {
+            await sink.enqueue(Fragment(sequence: sequence, segment: directSentinel(UInt8(sequence)),
+                                        duration: 1, container: .mpegTransportStream))
+        }
+        #expect(await sink.metrics().droppedFragments == 2)
+        #expect(await sink.metrics().queuedDuration == buffering.duration + 1) // Plus the active upload.
+        await transport.releaseFirstRequest()
+        #expect(try await sink.finish(timeout: successfulSinkShutdownTimeout))
+        let expected = [directSentinel(0), try MPEGTransportStreamMuxer.markingDiscontinuity(directSentinel(3))]
+            + (4...count).map { directSentinel(UInt8($0)) }
+        #expect(await transport.media.map(\.body) == expected)
+        #expect(await transport.discontinuousPlaylists > 0)
+    }
+
+    @Test(arguments: [false, true])
+    func diskBufferIsRemovedWhenCancellingOrReplacingTheSession(replace: Bool) async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let old = SerialSinkTransport(clock: SinkUploadClock(), uploadSeconds: 0.1)
+        let sink = YouTubeHLSStreamSink()
+        try await sink.prepare(endpoint: .manualPrimary(streamKey: "test"), sessionIdentifier: "old_disk",
+            userAgent: "Tubeist/Test", transport: old, buffering: .preserve60, bufferDirectory: root)
+        await sink.enqueue(Fragment(sequence: 0, segment: directSentinel(0), duration: 2, container: .mpegTransportStream))
+        try await old.waitUntilRequested()
+        await sink.enqueue(Fragment(sequence: 1, segment: directSentinel(1), duration: 2, container: .mpegTransportStream))
+        let oldFolder = try #require(FileManager.default.contentsOfDirectory(at: root,
+            includingPropertiesForKeys: nil).first)
+        if !replace { await sink.cancel() }
+        let fresh = DirectSinkTransport()
+        try await sink.prepare(endpoint: .manualPrimary(streamKey: "test"), sessionIdentifier: "new_disk",
+            userAgent: "Tubeist/Test", transport: fresh, buffering: .preserve15, bufferDirectory: root,
+            sleeper: { _ in })
+        #expect(!FileManager.default.fileExists(atPath: oldFolder.path))
+        await sink.enqueue(Fragment(sequence: 0, segment: directSentinel(42), duration: 2, container: .mpegTransportStream))
+        #expect(try await sink.finish(timeout: successfulSinkShutdownTimeout))
+        #expect(await fresh.requests().filter { $0.contentType == "video/mp2t" }.map(\.body) == [directSentinel(42)])
+        #expect(try FileManager.default.contentsOfDirectory(atPath: root.path).isEmpty)
+    }
+
+    @Test(arguments: [false, true])
+    func unavailableDiskBufferReportsOneFailureAndDoesNotPublishAnEnding(writeFailure: Bool) async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let transport = SerialSinkTransport(clock: SinkUploadClock(), uploadSeconds: 0.1)
+        let reports = UploadStopReports()
+        let sink = YouTubeHLSStreamSink()
+        try await sink.prepare(endpoint: .manualPrimary(streamKey: "test"), sessionIdentifier: "broken_disk",
+            userAgent: "Tubeist/Test", transport: transport, buffering: .preserve30, bufferDirectory: root,
+            reportUploadsStopped: { await reports.append($0) })
+        await sink.enqueue(Fragment(sequence: 0, segment: directSentinel(0), duration: 2, container: .mpegTransportStream))
+        try await transport.waitUntilRequested()
+        await sink.enqueue(Fragment(sequence: 1, segment: directSentinel(1), duration: 2, container: .mpegTransportStream))
+        let folder = try #require(FileManager.default.contentsOfDirectory(at: root,
+            includingPropertiesForKeys: nil).first)
+        try FileManager.default.removeItem(at: folder)
+        if writeFailure {
+            await sink.enqueue(Fragment(sequence: 2, segment: directSentinel(2), duration: 2, container: .mpegTransportStream))
+        } else { await transport.releaseFirstRequest() }
+        try await reports.waitForFirst()
+        #expect(await sink.hasStoppedAcceptingSegments)
+        await #expect(throws: YouTubeHLSPackagingError.self) {
+            try await sink.finish(timeout: successfulSinkShutdownTimeout)
+        }
+        #expect(await reports.messages.count == 1)
+        #expect(await !transport.endListReceived)
+    }
+
     @Test func drainedRecoveryClearsBufferMetricsAndDoesNotDelayTheNextFreshSegment() async throws {
         let clock = SinkUploadClock()
         let transport = SerialSinkTransport(clock: clock, uploadSeconds: 0.2)
@@ -108,18 +218,26 @@ struct YouTubeHLSStreamSinkTests {
         #expect(await newTransport.requests()[1].body == directSentinel(42))
     }
 
-    @Test func shutdownDeadlineInterruptsUploadWithoutSendingAnEarlyEndList() async throws {
+    @Test(arguments: [StreamBuffering.stayLive, .preserve60])
+    func shutdownDeadlineInterruptsUploadWithoutSendingAnEarlyEndList(buffering: StreamBuffering) async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
         let clock = SinkUploadClock()
         let transport = SerialSinkTransport(clock: clock, uploadSeconds: 0.1)
         let sink = YouTubeHLSStreamSink()
         try await sink.prepare(endpoint: .manualPrimary(streamKey: "test"),
-                               sessionIdentifier: "deadline", userAgent: "Tubeist/Test", transport: transport)
+                               sessionIdentifier: "deadline", userAgent: "Tubeist/Test", transport: transport,
+                               buffering: buffering, bufferDirectory: root)
         await sink.enqueue(Fragment(sequence: 0, segment: directSentinel(0), duration: 2, container: .mpegTransportStream))
         try await transport.waitUntilRequested()
+        await sink.enqueue(Fragment(sequence: 1, segment: directSentinel(1), duration: 2, container: .mpegTransportStream))
         await #expect(throws: YouTubeHLSPackagingError.self) { try await sink.finish(timeout: 0.05) }
         #expect(await transport.media.isEmpty)
         #expect(await transport.endListReceived == false)
         #expect(await sink.metrics().queuedFragments == 0)
+        if buffering.preservesFootage {
+            #expect(try FileManager.default.contentsOfDirectory(atPath: root.path).isEmpty)
+        }
     }
 
     @Test func emptySessionDoesNotAuthorizeBroadcastCompletion() async throws {
@@ -249,33 +367,35 @@ struct YouTubeHLSStreamSinkTests {
         #expect(await sink.metrics().videoBitrate == nil)
     }
 
-    @Test func overflowCatchupPreservesNewestCompleteSegmentAndSplitStopTail() async throws {
+    @Test(arguments: [StreamBuffering.stayLive, .preserve15])
+    func overflowCatchupPreservesNewestCompleteSegmentAndSplitStopTail(buffering: StreamBuffering) async throws {
         let transport = RecoveringDirectSinkTransport()
         let sink = YouTubeHLSStreamSink()
         try await sink.prepare(endpoint: .manualPrimary(streamKey: "test"),
                                sessionIdentifier: "overflow_stop_tail", userAgent: "Tubeist/Test",
-                               transport: transport, sleeper: { _ in })
+                               transport: transport, buffering: buffering, sleeper: { _ in })
         await sink.enqueue(Fragment(sequence: 0, segment: FMP4Fixture.initialization(), duration: 0, type: .initialization))
         await sink.enqueue(Fragment(sequence: 1, segment: directSentinel(1), duration: 2, container: .mpegTransportStream))
         try await transport.waitUntilRequested()
-        for sequence in 2...7 {
+        let lastComplete = buffering.preservesFootage ? 9 : 7
+        for sequence in 2...lastComplete {
             await sink.enqueue(Fragment(sequence: sequence, segment: directSentinel(UInt8(sequence)),
                                         duration: 2, container: .mpegTransportStream))
         }
-        await sink.enqueue(Fragment(sequence: 8, segment: FMP4Fixture.mediaSegment(includeAudio: false),
+        await sink.enqueue(Fragment(sequence: lastComplete + 1, segment: FMP4Fixture.mediaSegment(includeAudio: false),
                                     duration: 0.04, type: .finalization))
-        await sink.enqueue(Fragment(sequence: 9, segment: FMP4Fixture.mediaSegment(includeVideo: false),
+        await sink.enqueue(Fragment(sequence: lastComplete + 2, segment: FMP4Fixture.mediaSegment(includeVideo: false),
                                     duration: 0.03, type: .finalization))
         await transport.releaseFirstRequest()
         #expect(try await sink.finish(timeout: successfulSinkShutdownTimeout))
         let media = await transport.requests().filter { $0.contentType == "video/mp2t" }
-        #expect(media.count == 3)
+        #expect(media.count == (buffering.preservesFootage ? 9 : 3))
         #expect(media[0].body == directSentinel(1))
-        #expect(media[1].body == (try MPEGTransportStreamMuxer.markingDiscontinuity(directSentinel(7))))
+        #expect(media[1].body == (try MPEGTransportStreamMuxer.markingDiscontinuity(directSentinel(buffering.preservesFootage ? 3 : 7))))
         let tailPIDs = directSinkPacketPIDs(media.last!.body)
         #expect(tailPIDs.contains(MPEGTransportStreamMuxer.videoPID))
         #expect(tailPIDs.contains(MPEGTransportStreamMuxer.audioPID))
-        #expect(await sink.metrics().droppedFragments == 5)
+        #expect(await sink.metrics().droppedFragments == (buffering.preservesFootage ? 1 : 5))
     }
 
     @Test func directlyUploadsTransportSegmentsWithoutMP4Initialization() async throws {

@@ -448,6 +448,9 @@ struct TubeistApp: App {
             if CommandLine.arguments.contains("-reset-highlights-setting") {
                 UserDefaults.standard.removeObject(forKey: "HighlightsEnabled")
             }
+            if CommandLine.arguments.contains("-reset-buffer-setting") {
+                UserDefaults.standard.removeObject(forKey: "StreamBuffering")
+            }
             startupAlert = nil
         }
         self.startupAlert = startupAlert

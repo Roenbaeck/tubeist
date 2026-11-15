@@ -3,8 +3,10 @@
 The selected video bitrate is the ceiling. Presets derive an immutable ladder
 at creation/decoding: `maximum × 0.8ⁿ`, rounded to 50 kbps with unique descending
 rungs and exact endpoints. The quality floor remains
-`min(maximum, max(250 kbps, width × height × fps × 0.015))`. The ladder is not
-persisted separately. Audio bitrate is per-channel in Settings and multiplied
+`min(maximum, max(250 kbps, width × height × fps × 0.015))`. Preservation mode
+extends that ladder down to 250 kbps (or the selected ceiling if lower), retaining
+the exact normal floor as a rung. Startup uses the normal floor in both modes.
+The ladder is not persisted separately. Audio bitrate is per-channel in Settings and multiplied
 by channel count for the controller. Resolution, codec and audio stay fixed.
 
 ## Measurements and decisions
@@ -52,6 +54,41 @@ two segment intervals to affect encoded output; do not ratchet down solely
 because older, larger segments remain in a shrinking queue. Continued stalls,
 further slow completions and emergency queue pressure can still demand cuts.
 A lower target does not change bytes already encoded.
+
+### Emergency quality in preservation mode
+
+When congestion is confirmed and `0.85 × C` cannot sustain the normal floor,
+preservation mode selects an emergency target from measured capacity:
+
+```
+drainReserve = min(waitingBits / 6 seconds, 0.10 × C)
+video = (0.75 × C − drainReserve) / 1.08 − totalAudioBitrate
+```
+
+Choose the highest fitting rung, bounded by 250 kbps and the normal floor. This
+leaves 25–35% of measured throughput for draining/recovery before removing audio
+and muxing overhead. The same freshness, stall, settling and recovery gates apply;
+one slow completion cannot change the target on its own. A large queue on a link
+that still sustains the normal floor does not alone enable emergency quality.
+No increase is allowed until the queue drains. Below-floor quality also affects a
+simultaneous recording, since both use the same encoder. A link below even the
+emergency minimum can still fill the selected buffer and lose queued footage.
+
+### Encoder overshoot
+
+AverageBitRate is a request, not a strict output ceiling. The encoder now measures
+complete two-second windows of encoded video. Output more than 35% above the
+requested target reduces the underlying average-rate request proportionally,
+aiming for 10% allowance, with each correction limited to a halving. It waits two
+seconds after a change before measuring another full window. Ten seconds of
+healthy output permits a 10% step back toward the requested target. Applied
+requests are bounded below by 50 kbps or the requested target if smaller.
+
+This corrects sustained overshoot without discarding encoded pictures. Hard
+VideoToolbox DataRateLimits were tested and rejected: extreme noise plus bitrate
+changes caused hardware frame drops. The feedback cannot guarantee a strict byte
+cap, undo a large completed segment, or force every scene to fit an arbitrarily
+low bitrate. The queue and network controller still measure actual output bytes.
 
 ## Startup
 
@@ -121,7 +158,12 @@ there is no waiting media.
 
 ## Overflow and retry
 
-The local waiting queue permits at most ten seconds or 30 fragments (the count
+Settings > Upload Buffering offers Stay live (the existing default), or Preserve
+up to 15, 30, or 60 seconds. Save applies the choice to the next stream; the
+active sink keeps its selected policy through Stop. There is no initial buffering
+delay in either mode, and both modes retain adaptive bitrate control.
+
+In Stay live mode, the local waiting queue permits at most ten seconds or 30 fragments (the count
 cap protects against unusually short fragments). An arrival that would exceed
 it discards older unannounced media and selects the floor. Media duration alone
 understates latency when segments were encoded far above capacity, as after a
@@ -144,6 +186,25 @@ Signal the gap in both the HLS playlist and MPEG-TS adaptation fields. Preserve
 capture timestamps and monotonic playlist sequence numbers. Local recording
 retains its own complete encoded output.
 
+Preservation mode writes waiting segment bodies to a private per-session cache
+directory. RAM holds metadata and the active upload body, whose bytes and filename
+remain fixed through retries. The selected duration bounds waiting media; one
+announced transaction may also be in flight. The disk queue has additional limits
+of 512 MiB and 600 fragments. When an arrival exceeds a limit, remove only the
+oldest complete queued media needed to fit, preserving initialization and the
+latest complete fragment with its finalization tail. Mark the next upload as a
+discontinuity. Do not trim on estimated drain time or jump to the newest segment
+after a slow ACK. Thus extra latency can preserve footage when bandwidth recovers.
+
+Stop drains saved media in order before publishing ENDLIST, subject to the existing
+120-second upload shutdown deadline. Successful uploads, discards, cancellation,
+replacement and failure remove temporary files. The first disk-buffer session in
+a new process clears abandoned cache directories. This is not cross-launch stream
+recovery or a local recording. Disk write/read failures stop uploads with a visible
+error rather than silently losing saved segments. A larger phone queue cannot
+feed YouTube during a complete connection outage or guarantee how YouTube plays
+late-arriving media.
+
 Overflow blocks increases for 20 seconds and invalidates proven-quality memory.
 It does not reset throughput history. Production transport uses a 10-second
 idle request timeout and transient-error backoff; permanent HTTP failures remain
@@ -152,10 +213,19 @@ upload must never time out, or one ceiling segment over a slow link would never
 be acknowledged. URLSession's idle timer can expire while a large body is still
 draining from the socket buffer. On loopback, 12-16 second uploads failed
 reproducibly at 10 seconds while the server was still reading. Each request
-therefore gets `max(10 s, 1.5 × body bits / floor wire rate)`, enough for any
-segment to finish on a link that can sustain the quality floor. Playlists and
+therefore gets `max(10 s, 1.5 × body bits / minimum wire rate)`, capped at 120 seconds.
+Preservation mode includes the emergency minimum in this calculation so large
+segments already queued before a cut can finish on a slower connection. Playlists and
 floor-rate segments keep the short dead-connection timeout. The 120-second
 resource timeout bounds a whole transfer. Stop enforces its own deadline.
+
+A per-session network path monitor wakes a pending connectivity-error backoff
+when a previously unavailable path becomes available or its active interfaces
+change. Initial, repeated and unavailable notifications do nothing. A notification
+only authorizes one retry; it does not prove YouTube is reachable. HTTP errors
+(including 429 and 5xx) retain their backoff, active requests are not interrupted,
+and retry bytes/filenames stay frozen. Stop and task cancellation interrupt retry
+sleep promptly. Monitoring ends with the uploader session.
 
 This is a local latency policy, not a claim about YouTube's ingest/playback
 buffer. YouTube's five-outstanding-segment playlist limit is separate:

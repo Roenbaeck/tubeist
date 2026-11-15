@@ -425,6 +425,53 @@ final class TubeistUITests: XCTestCase {
     }
 
     @MainActor
+    func testUploadBufferDefaultsAndSettingsSaveCancelAndRelaunch() throws {
+        let originalOrientation = XCUIDevice.shared.orientation
+        XCUIDevice.shared.orientation = .landscapeRight
+        defer { XCUIDevice.shared.orientation = originalOrientation }
+        let app = launchForUITesting(additionalArguments: ["-reset-buffer-setting", "-Overlays", "[]"])
+        let picker = app.buttons["stream-buffering"]
+        func openBuffering() {
+            app.buttons["Settings"].tap()
+            XCTAssertTrue(app.buttons["Cancel"].waitForExistence(timeout: 5))
+            scrollTo(picker, in: app)
+        }
+        func select(_ title: String) {
+            picker.tap()
+            app.buttons[title].tap()
+        }
+        openBuffering()
+        XCTAssertEqual(picker.value as? String, "Stay live (default)")
+        select("Preserve up to 15 seconds")
+        app.buttons["Cancel"].tap()
+        openBuffering()
+        XCTAssertEqual(picker.value as? String, "Stay live (default)")
+        select("Preserve up to 30 seconds")
+        XCTAssertEqual(picker.value as? String, "Preserve up to 30 seconds")
+        select("Preserve up to 60 seconds")
+        let screenshot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        screenshot.name = "Upload buffering Settings"
+        screenshot.lifetime = .keepAlways
+        add(screenshot)
+        let key = app.secureTextFields["YouTube HLS Stream Key"]
+        scrollTo(key, in: app, searchDirection: -1)
+        key.tap()
+        key.typeText("abcd-efgh-1234")
+        app.buttons["Save"].tap()
+        XCTAssertTrue(app.buttons["Cancel"].waitForNonExistence(timeout: 5))
+        app.terminate()
+        app.launchArguments.removeAll { $0 == "-reset-buffer-setting" }
+        app.launch()
+        openBuffering()
+        XCTAssertEqual(picker.value as? String, "Preserve up to 60 seconds")
+        app.buttons["Cancel"].tap()
+        // Restore the default for the remaining UI suite.
+        app.terminate()
+        app.launchArguments.append("-reset-buffer-setting")
+        app.launch()
+    }
+
+    @MainActor
     func testOverlayOrderCanBeSavedAndCancelled() throws {
         try XCTSkipIf(true, "Native overlay-reordering drag is unreliable in the simulator.")
         let originalOrientation = XCUIDevice.shared.orientation

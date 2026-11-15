@@ -20,7 +20,7 @@ final class RecordingCollector: NSObject, AVAssetWriterDelegate, @unchecked Send
 }
 
 enum ProbeMediaFixtures {
-    static func makePixels(frame: Int) throws -> CVPixelBuffer {
+    static func makePixels(frame: Int, noisy: Bool = false, noiseRange: Int = 129) throws -> CVPixelBuffer {
         var pixels: CVPixelBuffer?
         try checkMediaStatus(CVPixelBufferCreate(nil, 320, 180, kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
             [kCVPixelBufferIOSurfacePropertiesKey: [:]] as CFDictionary, &pixels), "Creating test pixels")
@@ -32,7 +32,15 @@ enum ProbeMediaFixtures {
             let height = CVPixelBufferGetHeightOfPlane(pixels, plane)
             for y in 0..<height {
                 for x in 0..<320 {
-                    let value = plane == 0 ? 64 + ((x + y + frame * 7) % 877) : 512 + ((x + frame) % 160) - 80
+                    var value = plane == 0 ? 64 + ((x + y + frame * 7) % 877) : 512 + ((x + frame) % 160) - 80
+                    if noisy {
+                        // Deterministic spatial/temporal noise challenges rate control.
+                        var noise = UInt32(truncatingIfNeeded: x + y * 320 + frame * 57_600 + plane * 17)
+                        noise = (noise ^ (noise >> 16)) &* 0x45d9f3b
+                        noise = (noise ^ (noise >> 16)) &* 0x45d9f3b
+                        let range = max(1, min(877, noiseRange))
+                        value = 64 + (877 - range) / 2 + Int((noise ^ (noise >> 16)) % UInt32(range))
+                    }
                     pointer[y * stride + x] = UInt16(value << 6)
                 }
             }

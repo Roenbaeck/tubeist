@@ -62,7 +62,9 @@ actor YouTubeHLSStreamSink {
     private var initialization: ISOBMFFInitialization?
     private var muxer = MPEGTransportStreamMuxer()
     private var uploader: YouTubeHLSUploader?
-    private var queue: [Fragment] = []
+    private var queue: [BufferedStreamFragment] = []
+    private var buffering: StreamBuffering = .stayLive
+    private var diskBuffer: StreamDiskBuffer?
     private var isProcessing = false
     private var currentFragmentType: Fragment.SegmentType?
     private var isUploadingFinalization = false
@@ -99,6 +101,8 @@ actor YouTubeHLSStreamSink {
         endingPolicy: HLSStreamEndingPolicy = .automatic,
         transport: (any YouTubeHLSHTTPTransport)? = nil,
         bitrateController: AdaptiveBitrateController? = nil,
+        buffering: StreamBuffering = .stayLive,
+        bufferDirectory: URL? = nil,
         retryPolicy: YouTubeHLSRetryPolicy = .default,
         sleeper: @escaping YouTubeHLSUploader.Sleeper = { try await Task.sleep(for: $0) },
         uploadNow: @escaping @Sendable () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
@@ -118,6 +122,8 @@ actor YouTubeHLSStreamSink {
         initialization = nil
         muxer = MPEGTransportStreamMuxer(serviceName: serviceName)
         queue.removeAll(keepingCapacity: true)
+        diskBuffer = nil
+        self.buffering = buffering
         isProcessing = false
         currentFragmentType = nil
         isUploadingFinalization = false
@@ -141,6 +147,9 @@ actor YouTubeHLSStreamSink {
         }
         guard generation == sessionGeneration else {
             throw YouTubeHLSPackagingError.notPrepared
+        }
+        if buffering.preservesFootage {
+            diskBuffer = try StreamDiskBuffer(parentDirectory: bufferDirectory)
         }
         var uploadTransport: any YouTubeHLSHTTPTransport = transport ?? URLSessionYouTubeHLSHTTPTransport(
             minimumThroughput: bitrateController?.minimumWireRate)
@@ -179,14 +188,27 @@ actor YouTubeHLSStreamSink {
                 level: failure == nil ? .warning : .debug)
             return
         }
-        if queue.count >= Self.maximumQueuedFragments ||
-            queue.reduce(fragment.duration, { $0 + $1.duration }) > Self.maximumQueuedDuration ||
-            uploadWouldExceedLiveLatency(adding: fragment) {
-            needsLiveCatchup = true
-            discardQueuedMedia(before: fragment.type == .finalization
-                ? (queue.lastIndex(where: { $0.type == .separable }) ?? 0) : queue.count)
+        do {
+            if let diskBuffer {
+                // Make room before writing so a full buffer never needs an
+                // extra segment's worth of free disk space to roll forward.
+                queue.append(BufferedStreamFragment(fragment))
+                try trimPreservedMedia()
+                queue[queue.count - 1] = try diskBuffer.store(fragment)
+            } else {
+                if queue.count >= Self.maximumQueuedFragments ||
+                    queue.reduce(fragment.duration, { $0 + $1.duration }) > Self.maximumQueuedDuration ||
+                    uploadWouldExceedLiveLatency(adding: fragment) {
+                    needsLiveCatchup = true
+                    try discardQueuedMedia(before: fragment.type == .finalization
+                        ? (queue.lastIndex(where: { $0.type == .separable }) ?? 0) : queue.count)
+                }
+                queue.append(BufferedStreamFragment(fragment))
+            }
+        } catch {
+            await handleProcessingFailure(error, sessionGeneration: sessionGeneration)
+            return
         }
-        queue.append(fragment)
         updateBitrateController()
         if !isProcessing {
             isProcessing = true
@@ -197,16 +219,45 @@ actor YouTubeHLSStreamSink {
         }
     }
 
-    private func discardQueuedMedia(before endIndex: Int) {
+    /// Keep as much footage as the selected budget allows. Never skip ahead
+    /// just because the estimated upload time is long. The active transaction
+    /// is already announced and remains untouched, including its retry bytes.
+    private func trimPreservedMedia() throws {
+        var duration = queue.reduce(0) { $0 + $1.duration }
+        var bytes = queue.reduce(0) { $0 + $1.byteCount }
+        var count = queue.count
+        var end = 0
+        let lastComplete = queue.lastIndex(where: { $0.type == .separable }) ?? 0
+        func exceedsBudget() -> Bool {
+            duration > buffering.duration + 0.000001 || bytes > StreamDiskBuffer.maximumBytes ||
+                count > StreamDiskBuffer.maximumFragments
+        }
+        // Retain the latest complete fragment and its MP4 finalization tail.
+        // Initialization metadata is never thrown away by overflow.
+        while exceedsBudget(), end < lastComplete {
+            let item = queue[end]
+            if item.type != .initialization {
+                duration -= item.duration
+                bytes -= item.byteCount
+                count -= 1
+            }
+            end += 1
+        }
+        guard !exceedsBudget() else { throw StreamBufferError.oversized }
+        try discardQueuedMedia(before: end)
+    }
+
+    private func discardQueuedMedia(before endIndex: Int) throws {
         var discarded = 0
 #if DEBUG
         var events: [(sequence: Int, total: Int)] = []
 #endif
         // Select by position, not summed duration: retain the latest complete
         // segment AND any finalization callbacks after it when Stop is draining.
-        var retained: [Fragment] = []
+        var retained: [BufferedStreamFragment] = []
         for (index, fragment) in queue.enumerated() {
             if index < endIndex, fragment.type != .initialization {
+                try fragment.removeFile()
 #if DEBUG
                 events.append((fragment.sequence, droppedFragments + discarded + 1))
 #endif
@@ -218,7 +269,8 @@ actor YouTubeHLSStreamSink {
             droppedFragments += discarded
             pendingDiscontinuity = true
             bitrateController?.discardedBacklog(now: uploadNow())
-            LOG("Discarded \(discarded) queued segments to recover live latency after overflow", level: .warning)
+            let reason = buffering.preservesFootage ? "stay within the footage buffer limit" : "recover live latency after overflow"
+            LOG("Discarded \(discarded) queued segments to \(reason)", level: .warning)
 #if DEBUG
             let previous = dropReportingTask
             let identifier = acceptanceSessionIdentifier
@@ -273,6 +325,7 @@ actor YouTubeHLSStreamSink {
         }
         let finishingUploader = uploader
         uploader = nil
+        diskBuffer = nil
         isPrepared = false
         let finishingFailure = failure
         var endListAcknowledged = false
@@ -320,6 +373,7 @@ actor YouTubeHLSStreamSink {
         let cancelledUploader = uploader
         uploader = nil
         queue.removeAll(keepingCapacity: true)
+        diskBuffer = nil
         isPrepared = false
         isProcessing = false
         currentFragmentType = nil
@@ -371,12 +425,13 @@ actor YouTubeHLSStreamSink {
     }
 
     private var waitingUploadBytes: Int {
-        queue.reduce(0) { $0 + ($1.type == .initialization ? 0 : $1.segment.count) }
+        queue.reduce(0) { $0 + ($1.type == .initialization ? 0 : $1.byteCount) }
     }
 
     /// Queued media duration understates latency when segments were encoded far
     /// above capacity, e.g. at the selected ceiling before the first measurement.
     private func uploadWouldExceedLiveLatency(adding fragment: Fragment?) -> Bool {
+        guard !buffering.preservesFootage else { return false }
         let waiting = waitingUploadBytes
         guard waiting > 0, let drain = bitrateController?.estimatedDrainSeconds(
             waitingBytes: waiting + (fragment.map { $0.type == .initialization ? 0 : $0.segment.count } ?? 0),
@@ -398,7 +453,9 @@ actor YouTubeHLSStreamSink {
             now: now
         )
         if bitrateController?.state == .capacityBelowQualityFloor, previous != .capacityBelowQualityFloor {
-            LOG("Available bandwidth is below the quality floor for this preset; choose a lower resolution for the next stream", level: .warning)
+            LOG(buffering.preservesFootage
+                ? "Available bandwidth is below the normal quality floor; reducing picture quality to preserve footage"
+                : "Available bandwidth is below the quality floor for this preset; choose a lower resolution for the next stream", level: .warning)
         }
     }
 
@@ -408,19 +465,21 @@ actor YouTubeHLSStreamSink {
               isPrepared,
               failure == nil,
               !queue.isEmpty {
-            if needsLiveCatchup || uploadWouldExceedLiveLatency(adding: nil), uploadStartedAt == nil {
-                // The stalled transaction may have outlived several overflow
-                // trims, or its ACK may reveal that the waiting media cannot
-                // arrive in time. Resume with the newest complete segment.
-                discardQueuedMedia(before: queue.lastIndex(where: { $0.type == .separable }) ?? 0)
-                needsLiveCatchup = false
-            }
-            guard !queue.isEmpty else { break }
-            let fragment = queue.removeFirst()
-            currentFragmentType = fragment.type
-            currentDuration = fragment.duration
-            currentBytes = fragment.segment.count
             do {
+                if needsLiveCatchup || uploadWouldExceedLiveLatency(adding: nil), uploadStartedAt == nil {
+                    // The stalled transaction may have outlived several overflow
+                    // trims, or its ACK may reveal that the waiting media cannot
+                    // arrive in time. Resume with the newest complete segment.
+                    try discardQueuedMedia(before: queue.lastIndex(where: { $0.type == .separable }) ?? 0)
+                    needsLiveCatchup = false
+                }
+                guard !queue.isEmpty else { break }
+                let stored = queue.removeFirst()
+                let fragment = try stored.read()
+                try stored.removeFile()
+                currentFragmentType = fragment.type
+                currentDuration = fragment.duration
+                currentBytes = fragment.segment.count
                 try await process(fragment, sessionGeneration: generation)
                 guard generation == sessionGeneration else { return }
             } catch {
@@ -636,11 +695,12 @@ actor YouTubeHLSStreamSink {
         _ error: Error,
         sessionGeneration generation: UInt64
     ) async {
-        guard generation == sessionGeneration else { return }
+        guard generation == sessionGeneration, failure == nil else { return }
         let report = reportUploadsStopped
         let failedUploader = uploader
         failure = String(describing: error)
         queue.removeAll(keepingCapacity: true)
+        diskBuffer = nil
         clearFinalizationBuffer()
 #if DEBUG
         await HLSAcceptanceRecorder.shared.failed(String(describing: error))
@@ -695,13 +755,15 @@ actor EncodedOutputRouter {
         resetOrdering()
         let generation = routingGeneration
         mode = .none
+        let buffering = Settings.streamBuffering
         try await YouTubeHLSStreamSink.shared.prepare(
             endpoint: endpoint,
             sessionIdentifier: sessionIdentifier,
             userAgent: userAgent,
             serviceName: serviceName,
             endingPolicy: endingPolicy,
-            bitrateController: Self.makeBitrateController(),
+            bitrateController: Self.makeBitrateController(buffering: buffering),
+            buffering: buffering,
             reportUploadsStopped: reportUploadsStopped
         )
         guard generation == routingGeneration else {
@@ -710,10 +772,12 @@ actor EncodedOutputRouter {
         mode = .direct
     }
 
-    static func makeBitrateController(for preset: Preset = Settings.selectedPreset) -> AdaptiveBitrateController {
+    static func makeBitrateController(for preset: Preset = Settings.selectedPreset,
+                                     buffering: StreamBuffering = .stayLive) -> AdaptiveBitrateController {
         AdaptiveBitrateController(ladder: preset.bitrateLadder,
                                          audioBitrate: preset.audioBitrate * preset.audioChannels,
-                                         policy: .init(rampsUpAtStartup: preset.rampsUpAtStartup))
+                                         policy: .init(rampsUpAtStartup: preset.rampsUpAtStartup,
+                                                       emergencyMinimumBitrate: buffering.preservesFootage ? 250_000 : nil))
     }
 
     func recommendedVideoBitrate() async -> Int? {

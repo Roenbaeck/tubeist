@@ -15,7 +15,9 @@ xcrun swiftc -swift-version 6 -parse-as-library \
   "${repository_root}/Tubeist/RecordingAssetWriter.swift" \
   "${tool_directory}/MediaFixtures.swift" \
   "${tool_directory}/main.swift" -o "${artifact_root}/probe"
-for scenario in 30:2:44100 60:1:44100 30:2:48000; do
+scenarios=(30:2:44100 60:1:44100 30:2:48000)
+if (( $# > 0 )); then scenarios=("$@"); fi
+for scenario in "${scenarios[@]}"; do
   parts=("${(@s/:/)scenario}")
   fps=${parts[1]}
   channels=${parts[2]}

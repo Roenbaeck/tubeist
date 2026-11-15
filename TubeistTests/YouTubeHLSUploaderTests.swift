@@ -8,6 +8,80 @@ import Testing
 @testable import Tubeist
 
 struct YouTubeHLSUploaderTests {
+    @Test(arguments: [false, true], [false, true])
+    func aRecoveredOrChangedPathWakesNetworkBackoffWithoutChangingBytes(handover: Bool, mediaFailed: Bool) async throws {
+        let transport = MockYouTubeHLSTransport(outcomes: mediaFailed
+            ? [.status(200), .networkFailure, .status(200)]
+            : [.networkFailure, .status(200), .status(200)])
+        let started = GraceWaitSignal()
+        let uploader = try YouTubeHLSUploader(endpoint: .manualPrimary(streamKey: "test"),
+            sessionIdentifier: "network_wakeup", userAgent: "Tubeist/Test", transport: transport,
+            retryPolicy: .init(maximumAttempts: 3, initialDelay: 8, maximumDelay: 8, jitterFraction: 0),
+            monitorsNetworkChanges: false, sleeper: { delay in
+                await started.signal()
+                try await Task.sleep(for: delay)
+            })
+        await uploader.networkPathChanged(isAvailable: handover, interfaces: handover ? ["wifi"] : [])
+        let upload = Task { try await uploader.upload(segment: Data([0x47, 1, 2]), duration: 2) }
+        await started.wait()
+        await uploader.networkPathChanged(isAvailable: true, interfaces: ["cellular"])
+        for _ in 0..<100 {
+            if await transport.recordedRequests().count == 3 { break }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        let records = await transport.recordedRequests()
+        #expect(records.count == 3)
+        if records.count != 3 { await uploader.stop() } // Do not leave a failed test asleep for eight seconds.
+        #expect(try await upload.value.sequence == 0)
+        let failedIndex = mediaFailed ? 1 : 0
+        #expect(records[failedIndex].body == records[failedIndex + 1].body)
+        #expect(records[failedIndex].url == records[failedIndex + 1].url)
+        #expect(await uploader.diagnostics.retryCount == 1)
+        await uploader.stop()
+    }
+
+    @Test(arguments: [429, 500, 503])
+    func networkChangesRespectServerBackoff(status: Int) async throws {
+        let transport = MockYouTubeHLSTransport(statuses: [status, 200, 200])
+        let started = GraceWaitSignal()
+        let uploader = try YouTubeHLSUploader(endpoint: .manualPrimary(streamKey: "test"),
+            sessionIdentifier: "server_backoff", userAgent: "Tubeist/Test", transport: transport,
+            retryPolicy: .init(maximumAttempts: 3, initialDelay: 8, maximumDelay: 8, jitterFraction: 0),
+            monitorsNetworkChanges: false, sleeper: { delay in
+                await started.signal()
+                try await Task.sleep(for: delay)
+            })
+        await uploader.networkPathChanged(isAvailable: false, interfaces: [])
+        let upload = Task { try await uploader.upload(segment: Data([0x47]), duration: 2) }
+        await started.wait()
+        await uploader.networkPathChanged(isAvailable: true, interfaces: ["wifi"])
+        try await Task.sleep(for: .milliseconds(40))
+        #expect(await transport.recordedRequests().count == 1)
+        await uploader.stop()
+        await #expect(throws: YouTubeHLSUploadError.stopped) { try await upload.value }
+    }
+
+    @Test(arguments: [false, true])
+    func initialRepeatedAndUnavailablePathsDoNotWakeBackoffAndCancellationIsPrompt(cancelTask: Bool) async throws {
+        let transport = MockYouTubeHLSTransport(outcomes: [.networkFailure, .status(200), .status(200)])
+        let started = GraceWaitSignal()
+        let uploader = try YouTubeHLSUploader(endpoint: .manualPrimary(streamKey: "test"),
+            sessionIdentifier: "unchanged_path", userAgent: "Tubeist/Test", transport: transport,
+            retryPolicy: .init(maximumAttempts: 3, initialDelay: 8, maximumDelay: 8, jitterFraction: 0),
+            monitorsNetworkChanges: false, sleeper: { delay in
+                await started.signal()
+                try await Task.sleep(for: delay)
+            })
+        let upload = Task { try await uploader.upload(segment: Data([0x47]), duration: 2) }
+        await started.wait()
+        await uploader.networkPathChanged(isAvailable: true, interfaces: ["wifi"])
+        await uploader.networkPathChanged(isAvailable: true, interfaces: ["wifi"])
+        await uploader.networkPathChanged(isAvailable: false, interfaces: [])
+        try await Task.sleep(for: .milliseconds(40))
+        #expect(await transport.recordedRequests().count == 1)
+        if cancelTask { upload.cancel() } else { await uploader.stop() }
+        await #expect(throws: YouTubeHLSUploadError.stopped) { try await upload.value }
+    }
 
     @Test func requestTimeoutLetsAnySegmentFinishOnTheSlowestSupportedLink() {
         // 1080p floor: 0.93 Mbps video + 192 kbps audio, plus overhead.
@@ -25,6 +99,15 @@ struct YouTubeHLSUploaderTests {
         #expect(timeout(50_000_000) == URLSessionYouTubeHLSHTTPTransport.resourceTimeout)
         #expect(URLSessionYouTubeHLSHTTPTransport.timeout(forBodyBytes: 50_000_000, minimumThroughput: nil)
             == URLSessionYouTubeHLSHTTPTransport.requestTimeout)
+    }
+
+    @Test func preservationTimeoutAllowsLargeQueuedSegmentsOnAnEmergencyRateLink() {
+        let c = AdaptiveBitrateController(maximumBitrate: 9_700_000, minimumBitrate: 3_732_480,
+            audioBitrate: 256_000, policy: .init(emergencyMinimumBitrate: 250_000))
+        let timeout = URLSessionYouTubeHLSHTTPTransport.timeout(forBodyBytes: 2_700_000,
+                                                               minimumThroughput: c.minimumWireRate)
+        #expect(timeout > 59 && timeout < 60)
+        #expect(URLSessionYouTubeHLSHTTPTransport.timeout(forBodyBytes: 500, minimumThroughput: c.minimumWireRate) == 10)
     }
 
     @Test func manualEndingKeepsTheWindowWithoutEndListOrGrace() async throws {
@@ -748,10 +831,6 @@ private enum MockTransportOutcome: Sendable {
     case networkFailure
 }
 
-private enum MockNetworkError: Error {
-    case offline
-}
-
 private actor MockYouTubeHLSTransport: YouTubeHLSHTTPTransport {
     private var outcomes: [MockTransportOutcome]
     private var records: [MockRequestRecord] = []
@@ -778,7 +857,7 @@ private actor MockYouTubeHLSTransport: YouTubeHLSHTTPTransport {
         case .delayedStatus(let status):
             try await Task.sleep(for: .milliseconds(20))
             return YouTubeHLSHTTPResponse(statusCode: status)
-        case .networkFailure: throw MockNetworkError.offline
+        case .networkFailure: throw URLError(.notConnectedToInternet)
         }
     }
 

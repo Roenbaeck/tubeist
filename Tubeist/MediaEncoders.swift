@@ -82,7 +82,7 @@ private final class VideoEncoderOutput: @unchecked Sendable {
     func receive(status: OSStatus, flags: VTEncodeInfoFlags, frame: Int, sample: CMSampleBuffer?) {
         lock.withLock {
             // One frame's error is not yet the session's: the encoder decides
-            // how many in a row end the stream.
+            // whether recovery can safely continue.
             if status != noErr { events.append(.failed(frame: frame, status)) }
             // Real-time encoding may drop a frame under load or thermal pressure,
             // delivering no sample. Its timing is retired; the stream continues.
@@ -96,6 +96,45 @@ private final class VideoEncoderOutput: @unchecked Sendable {
             let result = events
             events.removeAll(keepingCapacity: true)
             return result
+        }
+    }
+}
+
+/// An errored picture may still be referenced by output already queued in
+/// VideoToolbox. Only an actual closed-GOP keyframe makes that output safe
+/// again; requesting a keyframe on a future input is not confirmation.
+struct HEVCFrameRecovery {
+    let maximumWaitingFrames: Int
+    private(set) var requiresKeyframe = false
+    private var failures = 0
+    private var waitingFrames = 0
+    static let maximumFailures = 5
+
+    mutating func failed(_ status: OSStatus) throws {
+        failures += 1
+        guard failures < Self.maximumFailures else {
+            throw MediaEncodingError.operation("HEVC encoding", status)
+        }
+        requiresKeyframe = true
+        try discarded()
+    }
+
+    mutating func shouldEmit(isKeyframe: Bool) throws -> Bool {
+        if requiresKeyframe, !isKeyframe {
+            try discarded()
+            return false
+        }
+        requiresKeyframe = false
+        failures = 0
+        waitingFrames = 0
+        return true
+    }
+
+    mutating func discarded() throws {
+        guard requiresKeyframe else { return }
+        waitingFrames += 1
+        guard waitingFrames <= maximumWaitingFrames else {
+            throw MediaEncodingError.invalid("The HEVC encoder did not return a recovery keyframe")
         }
     }
 }
@@ -166,6 +205,9 @@ struct VideoDecodeTimeline {
         if let index = inputPTS.firstIndex(of: pts) { inputPTS.remove(at: index) }
         else { inputPTS.removeFirst() }
         pendingOutputs -= 1
+        // If startup pictures were lost, the decode lead belongs to the first
+        // surviving picture, not the failed session-opening keyframe.
+        if emitted == 0 { firstPTS = inputPTS.first }
     }
 }
 
@@ -228,6 +270,69 @@ struct HEVCEncoderSelection {
         let encoder = try create(.yuv420)
         chroma = .yuv420
         return encoder
+    }
+}
+
+/// Correct sustained encoder overshoot without a hard DataRateLimits cap: some
+/// hardware enforces that cap by dropping pictures. This only adjusts the average
+/// request, using complete two-second output windows and a settling interval.
+struct HEVCBitrateRegulator {
+    private(set) var target: Int
+    private(set) var applied: Int
+    private(set) var adjustments = 0
+    private let windowFrames: Int
+    private let frameRate: Double
+    private var acceptsAfterFrame = 0
+    private var bytes = 0.0
+    private var frames = 0
+    private var healthyWindows = 0
+
+    init(bitrate: Int, frameRate: Double) {
+        target = bitrate
+        applied = bitrate
+        self.frameRate = frameRate
+        windowFrames = max(1, Int(ceil(frameRate * 2)))
+    }
+
+    mutating func setTarget(_ value: Int, afterFrame: Int) {
+        let scale = Double(applied) / Double(target)
+        target = value
+        applied = max(min(value, 50_000), min(value, Int(Double(value) * scale)))
+        reset(afterFrame: afterFrame)
+    }
+
+    mutating func observe(frame: Int, byteCount: Int) -> Int? {
+        guard frame > acceptsAfterFrame, byteCount >= 0 else { return nil }
+        bytes += Double(byteCount)
+        frames += 1
+        guard frames >= windowFrames else { return nil }
+        let actual = bytes * 8 * frameRate / Double(frames)
+        bytes = 0
+        frames = 0
+        var next = applied
+        if actual > Double(target) * 1.35 {
+            // Bound each correction so a complex scene cannot collapse quality
+            // in one observation. Leave 10% output allowance around the target.
+            next = max(min(target, 50_000), Int(Double(applied) * max(0.5, Double(target) * 1.1 / actual)))
+            healthyWindows = 0
+        } else {
+            healthyWindows = actual <= Double(target) * 1.1 ? healthyWindows + 1 : 0
+            if healthyWindows >= 5 { next = min(target, Int(ceil(Double(applied) * 1.1))) }
+        }
+        guard next != applied else { return nil }
+        applied = next
+        adjustments += 1
+        reset(afterFrame: frame)
+        return next
+    }
+
+    mutating func discarded(afterFrame: Int) { reset(afterFrame: afterFrame) }
+
+    private mutating func reset(afterFrame: Int) {
+        acceptsAfterFrame = afterFrame + windowFrames
+        bytes = 0
+        frames = 0
+        healthyWindows = 0
     }
 }
 
@@ -294,28 +399,35 @@ final class HEVCVideoEncoder {
     private var submittedFrames = 0
     private var emittedFrames = 0
     private(set) var droppedFrames = 0
-    /// Frames the encoder returned an error for. Each is retired like a drop
-    /// and the next submitted frame becomes a keyframe, since later frames
-    /// may have referred to the missing picture.
+    /// Failed pictures and dependent output withheld until a confirmed keyframe.
     private(set) var failedFrames = 0
-    private var consecutiveFailures = 0
-    private var needsKeyframe = false
-    static let maximumConsecutiveFailures = 5
+    private(set) var lastFailureStatus: OSStatus?
+    private(set) var recoveryDiscardedFrames = 0
+    private var recovery: HEVCFrameRecovery
     /// Keyed by the frame number passed through VideoToolbox's frame refcon,
     /// which identifies a dropped frame that has no output sample.
     private var pendingPTS: [Int: CMTime] = [:]
     private var lastSubmittedPTS: CMTime?
     let frameDuration: CMTime
     private(set) var bitrate: Int
+    private var bitrateRegulator: HEVCBitrateRegulator
+    private let regulatesBitrate: Bool
+    var appliedBitrate: Int { bitrateRegulator.applied }
+    var bitrateCorrections: Int { bitrateRegulator.adjustments }
 
     init(width: Int, height: Int, frameRate: Double, bitrate: Int, keyframeInterval: Double = 2,
-         chroma: HEVCChromaSampling = .yuv420) throws {
+         chroma: HEVCChromaSampling = .yuv420, regulatesBitrate: Bool = true) throws {
         try HEVCEncoderConfiguration.validate(width: width, height: height, frameRate: frameRate,
                                              bitrate: bitrate, keyframeInterval: keyframeInterval)
         self.bitrate = bitrate
+        self.regulatesBitrate = regulatesBitrate
+        bitrateRegulator = HEVCBitrateRegulator(bitrate: bitrate, frameRate: frameRate)
         let duration = CMTime(seconds: 1 / frameRate, preferredTimescale: 90_000)
         frameDuration = duration
         decodeTimeline = VideoDecodeTimeline(frameDuration: duration)
+        // Bound recovery to two seconds' worth of callbacks if keyframe
+        // requests never produce usable output.
+        recovery = HEVCFrameRecovery(maximumWaitingFrames: max(1, Int(ceil(frameRate * 2))))
         var created: VTCompressionSession?
         let creationStatus = VTCompressionSessionCreate(
             allocator: nil, width: Int32(width), height: Int32(height), codecType: kCMVideoCodecType_HEVC,
@@ -354,8 +466,10 @@ final class HEVCVideoEncoder {
     func setBitrate(_ value: Int) throws {
         guard let session, value > 0 else { throw MediaEncodingError.invalid("HEVC encoder is not active") }
         guard value != bitrate else { return }
+        bitrateRegulator.setTarget(value, afterFrame: submittedFrames)
+        let applied = regulatesBitrate ? bitrateRegulator.applied : value
         try checkMediaStatus(VTSessionSetProperty(session, key: kVTCompressionPropertyKey_AverageBitRate,
-                                                 value: value as CFNumber), "Updating HEVC bitrate")
+                                                 value: applied as CFNumber), "Updating HEVC bitrate")
         bitrate = value
     }
 
@@ -366,46 +480,58 @@ final class HEVCVideoEncoder {
             throw MediaEncodingError.invalid("HEVC input timestamps must increase")
         }
         // Submit the pipeline's original HLG pixel buffer; no RGB intermediate.
-        let properties = forceKeyframe || needsKeyframe
+        let properties = forceKeyframe || recovery.requiresKeyframe
             ? [kVTEncodeFrameOptionKey_ForceKeyFrame: true] as CFDictionary : nil
         let frame = submittedFrames + 1 // nonzero, so the refcon is never nil
         try checkMediaStatus(VTCompressionSessionEncodeFrame(
             session, imageBuffer: pixels, presentationTimeStamp: presentationTime, duration: frameDuration,
             frameProperties: properties, sourceFrameRefcon: UnsafeMutableRawPointer(bitPattern: frame), infoFlagsOut: nil
         ), "Submitting HEVC frame")
-        needsKeyframe = false
+        // Keep requesting recovery until a callback confirms a keyframe.
         decodeTimeline.submitted(presentationTime)
         pendingPTS[frame] = presentationTime
         submittedFrames += 1
         lastSubmittedPTS = presentationTime
     }
 
-    func takeOutput() throws -> [CMSampleBuffer] {
+    func takeOutput(adjustsBitrate: Bool = true) throws -> [CMSampleBuffer] {
         var samples: [CMSampleBuffer] = []
         for event in output.take() {
             switch event {
             case .encoded(let frame, let sample):
-                pendingPTS[frame] = nil
-                consecutiveFailures = 0
+                guard let pts = pendingPTS.removeValue(forKey: frame) else {
+                    throw MediaEncodingError.invalid("The HEVC encoder returned an unknown frame")
+                }
+                guard try recovery.shouldEmit(isKeyframe: EncodedSampleAdapter.isRandomAccess(sample)) else {
+                    try decodeTimeline.dropped(presentationTime: pts)
+                    bitrateRegulator.discarded(afterFrame: submittedFrames)
+                    recoveryDiscardedFrames += 1
+                    continue
+                }
                 samples.append(try normalizeDecodeTime(sample))
                 emittedFrames += 1
+                if regulatesBitrate, adjustsBitrate, let session,
+                   let adjusted = bitrateRegulator.observe(frame: frame, byteCount: CMSampleBufferGetTotalSampleSize(sample)) {
+                    try checkMediaStatus(VTSessionSetProperty(session, key: kVTCompressionPropertyKey_AverageBitRate,
+                                                             value: adjusted as CFNumber), "Correcting HEVC bitrate overshoot")
+                }
             case .dropped(let frame):
                 guard let pts = pendingPTS.removeValue(forKey: frame) else {
                     throw MediaEncodingError.invalid("The HEVC encoder dropped an unknown frame")
                 }
+                try recovery.discarded()
+                bitrateRegulator.discarded(afterFrame: submittedFrames)
                 try decodeTimeline.dropped(presentationTime: pts)
                 droppedFrames += 1
             case .failed(let frame, let status):
-                consecutiveFailures += 1
-                // A persistent error, or one for a frame that cannot be
-                // retired, still ends the session.
-                guard consecutiveFailures < Self.maximumConsecutiveFailures,
-                      let pts = pendingPTS.removeValue(forKey: frame) else {
+                lastFailureStatus = status
+                guard let pts = pendingPTS.removeValue(forKey: frame) else {
                     throw MediaEncodingError.operation("HEVC encoding", status)
                 }
+                try recovery.failed(status)
+                bitrateRegulator.discarded(afterFrame: submittedFrames)
                 try decodeTimeline.dropped(presentationTime: pts)
                 failedFrames += 1
-                needsKeyframe = true
             }
         }
         return samples
@@ -416,8 +542,8 @@ final class HEVCVideoEncoder {
         defer { VTCompressionSessionInvalidate(session); self.session = nil }
         try checkMediaStatus(VTCompressionSessionCompleteFrames(session, untilPresentationTimeStamp: .invalid),
                              "Draining HEVC encoder")
-        let samples = try takeOutput()
-        guard emittedFrames + droppedFrames + failedFrames == submittedFrames else {
+        let samples = try takeOutput(adjustsBitrate: false)
+        guard emittedFrames + droppedFrames + failedFrames + recoveryDiscardedFrames == submittedFrames else {
             throw MediaEncodingError.invalid("The HEVC encoder did not return every submitted frame")
         }
         return samples
@@ -450,6 +576,11 @@ final class HEVCVideoEncoder {
 }
 
 enum EncodedSampleAdapter {
+    static func isRandomAccess(_ buffer: CMSampleBuffer) -> Bool {
+        let attachments = CMSampleBufferGetSampleAttachmentsArray(buffer, createIfNecessary: false) as? [[CFString: Any]]
+        return !(attachments?.first?[kCMSampleAttachmentKey_NotSync] as? Bool ?? false)
+    }
+
     static func hevcConfiguration(_ format: CMFormatDescription) throws -> HEVCDecoderConfiguration {
         var count = 0
         var length: Int32 = 0
@@ -494,14 +625,12 @@ enum EncodedSampleAdapter {
         guard pts.isNumeric, dts.isNumeric, duration.isNumeric, duration > .zero else {
             throw MediaEncodingError.invalid("Invalid compressed sample timestamps")
         }
-        let attachments = CMSampleBufferGetSampleAttachmentsArray(buffer, createIfNecessary: false) as? [[CFString: Any]]
-        let sync = !(attachments?.first?[kCMSampleAttachmentKey_NotSync] as? Bool ?? false)
         return EncodedMediaSample(
             trackID: kind == .video ? 1 : 2, kind: kind, timescale: 90_000,
             decodeTime: CMTimeConvertScale(dts, timescale: 90_000, method: .roundHalfAwayFromZero).value,
             presentationTime: CMTimeConvertScale(pts, timescale: 90_000, method: .roundHalfAwayFromZero).value,
             duration: CMTimeConvertScale(duration, timescale: 90_000, method: .roundHalfAwayFromZero).value,
-            isRandomAccess: sync, data: data
+            isRandomAccess: isRandomAccess(buffer), data: data
         )
     }
 }

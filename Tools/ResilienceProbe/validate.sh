@@ -15,6 +15,7 @@ xcrun swiftc -swift-version 6 -parse-as-library \
   "${repository_root}/Tubeist/RecordingAssetWriter.swift" \
   "${repository_root}/Tubeist/LiveEncodingPipeline.swift" \
   "${repository_root}/Tubeist/Fragment.swift" \
+  "${repository_root}/Tubeist/StreamBuffer.swift" \
   "${repository_root}/Tubeist/FragmentReorderBuffer.swift" \
   "${repository_root}/Tubeist/HLSMediaPlaylist.swift" \
   "${repository_root}/Tubeist/YouTubeHLSUploader.swift" \
@@ -22,11 +23,15 @@ xcrun swiftc -swift-version 6 -parse-as-library \
   "${repository_root}/Tubeist/AdaptiveBitrateController.swift" \
   "${repository_root}/Tools/VideoToolboxProbe/MediaFixtures.swift" \
   "${tool_directory}/Support.swift" "${tool_directory}/main.swift" -o "${artifact_root}/probe"
-scenarios=(watchdog healthy startup-audio-overlap short-gaps stop-boundary processing-pressure both-stall mono-recovery long-recovery audio-stall video-stall clock-reset stabilization-changes audio-pool-startup audio-pool-recovery network-overflow)
+scenarios=(watchdog healthy second-stream startup-audio-overlap short-gaps stop-boundary processing-pressure both-stall mono-recovery long-recovery audio-stall video-stall clock-reset stabilization-changes audio-pool-startup audio-pool-recovery network-overflow network-preserve network-preserve-overflow)
 if (( $# > 0 )); then scenarios=("$@"); fi
 for scenario in "${scenarios[@]}"; do
   "${artifact_root}/probe" "${artifact_root}/${scenario}" "${scenario}"
-  if [[ "$scenario" != watchdog ]]; then
+  if [[ "$scenario" == second-stream ]]; then
+    for session in 1 2; do
+      python3 "${tool_directory}/verify.py" "${artifact_root}/${scenario}/session-${session}"
+    done
+  elif [[ "$scenario" != watchdog ]]; then
     python3 "${tool_directory}/verify.py" "${artifact_root}/${scenario}"
   fi
 done

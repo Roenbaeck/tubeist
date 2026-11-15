@@ -4,6 +4,7 @@
 //
 
 import Foundation
+import Network
 
 struct YouTubeHLSEndpoint: Sendable, Equatable {
     private let value: URL
@@ -87,7 +88,7 @@ actor URLSessionYouTubeHLSHTTPTransport: YouTubeHLSHTTPTransport {
     static let resourceTimeout: TimeInterval = 120
 
     /// `minimumThroughput` (bits per second) is the slowest link the stream must
-    /// still work on, normally the wire rate of the quality floor.
+    /// still work on, including emergency bitrates in preservation mode.
     init(minimumThroughput: Double? = nil) {
         self.init(requestTimeout: Self.requestTimeout, resourceTimeout: Self.resourceTimeout,
                   minimumThroughput: minimumThroughput, delegate: nil)
@@ -273,6 +274,17 @@ actor YouTubeHLSUploader {
     private var isReconnecting = false
     private var lastMediaAcknowledgedAt: ContinuousClock.Instant?
     private var finalPlaylistDelay: Task<Void, Error>?
+    private let monitorsNetworkChanges: Bool
+    private var pathMonitor: NWPathMonitor?
+    private var lastNetworkPath: NetworkPath?
+    private var retryDelay: Task<Void, Error>?
+    private var retryWaitIsForNetwork = false
+    private var retryWokenByNetwork = false
+
+    private struct NetworkPath: Equatable {
+        let isAvailable: Bool
+        let interfaces: Set<String>
+    }
 
     init(
         endpoint: YouTubeHLSEndpoint,
@@ -282,6 +294,7 @@ actor YouTubeHLSUploader {
         retryPolicy: YouTubeHLSRetryPolicy = .default,
         keepRetrying: Bool = false,
         endingPolicy: HLSStreamEndingPolicy = .automatic,
+        monitorsNetworkChanges: Bool = true,
         now: @escaping @Sendable () -> ContinuousClock.Instant = { .now },
         sleeper: @escaping Sleeper = { try await Task.sleep(for: $0) }
     ) throws {
@@ -300,7 +313,39 @@ actor YouTubeHLSUploader {
         self.now = now
         self.keepRetrying = keepRetrying
         self.endingPolicy = endingPolicy
+        self.monitorsNetworkChanges = monitorsNetworkChanges
         self.playlist = try HLSMediaPlaylist(sessionIdentifier: sessionIdentifier)
+    }
+
+    deinit { pathMonitor?.cancel() }
+
+    private func startNetworkMonitoring() {
+        guard monitorsNetworkChanges, pathMonitor == nil else { return }
+        let monitor = NWPathMonitor()
+        monitor.pathUpdateHandler = { [weak self] path in
+            let available = path.status == .satisfied
+            let interfaces = Set(path.availableInterfaces.filter { path.usesInterfaceType($0.type) }.map(\.name))
+            Task { await self?.networkPathChanged(isAvailable: available, interfaces: interfaces) }
+        }
+        pathMonitor = monitor
+        monitor.start(queue: DispatchQueue(label: "Tubeist.UploadNetworkPath"))
+    }
+
+    /// A path is only a hint to retry, never proof that YouTube is reachable.
+    /// Initial/repeated notifications and server-error backoff must not wake it.
+    func networkPathChanged(isAvailable: Bool, interfaces: Set<String>) {
+        let path = NetworkPath(isAvailable: isAvailable, interfaces: interfaces)
+        let previous = lastNetworkPath
+        lastNetworkPath = path
+        guard !stopped, let previous, path != previous, isAvailable,
+              retryWaitIsForNetwork, let retryDelay else { return }
+        retryWokenByNetwork = true
+        retryDelay.cancel()
+    }
+
+    private func stopNetworkMonitoring() {
+        pathMonitor?.cancel()
+        pathMonitor = nil
     }
 
     var queuedDuration: Double {
@@ -371,6 +416,7 @@ actor YouTubeHLSUploader {
         } catch {
             if !stopped {
                 stopped = true
+                stopNetworkMonitoring()
                 await transport.invalidate()
             }
             if error is CancellationError {
@@ -383,6 +429,8 @@ actor YouTubeHLSUploader {
     func stop() async {
         stopped = true
         finalPlaylistDelay?.cancel()
+        retryDelay?.cancel()
+        stopNetworkMonitoring()
         await transport.invalidate()
     }
 
@@ -415,6 +463,7 @@ actor YouTubeHLSUploader {
                 // All media has drained. Keep the last rolling playlist open;
                 // false also prevents Streamer from requesting API completion.
                 stopped = true
+                stopNetworkMonitoring()
                 await transport.invalidate()
                 return false
             }
@@ -443,10 +492,12 @@ actor YouTubeHLSUploader {
                 )
             }
             stopped = true
+            stopNetworkMonitoring()
             await transport.invalidate()
             return playlist.nextSequence > 0
         } catch {
             stopped = true
+            stopNetworkMonitoring()
             await transport.invalidate()
             if error is CancellationError {
                 throw YouTubeHLSUploadError.stopped
@@ -466,6 +517,7 @@ actor YouTubeHLSUploader {
         request.httpMethod = "POST"
         request.setValue(contentType, forHTTPHeaderField: "Content-Type")
         request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
+        startNetworkMonitoring()
 
         var attempt = 1
         let clock = ContinuousClock()
@@ -477,6 +529,7 @@ actor YouTubeHLSUploader {
                 throw YouTubeHLSUploadError.stopped
             }
             lastRetryCount = priorRetryCount + attempt - 1
+            var networkFailure = false
             do {
                 let response = try await transport.send(request, body: body)
                 guard !stopped, !Task.isCancelled else {
@@ -499,6 +552,7 @@ actor YouTubeHLSUploader {
                 }
             } catch {
                 lastHTTPStatus = nil
+                networkFailure = Self.isConnectivityFailure(error)
                 // Network errors are transient and use the same bounded policy as 5xx.
             }
 
@@ -519,9 +573,42 @@ actor YouTubeHLSUploader {
                 ? 1
                 : Double.random(in: (1 - retryPolicy.jitterFraction)...(1 + retryPolicy.jitterFraction))
             let remaining = max(.zero, clock.now.duration(to: retryDeadline))
-            try await sleeper(min(.seconds(baseDelay * jitter), remaining))
+            try await waitBeforeRetry(min(.seconds(baseDelay * jitter), remaining), networkFailure: networkFailure)
             attempt += 1
         }
+    }
+
+    private static func isConnectivityFailure(_ error: any Error) -> Bool {
+        guard let error = error as? URLError else { return false }
+        switch error.code {
+        case .timedOut, .cannotFindHost, .cannotConnectToHost, .networkConnectionLost,
+             .dnsLookupFailed, .notConnectedToInternet, .internationalRoamingOff,
+             .callIsActive, .dataNotAllowed:
+            return true
+        default: return false
+        }
+    }
+
+    private func waitBeforeRetry(_ duration: Duration, networkFailure: Bool) async throws {
+        let delay = Task { [sleeper] in try await sleeper(duration) }
+        retryDelay = delay
+        retryWaitIsForNetwork = networkFailure
+        retryWokenByNetwork = false
+        defer {
+            retryDelay = nil
+            retryWaitIsForNetwork = false
+            retryWokenByNetwork = false
+        }
+        do {
+            try await withTaskCancellationHandler {
+                try await delay.value
+            } onCancel: {
+                delay.cancel()
+            }
+        } catch is CancellationError {
+            guard retryWokenByNetwork, !stopped, !Task.isCancelled else { throw YouTubeHLSUploadError.stopped }
+        }
+        guard !stopped, !Task.isCancelled else { throw YouTubeHLSUploadError.stopped }
     }
 
     private func acquireUploadTurn() async {

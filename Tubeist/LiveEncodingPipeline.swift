@@ -340,7 +340,8 @@ final class LiveEncodingPipeline {
         if let failed = videoEncoder?.failedFrames, failed > encoderFailuresSeen {
             let count = failed - encoderFailuresSeen
             encoderFailuresSeen = failed
-            LOG("The HEVC encoder returned an error for \(count) frame\(count == 1 ? "" : "s"); skipped, and the next frame is a keyframe", level: .warning)
+            let status = videoEncoder?.lastFailureStatus.map(String.init) ?? "unknown"
+            LOG("The HEVC encoder returned an error for \(count) frame\(count == 1 ? "" : "s") (status \(status)); withholding dependent video until a keyframe is confirmed", level: .warning)
         }
         guard let dropped = videoEncoder?.droppedFrames, dropped > encoderDropsSeen else { return }
         let previous = videoDrops

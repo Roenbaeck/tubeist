@@ -3,6 +3,20 @@ import Testing
 @testable import Tubeist
 
 struct VideoDecodeTimelineTests {
+    @Test(arguments: [false, true])
+    func failedStartupAnchorsDecodeLeadToTheFirstSurvivingPicture(allPendingLost: Bool) throws {
+        let duration = CMTime(value: 1, timescale: 30)
+        var timeline = VideoDecodeTimeline(frameDuration: duration)
+        try timeline.configure(reorderFrames: 2)
+        let times = (0..<8).map { CMTimeMultiply(duration, multiplier: Int32($0)) }
+        for time in times.prefix(allPendingLost ? 4 : 8) { timeline.submitted(time) }
+        for index in [0, 3, 2, 1] { try timeline.dropped(presentationTime: times[index]) }
+        if allPendingLost { for time in times.suffix(4) { timeline.submitted(time) } }
+        for (slot, index) in [4, 7, 5, 6].enumerated() {
+            #expect(try timeline.next(presentationTime: times[index]) == times[slot + 2])
+        }
+    }
+
     @Test func irregularCaptureCadenceKeepsDecodeTimesIncreasingAndBeforePresentation() throws {
         let duration = CMTime(value: 1, timescale: 60)
         var timeline = VideoDecodeTimeline(frameDuration: duration)

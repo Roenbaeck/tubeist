@@ -3,6 +3,41 @@ import VideoToolbox
 @testable import Tubeist
 
 struct HEVCEncoderConfigurationTests {
+    @Test func overshootCorrectionUsesWholeWindowsAndIgnoresOutputBeforeTheNewTarget() {
+        var regulator = HEVCBitrateRegulator(bitrate: 1_000_000, frameRate: 30)
+        for frame in 1..<60 { #expect(regulator.observe(frame: frame, byteCount: 12_500) == nil) }
+        #expect(regulator.observe(frame: 60, byteCount: 12_500) == 500_000)
+        regulator.setTarget(600_000, afterFrame: 65)
+        #expect(regulator.applied == 300_000)
+        for frame in 61...125 { #expect(regulator.observe(frame: frame, byteCount: 100_000) == nil) }
+        #expect(regulator.applied == 300_000)
+        for frame in 126..<185 { #expect(regulator.observe(frame: frame, byteCount: 2_500) == nil) }
+        #expect(regulator.observe(frame: 185, byteCount: 2_500) == nil)
+        #expect(regulator.applied == 300_000)
+    }
+
+    @Test func correctionIsBoundedAndRestoresOnlyAfterSustainedHealthyOutput() {
+        var regulator = HEVCBitrateRegulator(bitrate: 1_000_000, frameRate: 30)
+        for frame in 1...60 { _ = regulator.observe(frame: frame, byteCount: 12_500) }
+        for frame in 61...419 { #expect(regulator.observe(frame: frame, byteCount: 1_000) == nil) }
+        #expect(regulator.observe(frame: 420, byteCount: 1_000) == 550_000)
+        #expect(regulator.applied <= regulator.target)
+        for frame in 421...3_000 { _ = regulator.observe(frame: frame, byteCount: 100_000) }
+        #expect(regulator.applied == 50_000)
+        regulator.setTarget(20_000, afterFrame: 3_000)
+        #expect(regulator.applied == 20_000)
+    }
+
+    @Test func encoderDoesNotUseHardRateCapsThatCanDropPictures() throws {
+        var applied: Set<String> = []
+        try HEVCEncoderConfiguration.apply(frameRate: 30, bitrate: 1_000_000, keyframeInterval: 2) { key, _ in
+            applied.insert(key as String)
+            return noErr
+        }
+        #expect(applied.contains(kVTCompressionPropertyKey_AverageBitRate as String))
+        #expect(!applied.contains(kVTCompressionPropertyKey_DataRateLimits as String))
+    }
+
     @Test func camera420NeverAttempts422() throws {
         for pixelFormat in [kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
                             kCVPixelFormatType_420YpCbCr10BiPlanarFullRange,

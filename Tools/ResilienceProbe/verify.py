@@ -135,10 +135,14 @@ for digest, pts in uploaded_audio:
 assert uploaded_audio, "No uploaded AAC packets were checked"
 print(f"AUDIO TIMING PASS: {len(uploaded_audio)} unchanged AAC packets; "
       f"maximum timing error {max(audio_timing_errors) * 1000:.3f} ms")
-if result["scenario"] in ("healthy", "startup-audio-overlap", "short-gaps", "stop-boundary", "network-overflow"):
+if result["scenario"] in ("healthy", "second-stream", "startup-audio-overlap", "short-gaps", "stop-boundary", "network-overflow", "network-preserve", "network-preserve-overflow"):
     assert len(recorded) == result["inputVideoFrames"], (len(recorded), result)
-if result["scenario"] in ("healthy", "startup-audio-overlap", "short-gaps", "stop-boundary"):
+if result["scenario"] in ("healthy", "second-stream", "startup-audio-overlap", "short-gaps", "stop-boundary", "network-preserve"):
     assert uploaded == recorded, "Healthy/repaired media was lost between encoding and upload"
+if result["scenario"] == "second-stream":
+    times = presentation_times(recording)
+    assert 0 <= times[0] < 0.25, "The new stream inherited the previous capture clock"
+    assert times[-1] - times[0] < 3.3, "The idle interval entered the new recording"
 if result["scenario"] == "processing-pressure":
     assert not result["captureRecovery"], "Processing pressure triggered capture recovery"
     assert len(recorded) == result["deliveredVideoFrames"], "Skipped timestamps created duplicate catch-up work"
@@ -160,6 +164,9 @@ if result["scenario"] in ("short-gaps", "both-stall", "mono-recovery"):
 if result["scenario"] == "network-overflow":
     assert len(uploaded) < len(recorded), "The overflow fixture did not discard live content"
     assert result["droppedSegments"] > 0
+if result["scenario"] == "network-preserve-overflow":
+    assert 0 < result["droppedSegments"] <= 6, "Preservation discarded more than the excess backlog"
+    assert len(recorded) - 12 * 30 <= len(uploaded) < len(recorded)
 if result["captureRecovery"] or result["droppedSegments"]:
     playlists = [path.read_text() for path in sorted(folder.glob("playlist_*.m3u8"))]
     assert any("#EXT-X-DISCONTINUITY\n" in text for text in playlists)

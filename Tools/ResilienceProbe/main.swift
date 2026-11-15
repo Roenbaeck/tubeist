@@ -9,13 +9,17 @@ import Foundation
 
     @PipelineActor static func run(folder: URL, scenario: String) async throws {
         if scenario == "watchdog" { try await checkWatchdog(); return }
+        if scenario == "second-stream" { try await checkSecondStream(folder: folder); return }
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let clock = ProbeClock()
         let audioPool = scenario.hasPrefix("audio-pool") ? ProbeAudioCapturePool() : nil
-        let transport = ProbeTransport(folder: folder, blocked: scenario == "network-overflow")
+        let preserves = scenario.hasPrefix("network-preserve")
+        let transport = ProbeTransport(folder: folder, blocked: scenario.hasPrefix("network-"))
         let sink = YouTubeHLSStreamSink()
         try await sink.prepare(endpoint: .manualPrimary(streamKey: "offline-probe"),
-                               sessionIdentifier: "probe", userAgent: "Tubeist/Probe", transport: transport, sleeper: { _ in })
+                               sessionIdentifier: "probe", userAgent: "Tubeist/Probe", transport: transport,
+                               buffering: preserves ? .preserve60 : .stayLive,
+                               bufferDirectory: folder.appendingPathComponent("buffer"), sleeper: { _ in })
         let collector = RecordingCollector()
         let recording = try RecordingAssetWriter(delegate: collector, finalizationFlag: AssetWriterFinalizationFlag())
         let pipeline = LiveEncodingPipeline(now: { clock.read() }, automaticWatchdog: false,
@@ -25,7 +29,8 @@ import Foundation
         try pipeline.start(preset: preset, stream: true, recording: recording)
         let rate = 48_000.0
         let duration = scenario == "stop-boundary" ? 6 + 1.0 / 30
-            : scenario == "network-overflow" ? 70.4 : scenario == "stabilization-changes" ? 33.4 : scenario == "long-recovery" ? 34.4 : 10.4
+            : scenario == "network-preserve" ? 50.4
+            : scenario.hasPrefix("network-") ? 70.4 : scenario == "stabilization-changes" ? 33.4 : scenario == "long-recovery" ? 34.4 : 10.4
         let totalFrames = Int(duration * 30)
         var audioOffset = 0
         var recoveryObserved = false
@@ -118,11 +123,64 @@ import Foundation
             let uploaded = await transport.uploaded
             precondition(uploaded < 10, "Recovery retained excessive live latency")
         }
+        if preserves {
+            precondition(scenario == "network-preserve" ? metrics.droppedFragments == 0 : metrics.droppedFragments > 0)
+            let remaining = try FileManager.default.contentsOfDirectory(atPath: folder.appendingPathComponent("buffer").path)
+            precondition(remaining.isEmpty, "Disk buffer was not cleaned after Stop")
+        }
         let metadata: [String: Any] = ["scenario": scenario, "inputVideoFrames": totalFrames,
             "deliveredVideoFrames": deliveredVideoFrames,
             "droppedSegments": metrics.droppedFragments, "captureRecovery": recoveryObserved]
         try JSONSerialization.data(withJSONObject: metadata).write(to: folder.appendingPathComponent("result.json"))
         print("PASS: \(scenario), recording finalized, \(metrics.droppedFragments) discarded network segments")
+    }
+
+    /// The application keeps one LiveEncodingPipeline across Stop/Start. Move
+    /// both wall and capture clocks ahead two hours while it is idle, then
+    /// require a fresh encoder, output sequence and recording timeline.
+    @PipelineActor static func checkSecondStream(folder: URL) async throws {
+        let clock = ProbeClock()
+        let captured = ProbeSessionFragments()
+        let pipeline = LiveEncodingPipeline(now: { clock.read() }, automaticWatchdog: false,
+            publish: { await captured.append($0) }, streamStopped: { false })
+        let rate = 48_000.0
+        let frameCount = 96
+        for session in 0..<2 {
+            let directory = folder.appendingPathComponent("session-\(session + 1)")
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let epoch = Double(session) * 7200
+            clock.set(epoch)
+            let collector = RecordingCollector()
+            let writer = try RecordingAssetWriter(delegate: collector, finalizationFlag: AssetWriterFinalizationFlag())
+            try pipeline.start(preset: Preset(), stream: true, recording: writer)
+            precondition(pipeline.captureState == .starting)
+            var audioOffset = 0
+            for frame in 0..<frameCount {
+                let time = Double(frame) / 30
+                clock.set(epoch + time)
+                while Double(audioOffset) / rate <= time {
+                    let audio = try ProbeMediaFixtures.makeAudio(offset: audioOffset, frames: 1024, rate: rate)
+                    try await pipeline.appendAudio(retime(audio, to: epoch + 100 + Double(audioOffset) / rate))
+                    audioOffset += 1024
+                }
+                try await pipeline.appendVideo(videoSample(frame: frame, pts: epoch + 100 + time))
+                try await pipeline.checkCapture()
+                try await Task.sleep(for: .milliseconds(5))
+            }
+            try await pipeline.finish(deadline: ContinuousClock.now.advanced(by: .seconds(20)))
+            precondition(!pipeline.isActive && pipeline.captureState == nil)
+            let fragments = await captured.take()
+            precondition(!fragments.isEmpty)
+            for (index, fragment) in fragments.enumerated() {
+                precondition(fragment.sequence == index && !fragment.discontinuity)
+                try fragment.segment.write(to: directory.appendingPathComponent(String(format: "upload_%03d.ts", index)))
+            }
+            try collector.save(to: directory.appendingPathComponent("recording.mp4"))
+            let result: [String: Any] = ["scenario": "second-stream", "inputVideoFrames": frameCount,
+                "droppedSegments": 0, "captureRecovery": false]
+            try JSONSerialization.data(withJSONObject: result).write(to: directory.appendingPathComponent("result.json"))
+            print("PASS: session \(session + 1) after \(Int(epoch)) idle-clock seconds; finalized recording and fresh segment sequence")
+        }
     }
 
     @PipelineActor static func checkWatchdog() async throws {

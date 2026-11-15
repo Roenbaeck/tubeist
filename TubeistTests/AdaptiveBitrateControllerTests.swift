@@ -36,6 +36,91 @@ struct AdaptiveBitrateControllerTests {
         #expect(ladder.next(above: 3_850_000) == 4_800_000)
     }
 
+    @Test(arguments: [StreamBuffering.stayLive, .preserve15, .preserve30, .preserve60])
+    func preservationAddsEmergencyRatesWithoutChangingStartup(buffering: StreamBuffering) {
+        let preset = Preset(name: "4K", width: 3840, height: 2160, frameRate: 30,
+                            keyframeInterval: 2, audioChannels: 2, audioBitrate: 128_000, videoBitrate: 9_700_000)
+        let c = EncodedOutputRouter.makeBitrateController(for: preset, buffering: buffering)
+        #expect(c.qualityFloorBitrate == 3_732_480)
+        #expect(c.targetBitrate == c.qualityFloorBitrate)
+        #expect(c.minimumBitrate == (buffering.preservesFootage ? 250_000 : c.qualityFloorBitrate))
+        #expect(c.ladder.rungs.starts(with: preset.bitrateLadder.rungs))
+        #expect(c.minimumWireRate == (Double(c.minimumBitrate) + 256_000) * 1.08)
+    }
+
+    @Test(arguments: [1_200_000.0, 2_000_000.0, 3_000_000.0])
+    func emergencyRateFollowsCapacityAndReservesSpaceForAudioAndDrain(capacity: Double) {
+        var c = AdaptiveBitrateController(maximumBitrate: 9_700_000, minimumBitrate: 3_732_480,
+            audioBitrate: 256_000, policy: .init(emergencyMinimumBitrate: 250_000))
+        // One slow completion is insufficient; the second confirms congestion.
+        ack(&c, at: 4, capacity: capacity, elapsed: 3)
+        #expect(c.targetBitrate == c.qualityFloorBitrate)
+        ack(&c, at: 8, capacity: capacity, elapsed: 3, bytes: 1_000_000, seconds: 4)
+        let budget = (capacity * 0.65) / 1.08 - 256_000
+        #expect(c.targetBitrate == c.ladder.fitting(budget))
+        #expect(c.targetBitrate < c.qualityFloorBitrate)
+        #expect(c.state == .capacityBelowQualityFloor)
+        let emergencyRate = c.targetBitrate
+        // A lone peak cannot restore quality while a queue still needs draining.
+        ack(&c, at: 10, capacity: 20_000_000, bytes: 900_000, seconds: 3)
+        #expect(c.targetBitrate == emergencyRate)
+    }
+
+    @Test func emergencyRatesRemainBoundedAndHealthyBacklogKeepsTheQualityFloor() {
+        var c = AdaptiveBitrateController(maximumBitrate: 6_000_000, minimumBitrate: 1_000_000,
+            audioBitrate: 256_000, policy: .init(emergencyMinimumBitrate: 250_000))
+        ack(&c, at: 4, capacity: 10_000_000, elapsed: 3, bytes: 10_000_000, seconds: 20)
+        #expect(c.targetBitrate == c.qualityFloorBitrate)
+        for now in [8.0, 12, 16] { ack(&c, at: now, capacity: 100_000, elapsed: 3, bytes: 500_000, seconds: 8) }
+        #expect(c.targetBitrate == 250_000)
+        #expect(c.state == .capacityBelowQualityFloor)
+        c.discardedBacklog(now: 20)
+        #expect(c.targetBitrate == 250_000)
+        var lowCeiling = AdaptiveBitrateController(maximumBitrate: 100_000, minimumBitrate: 250_000,
+            audioBitrate: 128_000, policy: .init(emergencyMinimumBitrate: 250_000))
+        ack(&lowCeiling, at: 4, capacity: 100_000, elapsed: 3, bytes: 500_000, seconds: 8)
+        #expect(lowCeiling.targetBitrate == 100_000)
+    }
+
+    @Test func recoveryKeepsTheBelowFloorIndicatorUntilNormalQualityReturns() {
+        var c = AdaptiveBitrateController(maximumBitrate: 6_000_000, minimumBitrate: 1_000_000,
+            audioBitrate: 128_000, policy: .init(rampsUpAtStartup: false, rampsUpAfterCollapse: false,
+                                             emergencyMinimumBitrate: 250_000))
+        ack(&c, at: 4, capacity: 300_000, elapsed: 3, bytes: 1_000_000, seconds: 8)
+        for now in stride(from: 6.0, through: 120, by: 2) {
+            ack(&c, at: now, capacity: 20_000_000)
+            if c.targetBitrate < c.qualityFloorBitrate { #expect(c.state == .capacityBelowQualityFloor) }
+        }
+        #expect(c.targetBitrate >= c.qualityFloorBitrate)
+        #expect(c.state != .capacityBelowQualityFloor)
+    }
+
+    @Test(arguments: [StreamBuffering.preserve15, .preserve30, .preserve60])
+    func emergencyRatesPreserveFootageOnASustainedWeakLinkAndRecover(buffering: StreamBuffering) {
+        func capacity(_ time: Double) -> Double {
+            if time < 20 || time >= 140 { return 20_000_000 }
+            return time < 80 ? 600_000 : 900_000
+        }
+        let emergency = simulate(seconds: 400, buffering: buffering, capacity: capacity)
+        let normalFloor = simulate(seconds: 400, buffering: buffering, allowsEmergencyBitrate: false, capacity: capacity)
+        // A tenfold collapse still has large pre-cut segments to drain. The
+        // emergency policy must at least halve losses and eventually recover.
+        #expect(emergency.dropped * 2 < normalFloor.dropped)
+        #expect(emergency.rates.filter { (50...75).contains($0.at) }.allSatisfy { $0.rate < 500_000 })
+        #expect(emergency.rates.last?.rate == 6_000_000)
+    }
+
+    @Test(arguments: [StreamBuffering.preserve30, .preserve60])
+    func aModerateCollapseBelowTheNormalFloorPreservesEverySegment(buffering: StreamBuffering) {
+        let trace = simulate(seconds: 240, maximum: 2_000_000, buffering: buffering) { time in
+            if time < 20 || time >= 140 { return 20_000_000 }
+            return time < 80 ? 600_000 : 900_000
+        }
+        #expect(trace.dropped == 0)
+        #expect(trace.maximumWaiting < buffering.duration)
+        #expect(trace.rates.last?.rate == 2_000_000)
+    }
+
     @Test func pollingOneSlowCompletionDoesNotCountItTwice() {
         var c = controller()
         ack(&c, at: 3, capacity: 4_000_000, elapsed: 3)
@@ -359,7 +444,8 @@ struct AdaptiveBitrateControllerTests {
     /// This includes the encoder/segment delay missing from instantaneous models.
     /// Overflow mirrors the sink: queued media duration or estimated drain time.
     private func simulate(seconds: Double, maximum: Int = 6_000_000, rampsUpAtStartup: Bool = true,
-                          rampsUpAfterCollapse: Bool = true, capacity: (Double) -> Double) -> Trace {
+                          rampsUpAfterCollapse: Bool = true, buffering: StreamBuffering = .stayLive,
+                          allowsEmergencyBitrate: Bool = true, capacity: (Double) -> Double) -> Trace {
         struct Segment {
             let bytes: Int
             let duration = 2.0
@@ -369,7 +455,8 @@ struct AdaptiveBitrateControllerTests {
         }
         var c = AdaptiveBitrateController(maximumBitrate: maximum, minimumBitrate: 1_000_000, audioBitrate: 128_000,
                                           policy: .init(rampsUpAtStartup: rampsUpAtStartup,
-                                                        rampsUpAfterCollapse: rampsUpAfterCollapse))
+                                                        rampsUpAfterCollapse: rampsUpAfterCollapse,
+                                                        emergencyMinimumBitrate: buffering.preservesFootage && allowsEmergencyBitrate ? 250_000 : nil))
         var queue: [Segment] = []
         var current: Segment?
         var nextArrival = 2.0
@@ -388,7 +475,17 @@ struct AdaptiveBitrateControllerTests {
                 let drain = queue.isEmpty ? nil : c.estimatedDrainSeconds(
                     waitingBytes: queue.reduce(Int(bits / 8)) { $0 + $1.bytes }, inFlightBytes: current?.bytes ?? 0,
                     inFlightSeconds: current.map { now - $0.started } ?? 0)
-                if queue.count >= 5 || drain ?? 0 > 10 {
+                if buffering.preservesFootage {
+                    var dropped = 0
+                    while Double(queue.count + 1) * 2 > buffering.duration, !queue.isEmpty {
+                        queue.removeFirst()
+                        dropped += 1
+                    }
+                    if dropped > 0 {
+                        trace.dropped += dropped
+                        c.discardedBacklog(now: now)
+                    }
+                } else if queue.count >= 5 || drain ?? 0 > 10 {
                     trace.dropped += queue.count
                     queue.removeAll()
                     c.discardedBacklog(now: now)
@@ -417,7 +514,7 @@ struct AdaptiveBitrateControllerTests {
             if current == nil, !queue.isEmpty {
                 // Overflow during a stall, or an ACK revealing an undeliverable
                 // backlog: resume with the newest segment, as the sink does.
-                if queue.count > 1, needsLiveCatchup || c.estimatedDrainSeconds(
+                if !buffering.preservesFootage, queue.count > 1, needsLiveCatchup || c.estimatedDrainSeconds(
                     waitingBytes: queue.reduce(0) { $0 + $1.bytes }, inFlightBytes: 0, inFlightSeconds: 0) ?? 0 > 10 {
                     trace.dropped += queue.count - 1
                     queue.removeFirst(queue.count - 1)

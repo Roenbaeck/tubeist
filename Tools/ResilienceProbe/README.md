@@ -12,6 +12,8 @@ makes capture faults deterministic; recording and encoding use the real framewor
 The scenarios cover:
 
 - Normal capture and local recording.
+- A second stream on the same pipeline after Stop and a simulated two-hour
+  idle interval, requiring fresh encoders, segment numbering and media timing.
 - Audio beginning before the first video frame, requiring a partial PCM block
   to be trimmed without relying on sample-size metadata.
 - Missing 200 ms of audio/video, duplicate samples and late samples.
@@ -26,6 +28,9 @@ The scenarios cover:
 - Startup and recovery with only 16 capture-owned audio buffers available;
   holding the originals must not starve the simulated microphone.
 - A network outage long enough to overflow the local segment queue.
+- Disk buffering preserving all 50 seconds of waiting footage through Stop,
+  plus a 70-second outage that removes only the excess over the 60-second budget.
+  Both cases verify decoded video, audio timing and temporary-file cleanup.
 - An independent watchdog detecting total silence, remaining active across
   encoder recovery, reporting a terminal stall once, and stopping between sessions.
 

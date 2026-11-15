@@ -241,6 +241,7 @@ private struct AppliedSettingsSnapshot {
     let record: Bool
     let highlightsEnabled: Bool
     let inputSyncsWithOutput: Bool
+    let streamBuffering: StreamBuffering
     let prefers422Chroma: Bool
     let areSystemMetricsAtTop: Bool
     let measuredBandwidth: Int
@@ -285,6 +286,7 @@ private struct AppliedSettingsSnapshot {
             record: Settings.record,
             highlightsEnabled: Settings.highlightsEnabled,
             inputSyncsWithOutput: Settings.isInputSyncedWithOutput,
+            streamBuffering: Settings.streamBuffering,
             prefers422Chroma: Settings.prefers422Chroma,
             areSystemMetricsAtTop: Settings.areSystemMetricsAtTop,
             measuredBandwidth: Settings.measuredBandwidth,
@@ -315,6 +317,7 @@ private struct AppliedSettingsSnapshot {
             record: Settings.record,
             highlightsEnabled: Settings.highlightsEnabled,
             inputSyncsWithOutput: Settings.isInputSyncedWithOutput,
+            streamBuffering: Settings.streamBuffering,
             prefers422Chroma: Settings.prefers422Chroma,
             areSystemMetricsAtTop: Settings.areSystemMetricsAtTop,
             measuredBandwidth: Settings.measuredBandwidth,
@@ -344,6 +347,7 @@ private struct AppliedSettingsSnapshot {
         Settings.record = record
         Settings.highlightsEnabled = highlightsEnabled
         Settings.isInputSyncedWithOutput = inputSyncsWithOutput
+        Settings.streamBuffering = streamBuffering
         Settings.prefers422Chroma = prefers422Chroma
         Settings.areSystemMetricsAtTop = areSystemMetricsAtTop
         Settings.measuredBandwidth = measuredBandwidth
@@ -392,6 +396,7 @@ struct SettingsView: View {
     @State private var stream: Bool = Settings.stream
     @State private var record: Bool = Settings.record
     @State private var highlightsEnabled = Settings.highlightsEnabled
+    @State private var streamBuffering = Settings.streamBuffering
     @State private var inputSyncsWithOutput: Bool = Settings.isInputSyncedWithOutput
     @State private var prefers422Chroma: Bool = Settings.prefers422Chroma
     @State private var areSystemMetricsAtTop = Settings.areSystemMetricsAtTop
@@ -710,6 +715,20 @@ struct SettingsView: View {
         }
 
         streamingSettingsSection
+
+        if stream {
+            Section(header: Text("Upload Buffering"), footer: Text(streamBuffering.preservesFootage
+                ? "Saves waiting video temporarily on this iPhone during slow uploads. Uploads start immediately. On weak connections, picture quality may fall further to preserve footage, including in a simultaneous recording. A longer buffer may increase stream delay and the time needed to stop. When full, the oldest waiting footage is removed."
+                : "Prioritizes staying close to live. Older waiting footage may be skipped after a network slowdown. Choose a preservation option to keep more footage and allow extra delay.")) {
+                Picker("Buffering", selection: $streamBuffering) {
+                    ForEach(StreamBuffering.allCases, id: \.self) { option in
+                        Text(option.label).tag(option)
+                    }
+                }
+                .accessibilityIdentifier("stream-buffering")
+                .accessibilityValue(streamBuffering.label)
+            }
+        }
 
         Section(
             header: Text("Highlights"),
@@ -1854,6 +1873,7 @@ struct SettingsView: View {
         Settings.record = record
         Settings.highlightsEnabled = highlightsEnabled
         Settings.isInputSyncedWithOutput = inputSyncsWithOutput
+        Settings.streamBuffering = streamBuffering
         Settings.prefers422Chroma = prefers422Chroma
         Settings.areSystemMetricsAtTop = areSystemMetricsAtTop
         Settings.measuredBandwidth = measuredBandwidth
@@ -2028,6 +2048,11 @@ final class Settings: Sendable {
     static var highlightsEnabled: Bool {
         get { bool(forKey: "HighlightsEnabled", default: false) }
         set { UserDefaults.standard.set(newValue, forKey: "HighlightsEnabled") }
+    }
+
+    static var streamBuffering: StreamBuffering {
+        get { StreamBuffering.load() }
+        set { newValue.save() }
     }
 
     // YouTube's HDR HLS guide documents a 10-bit 4:2:0 requirement. Tubeist

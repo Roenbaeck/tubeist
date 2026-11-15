@@ -9,10 +9,18 @@ struct Preset: Sendable {
     let width = 320, height = 180
     let frameRate = 30.0, keyframeInterval = 2.0
     let bitrateLadder = BitrateLadder(maximum: 1_000_000, minimum: 250_000)
+    let rampsUpAtStartup = true
     var audioChannels = 2
     let audioBitrate = 64_000, videoBitrate = 1_000_000
 }
-enum Settings { static let selectedPreset = Preset() }
+enum Settings {
+    static let selectedPreset = Preset()
+    static let streamBuffering = StreamBuffering.stayLive
+}
+@PipelineActor final class HighlightRecorder {
+    static let shared = HighlightRecorder()
+    func stopAfterFailure() {}
+}
 enum LogLevel { case debug, info, warning, error }
 func LOG(_ message: String, level: LogLevel) { if level != .debug { print(message) } }
 enum StreamHealth { case unusable, degraded }
@@ -36,6 +44,15 @@ final class ProbeClock: @unchecked Sendable {
 actor ProbeFailures {
     private(set) var count = 0
     func record(_ error: any Error) { count += 1 }
+}
+
+actor ProbeSessionFragments {
+    private var fragments: [Fragment] = []
+    func append(_ fragment: Fragment) { fragments.append(fragment) }
+    func take() -> [Fragment] {
+        defer { fragments.removeAll() }
+        return fragments
+    }
 }
 
 /// Models scarce capture-owned storage. A slot returns only when every sample

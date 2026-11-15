@@ -20,6 +20,12 @@ struct BitrateLadder: Sendable, Hashable {
         self.rungs = rungs
     }
 
+    /// Keep all normal quality rungs, including their exact floor, when adding
+    /// emergency rates below them.
+    init(extending ladder: BitrateLadder, minimum: Int) {
+        rungs = ladder.rungs + BitrateLadder(maximum: ladder.minimum, minimum: minimum).rungs.dropFirst()
+    }
+
     func fitting(_ budget: Double) -> Int {
         rungs.first { Double($0) <= budget } ?? minimum
     }
@@ -56,6 +62,10 @@ struct AdaptiveBitrateController: Sendable {
         var collapseRecurrenceSeconds = 180.0
         var rampHeadroom = 0.9
         var rampMaximumStep = 4.0
+        /// Preservation mode may sacrifice quality when the normal floor cannot
+        /// fit the link. Startup still uses the normal floor.
+        var emergencyMinimumBitrate: Int? = nil
+        var emergencyHeadroom = 0.75
     }
 
     enum State: String, Sendable {
@@ -63,9 +73,10 @@ struct AdaptiveBitrateController: Sendable {
     }
 
     let ladder: BitrateLadder
+    let qualityFloorBitrate: Int
     var maximumBitrate: Int { ladder.maximum }
     var minimumBitrate: Int { ladder.minimum }
-    /// Link throughput needed to sustain the quality floor, audio and overhead included.
+    /// Slowest supported link, including emergency rates, audio and overhead.
     var minimumWireRate: Double { wireRate(minimumBitrate) }
     let audioBitrate: Int
     let policy: Policy
@@ -113,7 +124,8 @@ struct AdaptiveBitrateController: Sendable {
     }
 
     init(ladder: BitrateLadder, audioBitrate: Int, policy: Policy = Policy()) {
-        self.ladder = ladder
+        qualityFloorBitrate = ladder.minimum
+        self.ladder = BitrateLadder(extending: ladder, minimum: policy.emergencyMinimumBitrate ?? ladder.minimum)
         self.audioBitrate = max(0, audioBitrate)
         self.policy = policy
         if policy.rampsUpAtStartup { ramp = Ramp(ceiling: ladder.maximum, afterCollapse: false) }
@@ -191,7 +203,13 @@ struct AdaptiveBitrateController: Sendable {
             let budget = (policy.headroom * capacity - Double(waitingBytes) * 8 / policy.drainSeconds)
                 / policy.wireOverhead - Double(audioBitrate)
             if episodeTarget == nil { episodeTarget = targetBitrate }
-            var desired = ladder.fitting(budget)
+            // A large queue alone should not destroy picture quality on a link
+            // that can still sustain the normal floor. Below that capacity,
+            // reserve 25% for recovery, plus up to 10% more to drain waiting work.
+            var desired = max(qualityFloorBitrate, ladder.fitting(budget))
+            if let emergency = emergencyTarget(capacity: capacity, waitingBytes: waitingBytes) {
+                desired = emergency
+            }
             if let prior = increaseFrom, now - increaseAt < policy.failedIncreaseCooldown {
                 desired = min(desired, prior)
                 increasesBlockedUntil = now + policy.failedIncreaseCooldown
@@ -206,7 +224,8 @@ struct AdaptiveBitrateController: Sendable {
                 stableSince = nil
                 increaseFrom = nil
             }
-            state = budget < Double(minimumBitrate) ? .capacityBelowQualityFloor : .catchingUp
+            state = budget < Double(qualityFloorBitrate) || targetBitrate < qualityFloorBitrate
+                ? .capacityBelowQualityFloor : .catchingUp
             congested(now: now)
         }
 
@@ -227,7 +246,7 @@ struct AdaptiveBitrateController: Sendable {
         }
         let sustainable = policy.headroom * min(latestThroughput, fastThroughput) / policy.wireOverhead
             - Double(audioBitrate)
-        state = targetBitrate == minimumBitrate && sustainable < Double(minimumBitrate)
+        state = targetBitrate < qualityFloorBitrate || (targetBitrate == qualityFloorBitrate && sustainable < Double(qualityFloorBitrate))
             ? .capacityBelowQualityFloor : (targetBitrate == maximumBitrate ? .steady : .recovering)
         evidence.append((now, latestThroughput))
         evidence.removeAll { now - $0.at > policy.exploreSeconds + 2 * policy.segmentSeconds }
@@ -293,7 +312,8 @@ struct AdaptiveBitrateController: Sendable {
             lastChange = now
             stableSince = nil
             evidence.removeAll()
-            state = desired == maximumBitrate ? .steady : .recovering
+            state = desired < qualityFloorBitrate ? .capacityBelowQualityFloor
+                : (desired == maximumBitrate ? .steady : .recovering)
         }
     }
 
@@ -314,8 +334,10 @@ struct AdaptiveBitrateController: Sendable {
     mutating func discardedBacklog(now: Double) {
         guard now.isFinite else { return }
         if episodeTarget == nil { episodeTarget = targetBitrate }
-        targetBitrate = minimumBitrate
-        state = .catchingUp
+        let capacity = latestThroughput.flatMap { last in fastThroughput.map { min(last, $0) } }
+        let floor = capacity.flatMap { emergencyTarget(capacity: $0, waitingBytes: 0) } ?? qualityFloorBitrate
+        targetBitrate = min(targetBitrate, floor)
+        state = targetBitrate < qualityFloorBitrate ? .capacityBelowQualityFloor : .catchingUp
         congested(now: now)
         lastChange = now
         lastReduction = now
@@ -346,5 +368,13 @@ struct AdaptiveBitrateController: Sendable {
 
     private func wireRate(_ video: Int) -> Double {
         (Double(video) + Double(audioBitrate)) * policy.wireOverhead
+    }
+
+    private func emergencyTarget(capacity: Double, waitingBytes: Int) -> Int? {
+        guard policy.emergencyMinimumBitrate != nil,
+              policy.headroom * capacity < wireRate(qualityFloorBitrate) else { return nil }
+        let drainReserve = min(Double(waitingBytes) * 8 / policy.drainSeconds, capacity * 0.1)
+        let budget = (policy.emergencyHeadroom * capacity - drainReserve) / policy.wireOverhead - Double(audioBitrate)
+        return min(qualityFloorBitrate, ladder.fitting(budget))
     }
 }
