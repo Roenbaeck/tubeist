@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#142024">
+  <title>Support &amp; getting started — Tubeist</title>
+  <meta name="description" content="Set up Tubeist for recording and YouTube streaming. Find device requirements, connection advice, purchase help and a direct support contact.">
+  <link rel="canonical" href="https://www.uptochange.com/tubeist/support.html">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="Support &amp; getting started — Tubeist">
+  <meta property="og:description" content="Set up Tubeist for recording and YouTube streaming. Find device requirements, connection advice, purchase help and a direct support contact.">
+  <meta property="og:url" content="https://www.uptochange.com/tubeist/support.html">
+  <meta property="og:image" content="https://www.uptochange.com/tubeist/assets/social.jpg">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="Tubeist — HDR recording and YouTube streaming for iPhone">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="icon" href="assets/favicon.png" type="image/png">
+  <link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
+  <link rel="stylesheet" href="assets/site.css">
+</head>
+<body class="document">
+  <a class="skip" href="#main">Skip to content</a>
+  <header class="site-header">
+    <a class="wordmark" href="./" aria-label="Tubeist home"><img src="assets/icon.png" width="40" height="40" alt="">Tubeist<span class="wordmark-dot" aria-hidden="true">.</span></a>
+    <nav aria-label="Main navigation"><a href="./#possibilities">Overview</a><a href="./#get-started">Get started</a><a href="support.html" aria-current="page">Support</a></nav>
+  </header>
+  <main id="main">
+    <article class="document-wrap">
+      <p class="eyebrow">From setup to the final frame</p><h1>Tubeist support</h1>
+      <p class="lede">A clear picture starts with a little preparation.</p>
+      <div class="contact-panel"><h2>Get in touch</h2><p>Email <a href="mailto:support@uptochange.com?subject=Tubeist%20support">support@uptochange.com</a>. Include your iPhone model, iOS and Tubeist versions, selected preset, and what happened.</p><p class="small-note">Please omit stream keys, authorization tokens and private recordings. Review screenshots and copied logs before sharing them.</p><p>You can also join the <a href="https://discord.gg/W48k2rSvr8">Tubeist community on Discord</a> or <a href="https://github.com/Roenbaeck/tubeist/issues">report an issue on GitHub</a>.</p></div>
+      <nav class="document-nav" aria-label="On this page"><a href="#requirements">Requirements</a><a href="#get-started">First recording</a><a href="#youtube">Go live</a><a href="#connection">Connections</a><a href="#questions">Common questions</a></nav>
+
+      <h2 id="requirements">What you need</h2>
+      <ul><li>An iPhone running iOS 18 or later, with an HDR-capable camera format. Supported presets depend on the phone and selected camera.</li><li>Camera and Microphone permission, plus enough local storage for recordings or buffered footage.</li><li>For streaming: an internet connection with sufficient upload bandwidth and a YouTube channel that is eligible and enabled for live streaming.</li><li>For Watch features: a paired Apple Watch running watchOS 11 or later. The Watch is optional.</li></ul>
+      <p>Tubeist has a landscape camera interface. It is designed for longer broadcasts where picture quality matters more than very low delay.</p>
+
+      <h2 id="get-started">Make your first recording</h2>
+      <ol><li>Open Tubeist and allow Camera and Microphone access.</li><li>Open Settings. Under <strong>YouTube Streaming and Recording</strong>, choose <strong>Record Only</strong>.</li><li>Select a preset supported by your phone, then tap <strong>Save</strong>.</li><li>Frame the shot and start recording. Keep Tubeist in the foreground.</li><li>Tap Stop when finished. Wait for the orange stopping state to finish before closing the app.</li></ol>
+      <p>Recordings are saved in Tubeist’s local Documents folder, accessible in the Files app under <strong>On My iPhone → Tubeist</strong>. They are not automatically copied to Photos. You do not need Google sign-in or a YouTube account for local recording.</p>
+
+      <h2 id="youtube">Stream to YouTube</h2>
+      <p>First enable live streaming for your channel in <a href="https://studio.youtube.com/">YouTube Studio</a>. Tubeist cannot activate or verify a channel for you.</p>
+      <ol><li>In Tubeist Settings, choose Stream Only or Stream and Record.</li><li>Choose <strong>Sign in with Google</strong>, then <strong>Create stream key</strong>. If a reusable Tubeist key already exists, <strong>Use a Tubeist stream key</strong> can select it.</li><li>Check the title, visibility, audience and other broadcast preferences. New broadcast drafts default to private.</li><li>Choose a suitable preset and tap <strong>Save</strong>. Saving stores your preferences locally; tapping Start prepares the broadcast on YouTube.</li><li>Start a private test stream. Check video and audio in YouTube Studio before a real event.</li><li>Keep Tubeist open while streaming and while Stop finishes. YouTube may take additional time to process the archive.</li></ol>
+      <p><strong>Already have a key?</strong> Paste an existing YouTube <strong>HLS</strong> stream key. Google sign-in is optional for this route, but you must prepare and finish the broadcast in YouTube yourself. RTMP and RTMPS keys are not interchangeable with HLS keys. See <a href="https://developers.google.com/youtube/v3/live/guides/hls-ingestion">YouTube’s HLS ingestion guide</a>.</p>
+
+      <h2 id="connection">When the connection gets difficult</h2>
+      <p>Choose a preset your upload connection can sustain. Tubeist lowers video bitrate when uploads fall behind and raises quality as the connection recovers. This can also change the quality of a simultaneous local recording.</p>
+      <p>In <strong>Settings → Upload Buffering</strong>, Stay live prioritizes keeping up with the event. Preservation options keep up to 15, 30 or 60 seconds of waiting footage during slow uploads, at the cost of extra delay. A prolonged outage can still lose footage. Temporary upload buffers are not saved recordings.</p>
+      <p>For long sessions, watch temperature, battery and upload health. Battery Saving Mode reduces display activity while Tubeist stays in the foreground. Locking the phone or leaving the app can interrupt camera capture.</p>
+
+      <h2 id="questions">Common questions</h2>
+      <div class="faq">
+        <details><summary>Can I use Tubeist commercially?</summary><div><p>Yes. You may use Tubeist for paid productions, business work, monetized channels and personal projects. No separate permission, commercial licence fee or royalty is required by Up to Change. See <a href="licence.html">use and licensing</a>.</p></div></details>
+        <details><summary>What is free, and what is paid?</summary><div><p>Recording, YouTube streaming, camera controls and web overlays are included in the free app. Styles and Effects is an optional one-time in-app purchase that unlocks the visual styles and effects. There is no subscription. The App Store shows the current price in your region.</p></div></details>
+        <details><summary>I bought the effects. How do I get them back?</summary><div><p>Tubeist checks your App Store purchases automatically when it opens. Use the Apple Account that made the purchase, check your connection, and reopen the app. If the effects remain locked, contact support. The current app has no separate Restore Purchases button.</p></div></details>
+        <details><summary>Why is Start unavailable?</summary><div><p>Check Camera and Microphone permissions, the selected camera and preset, and your YouTube HLS key if streaming is enabled. Ensure that your channel is enabled for live streaming. Read any on-screen error, then open Journal for details.</p></div></details>
+        <details><summary>Can I stream to Twitch or through a relay?</summary><div><p>The current app streams directly to YouTube over HLS. It does not need an HLS relay and does not offer Twitch or generic RTMP output. Older documentation describing those setups does not describe the current app.</p></div></details>
+        <details><summary>Can I leave the app or lock the phone?</summary><div><p>Keep Tubeist open and the phone unlocked during a stream or recording. iOS limits camera capture in the background. Battery Saving Mode is the option for reducing display power while keeping Tubeist in the foreground.</p></div></details>
+        <details><summary>How do overlays and effects work?</summary><div><p>Add your chosen web overlay URLs in Settings and save. Overlays can provide scores, graphics or other live information. Providers may have their own accounts, charges and privacy policies. The top overlay in the list appears above those below it. The optional Styles and Effects purchase adds visual treatments to the output.</p></div></details>
+        <details><summary>How do I use Apple Watch and highlights?</summary><div><p>Enable Apple Watch and Live Activity in Settings, and allow Live Activities on your devices. Standard shows session time and health; Full adds available streaming information. Display and refresh timing depend on the system.</p><p>Highlights are optional and off by default. Enable them before a session to save short clips around a moment from the iPhone or supported Live Activity controls. Clips are stored locally in Tubeist’s Documents folder.</p></div></details>
+        <details><summary>How do I disconnect YouTube?</summary><div><p>Use <strong>Settings → Privacy and Credentials → Remove YouTube Credentials</strong> to remove the app’s stored key and Google authorization. You can also revoke Tubeist’s access from your <a href="https://myaccount.google.com/connections">Google Account connections</a>. Removing local credentials does not delete broadcasts stored by YouTube.</p></div></details>
+      </div>
+      <h2>More detail</h2><p>See the <a href="https://github.com/Roenbaeck/tubeist#readme">project documentation</a> for technical details, or watch <a href="https://www.youtube.com/playlist?list=PLFnkPgO2HxdAp_YiFVSWVpyak--0y6m5U">broadcasts made with Tubeist</a>. For how your information is handled, read the <a href="privacy-policy.html">privacy policy</a>.</p>
+    </article>
+</main>
+  <footer class="site-footer">
+    <div class="footer-brand"><a class="wordmark" href="./">Tubeist<span class="wordmark-dot" aria-hidden="true">.</span></a><p>Bring the whole event.</p></div>
+    <nav aria-label="Footer navigation"><a href="support.html">Support</a><a href="privacy-policy.html">Privacy</a><a href="licence.html">Use &amp; licence</a><a href="https://github.com/Roenbaeck/tubeist">Source code <span aria-hidden="true">↗</span></a><a href="mailto:support@uptochange.com">Get in touch <span aria-hidden="true">↗</span></a></nav>
+    <p class="copyright">© 2026 <a href="https://www.uptochange.com/">Up to Change AB</a>. Developed by Lars Rönnbäck.<br>iPhone, Apple Watch and App Store are trademarks of Apple Inc. YouTube is a trademark of Google LLC. Tubeist is an independent app.</p>
+  </footer>
+</body>
+</html>
