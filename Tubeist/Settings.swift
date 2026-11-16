@@ -850,7 +850,7 @@ struct SettingsView: View {
         Section(header: Text("Privacy and Credentials"), footer: Text("Tubeist stores the HLS stream key and optional Google authorization in the iOS Keychain. Removing them disables streaming until a new key is entered.")) {
             Link(
                 "Read the Tubeist Privacy Policy",
-                destination: URL(string: "https://github.com/Roenbaeck/tubeist/blob/main/PRIVACY.md")!
+                destination: URL(string: "https://www.uptochange.com/tubeist/privacy-policy.html")!
             )
             if !isReadOnly, !streamKeyManager.currentKey.isEmpty || youtubeService.isSignedIn {
                 Button("Remove YouTube Credentials", role: .destructive) {
@@ -885,6 +885,15 @@ struct SettingsView: View {
                     }
                 }
             }
+        }
+
+        Section(
+            header: Text("About Tubeist"),
+            footer: Text("Published by Up to Change AB. Developed by Lars Rönnbäck.")
+        ) {
+            Link("Tubeist Website", destination: URL(string: "https://www.uptochange.com/tubeist/")!)
+            Link("Support", destination: URL(string: "https://www.uptochange.com/tubeist/support.html")!)
+            Link("Use and Licence", destination: URL(string: "https://www.uptochange.com/tubeist/licence.html")!)
         }
     }
 

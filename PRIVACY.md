@@ -1,5 +1,9 @@
 # Privacy Policy for Tubeist
 
+The current policy is published at
+[uptochange.com/tubeist/privacy-policy.html](https://www.uptochange.com/tubeist/privacy-policy.html).
+The earlier policy below remains available for links from existing app versions.
+
 **Effective Date:** 2026-08-19
 
 Thank you for using Tubeist. This policy explains what the app processes, where

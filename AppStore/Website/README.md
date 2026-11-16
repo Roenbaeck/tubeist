@@ -41,11 +41,16 @@ email link and support disclosures. Then update the relevant services:
 | App Store Connect privacy | `https://www.uptochange.com/tubeist/privacy-policy.html` |
 | App licence / use | `https://www.uptochange.com/tubeist/licence.html` |
 
-This delivery does not change App Store Connect, the submitted app, Google
-OAuth configuration, the existing GitHub privacy policy, or the live
-subside.com website. The native app still opens the GitHub privacy policy.
-Once the new site is live, the in-app privacy link can move to the new URL
-in a future app update, and the GitHub policy can point readers there.
+The website is live at the URLs above. The app source links to the new
+privacy policy from Settings → Privacy and Credentials, and to the homepage,
+support and licence from Settings → About Tubeist. These native links will
+ship with the next app build. The repository privacy policy also directs
+readers of existing app versions to the current hosted policy.
+
+App Store Connect marketing, support and privacy URLs are managed separately
+from the app binary. Updating these URLs does not replace a submitted build.
+Google OAuth branding and any old subside.com pages are separate migration
+steps, described below.
 
 If Tubeist's Google OAuth branding uses subside.com, update its homepage,
 privacy and terms URLs to these deployed pages through Google Cloud's

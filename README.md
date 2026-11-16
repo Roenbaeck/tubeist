@@ -27,6 +27,14 @@ Tubeist is designed for events, sports, education, performances, and other long-
 - Built-in image styles and effects
 - Optional Google sign-in for YouTube broadcast discovery and management
 
+## Website and support
+
+Visit the [Tubeist website](https://www.uptochange.com/tubeist/) for an overview
+and the [support guide](https://www.uptochange.com/tubeist/support.html) for setup
+and troubleshooting. You can contact [support@uptochange.com](mailto:support@uptochange.com).
+Personal and commercial use are welcome; see
+[use and licensing](https://www.uptochange.com/tubeist/licence.html).
+
 ## Installation
 
 Tubeist is available on the [App Store](https://apps.apple.com/us/app/tubeist/id6740208994), and public builds are also distributed through [TestFlight](https://testflight.apple.com/join/atDHXHWy).
@@ -132,7 +140,7 @@ closes. Returning from the background with Settings still open keeps capture pau
 
 Stream keys and authentication credentials are stored using iOS-provided secure storage. Tubeist redacts stream keys, complete ingestion URLs, and OAuth tokens from its diagnostic output. Never include those credentials—or private recordings—in an issue or bug report.
 
-See the [privacy policy](PRIVACY.md) for details about data handling.
+See the [privacy policy](https://www.uptochange.com/tubeist/privacy-policy.html) for details about data handling.
 
 ## Troubleshooting
 
