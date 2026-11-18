@@ -194,7 +194,11 @@ actor YouTubeHLSStreamSink {
                 // extra segment's worth of free disk space to roll forward.
                 queue.append(BufferedStreamFragment(fragment))
                 try trimPreservedMedia()
-                queue[queue.count - 1] = try diskBuffer.store(fragment)
+                // The idle worker takes this fragment directly. Only footage
+                // waiting behind another transaction needs disk storage.
+                if isProcessing {
+                    queue[queue.count - 1] = try diskBuffer.store(fragment)
+                }
             } else {
                 if queue.count >= Self.maximumQueuedFragments ||
                     queue.reduce(fragment.duration, { $0 + $1.duration }) > Self.maximumQueuedDuration ||
@@ -248,6 +252,7 @@ actor YouTubeHLSStreamSink {
     }
 
     private func discardQueuedMedia(before endIndex: Int) throws {
+        guard endIndex > 0 else { return }
         var discarded = 0
 #if DEBUG
         var events: [(sequence: Int, total: Int)] = []

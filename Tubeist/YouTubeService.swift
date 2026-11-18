@@ -37,6 +37,14 @@ struct YouTubeBroadcast: Identifiable, Sendable, Equatable {
     var thumbnailURL: String? = nil
     var isDefaultBroadcast: Bool = false
     var broadcastDescription: String? = nil
+    var etag: String? = nil
+    var categoryId: String? = nil
+    var scheduledEndTime: String? = nil
+    var closedCaptionsType: String? = nil
+    var projection: String? = nil
+    var mesh: String? = nil
+    var stereoLayout: String? = nil
+    var availabilityConfig: YouTubeBroadcastAvailability? = nil
 
     /// A local template, never a remote broadcast ID or a status-polling target.
     static func draft(for stream: YouTubeStream) -> YouTubeBroadcast {
@@ -151,6 +159,11 @@ struct YouTubeStreamingPreparation: Sendable, Equatable {
     var warnings: [String] = []
 }
 
+enum YouTubeBroadcastStatusSource: Equatable {
+    case session(YouTubeHealthTarget)
+    case savedKey(String)
+}
+
 /// Captured at Start; completion must never follow a later Settings selection.
 struct YouTubeBroadcastCompletionTarget: Sendable, Equatable {
     let id: String
@@ -250,6 +263,8 @@ struct YouTubeBroadcastResource: Decodable, Sendable {
 
         let title: String?
         let scheduledStartTime: String?
+        let scheduledEndTime: String?
+        let categoryId: String?
         let actualStartTime: String?
         let publishedAt: String?
         let thumbnails: Thumbnails?
@@ -264,7 +279,7 @@ struct YouTubeBroadcastResource: Decodable, Sendable {
     }
 
     struct ContentDetails: Decodable, Sendable {
-        struct MonitorStream: Decodable, Sendable {
+        struct MonitorStream: Codable, Sendable, Equatable {
             let enableMonitorStream: Bool?
             let broadcastStreamDelayMs: Int?
         }
@@ -278,12 +293,19 @@ struct YouTubeBroadcastResource: Decodable, Sendable {
         let recordFromStart: Bool?
         let enableAutoStart: Bool?
         let enableAutoStop: Bool?
+        let closedCaptionsType: String?
+        let enableClosedCaptions: Bool?
+        let projection: String?
+        let mesh: String?
+        let stereoLayout: String?
+        let availabilityConfig: YouTubeBroadcastAvailability?
     }
 
     let id: String?
     let snippet: Snippet?
     let status: Status?
     let contentDetails: ContentDetails?
+    let etag: String?
 
     var broadcast: YouTubeBroadcast? {
         guard let id, let snippet else {
@@ -319,8 +341,96 @@ struct YouTubeBroadcastResource: Decodable, Sendable {
             selfDeclaredMadeForKids: status?.selfDeclaredMadeForKids,
             thumbnailURL: snippet.thumbnails?.bestURL,
             isDefaultBroadcast: snippet.isDefaultBroadcast ?? false,
-            broadcastDescription: snippet.description
+            broadcastDescription: snippet.description,
+            etag: etag,
+            categoryId: snippet.categoryId,
+            scheduledEndTime: snippet.scheduledEndTime,
+            closedCaptionsType: contentDetails?.closedCaptionsType ?? contentDetails?.enableClosedCaptions.map {
+                $0 ? "closedCaptionsHttpPost" : "closedCaptionsDisabled"
+            },
+            projection: contentDetails?.projection,
+            mesh: contentDetails?.mesh,
+            stereoLayout: contentDetails?.stereoLayout,
+            availabilityConfig: contentDetails?.availabilityConfig
         )
+    }
+}
+
+struct YouTubeBroadcastAvailability: Codable, Equatable, Sendable {
+    struct Interval: Codable, Equatable, Sendable {
+        let startTime: String?
+        let endTime: String?
+    }
+    struct GlobalConfig: Codable, Equatable, Sendable {
+        let excludedRegionCodes: [String]?
+        let interval: Interval?
+    }
+    struct RegionInterval: Codable, Equatable, Sendable {
+        let regionCode: String?
+        let interval: Interval?
+    }
+    struct RegionsConfig: Codable, Equatable, Sendable {
+        let regionIntervals: [RegionInterval]?
+    }
+    let globalConfig: GlobalConfig?
+    let regionsConfig: RegionsConfig?
+}
+
+// YouTube replaces the writable fields of each part named in a PUT.
+private struct YouTubeBroadcastUpdate: Encodable {
+    struct Status: Encodable, Equatable {
+        let privacyStatus: String
+        let selfDeclaredMadeForKids: Bool?
+    }
+
+    struct ContentDetails: Encodable, Equatable {
+        let enableDvr: Bool
+        let latencyPreference: String
+        let monitorStream: YouTubeBroadcastResource.ContentDetails.MonitorStream
+        let enableEmbed: Bool
+        let recordFromStart: Bool
+        let enableAutoStart: Bool
+        let enableAutoStop: Bool
+        let closedCaptionsType: String?
+        let projection: String?
+        let mesh: String?
+        let stereoLayout: String?
+        let availabilityConfig: YouTubeBroadcastAvailability?
+    }
+
+    let id: String
+    var snippet: [String: String]?
+    var status: Status?
+    var contentDetails: ContentDetails?
+
+    var parts: [String] {
+        [snippet == nil ? nil : "snippet", status == nil ? nil : "status",
+         contentDetails == nil ? nil : "contentDetails"].compactMap { $0 }
+    }
+
+    init(_ broadcast: YouTubeBroadcast) {
+        id = broadcast.id
+        snippet = ["title": broadcast.title, "description": broadcast.broadcastDescription,
+                   "categoryId": broadcast.categoryId, "scheduledStartTime": broadcast.scheduledStartTime,
+                   "scheduledEndTime": broadcast.scheduledEndTime].compactMapValues { $0 }
+        status = Status(privacyStatus: broadcast.privacyStatus, selfDeclaredMadeForKids: broadcast.selfDeclaredMadeForKids)
+        contentDetails = ContentDetails(
+            enableDvr: broadcast.enableDvr, latencyPreference: broadcast.latencyPreference,
+            monitorStream: .init(enableMonitorStream: broadcast.enableMonitorStream,
+                                 broadcastStreamDelayMs: broadcast.broadcastStreamDelayMs),
+            enableEmbed: broadcast.enableEmbed, recordFromStart: broadcast.recordFromStart,
+            enableAutoStart: broadcast.enableAutoStart, enableAutoStop: broadcast.enableAutoStop,
+            closedCaptionsType: broadcast.closedCaptionsType, projection: broadcast.projection,
+            mesh: broadcast.mesh, stereoLayout: broadcast.stereoLayout,
+            availabilityConfig: broadcast.availabilityConfig)
+    }
+
+    init(from original: YouTubeBroadcast, to updated: YouTubeBroadcast) {
+        self.init(updated)
+        let previous = Self(original)
+        if snippet == previous.snippet { snippet = nil }
+        if status == previous.status { status = nil }
+        if contentDetails == previous.contentDetails { contentDetails = nil }
     }
 }
 
@@ -944,7 +1054,7 @@ final class YouTubeService {
     /// Read-only Settings: the broadcast a running stream uses, found by its ID,
     /// with the YouTube title of the key it is bound to (never the key itself).
     func loadBroadcastInUse(id: String) async throws
-        -> (broadcast: YouTubeBroadcast, playlists: [YouTubePlaylist], keyTitle: String?)? {
+        -> (broadcast: YouTubeBroadcast, playlists: [YouTubePlaylist], keyTitle: String?) {
         beginLoading()
         defer { endLoading() }
         let scope = try authorizationScope()
@@ -952,7 +1062,9 @@ final class YouTubeService {
         try checkAuthorization(scope)
         try await fetchAuthorizedChannel(token: token, scope: scope, streamKey: "")
         try checkAuthorization(scope)
-        guard let broadcast = try await plannedBroadcast(id: id, scope: scope) else { return nil }
+        guard let broadcast = try await plannedBroadcast(id: id, scope: scope) else {
+            throw YouTubeError.broadcastInUseUnavailable
+        }
         var keyTitle: String?
         if let streamID = broadcast.boundStreamId, !streamID.isEmpty {
             let resource = try await streamByID(streamID, token: token)
@@ -1134,24 +1246,8 @@ final class YouTubeService {
         preparedBroadcast.enableAutoStop = endingPolicy.automaticallyEndsBroadcast
         stampOwnership(on: &preparedBroadcast, scope: scope)
         if preparedBroadcast != broadcast {
-            try await updateBroadcast(
-                id: broadcast.id,
-                title: preparedBroadcast.title,
-                privacyStatus: preparedBroadcast.privacyStatus,
-                scheduledStartTime: broadcast.scheduledStartTime,
-                enableDvr: preparedBroadcast.enableDvr,
-                latencyPreference: preparedBroadcast.latencyPreference,
-                enableMonitorStream: preparedBroadcast.enableMonitorStream,
-                broadcastStreamDelayMs: preparedBroadcast.broadcastStreamDelayMs,
-                enableEmbed: preparedBroadcast.enableEmbed,
-                recordFromStart: preparedBroadcast.recordFromStart,
-                enableAutoStart: preparedBroadcast.enableAutoStart,
-                enableAutoStop: preparedBroadcast.enableAutoStop,
-                selfDeclaredMadeForKids: preparedBroadcast.selfDeclaredMadeForKids,
-                verifyAutoStop: endingPolicy == .manualDiagnostic,
-                broadcastDescription: preparedBroadcast.broadcastDescription
-            )
-            broadcast = preparedBroadcast
+            broadcast = try await updateBroadcast(from: broadcast, to: preparedBroadcast,
+                                                  verifyAutoStop: endingPolicy == .manualDiagnostic)
         }
         if let preferences = applicablePreferences {
             // Optional extras must not block Start, e.g. a channel without
@@ -1217,6 +1313,7 @@ final class YouTubeService {
         switch planned.kind {
         case .planned:
             guard let fetched = try await plannedBroadcast(id: planned.broadcastId, scope: scope),
+                  PlannedStreams.isScheduledToday(fetched.scheduledStartTime, now: now(), calendar: calendar),
                   ["created", "ready"].contains(fetched.lifeCycleStatus ?? "") else {
                 throw unavailable
             }
@@ -1253,7 +1350,8 @@ final class YouTubeService {
             // auto-start waits for ingest. Reuse it instead of a duplicate.
             let original = try await plannedBroadcast(id: planned.broadcastId, scope: scope)
             if let original, original.lifeCycleStatus == "ready" {
-                guard let keyID = original.boundStreamId,
+                guard PlannedStreams.isScheduledToday(original.scheduledStartTime, now: now(), calendar: calendar),
+                      let keyID = original.boundStreamId,
                       let key = try await keyStream(id: keyID, token: token, scope: scope) else {
                     throw unavailable
                 }
@@ -1300,25 +1398,9 @@ final class YouTubeService {
         prepared.enableAutoStop = endingPolicy.automaticallyEndsBroadcast
         stampOwnership(on: &prepared, scope: scope)
         if prepared != broadcast {
-            try await updateBroadcast(
-                id: broadcast.id,
-                title: prepared.title,
-                privacyStatus: prepared.privacyStatus,
-                scheduledStartTime: broadcast.scheduledStartTime,
-                enableDvr: prepared.enableDvr,
-                latencyPreference: prepared.latencyPreference,
-                enableMonitorStream: prepared.enableMonitorStream,
-                broadcastStreamDelayMs: prepared.broadcastStreamDelayMs,
-                enableEmbed: prepared.enableEmbed,
-                recordFromStart: prepared.recordFromStart,
-                enableAutoStart: prepared.enableAutoStart,
-                enableAutoStop: prepared.enableAutoStop,
-                selfDeclaredMadeForKids: prepared.selfDeclaredMadeForKids,
-                verifyAutoStop: endingPolicy == .manualDiagnostic,
-                broadcastDescription: prepared.broadcastDescription
-            )
+            broadcast = try await updateBroadcast(from: broadcast, to: prepared,
+                                                  verifyAutoStop: endingPolicy == .manualDiagnostic)
             try checkAuthorization(scope)
-            broadcast = prepared
         }
         var warnings: [String] = []
         // Optional extras must not block Start.
@@ -1772,54 +1854,36 @@ final class YouTubeService {
 
     // MARK: - YouTube API: Update Broadcast
 
-    func updateBroadcast(id: String, title: String, privacyStatus: String, scheduledStartTime: String?, enableDvr: Bool, latencyPreference: String, enableMonitorStream: Bool, broadcastStreamDelayMs: Int, enableEmbed: Bool, recordFromStart: Bool, enableAutoStart: Bool, enableAutoStop: Bool, selfDeclaredMadeForKids: Bool? = nil, verifyAutoStop: Bool = false, broadcastDescription: String? = nil) async throws {
+    @discardableResult
+    func updateBroadcast(from original: YouTubeBroadcast, to updated: YouTubeBroadcast,
+                         verifyAutoStop: Bool = false) async throws -> YouTubeBroadcast {
+        guard original.id == updated.id else { throw YouTubeError.invalidResponse }
+        let update = YouTubeBroadcastUpdate(from: original, to: updated)
+        let parts = update.parts
+        guard !parts.isEmpty else { return original }
         beginLoading()
         defer { endLoading() }
 
         let token = try await getValidAccessToken()
-        let url = "\(YOUTUBE_API_BASE)/liveBroadcasts?part=snippet,status,contentDetails"
-
-        var snippet: [String: Any] = ["title": title]
-        if let broadcastDescription { snippet["description"] = broadcastDescription }
-        if let scheduledStartTime {
-            snippet["scheduledStartTime"] = scheduledStartTime
+        let url = try resourceURL("liveBroadcasts", query: [.init(name: "part", value: parts.joined(separator: ","))])
+        let resource: YouTubeBroadcastResource
+        do {
+            resource = try await apiPut(url: url, token: token, jsonBody: JSONEncoder().encode(update),
+                                        etag: original.etag, operation: .updateBroadcast)
+        } catch YouTubeError.apiError(412, _) where original.etag != nil {
+            throw YouTubeError.broadcastChangedDuringSetup
         }
-
-        var status: [String: Any] = ["privacyStatus": privacyStatus]
-        if let selfDeclaredMadeForKids { status["selfDeclaredMadeForKids"] = selfDeclaredMadeForKids }
-        let body: [String: Any] = [
-            "id": id,
-            "snippet": snippet,
-            "status": status,
-            "contentDetails": [
-                "enableDvr": enableDvr,
-                "latencyPreference": latencyPreference,
-                "monitorStream": [
-                    "enableMonitorStream": enableMonitorStream,
-                    "broadcastStreamDelayMs": broadcastStreamDelayMs,
-                ],
-                "enableEmbed": enableEmbed,
-                "recordFromStart": recordFromStart,
-                "enableAutoStart": enableAutoStart,
-                "enableAutoStop": enableAutoStop,
-            ],
-        ]
-
-        let jsonData = try JSONSerialization.data(withJSONObject: body)
-        let resource: YouTubeBroadcastResource = try await apiPut(
-            url: url,
-            token: token,
-            jsonBody: jsonData,
-            operation: .updateBroadcast
-        )
-        guard resource.id == id else {
+        guard resource.id == updated.id else {
             throw YouTubeError.invalidResponse
         }
-        if verifyAutoStop, resource.contentDetails?.enableAutoStop != enableAutoStop {
+        if verifyAutoStop, update.contentDetails != nil, resource.contentDetails?.enableAutoStop != updated.enableAutoStop {
             throw YouTubeError.invalidResponse
         }
 
-        LOG("Updated YouTube broadcast: \(title) (\(privacyStatus))", level: .debug)
+        LOG("Updated YouTube broadcast: \(updated.title) (\(updated.privacyStatus))", level: .debug)
+        var result = updated
+        result.etag = resource.etag
+        return result
     }
 
     // MARK: - YouTube API: Broadcast Status (lightweight, 1 unit)
@@ -1881,6 +1945,17 @@ final class YouTubeService {
             operation: .broadcastStatus
         )
         return response.items.first(where: { $0.id == broadcastId })?.status?.lifeCycleStatus
+    }
+
+    func broadcastStatus(for source: YouTubeBroadcastStatusSource) async throws -> (id: String, status: String?)? {
+        switch source {
+        case .session(let target):
+            guard let status = try await fetchBroadcastStatus(target: target) else { return nil }
+            return (target.broadcastID, status)
+        case .savedKey(let key):
+            let broadcast = try await findBroadcastForStreamKey(key)
+            return (broadcast.id, broadcast.lifeCycleStatus)
+        }
     }
 
     /// Shutdown must observe the broadcast/account selected at Start, even if
@@ -2485,6 +2560,7 @@ final class YouTubeService {
         url: String,
         token: String,
         jsonBody: Data,
+        etag: String?,
         operation: YouTubeAPIOperation
     ) async throws -> Response {
         guard let requestURL = URL(string: url) else {
@@ -2494,6 +2570,11 @@ final class YouTubeService {
         request.httpMethod = "PUT"
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if let etag, !etag.isEmpty {
+            // A Studio edit after preflight must win over this stale copy.
+            let quoted = etag.hasPrefix("\"") || etag.hasPrefix("W/\"") ? etag : "\"\(etag)\""
+            request.setValue(quoted, forHTTPHeaderField: "If-Match")
+        }
         request.httpBody = jsonBody
         request.timeoutInterval = 30
         let data = try await authenticatedData(for: request, fallbackToken: token, operation: operation)
@@ -2582,12 +2663,15 @@ final class YouTubeService {
 
 extension UIImage {
     func scaledToFit(maxWidth: CGFloat, maxHeight: CGFloat) -> UIImage? {
-        let widthRatio = maxWidth / size.width
-        let heightRatio = maxHeight / size.height
-        let scale = min(widthRatio, heightRatio)
-        guard scale < 1 else { return self }
-        let newSize = CGSize(width: size.width * scale, height: size.height * scale)
-        let renderer = UIGraphicsImageRenderer(size: newSize)
+        let width = size.width * scale
+        let height = size.height * scale
+        guard width > 0, height > 0, maxWidth >= 1, maxHeight >= 1 else { return nil }
+        let ratio = min(maxWidth / width, maxHeight / height)
+        guard ratio < 1 else { return self }
+        let newSize = CGSize(width: max(1, floor(width * ratio)), height: max(1, floor(height * ratio)))
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        let renderer = UIGraphicsImageRenderer(size: newSize, format: format)
         return renderer.image { _ in
             draw(in: CGRect(origin: .zero, size: newSize))
         }

@@ -199,7 +199,7 @@ private class DeviceActor {
         // Fetch frame rate from settings
         self.frameRate = Settings.selectedPreset.frameRate
 
-        guard let format = videoDevice.findFormat() else {
+        guard let format = videoDevice.findFormat(frameRate: frameRate) else {
             throw CaptureSetupError.formatUnavailable
         }
 
@@ -209,12 +209,6 @@ private class DeviceActor {
             let audioInput = try AVCaptureDeviceInput(device: microphoneDevice)
             let audioOutput = AVCaptureAudioDataOutput()
 
-            try videoDevice.lockForConfiguration()
-            videoDevice.activeFormat = format
-            videoDevice.activeVideoMinFrameDuration = CMTime(value: 1, timescale: CMTimeScale(frameRate))
-            videoDevice.activeVideoMaxFrameDuration = CMTime(value: 1, timescale: CMTimeScale(frameRate))
-            videoDevice.activeColorSpace = AV_COLOR_SPACE
-            videoDevice.unlockForConfiguration()
             videoOutput.alwaysDiscardsLateVideoFrames = true
 
             do {
@@ -233,7 +227,7 @@ private class DeviceActor {
 
             session.beginConfiguration()
             session.sessionPreset = .inputPriority
-            session.automaticallyConfiguresCaptureDeviceForWideColor = true
+            session.automaticallyConfiguresCaptureDeviceForWideColor = false
             // Let capture choose a microphone data source and polar pattern
             // matching the camera. Establish our category/preferences above,
             // before capture applies its configuration. The AAC encoder uses
@@ -264,6 +258,9 @@ private class DeviceActor {
                     // versions when multichannel capture has a video input.
                     // Rely on that default so older SDKs can build this path.
                 }
+                // Adding the video input resets both frame-duration limits. Apply the
+                // format, HDR color space and cadence together on the attached device.
+                try videoDevice.applyCaptureFormat(format, frameRate: frameRate)
                 session.commitConfiguration()
             } catch {
                 for output in addedOutputs { session.removeOutput(output) }
@@ -509,16 +506,20 @@ private class DeviceActor {
         }
     }
 
+    var focusCapabilities: (canLock: Bool, canPositionLens: Bool) {
+        guard let device = videoDevice else { return (false, false) }
+        return (device.isFocusModeSupported(.locked), device.isLockingFocusWithCustomLensPositionSupported)
+    }
+
     func setFocus(at point: CGPoint) {
-        guard let device = videoDevice else { return }
+        guard let device = videoDevice, device.isFocusPointOfInterestSupported,
+              device.isFocusModeSupported(.autoFocus) else { return }
         
         do {
             try device.lockForConfiguration()
             
-            if device.isFocusPointOfInterestSupported {
-                device.focusPointOfInterest = point
-                device.focusMode = .autoFocus
-            }
+            device.focusPointOfInterest = point
+            device.focusMode = .autoFocus
             
             device.unlockForConfiguration()
         } catch {
@@ -527,17 +528,19 @@ private class DeviceActor {
     }
     func autoFocus() {
         guard let device = videoDevice else { return }
+        let mode: AVCaptureDevice.FocusMode = device.isFocusModeSupported(.continuousAutoFocus) ? .continuousAutoFocus : .autoFocus
+        guard device.isFocusModeSupported(mode) else { return }
         
         do {
             try device.lockForConfiguration()
-            device.focusMode = .continuousAutoFocus
+            device.focusMode = mode
             device.unlockForConfiguration()
         } catch {
             LOG("Focus configuration error: \(error.localizedDescription)", level: .error)
         }
     }
     func lockFocus() {
-        guard let device = videoDevice else { return }
+        guard let device = videoDevice, device.isFocusModeSupported(.locked) else { return }
         
         do {
             try device.lockForConfiguration()
@@ -548,7 +551,8 @@ private class DeviceActor {
         }
     }
     func setLensPosition(to lensPosition: Float) {
-        guard let device = videoDevice else { return }
+        guard let device = videoDevice, device.isFocusModeSupported(.locked),
+              device.isLockingFocusWithCustomLensPositionSupported, (0...1).contains(lensPosition) else { return }
         
         do {
             try device.lockForConfiguration()
@@ -978,6 +982,9 @@ final class CaptureDirector: NSObject, Sendable {
     func setFocus(at point: CGPoint) async {
         await deviceActor.setFocus(at: point)
     }
+    func focusCapabilities() async -> (canLock: Bool, canPositionLens: Bool) {
+        await deviceActor.focusCapabilities
+    }
     func autoFocus() async {
         await deviceActor.autoFocus()
     }
@@ -1140,10 +1147,24 @@ struct CaptureFormatCandidate {
 
 // Extend AVCaptureDevice to include findFormat method
 extension AVCaptureDevice {
-    func findFormat() -> AVCaptureDevice.Format? {
+    func applyCaptureFormat(_ format: AVCaptureDevice.Format, frameRate: Double) throws {
+        guard let range = format.videoSupportedFrameRateRanges.first(where: {
+            $0.minFrameRate <= frameRate && frameRate <= $0.maxFrameRate
+        }) else { throw CaptureSetupError.formatUnavailable }
+        let requested = CMTime(seconds: 1 / frameRate, preferredTimescale: 600_000)
+        let duration = min(max(requested, range.minFrameDuration), range.maxFrameDuration)
+        try lockForConfiguration()
+        defer { unlockForConfiguration() }
+        activeFormat = format
+        activeColorSpace = AV_COLOR_SPACE
+        if isAutoVideoFrameRateEnabled { isAutoVideoFrameRateEnabled = false }
+        activeVideoMinFrameDuration = duration
+        activeVideoMaxFrameDuration = duration
+    }
+
+    func findFormat(frameRate: Double) -> AVCaptureDevice.Format? {
         let width = (Settings.isInputSyncedWithOutput ? Settings.selectedPreset.width : DEFAULT_CAPTURE_WIDTH)
         let height = (Settings.isInputSyncedWithOutput ? Settings.selectedPreset.height : DEFAULT_CAPTURE_HEIGHT)
-        let frameRate = Settings.selectedPreset.frameRate 
         LOG("Searching for best capture format with resolution \(width)x\(height) and \(frameRate) FPS.", level: .debug)
         var candidates: [CaptureFormatCandidate] = []
         let pixelFormats = [

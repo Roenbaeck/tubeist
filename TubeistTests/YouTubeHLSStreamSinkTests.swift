@@ -10,6 +10,27 @@ import Testing
 private let successfulSinkShutdownTimeout: TimeInterval = 10
 
 struct YouTubeHLSStreamSinkTests {
+    @Test func preservationUploadsImmediatelyAvailableSegmentsWithoutTouchingDisk() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let transport = DirectSinkTransport()
+        let sink = YouTubeHLSStreamSink()
+        try await sink.prepare(endpoint: .manualPrimary(streamKey: "test"), sessionIdentifier: "healthy_disk",
+            userAgent: "Tubeist/Test", transport: transport, buffering: .preserve30, bufferDirectory: root,
+            sleeper: { _ in })
+        // Any attempt to spill to this session's removed directory would fail.
+        let folder = try #require(FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil).first)
+        try FileManager.default.removeItem(at: folder)
+        for sequence in 0..<2 {
+            await sink.enqueue(Fragment(sequence: sequence, segment: directSentinel(UInt8(sequence)),
+                                        duration: 2, container: .mpegTransportStream))
+            try await waitForIdle(sink)
+        }
+        #expect(try await sink.finish(timeout: successfulSinkShutdownTimeout))
+        let media = await transport.requests().filter { $0.contentType == "video/mp2t" }
+        #expect(media.map(\.body) == [directSentinel(0), directSentinel(1)])
+    }
+
     @Test(arguments: [StreamBuffering.preserve15, .preserve30, .preserve60])
     func preservationDrainsAllSavedMediaOnStopDespiteLongUploadEstimates(buffering: StreamBuffering) async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

@@ -11,6 +11,8 @@ enum YouTubeError: LocalizedError, Equatable {
     case authFailed(String)
     case apiError(Int, String)
     case noBroadcastFound
+    case broadcastInUseUnavailable
+    case broadcastChangedDuringSetup
     case noStreamFound
     case broadcastNotReady(String)
     case incompatibleIngestionType(String)
@@ -35,6 +37,8 @@ enum YouTubeError: LocalizedError, Equatable {
         case .authFailed(let message): "Authentication failed: \(message)"
         case .apiError(let code, let message): "YouTube API error (\(code)): \(message)"
         case .noBroadcastFound: "No active or upcoming broadcast. Tubeist will create one when you start streaming."
+        case .broadcastInUseUnavailable: "The broadcast for this session is unavailable on YouTube."
+        case .broadcastChangedDuringSetup: "The YouTube broadcast changed during setup. Start again to use its latest settings."
         case .noStreamFound: "No stream found matching this key"
         case .broadcastNotReady(let status):
             "The YouTube broadcast is \(status) and cannot start. If the previous stream is still finishing, wait and try again; otherwise review its YouTube setup."

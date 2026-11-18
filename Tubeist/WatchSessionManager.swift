@@ -224,7 +224,7 @@ final class WatchSessionManager: NSObject, WCSessionDelegate {
         guard !appState.isSettingsPresented else {
             return .failure("Close Settings on your iPhone before starting")
         }
-        if appState.youtubeStatus == "live" || appState.youtubeStatus == "testing" {
+        if appState.isWaitingForPreviousYouTubeStream {
             return .failure("YouTube is still finishing the previous stream")
         }
         guard isAppActive(), !appState.soonGoingToBackground, !appState.isAppInitialization else {
