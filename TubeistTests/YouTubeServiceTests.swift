@@ -5,9 +5,29 @@
 
 import Foundation
 import Testing
+import UIKit
 @testable import Tubeist
 
 struct YouTubeServiceTests {
+    @Test @MainActor func thumbnailsFitInPixelsAtAnySourceScaleAndOrientation() throws {
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        let size = CGSize(width: 1920, height: 1080)
+        let image = UIGraphicsImageRenderer(size: size, format: format).image { context in
+            context.fill(CGRect(origin: .zero, size: size))
+        }
+        let pixels = try #require(image.cgImage)
+        for scale: CGFloat in [1, 3] {
+            let source = UIImage(cgImage: pixels, scale: scale, orientation: .up)
+            let result = try #require(source.scaledToFit(maxWidth: 1280, maxHeight: 720)?.cgImage)
+            #expect(result.width == 1280 && result.height == 720)
+            #expect(source.scaledToFit(maxWidth: 1920, maxHeight: 1080) === source)
+        }
+        let portrait = UIImage(cgImage: pixels, scale: 3, orientation: .right)
+        let result = try #require(portrait.scaledToFit(maxWidth: 1280, maxHeight: 720)?.cgImage)
+        #expect(result.width == 405 && result.height == 720)
+    }
+
     @Test(arguments: ["42", "\"42\"", "null", "\"invalid\"", "-1"]) @MainActor
     func viewerCountsAreOptionalAndPinnedToTheSession(value: String) async throws {
         let body = "{\"items\":[{\"id\":\"session-broadcast\",\"liveStreamingDetails\":{\"concurrentViewers\":\(value)}}]}"
@@ -845,20 +865,11 @@ struct YouTubeServiceTests {
         ])
         let service = YouTubeService(transport: transport, tokenStore: store, discoveryCache: YouTubeDiscoveryCache())
 
-        try await service.updateBroadcast(
-            id: "broadcast-1",
-            title: "Updated",
-            privacyStatus: "unlisted",
-            scheduledStartTime: nil,
-            enableDvr: true,
-            latencyPreference: "low",
-            enableMonitorStream: false,
-            broadcastStreamDelayMs: 0,
-            enableEmbed: true,
-            recordFromStart: true,
-            enableAutoStart: true,
-            enableAutoStop: true
-        )
+        let original = broadcast(id: "broadcast-1", title: "Original", status: "ready")
+        var updated = original
+        updated.title = "Updated"
+        updated.latencyPreference = "low"
+        try await service.updateBroadcast(from: original, to: updated)
         try await service.stopBroadcast(id: "broadcast-1")
 
         let requests = await transport.requests
@@ -2160,7 +2171,7 @@ extension YouTubeServiceTests {
         #expect(body["id"] as? String == "m5")
         #expect((body["snippet"] as? [String: Any])?["title"] as? String == "Match 5 – Final")
         #expect((body["snippet"] as? [String: Any])?["scheduledStartTime"] as? String == fixture.today)
-        #expect((body["status"] as? [String: Any])?["privacyStatus"] as? String == "unlisted")
+        #expect(body["status"] == nil)
         let details = try #require(body["contentDetails"] as? [String: Any])
         #expect(details["enableAutoStart"] as? Bool == true)
         #expect(details["enableAutoStop"] as? Bool == true)
@@ -2215,6 +2226,22 @@ extension YouTubeServiceTests {
         }
         let methods = await fixture.transport.requests.map(\.httpMethod)
         #expect(!methods.contains { ["PUT", "POST", "DELETE"].contains($0) })
+    }
+
+    @Test(arguments: [PlannedStreamSelection.Kind.planned, .restart]) @MainActor
+    func studioRescheduleRefusesTheSavedEventBeforeAnyMutation(kind: PlannedStreamSelection.Kind) async throws {
+        var event = plannedM5(stream: "match-1", enableAutoStart: false)
+        let tomorrow = ISO8601DateFormatter().string(from: plannedFixtureNow.addingTimeInterval(86_400))
+        event["snippet"] = ["title": "Match 5", "scheduledStartTime": tomorrow]
+        let fixture = PlannedStartFixture(m5: event)
+        let selection = kind == .restart ? fixture.selection.restarting() : fixture.selection
+        await #expect(throws: YouTubeError.plannedBroadcastUnavailable("Match 5")) {
+            _ = try await fixture.start(selection)
+        }
+        let requests = await fixture.transport.requests
+        #expect(requests.map(\.httpMethod) == ["GET"])
+        let request = try #require(requests.first)
+        #expect(queryItems(in: request).contains(.init(name: "id", value: "m5")))
     }
 
     @Test func plannedUnavailableErrorNamesTheStream() {
@@ -2367,7 +2394,7 @@ extension YouTubeServiceTests {
         let put = try #require(await fixture.transport.requests.first { $0.httpMethod == "PUT" })
         let body = try plannedJSONBody(put.httpBody)
         #expect((body["snippet"] as? [String: Any])?["title"] as? String == "Match 5 – Final")
-        #expect((body["status"] as? [String: Any])?["privacyStatus"] as? String == "public")
+        #expect(body["status"] == nil)
         #expect(preparation.broadcast.privacyStatus == "public")
         // Restart carries what was applied at Start, not the pick-time value.
         let restart = selection.restarting(after: preparation.broadcast)
@@ -2396,7 +2423,7 @@ extension YouTubeServiceTests {
         #expect(puts.count == 1)
         let body = try plannedJSONBody(puts.first?.httpBody)
         #expect(body["id"] as? String == "m5")
-        #expect((body["status"] as? [String: Any])?["privacyStatus"] as? String == "unlisted")
+        #expect(body["status"] == nil)
         #expect((body["contentDetails"] as? [String: Any])?["enableAutoStart"] as? Bool == true)
     }
 
@@ -3429,10 +3456,14 @@ extension YouTubeServiceTests {
     }
 
     @Test @MainActor
-    func plannedUpdatePreservesTheBroadcastDescription() async throws {
+    func plannedUpdatePreservesStudioSnippetWhenTheTitleChanges() async throws {
         var item = plannedM5(stream: "match-1")
+        item["etag"] = "studio-revision"
         var snippet = item["snippet"] as! [String: Any]
         snippet["description"] = "Match details and tournament links."
+        snippet["scheduledEndTime"] = "2027-01-15T10:00:00Z"
+        snippet["categoryId"] = "17"
+        snippet["liveChatId"] = "read-only"
         item["snippet"] = snippet
         let fixture = PlannedStartFixture(m5: item)
         var selection = fixture.selection
@@ -3440,7 +3471,109 @@ extension YouTubeServiceTests {
         _ = try await fixture.start(selection)
         let update = try #require(await fixture.transport.requests.first { $0.httpMethod == "PUT" })
         let body = try plannedJSONBody(update.httpBody)
-        #expect((body["snippet"] as? [String: Any])?["description"] as? String == "Match details and tournament links.")
+        #expect(queryItems(in: update).contains(.init(name: "part", value: "snippet")))
+        #expect(update.value(forHTTPHeaderField: "If-Match") == "\"studio-revision\"")
+        #expect(Set(body.keys) == ["id", "snippet"])
+        let sent = try #require(body["snippet"] as? [String: String])
+        #expect(sent == ["title": "New match title", "description": "Match details and tournament links.",
+                         "scheduledStartTime": fixture.today, "scheduledEndTime": "2027-01-15T10:00:00Z", "categoryId": "17"])
+    }
+
+    @Test @MainActor
+    func enablingAutoStartPreservesCaptionsAndRegionalAvailabilityWithoutRewritingTheSnippet() async throws {
+        var item = plannedM5(stream: "match-1", enableAutoStart: false)
+        var details = item["contentDetails"] as! [String: Any]
+        let availability = ["regionsConfig": ["regionIntervals": [
+            ["regionCode": "SE", "interval": ["startTime": "2027-01-15T08:00:00Z"]]
+        ]]]
+        details["availabilityConfig"] = availability
+        details["closedCaptionsType"] = "closedCaptionsEmbedded"
+        details["enableClosedCaptions"] = false
+        details["projection"] = "360"
+        item["contentDetails"] = details
+        let fixture = PlannedStartFixture(m5: item)
+        _ = try await fixture.start(fixture.selection)
+        let update = try #require(await fixture.transport.requests.first { $0.httpMethod == "PUT" })
+        #expect(queryItems(in: update).contains(.init(name: "part", value: "contentDetails")))
+        let body = try plannedJSONBody(update.httpBody)
+        #expect(Set(body.keys) == ["id", "contentDetails"])
+        let sent = try #require(body["contentDetails"] as? [String: Any])
+        #expect(sent["closedCaptionsType"] as? String == "closedCaptionsEmbedded")
+        #expect(sent["projection"] as? String == "360")
+        #expect((sent["availabilityConfig"] as? NSDictionary)?.isEqual(to: availability) == true)
+        #expect(sent["boundStreamId"] == nil && sent["enableClosedCaptions"] == nil)
+    }
+
+    @Test @MainActor
+    func changingOnlyTheAudienceKeepsStudioPrivacyAndSendsOnlyStatus() async throws {
+        let fixture = PlannedStartFixture(m5: plannedM5(stream: "match-1", privacy: "private"))
+        var selection = fixture.selection
+        selection.edited.selfDeclaredMadeForKids = true
+        _ = try await fixture.start(selection)
+        let update = try #require(await fixture.transport.requests.first { $0.httpMethod == "PUT" })
+        #expect(queryItems(in: update).contains(.init(name: "part", value: "status")))
+        let body = try plannedJSONBody(update.httpBody)
+        #expect(Set(body.keys) == ["id", "status"])
+        let status = try #require(body["status"] as? [String: Any])
+        #expect(status["privacyStatus"] as? String == "private")
+        #expect(status["selfDeclaredMadeForKids"] as? Bool == true)
+        #expect(status["lifeCycleStatus"] == nil)
+    }
+
+    @Test @MainActor
+    func aConcurrentStudioEditDoesNotRetryAStaleBroadcastUpdate() async throws {
+        let response = YouTubeAPIResponse(data: Data(), statusCode: 412)
+        let transport = MockYouTubeAPITransport(responses: [response])
+        let service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore(), discoveryCache: YouTubeDiscoveryCache())
+        var original = broadcast(id: "event", title: "Original", status: "ready")
+        original.etag = "\"previous-revision\""
+        var updated = original
+        updated.title = "Changed on the phone"
+        await #expect(throws: YouTubeError.broadcastChangedDuringSetup) {
+            _ = try await service.updateBroadcast(from: original, to: updated)
+        }
+        let requests = await transport.requests
+        #expect(requests.count == 1)
+        let update = try #require(requests.first)
+        #expect(update.value(forHTTPHeaderField: "If-Match") == original.etag)
+    }
+
+    @Test @MainActor
+    func readOnlySettingsReportAMissingSessionBroadcast() async throws {
+        let transport = MockYouTubeAPITransport(responses: [
+            .init(data: Data(#"{"items":[{"id":"channel","snippet":{"title":"Channel"}}]}"#.utf8), statusCode: 200),
+            emptyYouTubePage()
+        ])
+        let service = YouTubeService(transport: transport, tokenStore: validMemoryTokenStore(), discoveryCache: YouTubeDiscoveryCache())
+        await #expect(throws: YouTubeError.broadcastInUseUnavailable) {
+            _ = try await service.loadBroadcastInUse(id: "missing")
+        }
+        let requests = await transport.requests
+        #expect(requests.count == 2)
+        let lookup = try #require(requests.last)
+        #expect(queryItems(in: lookup).contains(.init(name: "id", value: "missing")))
+    }
+
+    @Test @MainActor
+    func liveStatusUsesThePreparedEventWhenThePhoneKeyHasAnotherLiveBroadcast() async throws {
+        let other = studioPlannedPage(status: "live", id: "other-event", stream: "stream-1")
+        let fixture = PlannedStartFixture(active: other)
+        let prepared = try await fixture.start(fixture.selection)
+        let app = AppState()
+        app.setStreamSessionState(.preparing)
+        app.youtubeHealth.configure(prepared.healthTarget)
+        app.setStreamSessionState(.live)
+        let source = try #require(app.youtubeBroadcastStatusSource)
+        let priorCount = await fixture.transport.requests.count
+        let status = try await fixture.service.broadcastStatus(for: source)
+        #expect(status?.id == "m5" && status?.status == "ready")
+        let requests = await fixture.transport.requests.dropFirst(priorCount)
+        #expect(requests.count == 1)
+        let request = try #require(requests.first)
+        #expect(queryItems(in: request).contains(.init(name: "id", value: "m5")))
+        #expect(queryItems(in: request).contains(.init(name: "part", value: "status")))
+        app.youtubeHealth.configure(nil)
+        #expect(app.youtubeBroadcastStatusSource == nil)
     }
 
     @Test @MainActor

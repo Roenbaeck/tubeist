@@ -249,9 +249,14 @@ struct MetalCameraFrameTests {
         let input = try AVCaptureDeviceInput(device: camera)
         let output = AVCaptureVideoDataOutput()
         let receiver = MetalCameraFrameReceiver(metalDevice: metalDevice, library: library)
+        let frameRate = Settings.selectedPreset.frameRate
+        guard let format = camera.findFormat(frameRate: frameRate) else {
+            throw MetalCameraFrameTestError.noCaptureFormat
+        }
 
         session.beginConfiguration()
         session.sessionPreset = .inputPriority
+        session.automaticallyConfiguresCaptureDeviceForWideColor = false
         guard session.canAddInput(input) else {
             session.commitConfiguration()
             throw MetalCameraFrameTestError.cannotAddInput
@@ -262,15 +267,13 @@ struct MetalCameraFrameTests {
             throw MetalCameraFrameTestError.cannotAddOutput
         }
         session.addOutput(output)
-        session.commitConfiguration()
-
-        guard let format = camera.findFormat() else {
-            throw MetalCameraFrameTestError.noCaptureFormat
+        do {
+            try camera.applyCaptureFormat(format, frameRate: frameRate)
+        } catch {
+            session.commitConfiguration()
+            throw error
         }
-        try camera.lockForConfiguration()
-        camera.activeFormat = format
-        camera.activeColorSpace = AV_COLOR_SPACE
-        camera.unlockForConfiguration()
+        session.commitConfiguration()
 
         output.alwaysDiscardsLateVideoFrames = true
         output.setSampleBufferDelegate(
@@ -283,6 +286,9 @@ struct MetalCameraFrameTests {
             output.setSampleBufferDelegate(nil, queue: nil)
             session.stopRunning()
         }
+        #expect(abs(camera.activeVideoMinFrameDuration.seconds - 1 / frameRate) <= 1 / 600_000.0)
+        #expect(abs(camera.activeVideoMaxFrameDuration.seconds - 1 / frameRate) <= 1 / 600_000.0)
+        #expect(camera.activeColorSpace == AV_COLOR_SPACE)
         try receiver.waitForResult(timeout: 15)
     }
 }

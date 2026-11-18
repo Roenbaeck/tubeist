@@ -92,24 +92,26 @@ struct WatchSessionManagerTests {
         #expect(decode(reply) == (false, "Tubeist is not ready"))
     }
 
-    @Test @MainActor
-    func startIsRejectedWhileAPreviousBroadcastIsStillFinishing() async throws {
-        let manager = WatchSessionManager()
-        let appState = AppState()
-        appState.youtubeStatus = "live"
-        manager.appState = appState
+    @Test(arguments: ["live", "testing"], [true, false]) @MainActor
+    func previousYouTubeBroadcastBlocksOnlyStreamingStarts(status: String, streaming: Bool) async {
+        let defaults = UserDefaults.standard
+        let previousStream = defaults.object(forKey: "Stream")
+        let previousRecord = defaults.object(forKey: "Record")
+        defer {
+            defaults.set(previousStream, forKey: "Stream")
+            defaults.set(previousRecord, forKey: "Record")
+        }
+        Settings.stream = streaming
+        Settings.record = true
+        let app = AppState()
+        app.isAppInitialization = false
+        app.youtubeStatus = status
+        let manager = WatchSessionManager(isAppActive: { true }, startStream: { _ in })
+        manager.appState = app
+        #expect(app.isWaitingForPreviousYouTubeStream == streaming)
         let reply = await manager.handle(rawCommand: WatchCommand.start.rawValue)
-        #expect(decode(reply) == (false, "YouTube is still finishing the previous stream"))
-    }
-
-    @Test @MainActor
-    func startIsRejectedWhileATestBroadcastIsStillFinishing() async throws {
-        let manager = WatchSessionManager()
-        let appState = AppState()
-        appState.youtubeStatus = "testing"
-        manager.appState = appState
-        let reply = await manager.handle(rawCommand: WatchCommand.start.rawValue)
-        #expect(decode(reply) == (false, "YouTube is still finishing the previous stream"))
+        #expect(reply.success == !streaming)
+        #expect(reply.message == (streaming ? "YouTube is still finishing the previous stream" : nil))
     }
 
     @Test @MainActor

@@ -384,6 +384,7 @@ private struct YouTubeSettingsLoadContext: Equatable {
     let streamKey: String
     let isSignedIn: Bool
     let streamingEnabled: Bool
+    let broadcastInUseID: String?
 }
 
 struct SettingsView: View {
@@ -998,7 +999,8 @@ struct SettingsView: View {
                             Text("Loading...")
                                 .foregroundColor(.secondary)
                         }
-                    } else if youtubeDraft.broadcast != nil {
+                    } else if let broadcast = youtubeDraft.broadcast,
+                              !isReadOnly || broadcast.id == youtubeLoadContext.broadcastInUseID {
                         HStack {
                             Text("Status")
                             Spacer()
@@ -1368,10 +1370,17 @@ struct SettingsView: View {
     }
 
     private var youtubeLoadContext: YouTubeSettingsLoadContext {
-        YouTubeSettingsLoadContext(
+        let broadcastID: String?
+        if isReadOnly && (appState.streamSessionState == .preparing || appState.isStreamActive) {
+            broadcastID = appState.youtubeHealth.target?.broadcastID
+        } else {
+            broadcastID = isReadOnly ? appState.youtubeBroadcastId : nil
+        }
+        return YouTubeSettingsLoadContext(
             streamKey: streamKeyManager.currentKey,
             isSignedIn: youtubeService.isSignedIn,
-            streamingEnabled: stream
+            streamingEnabled: stream,
+            broadcastInUseID: broadcastID
         )
     }
 
@@ -1717,24 +1726,16 @@ struct SettingsView: View {
         isLoadingBroadcastInUse = true
         defer { if generation == youtubeLoadGeneration { isLoadingBroadcastInUse = false } }
         do {
-            if streamKey.isEmpty && appState.youtubeBroadcastId?.isEmpty != false {
+            guard let broadcastID = context.broadcastInUseID else {
                 try await youtubeService.loadAuthorizedChannel()
                 guard isCurrent() else { return }
                 youtubeConfigLoaded = true
                 lastYouTubeLoadContext = context
                 return
             }
-            var keyTitle: String?
-            let configuration: (broadcast: YouTubeBroadcast, playlists: [YouTubePlaylist])
-            if let inUseID = appState.youtubeBroadcastId, !inUseID.isEmpty,
-               let inUse = try await youtubeService.loadBroadcastInUse(id: inUseID) {
-                configuration = (inUse.broadcast, inUse.playlists)
-                keyTitle = inUse.keyTitle
-            } else {
-                configuration = try await youtubeService.loadSettingsConfiguration(forStreamKey: streamKey)
-            }
+            let configuration = try await youtubeService.loadBroadcastInUse(id: broadcastID)
             guard isCurrent() else { return }
-            broadcastInUseKeyTitle = keyTitle
+            broadcastInUseKeyTitle = configuration.keyTitle
             let broadcast = configuration.broadcast
             // Playlist and thumbnail are best effort: a failure leaves them empty.
             var membership: YouTubePlaylistMembership?

@@ -175,6 +175,20 @@ final class AppState {
     var isYouTubeSignedIn = false
     var youtubeStatus: String? = nil
     var youtubeBroadcastId: String? = nil
+    var isWaitingForPreviousYouTubeStream: Bool {
+        Settings.stream && (youtubeStatus == "live" || youtubeStatus == "testing")
+    }
+    var youtubeBroadcastStatusSource: YouTubeBroadcastStatusSource? {
+        switch streamSessionState {
+        case .live:
+            return youtubeHealth.target.map(YouTubeBroadcastStatusSource.session)
+        case .idle, .failed:
+            guard let key = Settings.streamKey, !key.isEmpty else { return nil }
+            return .savedKey(key)
+        case .preparing, .stopping:
+            return nil
+        }
+    }
     var activeAlert: String?
     var availableProducts: [String: Product] = [:]
     var lastKnownBrightness: CGFloat = UIScreen.main.brightness

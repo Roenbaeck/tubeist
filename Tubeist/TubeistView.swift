@@ -91,7 +91,8 @@ struct TubeistView: View {
     @State private var showStylingPicker = false
     @State private var showStabilizationPicker = false
     @State private var showJournal = false
-    @State private var enableFocusAndExposureTap = false
+    @State private var focusCapabilities = (canLock: false, canPositionLens: false)
+    private var enableFocusAndExposureTap: Bool { appState.isExposureLocked || appState.isFocusLocked }
     @State private var cameraZoom = CameraZoomState()
     @State private var exposureBias: Float = 0.0
     @State private var lensPosition: Float = 1.0
@@ -261,7 +262,10 @@ struct TubeistView: View {
             style: $style,
             effect: $effect
         )
+        let capabilities = await CaptureDirector.shared.focusCapabilities()
         guard !Task.isCancelled else { return }
+        focusCapabilities = capabilities
+        if !capabilities.canLock { appState.isFocusLocked = false }
         selectedStabilization = Settings.cameraStabilization ?? "Off"
         appState.isStabilizationOn = selectedStabilization != "Off"
     }
@@ -367,11 +371,11 @@ struct TubeistView: View {
 #endif
         // A canceled poll must not invalidate a newer refresh's generation.
         guard !Task.isCancelled else { return }
-        guard youtubeService.isSignedIn,
-              let streamKey = Settings.streamKey,
-              !streamKey.isEmpty else {
-            appState.youtubeStatus = nil
-            appState.youtubeBroadcastId = nil
+        guard youtubeService.isSignedIn, let source = appState.youtubeBroadcastStatusSource else {
+            if !appState.isStreamSessionRunning {
+                appState.youtubeStatus = nil
+                appState.youtubeBroadcastId = nil
+            }
             return
         }
 
@@ -381,15 +385,15 @@ struct TubeistView: View {
         let sessionState = appState.streamSessionState
         let broadcastID = appState.youtubeBroadcastId
         do {
-            let broadcast = try await service.findBroadcastForStreamKey(streamKey)
-            guard !Task.isCancelled,
+            let result = try await service.broadcastStatus(for: source)
+            guard let result, !Task.isCancelled,
                   generation == youtubeStatusGeneration,
                   service === youtubeService,
-                  Settings.streamKey == streamKey,
+                  appState.youtubeBroadcastStatusSource == source,
                   appState.streamSessionState == sessionState,
                   appState.youtubeBroadcastId == broadcastID else { return }
-            appState.youtubeBroadcastId = broadcast.id
-            appState.youtubeStatus = broadcast.lifeCycleStatus
+            appState.youtubeBroadcastId = result.id
+            appState.youtubeStatus = result.status
         } catch {
             guard !Task.isCancelled, !YouTubeDiagnostics.isCancellation(error) else { return }
             LOG("YouTube \(logContext) status failed: \(error.localizedDescription)", level: .debug)
@@ -405,25 +409,10 @@ struct TubeistView: View {
         }
 
         isYouTubeRefreshCoolingDown = true
-        youtubeStatusGeneration = UUID()
         defer {
             Task { @MainActor in
                 try? await Task.sleep(for: .seconds(2))
                 isYouTubeRefreshCoolingDown = false
-            }
-        }
-
-        if let broadcastId = appState.youtubeBroadcastId {
-            do {
-                if let status = try await youtubeService.fetchBroadcastStatus(broadcastId: broadcastId) {
-                    try Task.checkCancellation()
-                    appState.youtubeStatus = status
-                    await refreshYouTubeIngestHealth()
-                    return
-                }
-            } catch {
-                guard !Task.isCancelled, !YouTubeDiagnostics.isCancellation(error) else { return }
-                LOG("YouTube manual status refresh failed: \(error.localizedDescription)", level: .debug)
             }
         }
 
@@ -438,17 +427,12 @@ struct TubeistView: View {
         youtubePollingTask?.cancel()
         youtubePollingTask = nil
         guard !appState.soonGoingToBackground, youtubeService.isSignedIn,
-              let streamKey = Settings.streamKey,
-              !streamKey.isEmpty else {
+              youtubeHealthPollingTarget != nil else {
             return
         }
         youtubePollingTask = Task {
             await refreshCurrentYouTubeBroadcastStatus(logContext: "startup")
             guard !Task.isCancelled else { return }
-            if appState.youtubeBroadcastId == nil {
-                LOG("YouTube status: could not find broadcast for active stream", level: .warning)
-                return
-            }
             let startTime = Date()
 
             while !Task.isCancelled {
@@ -463,26 +447,8 @@ struct TubeistView: View {
 
                 guard !Task.isCancelled else { break }
 
-                guard let broadcastId = appState.youtubeBroadcastId else {
-                    await refreshCurrentYouTubeBroadcastStatus(logContext: "poll recovery")
-                    continue
-                }
-
-                do {
-                    if let status = try await youtubeService.fetchBroadcastStatus(broadcastId: broadcastId) {
-                        try Task.checkCancellation()
-                        appState.youtubeStatus = status
-                        if status != "live" && status != "testing" {
-                            await refreshCurrentYouTubeBroadcastStatus(logContext: "poll reconcile")
-                        }
-                    } else {
-                        await refreshCurrentYouTubeBroadcastStatus(logContext: "poll refresh")
-                    }
-                } catch {
-                    guard !Task.isCancelled, !YouTubeDiagnostics.isCancellation(error) else { return }
-                    LOG("YouTube status poll failed: \(error.localizedDescription)", level: .debug)
-                    await refreshCurrentYouTubeBroadcastStatus(logContext: "poll failure recovery")
-                }
+                guard youtubeHealthPollingTarget != nil else { break }
+                await refreshCurrentYouTubeBroadcastStatus(logContext: "poll")
             }
         }
     }
@@ -492,7 +458,7 @@ struct TubeistView: View {
         youtubePollingTask = nil
         // Stop owns the final transition. Do not let an older status response
         // replace its confirmed completion or add another polling delay.
-        guard appState.streamSessionState != .stopping,
+        guard !appState.isStreamSessionRunning,
               appState.youtubeStatus != "complete" else { return }
         // Keychain-protected OAuth credentials may become unavailable after the
         // device locks. The explicit Stop path owns completion; status polling
@@ -548,7 +514,7 @@ struct TubeistView: View {
                     }
                 }
             }
-            else if appState.isFocusLocked {
+            else if appState.isFocusLocked && focusCapabilities.canPositionLens {
                 CameraControlSlider(
                     value: $lensPosition,
                     range: 0...1.0,
@@ -975,7 +941,7 @@ struct TubeistView: View {
                                         }
                                     }
                                 case .idle, .failed:
-                                    if appState.youtubeStatus == "live" || appState.youtubeStatus == "testing" {
+                                    if appState.isWaitingForPreviousYouTubeStream {
                                         fade("YouTube is still finishing the previous stream")
                                     }
                                     else if isCameraReady && Settings.hasCameraPermission() && Settings.hasMicrophonePermission() {
@@ -1135,7 +1101,6 @@ struct TubeistView: View {
                     SmallButton(imageName: appState.isFocusLocked ? "viewfinder.circle.fill" : "viewfinder.circle",
                                 foregroundColor: appState.isFocusLocked ? .yellow : .white) {
                         appState.isFocusLocked.toggle()
-                        enableFocusAndExposureTap = appState.isExposureLocked || appState.isFocusLocked
                         if appState.isFocusLocked {
                             fade("Focus locked: tap to set focus")
                             Task {
@@ -1149,11 +1114,11 @@ struct TubeistView: View {
                             }
                         }
                     }
+                    .disabled(!focusCapabilities.canLock)
                     
                     SmallButton(imageName: appState.isExposureLocked ? "sun.max.fill" : "sun.max",
                                 foregroundColor: appState.isExposureLocked ? .yellow : .white) {
                         appState.isExposureLocked.toggle()
-                        enableFocusAndExposureTap = appState.isExposureLocked || appState.isFocusLocked
                         if appState.isExposureLocked {
                             fade("Exposure locked: tap to set exposure")
                             Task {

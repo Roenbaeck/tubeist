@@ -614,9 +614,12 @@ private extension MPEGTransportStreamMuxer {
                     to: &packet
                 )
             }
-            packet.append(pes.subdata(in: cursor..<(cursor + payloadSize)))
-            precondition(packet.count == Self.packetSize)
+            precondition(packet.count + payloadSize == Self.packetSize)
             output.append(packet)
+            pes.withUnsafeBytes { bytes in
+                let payload = UnsafeRawBufferPointer(rebasing: bytes[cursor..<(cursor + payloadSize)])
+                output.append(contentsOf: payload)
+            }
             cursor += payloadSize
             firstPacket = false
         }
