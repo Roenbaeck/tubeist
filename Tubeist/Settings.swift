@@ -389,6 +389,7 @@ private struct YouTubeSettingsLoadContext: Equatable {
 
 struct SettingsView: View {
     var overlayManager: OverlaySettingsManager
+    let nearbyOverlay: NearbyOverlayReceiver
     /// While a stream runs, Settings only shows values: nothing is saved,
     /// no session is cycled and YouTube is only read.
     var isReadOnly: Bool = false
@@ -465,6 +466,7 @@ struct SettingsView: View {
     // Settings presents the stack front to back, with the top layer first.
     @State private var overlayDraft: [OverlaySetting] = []
     @State private var showingOverlayOrder = false
+    @State private var showingNearbyOverlay = false
     @State private var overlayRefreshRate = Settings.overlayRefreshRate
     @State private var isSaving = false
     @State private var saveErrorMessage: String?
@@ -685,6 +687,9 @@ struct SettingsView: View {
             .sheet(isPresented: $showingOverlayOrder) {
                 OverlayOrderView(overlays: $overlayDraft)
             }
+            .sheet(isPresented: $showingNearbyOverlay) {
+                NearbyOverlayPanel(receiver: nearbyOverlay)
+            }
         }
     }
 
@@ -800,6 +805,10 @@ struct SettingsView: View {
             Button("Reorder overlays") { showingOverlayOrder = true }
                 .disabled(overlayDraft.count < 2)
                 .accessibilityIdentifier("reorder-overlays")
+            Button("Nearby Overlay", systemImage: "antenna.radiowaves.left.and.right") {
+                showingNearbyOverlay = true
+            }
+            .accessibilityIdentifier("settings-nearby-overlay")
         } header: {
             Text("Overlays")
         } footer: {

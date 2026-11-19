@@ -9,6 +9,94 @@ import WebKit
 struct OverlayRecoveryTests {
     private let retryPolicy = OverlayRetryPolicy(initialDelay: 0.05, maximumDelay: 0.1, requestTimeout: 10)
 
+    @Test func nearbyPackageReceivesUpdatesInPlaceAndReplaysAfterReload() async throws {
+        let page = """
+        <!doctype html>
+        <link rel="stylesheet" href="assets/style.css">
+        <div id="output">waiting</div>
+        <script>
+        window.instance = Math.random();
+        window.addEventListener('overlay:update', event => {
+            document.getElementById('output').textContent = event.detail.label;
+        });
+        </script>
+        """
+        let package = NearbyOverlayWire.Package(
+            name: "Local test", entry: "index.html",
+            files: ["index.html": Data(page.utf8), "assets/style.css": Data("#output { color: red; }".utf8)]
+        )
+        let document = try NearbyOverlayDocument(package: package)
+        let overlay = Overlay(url: NearbyOverlayDocument.sourceURL, bundler: OverlayBundler(),
+                              refreshRate: { .once }, localDocument: document)
+        let webView = overlay.createWebView(width: 320, height: 180)
+        let window = display(webView)
+        defer { window.isHidden = true; overlay.prepareForRemoval() }
+        overlay.setNearbyPayload(#"{"label":"first"}"#)
+        try await waitUntil {
+            try await webView.evaluateJavaScript("document.getElementById('output').textContent") as? String == "first"
+        }
+        let firstInstance = try await webView.evaluateJavaScript("window.instance") as? Double
+        let color = try await webView.evaluateJavaScript("getComputedStyle(document.getElementById('output')).color") as? String
+        #expect(color == "rgb(255, 0, 0)")
+        try await waitForInitialSnapshot(of: overlay)
+        let firstImage = try #require(overlay.getOverlayImage())
+
+        overlay.setNearbyPayload(#"{"label":"second"}"#)
+        try await waitUntil {
+            guard let image = overlay.getOverlayImage(), firstImage !== image else { return false }
+            return try await webView.evaluateJavaScript("document.getElementById('output').textContent") as? String == "second"
+        }
+        let secondInstance = try await webView.evaluateJavaScript("window.instance") as? Double
+        #expect(firstInstance != nil && firstInstance == secondInstance)
+
+        overlay.reload()
+        try await waitUntil {
+            let instance = try await webView.evaluateJavaScript("window.instance") as? Double
+            let label = try await webView.evaluateJavaScript("document.getElementById('output').textContent") as? String
+            return instance != nil && instance != firstInstance && label == "second"
+        }
+    }
+
+    @Test func nearbyMonitorFitsTheSameCanvasAsTheSnapshot() async throws {
+        let page = """
+        <!doctype html>
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <style>
+        body { margin: 0; }
+        #graphic { position: fixed; width: 192px; height: 36px; bottom: 0; right: 0; background: red; }
+        </style>
+        <div id="graphic"></div>
+        """
+        let package = NearbyOverlayWire.Package(name: "Local test", entry: "index.html",
+                                                files: ["index.html": Data(page.utf8)])
+        let document = try NearbyOverlayDocument(package: package)
+        let overlay = Overlay(url: NearbyOverlayDocument.sourceURL, bundler: OverlayBundler(),
+                              refreshRate: { .once }, localDocument: document)
+        let viewport = NearbyOverlayViewport(overlay: overlay)
+        viewport.frame = CGRect(x: 0, y: 0, width: 320, height: 180)
+        let window = display(viewport)
+        defer { window.isHidden = true; overlay.prepareForRemoval() }
+
+        try await waitForInitialSnapshot(of: overlay)
+        let webView = try #require(overlay.getWebView())
+        let image = try #require(overlay.getOverlayImage())
+        let box = try #require(image.roughBoundingBox(scaledWidth: 640))
+        let width = try #require(image.cgImage?.width)
+        #expect(abs(box.width / Double(width) - 0.15) < 0.02)
+
+        viewport.layoutIfNeeded()
+        #expect(webView.bounds.size == CGSize(width: 1280, height: 720))
+        #expect(webView.frame == viewport.bounds)
+        let layoutWidth = try await webView.evaluateJavaScript("window.innerWidth") as? Int
+        #expect(layoutWidth == 1280)
+
+        viewport.frame.size = CGSize(width: 480, height: 270)
+        viewport.layoutIfNeeded()
+        #expect(webView.frame == viewport.bounds)
+        let resizedLayoutWidth = try await webView.evaluateJavaScript("window.innerWidth") as? Int
+        #expect(resizedLayoutWidth == layoutWidth)
+    }
+
     @Test func unmountingStopsHighRateCaptureAndReleasesThePage() async throws {
         let server = try OverlayHTTPTestServer(replies: [.html("Background cleanup")])
         try await server.start()
@@ -558,13 +646,13 @@ struct OverlayRecoveryTests {
         #expect(server.requests.count == 2)
     }
 
-    private func display(_ webView: WKWebView) -> UIWindow {
+    private func display(_ view: UIView) -> UIWindow {
         let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 320, height: 180))
         window.windowScene = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first
         window.windowLevel = .normal + 1
         let controller = UIViewController()
         window.rootViewController = controller
-        controller.view.addSubview(webView)
+        controller.view.addSubview(view)
         window.isHidden = false
         return window
     }

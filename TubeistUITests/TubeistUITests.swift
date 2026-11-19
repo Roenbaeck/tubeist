@@ -472,6 +472,34 @@ final class TubeistUITests: XCTestCase {
     }
 
     @MainActor
+    func testNearbyOverlayCanBeOpenedFromSettingsAndCamera() {
+        let originalOrientation = XCUIDevice.shared.orientation
+        XCUIDevice.shared.orientation = .landscapeRight
+        defer { XCUIDevice.shared.orientation = originalOrientation }
+        let app = launchForUITesting(additionalArguments: ["-Overlays", "[]"])
+        let settings = app.navigationBars["Settings"]
+        let pairingPanel = app.navigationBars["Nearby Overlay"]
+
+        app.buttons["Settings"].tap()
+        let nearbyOverlay = app.buttons["settings-nearby-overlay"]
+        scrollTo(nearbyOverlay, in: app)
+        nearbyOverlay.tap()
+        XCTAssertTrue(pairingPanel.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["Start receiving"].exists)
+        pairingPanel.buttons["Done"].tap()
+        settings.buttons["Cancel"].tap()
+
+        let overlayControl = app.buttons["Overlays"]
+        XCTAssertTrue(overlayControl.waitForExistence(timeout: 5))
+        overlayControl.press(forDuration: 1.0)
+        let shortcut = app.buttons["Nearby Overlay"]
+        XCTAssertTrue(shortcut.waitForExistence(timeout: 5))
+        shortcut.tap()
+        XCTAssertTrue(pairingPanel.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["Start receiving"].exists)
+    }
+
+    @MainActor
     func testOverlayOrderCanBeSavedAndCancelled() throws {
         try XCTSkipIf(true, "Native overlay-reordering drag is unreliable in the simulator.")
         let originalOrientation = XCUIDevice.shared.orientation

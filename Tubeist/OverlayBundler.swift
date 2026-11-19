@@ -102,6 +102,10 @@ final class Overlay: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     private let url: URL
     var sourceURL: URL { url }
     private let bundler: OverlayBundler
+    private let localDocument: NearbyOverlayDocument?
+    private var localRulesReady = false
+    private var latestPayload: String?
+    private var submittedPayload: String?
     private var webView: WKWebView?
     private var mimeType: String?
     private var overlayImage: UIImage?
@@ -120,9 +124,11 @@ final class Overlay: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     private var appliedScale: Double?
     
     init(url: URL, bundler: OverlayBundler, scale: Double = 1, retryPolicy: OverlayRetryPolicy = OverlayRetryPolicy(),
-         refreshRate: @escaping () -> OverlayRefreshRate = { Settings.overlayRefreshRate }) {
+         refreshRate: @escaping () -> OverlayRefreshRate = { Settings.overlayRefreshRate },
+         localDocument: NearbyOverlayDocument? = nil) {
         self.url = url
         self.bundler = bundler
+        self.localDocument = localDocument
         self.scale = OverlaySetting.normalizedScale(scale)
         self.retryPolicy = retryPolicy
         self.retryDelay = retryPolicy.initialDelay
@@ -185,8 +191,74 @@ final class Overlay: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         webView.scrollView.contentInsetAdjustmentBehavior = .never
 
         self.webView = webView
-        loadOverlay()
+        if localDocument != nil {
+            installLocalContentRules(in: webView)
+        } else {
+            loadOverlay()
+        }
         return webView
+    }
+
+    private static var localContentRules: WKContentRuleList?
+
+    private func installLocalContentRules(in webView: WKWebView) {
+        localRulesReady = false
+        Task { @MainActor [weak self, weak webView] in
+            guard let self, let webView else { return }
+            do {
+                let rules: WKContentRuleList
+                if let cached = Self.localContentRules {
+                    rules = cached
+                } else {
+                    let encodedRules = """
+                    [
+                        {"trigger":{"url-filter":"^http://"},"action":{"type":"block"}},
+                        {"trigger":{"url-filter":"^https://"},"action":{"type":"block"}},
+                        {"trigger":{"url-filter":"^ws://"},"action":{"type":"block"}},
+                        {"trigger":{"url-filter":"^wss://"},"action":{"type":"block"}},
+                        {"trigger":{"url-filter":"^ftp://"},"action":{"type":"block"}}
+                    ]
+                    """
+                    guard let compiled = try await WKContentRuleListStore.default().compileContentRuleList(
+                        forIdentifier: "NearbyOverlayLocalContent", encodedContentRuleList: encodedRules
+                    ) else {
+                        LOG("WebKit did not return nearby overlay content rules", level: .warning)
+                        return
+                    }
+                    rules = compiled
+                    Self.localContentRules = compiled
+                }
+                guard self.webView === webView else { return }
+                webView.configuration.userContentController.add(rules)
+                self.localRulesReady = true
+                self.loadOverlay()
+            } catch {
+                LOG("Could not load nearby overlay content rules: \(error.localizedDescription)", level: .warning)
+            }
+        }
+    }
+
+    func setNearbyPayload(_ json: String?) {
+        guard localDocument != nil else { return }
+        latestPayload = json
+        deliverNearbyPayload()
+    }
+
+    private func deliverNearbyPayload() {
+        guard isPageReady, let webView, let latestPayload, latestPayload != submittedPayload else { return }
+        submittedPayload = latestPayload
+        webView.callAsyncJavaScript(
+            "return window.dispatchEvent(new CustomEvent('overlay:update', {detail: JSON.parse(payload)}));",
+            arguments: ["payload": latestPayload], in: nil, in: .page
+        ) { [weak self, weak webView] result in
+            guard let self, let webView, self.webView === webView, self.isPageReady else { return }
+            if case let .failure(error) = result {
+                if self.submittedPayload == latestPayload { self.submittedPayload = nil }
+                LOG("Could not deliver a nearby overlay update: \(error.localizedDescription)", level: .warning)
+                return
+            }
+            self.captureWebViewImageOrSchedule()
+        }
     }
 
     func setScale(_ value: Double) {
@@ -280,6 +352,13 @@ final class Overlay: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
 
     private func loadOverlay() {
         guard let webView else { return }
+        if let localDocument {
+            guard localRulesReady else { return }
+            currentNavigation = webView.loadFileURL(
+                localDocument.entryURL, allowingReadAccessTo: localDocument.directory
+            )
+            return
+        }
         // Always retry the saved URL, even if the first navigation never
         // committed. Bypass cached error responses when the server returns.
         let request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData,
@@ -336,6 +415,7 @@ final class Overlay: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         retryTask = nil
         currentNavigation = navigation
         mimeType = nil
+        submittedPayload = nil
         isPageReady = false
         invalidateCapture()
     }
@@ -344,6 +424,11 @@ final class Overlay: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         _ webView: WKWebView,
         decidePolicyFor navigationAction: WKNavigationAction
     ) async -> WKNavigationActionPolicy {
+        if let localDocument {
+            let target = navigationAction.request.url
+            return navigationAction.targetFrame?.isMainFrame == true && target == localDocument.entryURL
+                ? .allow : .cancel
+        }
         guard let targetURL = navigationAction.request.url,
               OverlayURLValidator.isAllowed(targetURL.absoluteString) else {
             LOG("Blocked overlay navigation to an unsupported URL scheme", level: .warning)
@@ -396,6 +481,8 @@ final class Overlay: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         isPageReady = true
         captureSchedule.rate = refreshRate()
         didLogSnapshot = false
+        if localDocument != nil { mimeType = "text/html" }
+        deliverNearbyPayload()
         LOG("Web view finished loading; maximum overlay refresh rate: \(captureSchedule.rate.rawValue)/s", level: .debug)
         applyScale(in: webView)
         
@@ -583,6 +670,7 @@ actor OverlayBundler {
 
     private nonisolated var savedOverlayOrder: [URL] {
         OverlaySettingsManager.loadOverlaysFromStorage().compactMap { URL(string: $0.url) }
+            + [NearbyOverlayDocument.sourceURL]
     }
 
     func combineOverlayImages() async {
@@ -662,16 +750,21 @@ actor OverlayBundler {
 struct OverlayView: UIViewRepresentable {
     var url: URL
     var scale: Double = 1
+    var localDocument: NearbyOverlayDocument?
+    var nearbyPayload: String?
 
     func makeCoordinator() -> Overlay {
-        let overlay = Overlay(url: url, bundler: OverlayBundler.shared, scale: scale)
+        let overlay = Overlay(url: url, bundler: OverlayBundler.shared, scale: scale, localDocument: localDocument)
         Task {
             await OverlayBundler.shared.addOverlay(url: url, overlay: overlay)
         }
         return overlay
     }
 
-    func makeUIView(context: Context) -> WKWebView {
+    func makeUIView(context: Context) -> UIView {
+        if localDocument != nil {
+            return NearbyOverlayViewport(overlay: context.coordinator)
+        }
         if Settings.isInputSyncedWithOutput {
             let preset = Settings.selectedPreset
             return context.coordinator.createWebView(width: preset.width, height: preset.height)
@@ -679,12 +772,39 @@ struct OverlayView: UIViewRepresentable {
         return context.coordinator.createWebView(width: DEFAULT_CAPTURE_WIDTH, height: DEFAULT_CAPTURE_HEIGHT)
     }
 
-    func updateUIView(_ webView: WKWebView, context: Context) {
+    func updateUIView(_ view: UIView, context: Context) {
         context.coordinator.setScale(scale)
+        context.coordinator.setNearbyPayload(nearbyPayload)
     }
 
-    static func dismantleUIView(_ webView: WKWebView, coordinator: Overlay) {
+    static func dismantleUIView(_ view: UIView, coordinator: Overlay) {
         coordinator.prepareForRemoval()
         OverlayBundler.shared.removeOverlay(url: coordinator.sourceURL, matching: coordinator)
+    }
+}
+
+final class NearbyOverlayViewport: UIView {
+    private static let canvasSize = CGSize(width: NearbyOverlayWire.canvasWidth, height: NearbyOverlayWire.canvasHeight)
+    private let webView: WKWebView
+
+    init(overlay: Overlay) {
+        webView = overlay.createWebView(width: NearbyOverlayWire.canvasWidth, height: NearbyOverlayWire.canvasHeight)
+        super.init(frame: .zero)
+        clipsToBounds = true
+        addSubview(webView)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("The nearby overlay viewport is created in code")
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        guard !bounds.isEmpty else { return }
+        // Keep WebKit's layout and the snapshot rect fixed as the monitor resizes.
+        let scale = min(bounds.width / Self.canvasSize.width, bounds.height / Self.canvasSize.height)
+        webView.center = CGPoint(x: bounds.midX, y: bounds.midY)
+        webView.transform = CGAffineTransform(scaleX: scale, y: scale)
     }
 }

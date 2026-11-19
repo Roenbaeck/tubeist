@@ -57,6 +57,10 @@ Tubeist does not add developer-operated tracking or advertising identifiers.
 User-selected web overlays and Google's authorization page may use their own web
 storage or cookies.
 
+Nearby overlays are received directly from a paired device over Bluetooth. The
+package is kept locally for the current app session. Its visible content is
+included in any stream or recording that uses the overlay.
+
 Local recordings remain on your device until you export or delete them. You can
 remove the stream key in Settings and sign out of YouTube to delete Tubeist's
 stored credentials. You can revoke Tubeist's Google access from your Google

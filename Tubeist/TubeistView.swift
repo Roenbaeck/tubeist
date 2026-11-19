@@ -76,6 +76,8 @@ struct TubeistView: View {
     @State private var showHorizonLevel = Settings.showHorizonLevel
     @State private var areSystemMetricsAtTop = Settings.areSystemMetricsAtTop
     @State private var overlayManager = OverlaySettingsManager()
+    @State private var nearbyOverlay = NearbyOverlayReceiver()
+    @State private var showNearbyOverlay = false
     /// Read-only Settings while a stream runs. It never sets
     /// `appState.isSettingsPresented`, so the running pipeline, Start and the
     /// Watch behave as if Settings were closed.
@@ -628,6 +630,14 @@ struct TubeistView: View {
                                     .opacity(appState.areOverlaysHidden ? 0 : 1)
                             }
                         }
+                        if let document = nearbyOverlay.document {
+                            OverlayView(url: NearbyOverlayDocument.sourceURL,
+                                        localDocument: document,
+                                        nearbyPayload: nearbyOverlay.update)
+                                .frame(width: width, height: height)
+                                .id(document.id)
+                                .opacity(appState.areOverlaysHidden ? 0 : 1)
+                        }
                     }
                     
                     if showSplashScreen {
@@ -856,7 +866,8 @@ struct TubeistView: View {
                                     appState.youtubeBroadcastId = nil
                                 }
                             }) {
-                                SettingsView(overlayManager: overlayManager, isReadOnly: settingsReadOnly)
+                                SettingsView(overlayManager: overlayManager, nearbyOverlay: nearbyOverlay,
+                                             isReadOnly: settingsReadOnly)
                             }
                             .padding(.bottom, 10)
                             
@@ -1157,7 +1168,12 @@ struct TubeistView: View {
                         Settings.hideOverlays = appState.areOverlaysHidden
                         OverlayBundler.shared.refreshCombinedImage()
                     }
-                    
+                    .contextMenu {
+                        Button("Nearby Overlay", systemImage: "antenna.radiowaves.left.and.right") {
+                            showNearbyOverlay = true
+                        }
+                    }
+
                     SmallButton(imageName: "text.quote",
                                 foregroundColor: showJournal ? .yellow : Journal.publisher.hasErrors ? .red : .white) {
                         showJournal.toggle()
@@ -1208,6 +1224,9 @@ struct TubeistView: View {
         }
         .ignoresSafeArea(edges: verticalBarEdge == nil ? .all : verticalBarEdge == .leading ? .leading : [])
         .persistentSystemOverlays(.hidden)
+        .sheet(isPresented: $showNearbyOverlay) {
+            NearbyOverlayPanel(receiver: nearbyOverlay)
+        }
         .task(id: canPrepareCamera) {
             if showSettings {
                 await Streamer.shared.suspendPreviewForSettings()
