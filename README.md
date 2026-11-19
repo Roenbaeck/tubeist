@@ -122,6 +122,28 @@ Web overlays can add live graphics and information to the encoded output. Tubeis
 
 In Settings, overlays are listed from front to back: the top row appears above the others in both INPUT and OUTPUT. New overlays start on top. Tap **Reorder overlays** in the Overlays section, drag the handles, and tap **Done**, then **Save** to apply the order. **Cancel** in Settings discards the draft changes.
 
+### Nearby overlays
+
+Open **Settings → Overlays → Nearby Overlay** to pair a companion. You can
+also touch and hold **Overlays** on the camera screen and choose **Nearby
+Overlay**, including during a stream. Tap **Start receiving** and open a
+compatible companion app on a second device,
+enter the pairing code shown in Tubeist, and select Tubeist. After the package
+arrives, tap **Done** to return to the camera. The companion can keep updating
+the overlay while you record or stream. If the companion is still looking
+for Tubeist, tap **Refresh discovery** in the receiver panel to advertise
+again with the same code.
+
+Tubeist mounts one nearby overlay above its web overlays. It holds the latest
+graphic while the companion reconnects. If the scorer needs to pair again,
+tap **New pairing code** in Tubeist and enter it in the companion. Use
+**Stop receiving** to end the Bluetooth session or **Remove overlay** to
+take the graphic off the video. The package lives in Tubeist for the current
+app session.
+
+Nearby overlay pages use a 1280 × 720 layout canvas. The monitors and encoded
+output scale the whole canvas to fit their video frame.
+
 ## iOS behavior
 
 iOS does not permit indefinite camera capture in the background. If Tubeist moves to the background during capture, it stops capture and uses finite background execution time to finalize the local recording and accepted YouTube tail. Keep the app in the foreground for an active stream. When no stream is running, Tubeist stops capture and releases its audio session after the three-second background grace period, retaining the camera configuration for foreground resumption. Backgrounding also unmounts overlay web pages and stops their snapshots, retries and media playback, pauses system metrics, and cancels view-owned YouTube polling. Overlays reload on return. Battery Saving Mode while Tubeist remains in the foreground continues updating overlays for the broadcast.
