@@ -16,6 +16,42 @@ private actor CommandOrderRecorder {
     }
 }
 
+/// Holds a Start preflight or a queued command until the test releases it.
+@MainActor
+private final class StepGate {
+    private var entered = false
+    private var released = false
+    private var enteredWaiters: [CheckedContinuation<Void, Never>] = []
+    private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func enter() {
+        entered = true
+        enteredWaiters.forEach { $0.resume() }
+        enteredWaiters.removeAll()
+    }
+
+    func waitUntilEntered() async {
+        guard !entered else { return }
+        await withCheckedContinuation { enteredWaiters.append($0) }
+    }
+
+    func waitForRelease() async {
+        guard !released else { return }
+        await withCheckedContinuation { releaseWaiters.append($0) }
+    }
+
+    func release() {
+        released = true
+        releaseWaiters.forEach { $0.resume() }
+        releaseWaiters.removeAll()
+    }
+}
+
+private actor CaptureStartCounter {
+    private(set) var count = 0
+    func record() { count += 1 }
+}
+
 struct StreamerTests {
     @Test @MainActor
     func settingsRejectsQueuedStartBeforePreparingAnyMedia() async throws {
@@ -228,6 +264,137 @@ struct StreamerTests {
         await streamer.handleRuntimeFailure(CaptureContinuityError.invalidTiming, sessionID: failedOwner)
         #expect(appState.streamSessionState == .live)
         #expect(appState.activeAlert == nil)
+    }
+
+    // Independent of the simulator's saved Stream and Record settings.
+    private static let recordingOnly = StreamOutputPlan(streamsToYouTube: false, recordsLocally: true)
+
+    @Test(.timeLimit(.minutes(1))) @MainActor func stopDuringPreflightCancelsStartBeforeItGoesLive() async throws {
+        let app = AppState()
+        let actor = StreamingActor()
+        let gate = StepGate()
+        let streamer = Streamer(streamingActor: actor, outputPlan: { Self.recordingOnly }, outputPreflight: { _, _, _ in
+            await gate.enter()
+            // A slow YouTube setup. Stop must cancel it rather than wait.
+            try await Task.sleep(for: .seconds(60))
+            return ("unused", nil)
+        })
+        await streamer.setAppState(app)
+        let start = Task { try await streamer.startStream(streamID: "stop-during-preflight") }
+        await gate.waitUntilEntered()
+        #expect(app.streamSessionState == .preparing)
+
+        let stop = try await streamer.endStream()
+        // Start cleaned up; the queued Stop found nothing left to stop.
+        #expect(stop.outcome == .alreadyIdle)
+        await #expect(throws: StreamStartError.stoppedDuringPreparation) { try await start.value }
+        #expect(await actor.sessionState() == .idle)
+        #expect(app.streamSessionState == .idle)
+        #expect(app.activitySession?.startedAt == nil)
+        #expect(app.activeAlert == nil)
+
+        // The request belonged to that session only.
+        try await actor.beginPreparing()
+        try await actor.markLive()
+        #expect(app.streamSessionState == .live)
+    }
+
+    @Test(.timeLimit(.minutes(1))) @MainActor func preflightFinishingAfterStopDoesNotGoLive() async throws {
+        let app = AppState()
+        let actor = StreamingActor()
+        let gate = StepGate()
+        let streamer = Streamer(streamingActor: actor, outputPlan: { Self.recordingOnly }, outputPreflight: { _, _, _ in
+            await gate.enter()
+            await gate.waitForRelease() // Ignores cancellation.
+            return ("unused", nil)
+        })
+        await streamer.setAppState(app)
+        let start = Task { try await streamer.startStream(streamID: "preflight-after-stop") }
+        await gate.waitUntilEntered()
+        let stop = Task { try await streamer.endStream() }
+        while await !actor.wasStopRequestedDuringPreparation() { await Task.yield() }
+        gate.release()
+
+        await #expect(throws: StreamStartError.stoppedDuringPreparation) { try await start.value }
+        #expect(try await stop.value.outcome == .alreadyIdle)
+        #expect(app.streamSessionState == .idle)
+        #expect(app.activitySession?.startedAt == nil)
+        #expect(app.activeAlert == nil)
+    }
+
+    @Test @MainActor func stopRequestedWhilePreparingPreventsLive() async throws {
+        let app = AppState()
+        let actor = StreamingActor()
+        await actor.setAppState(app)
+        try await actor.beginPreparing()
+        await actor.requestStop()
+        await #expect(throws: StreamStartError.stoppedDuringPreparation) { try await actor.markLive() }
+        #expect(await actor.sessionState() == .preparing)
+        #expect(actor.captureSessionID == nil)
+
+        // A preflight registered after the request is cancelled at once.
+        let cancelled = CaptureStartCounter()
+        await actor.setPreflightCancellation { Task { await cancelled.record() } }
+        while await cancelled.count == 0 { await Task.yield() }
+
+        // Once live, the request is left to the queued Stop.
+        await actor.completeStop()
+        try await actor.beginPreparing()
+        try await actor.markLive()
+        await actor.requestStop()
+        #expect(await actor.sessionState() == .live)
+        #expect(await !actor.wasStopRequestedDuringPreparation())
+    }
+
+    @Test(.timeLimit(.minutes(1))) @MainActor func foregroundCaptureResumesWhileStopDrainsUploads() async throws {
+        let app = AppState()
+        let actor = StreamingActor()
+        let queue = StreamCommandQueue()
+        let starts = CaptureStartCounter()
+        let streamer = Streamer(streamingActor: actor, commandQueue: queue,
+                                startCapture: { await starts.record() })
+        await streamer.setAppState(app)
+        #expect(StreamSessionState.preparing.keepsCaptureRunning)
+        #expect(StreamSessionState.live.keepsCaptureRunning)
+        #expect(!StreamSessionState.stopping.keepsCaptureRunning)
+        #expect(!StreamSessionState.idle.keepsCaptureRunning)
+
+        // Stop holds the command queue while uploads drain, after it suspended
+        // capture in the background. Returning to the app restarts capture
+        // before reporting the camera ready, without waiting for that drain.
+        try await actor.beginPreparing()
+        try await actor.markLive()
+        #expect(await actor.beginStopping())
+        let drain = StepGate()
+        let stop = Task {
+            try await queue.run {
+                await drain.enter()
+                await drain.waitForRelease()
+            }
+        }
+        await drain.waitUntilEntered()
+        try await streamer.startSessions()
+        #expect(await starts.count == 1)
+        drain.release()
+        try await stop.value
+        await actor.completeStop()
+
+        // Idle startup stays ordered behind other session commands.
+        let command = StepGate()
+        let other = Task {
+            try await queue.run {
+                await command.enter()
+                await command.waitForRelease()
+            }
+        }
+        await command.waitUntilEntered()
+        let resume = Task { try await streamer.startSessions() }
+        for _ in 0..<20 { await Task.yield() }
+        #expect(await starts.count == 1)
+        command.release()
+        try await other.value
+        try await resume.value
+        #expect(await starts.count == 2)
     }
 
     @Test func stabilizedVideoMustReachTheStopTimestamp() {

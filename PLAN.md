@@ -16,14 +16,15 @@
 
 ## Capture lifecycle audit, 2026-11-21
 
-Audit baseline `eba1808`. The two high-priority fixes have local regression coverage.
+Audit baseline `eba1808`. The two high-priority fixes and the first two
+medium-priority fixes have local regression coverage.
 
 | Status | Priority | Finding | Verification |
 | --- | --- | --- | --- |
 | [x] | High | A second timestamp gap inside buffered recovery audio could throw a fatal error while both tracks were returning. The pipeline now stages AAC and discards candidates preceding that gap before committing either output. | The `recovery-audio-gap` probe injects a three-second jump, requires recovery with the next aligned pair, and decodes the MP4 and live segments. The watchdog probe checks that repeated gaps still expire at the original deadline. |
 | [x] | High | A delayed audio or video encoding error could stop the next stream. Samples now carry the session that accepted them through the capture and encoder queues. | The `second-stream` probe delivers stale audio, video and a preview frame to a restarted pipeline. `StreamerTests` delivers the previous session’s sample error after the next Start. |
-| [ ] | Medium | A Stop requested during preparation waits behind Start, which can still enter Live. | Hold Start at preflight, issue Stop through the public command queue, then release preflight. Require cleanup exactly once and no transition to Live. |
-| [ ] | Medium | Returning to the foreground while a background Stop drains can leave the camera stopped and the UI reporting ready. | Foreground the app during the upload drain, then finish Stop. Require the preview session to be running before readiness. |
+| [x] | Medium | A Stop requested during preparation waits behind Start, which can still enter Live. Stop now marks the preparing session before it queues and cancels the YouTube preflight. Start checks the request before enabling capture output and again in the Live transition, then returns to idle without an alert. | `StreamerTests` holds Start in a cancellable preflight and in one that ignores cancellation, issues Stop through the public queue, and requires idle, no alert, no Live start time, and an already-idle Stop. A separate test requires `markLive` to reject a recorded request. |
+| [x] | Medium | Returning to the foreground while a background Stop drains can leave the camera stopped and the UI reporting ready. Foreground setup now restarts capture during Stop, without waiting behind the upload drain, before reporting the camera ready. | `StreamerTests` holds the command queue as a draining Stop and requires capture to restart immediately, while idle startup stays ordered behind other commands. `CaptureSessionRecoveryTests` covers restarting a suspended session. |
 | [ ] | Medium | A stream-only Stop can report YouTube success when no media was delivered. | Stop after video starts but before the first microphone sample. Require the shutdown report to distinguish zero delivered segments from a successful stream, including manual ending mode. |
 | [ ] | Medium | Stale cached YouTube Live or Testing status can block the next Start on phone and Watch while idle. | End the previous broadcast remotely with Tubeist in the foreground. Require an idle refresh to unblock both controls once YouTube confirms the end. |
 | [ ] | Low | The health indicator can show pristine during capture startup, or silenced after a terminal failure. | Poll before both tracks are usable and again after a failure with empty buffers. Check the indicator against the session and capture states. |

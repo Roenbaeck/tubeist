@@ -186,6 +186,8 @@ struct TubeistView: View {
                 LOG("Started streaming engine", level: .info)
             } catch YouTubeError.keyConflict(let conflict) {
                 pendingKeyConflict = conflict
+            } catch StreamStartError.stoppedDuringPreparation {
+                fade("Stream start cancelled")
             } catch {
                 fade(error.localizedDescription)
                 LOG("Could not start streaming engine: \(error.localizedDescription)", level: .error)
@@ -293,9 +295,11 @@ struct TubeistView: View {
         return
 #else
         do {
-            // An active stream still owns its capture graph. Brief system UI
-            // interruptions resume automatically; don't restart it on return.
-            if !appState.isStreamSessionRunning {
+            // A preparing or live stream owns its capture graph. Brief system
+            // UI interruptions resume automatically; don't restart it on return.
+            // Stop may have suspended the camera for a background upload drain,
+            // so resume it then, before the camera is reported ready.
+            if !appState.streamSessionState.keepsCaptureRunning {
                 try await Streamer.shared.startSessions()
             }
             try Task.checkCancellation()

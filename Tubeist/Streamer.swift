@@ -49,6 +49,17 @@ enum StreamSessionState: Equatable, Sendable {
         case .idle, .failed: false
         }
     }
+
+    /// Start and Live keep the capture graph running for the stream, and iOS
+    /// resumes it after a brief interruption. Stop releases capture once its
+    /// media has drained, and may suspend it while uploads finish in the
+    /// background, so foreground setup must restart it.
+    var keepsCaptureRunning: Bool {
+        switch self {
+        case .preparing, .live: true
+        case .idle, .stopping, .failed: false
+        }
+    }
 }
 
 enum StreamSessionError: LocalizedError, Equatable {
@@ -171,6 +182,10 @@ actor StreamingActor {
     private var youTubeHealthTarget: YouTubeHealthTarget?
     private var youTubeUploadFailure: String?
     private(set) var sessionID: UUID?
+    /// Stop waits in the command queue behind a preparing Start. Recording it
+    /// lets Start abandon preflight and never enable output or go live.
+    private var stopRequestedDuringPreparation = false
+    private var cancelPreflight: (@Sendable () -> Void)?
 
     func setAppState(_ appState: AppState) {
         self.appState = appState
@@ -206,15 +221,49 @@ actor StreamingActor {
             youTubeCompletionTarget = nil
             youTubeHealthTarget = nil
             youTubeUploadFailure = nil
+            stopRequestedDuringPreparation = false
+            cancelPreflight = nil
         case .preparing, .live, .stopping:
             throw StreamSessionError.sessionBusy(state)
         }
+    }
+
+    /// Called before Stop joins the command queue. A live session is stopped
+    /// by the queued command; a preparing one is told not to go live.
+    func requestStop() {
+        guard state == .preparing else { return }
+        stopRequestedDuringPreparation = true
+        let cancel = cancelPreflight
+        cancelPreflight = nil
+        cancel?()
+    }
+
+    /// Registers how to abandon the network preflight of the preparing session.
+    func setPreflightCancellation(_ cancel: (@Sendable () -> Void)?) {
+        guard state == .preparing, !stopRequestedDuringPreparation else {
+            cancelPreflight = nil
+            cancel?()
+            return
+        }
+        cancelPreflight = cancel
+    }
+
+    func throwIfStopRequested() throws {
+        if stopRequestedDuringPreparation { throw StreamStartError.stoppedDuringPreparation }
+    }
+
+    func wasStopRequestedDuringPreparation() -> Bool {
+        stopRequestedDuringPreparation
     }
 
     func markLive() async throws {
         guard state == .preparing else {
             throw StreamSessionError.invalidTransition(from: state, to: .live)
         }
+        // Checked in the same actor turn as the transition, so a Stop request
+        // either prevents Live or arrives afterwards and stops the session.
+        try throwIfStopRequested()
+        cancelPreflight = nil
         intake.setSession(sessionID)
         await transition(to: .live)
     }
@@ -300,6 +349,8 @@ actor StreamingActor {
     func completeStop() async {
         sessionID = nil
         closeMediaIntake()
+        stopRequestedDuringPreparation = false
+        cancelPreflight = nil
         isHandlingRuntimeFailure = false
         outputPlan = nil
         youTubeCompletionTarget = nil
@@ -311,6 +362,8 @@ actor StreamingActor {
     func fail(_ error: Error) async {
         sessionID = nil
         closeMediaIntake()
+        stopRequestedDuringPreparation = false
+        cancelPreflight = nil
         isHandlingRuntimeFailure = false
         outputPlan = nil
         youTubeCompletionTarget = nil
@@ -407,12 +460,28 @@ actor StreamCommandQueue {
 }
 
 final class Streamer: Sendable {
+    typealias PreparedOutput = (serviceName: String, restart: PlannedStreamSelection?)
+    typealias OutputPreflight = @Sendable (_ streamID: String, _ sessionID: UUID,
+                                           _ plan: StreamOutputPlan) async throws -> PreparedOutput
     public static let shared = Streamer()
     private let streamingActor: StreamingActor
     var captureSessionID: UUID? { streamingActor.captureSessionID }
-    private let commandQueue = StreamCommandQueue()
-    init(streamingActor: StreamingActor = StreamingActor()) {
+    private let commandQueue: StreamCommandQueue
+    private let startCapture: @Sendable () async throws -> Void
+    /// Replace the Settings-based output plan and the YouTube and recording
+    /// preflight in tests.
+    private let outputPlan: (@Sendable () throws -> StreamOutputPlan)?
+    private let outputPreflight: OutputPreflight?
+    init(streamingActor: StreamingActor = StreamingActor(),
+         commandQueue: StreamCommandQueue = StreamCommandQueue(),
+         startCapture: @escaping @Sendable () async throws -> Void = { try await CaptureDirector.shared.startSessions() },
+         outputPlan: (@Sendable () throws -> StreamOutputPlan)? = nil,
+         outputPreflight: OutputPreflight? = nil) {
         self.streamingActor = streamingActor
+        self.commandQueue = commandQueue
+        self.startCapture = startCapture
+        self.outputPlan = outputPlan
+        self.outputPreflight = outputPreflight
     }
     private static let streamIDFormatter: DateFormatter = {
         let formatter = DateFormatter()
@@ -456,9 +525,19 @@ final class Streamer: Sendable {
         }
     }
     func startSessions() async throws {
+        // Stop releases capture after draining it, and suspends the camera if
+        // the app is in the background then. Restart it now rather than behind
+        // the upload drain, which can take minutes. SessionController serializes
+        // this with that suspension, which a foreground app skips. Before the
+        // release, capture is running or resuming by itself, so this is a no-op.
+        if await streamingActor.sessionState() == .stopping {
+            guard await !streamingActor.isSettingsPresented() else { throw CancellationError() }
+            try await startCapture()
+            return
+        }
         try await commandQueue.run { [self] in
             guard await !streamingActor.isSettingsPresented() else { throw CancellationError() }
-            try await CaptureDirector.shared.startSessions()
+            try await startCapture()
         }
     }
     func stopSessions() async {
@@ -498,7 +577,10 @@ final class Streamer: Sendable {
         // Up to 120s to drain, then 120s observation and a bounded API request.
         shutdownTimeout: TimeInterval = 260
     ) async throws -> StreamStopResult {
-        try await commandQueue.run { [self] in
+        // Stop queues behind a preparing Start. Tell that Start now, so it
+        // abandons preflight instead of enabling capture and going live first.
+        await streamingActor.requestStop()
+        return try await commandQueue.run { [self] in
             try await performStop(
                 resumePreviewAfterStop: resumePreviewAfterStop,
                 shutdownTimeout: shutdownTimeout
@@ -592,13 +674,24 @@ final class Streamer: Sendable {
             guard await !ContentPackager.shared.isPackaging() else {
                 throw ContentPackagingError.alreadyEncoding
             }
-            let outputPlan = try StreamOutputPlan.resolve(
+            let outputPlan = try self.outputPlan?() ?? StreamOutputPlan.resolve(
                 stream: Settings.stream,
                 record: Settings.record,
                 highlightsEnabled: Settings.highlightsEnabled
             )
             await streamingActor.setOutputPlan(outputPlan)
-            let prepared = try await prepareEncodedOutput(streamID: streamID, sessionID: sessionID, plan: outputPlan)
+            // YouTube preflight can take many seconds. Run it as a task a Stop
+            // request can cancel; YouTubeService propagates the cancellation.
+            let preflight = Task { [self, outputPreflight] in
+                if let outputPreflight {
+                    return try await outputPreflight(streamID, sessionID, outputPlan)
+                }
+                return try await prepareEncodedOutput(streamID: streamID, sessionID: sessionID, plan: outputPlan)
+            }
+            await streamingActor.setPreflightCancellation { preflight.cancel() }
+            let prepared = try await preflight.value
+            await streamingActor.setPreflightCancellation(nil)
+            try await streamingActor.throwIfStopRequested()
             try await ContentPackager.shared.beginPackaging(
                 plan: outputPlan,
                 serviceName: prepared.serviceName,
@@ -609,6 +702,7 @@ final class Streamer: Sendable {
             await FrameGrabber.shared.commenceGrabbing()
             videoStarted = true
             await FrameGrabber.shared.resetDroppedFrameCount()
+            try await streamingActor.throwIfStopRequested()
             try await CaptureDirector.shared.startOutput()
             outputStarted = true
             try await streamingActor.markLive()
@@ -632,6 +726,20 @@ final class Streamer: Sendable {
                 _ = try? await ContentPackager.shared.endPackaging()
             }
             await EncodedOutputRouter.shared.cancel()
+            if await streamingActor.wasStopRequestedDuringPreparation() {
+                // The user's Stop, not a failure: return to idle without an
+                // alert. The queued Stop then finds nothing left to clean up.
+                if !(error is StreamStartError) {
+                    LOG("Start preflight ended after Stop: \(error.localizedDescription)", level: .debug)
+                }
+                LOG("Start cancelled by Stop before going live", level: .info)
+                await streamingActor.completeStop()
+                if videoStarted || outputStarted {
+                    // Cleanup also stopped any output preview; restore the monitor.
+                    await performMonitorChange(await streamingActor.getMonitor())
+                }
+                throw StreamStartError.stoppedDuringPreparation
+            }
             await streamingActor.fail(error)
             throw error
         }
@@ -977,6 +1085,7 @@ enum StreamStartError: LocalizedError, Equatable {
     case noOutputSelected
     case endingTestRequiresSignIn
     case settingsPresented
+    case stoppedDuringPreparation
 
     var errorDescription: String? {
         switch self {
@@ -985,6 +1094,7 @@ enum StreamStartError: LocalizedError, Equatable {
         case .noOutputSelected: "Enable YouTube streaming, local recording, or both"
         case .endingTestRequiresSignIn: "Sign in to YouTube before using the stream ending test, or turn the test off in Settings"
         case .settingsPresented: "Close Settings on your iPhone before starting"
+        case .stoppedDuringPreparation: "Start was cancelled by Stop"
         }
     }
 }

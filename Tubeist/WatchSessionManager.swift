@@ -239,6 +239,8 @@ final class WatchSessionManager: NSObject, WCSessionDelegate {
             } catch YouTubeError.keyConflict(let conflict) {
                 // The fix needs a decision; that happens on the phone.
                 appState.activeAlert = conflict.watchMessage
+            } catch StreamStartError.stoppedDuringPreparation {
+                // Stop (from the phone or Watch) cancelled it; not an error.
             } catch {
                 appState.activeAlert = error.localizedDescription
             }
