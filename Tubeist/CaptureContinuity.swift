@@ -31,7 +31,6 @@ struct CaptureLiveness {
     func state(at now: TimeInterval) -> State {
         let oldest = min(videoAt ?? startedAt, audioAt ?? startedAt)
         let age = max(0, now - oldest)
-        if age >= 30 { return .failed }
         if videoAt == nil || audioAt == nil {
             return age >= Self.concealmentLimit ? .recovering : .starting
         }

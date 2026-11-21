@@ -179,6 +179,26 @@ struct StreamerTests {
         #expect(await actor.noteYouTubeUploadFailure("new rejection", sessionID: newSession) == plan)
     }
 
+    @Test @MainActor func delayedCaptureTimeoutCannotStopTheNextSession() async throws {
+        let actor = StreamingActor()
+        let streamer = Streamer(streamingActor: actor)
+        let appState = AppState()
+        await streamer.setAppState(appState)
+
+        let oldSessionID = UUID()
+        try await actor.beginPreparing(sessionID: oldSessionID)
+        try await actor.markLive()
+        #expect(await actor.beginStopping())
+        await actor.completeStop()
+
+        try await actor.beginPreparing(sessionID: UUID())
+        try await actor.markLive()
+        await streamer.handleRuntimeFailure(CaptureContinuityError.stalled, sessionID: oldSessionID)
+
+        #expect(appState.streamSessionState == .live)
+        #expect(appState.activeAlert == nil)
+    }
+
     @Test func stabilizedVideoMustReachTheStopTimestamp() {
         let stop = CMTime(value: 900_000, timescale: 90_000)
 

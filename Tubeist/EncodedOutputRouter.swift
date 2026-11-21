@@ -4,6 +4,7 @@
 //
 
 import Foundation
+import Synchronization
 
 enum YouTubeHLSPackagingError: LocalizedError, CustomStringConvertible {
     case notPrepared
@@ -51,6 +52,11 @@ struct EncodedOutputMetrics: Sendable, Equatable {
     var belowQualityFloor: Bool = false
 }
 
+struct StreamEncoderFeedback: Sendable, Equatable {
+    var uploadsStopped = false
+    var videoBitrate: Int?
+}
+
 actor YouTubeHLSStreamSink {
     static let shared = YouTubeHLSStreamSink()
 
@@ -81,6 +87,7 @@ actor YouTubeHLSStreamSink {
     private var failure: String?
     private var sessionGeneration: UInt64 = 0
     private var bitrateController: AdaptiveBitrateController?
+    private let encoderFeedback = Mutex(StreamEncoderFeedback())
     private var currentBytes = 0
     private var uploadStartedAt: TimeInterval?
     private var processingTask: Task<Void, Never>?
@@ -119,6 +126,7 @@ actor YouTubeHLSStreamSink {
         processingTask = nil
         uploader = nil
         isPrepared = false
+        publishEncoderFeedback()
         initialization = nil
         muxer = MPEGTransportStreamMuxer(serviceName: serviceName)
         queue.removeAll(keepingCapacity: true)
@@ -173,12 +181,18 @@ actor YouTubeHLSStreamSink {
             endingPolicy: endingPolicy, sleeper: sleeper
         )
         isPrepared = true
+        publishEncoderFeedback()
         LOG("YouTube HLS output is prepared", level: .debug)
     }
 
     /// Uploads cannot resume after a failure; the pipeline stops producing
     /// segments at its next boundary while any local recording continues.
     var hasStoppedAcceptingSegments: Bool { isPrepared && failure != nil }
+
+    /// The capture mailbox can read this while the sink is doing file I/O.
+    nonisolated var latestEncoderFeedback: StreamEncoderFeedback {
+        encoderFeedback.withLock { $0 }
+    }
 
     func enqueue(_ fragment: Fragment) async {
         guard isPrepared, failure == nil else {
@@ -332,6 +346,7 @@ actor YouTubeHLSStreamSink {
         uploader = nil
         diskBuffer = nil
         isPrepared = false
+        publishEncoderFeedback()
         let finishingFailure = failure
         var endListAcknowledged = false
         if let finishingUploader {
@@ -380,6 +395,7 @@ actor YouTubeHLSStreamSink {
         queue.removeAll(keepingCapacity: true)
         diskBuffer = nil
         isPrepared = false
+        publishEncoderFeedback()
         isProcessing = false
         currentFragmentType = nil
         isUploadingFinalization = false
@@ -424,9 +440,10 @@ actor YouTubeHLSStreamSink {
         )
     }
 
-    func recommendedVideoBitrate() -> Int? {
-        updateBitrateController()
-        return bitrateController?.targetBitrate
+    private func publishEncoderFeedback() {
+        let feedback = StreamEncoderFeedback(uploadsStopped: hasStoppedAcceptingSegments,
+            videoBitrate: isPrepared ? bitrateController?.targetBitrate : nil)
+        encoderFeedback.withLock { $0 = feedback }
     }
 
     private var waitingUploadBytes: Int {
@@ -457,6 +474,7 @@ actor YouTubeHLSStreamSink {
             inFlightSeconds: uploadStartedAt.map { max(0, now - $0) } ?? 0,
             now: now
         )
+        publishEncoderFeedback()
         if bitrateController?.state == .capacityBelowQualityFloor, previous != .capacityBelowQualityFloor {
             LOG(buffering.preservesFootage
                 ? "Available bandwidth is below the normal quality floor; reducing picture quality to preserve footage"
@@ -704,6 +722,7 @@ actor YouTubeHLSStreamSink {
         let report = reportUploadsStopped
         let failedUploader = uploader
         failure = String(describing: error)
+        publishEncoderFeedback()
         queue.removeAll(keepingCapacity: true)
         diskBuffer = nil
         clearFinalizationBuffer()
@@ -783,16 +802,6 @@ actor EncodedOutputRouter {
                                          audioBitrate: preset.audioBitrate * preset.audioChannels,
                                          policy: .init(rampsUpAtStartup: preset.rampsUpAtStartup,
                                                        emergencyMinimumBitrate: buffering.preservesFootage ? 250_000 : nil))
-    }
-
-    func recommendedVideoBitrate() async -> Int? {
-        guard case .direct = mode else { return nil }
-        return await YouTubeHLSStreamSink.shared.recommendedVideoBitrate()
-    }
-
-    func hasStoppedAcceptingSegments() async -> Bool {
-        guard case .direct = mode else { return false }
-        return await YouTubeHLSStreamSink.shared.hasStoppedAcceptingSegments
     }
 
     func route(_ fragment: Fragment) {

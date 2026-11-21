@@ -11,7 +11,7 @@ struct CaptureContinuityTests {
         #expect(live.state(at: 10.2) == .healthy)
         #expect(live.state(at: 10.5) == .concealing)
         #expect(live.state(at: 12.2) == .recovering)
-        #expect(live.state(at: 40.2) == .failed)
+        #expect(live.state(at: 40.2) == .recovering)
     }
 
     @Test func oneHealthyTrackCannotHideAStalledTrack() {

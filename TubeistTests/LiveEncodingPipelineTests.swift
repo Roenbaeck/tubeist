@@ -11,7 +11,7 @@ struct LiveEncodingPipelineTests {
     func fileWriteFailurePreservesOnlyTheHealthyOutput(streams: Bool) async throws {
         let fragments = PublishedFragments()
         let pipeline = LiveEncodingPipeline(now: { 0 }, automaticWatchdog: false,
-                                            publish: { await fragments.append($0) }, streamStopped: { false })
+                                            publish: { await fragments.append($0) }, outputFeedback: { .init() })
         let delegate = PipelineRecordingFile()
         let writer = try RecordingAssetWriter(delegate: delegate, finalizationFlag: AssetWriterFinalizationFlag())
         let recording = RecordingActor(recordingFolder: FileManager.default.temporaryDirectory,
@@ -39,7 +39,7 @@ struct LiveEncodingPipelineTests {
     func recordingFailureEndsOnlyTheRecordingWhileStreamingContinues() async throws {
         let fragments = PublishedFragments()
         let pipeline = LiveEncodingPipeline(now: { 0 }, automaticWatchdog: false,
-                                            publish: { await fragments.append($0) }, streamStopped: { false })
+                                            publish: { await fragments.append($0) }, outputFeedback: { .init() })
         let file = PipelineRecordingFile()
         let writer = try RecordingAssetWriter(delegate: file, finalizationFlag: AssetWriterFinalizationFlag())
         try pipeline.start(preset: PipelineTestMedia.preset, stream: true, recording: writer)
@@ -61,7 +61,7 @@ struct LiveEncodingPipelineTests {
 
     @Test(.enabled(if: PipelineTestMedia.hasHardwareHEVC))
     func recordingFailureEndsARecordingOnlySession() async throws {
-        let pipeline = LiveEncodingPipeline(now: { 0 }, automaticWatchdog: false, publish: { _ in }, streamStopped: { false })
+        let pipeline = LiveEncodingPipeline(now: { 0 }, automaticWatchdog: false, publish: { _ in }, outputFeedback: { .init() })
         let file = PipelineRecordingFile() // AVAssetWriter holds its delegate weakly.
         let writer = try RecordingAssetWriter(delegate: file, finalizationFlag: AssetWriterFinalizationFlag())
         try pipeline.start(preset: PipelineTestMedia.preset, stream: false, recording: writer)
@@ -79,7 +79,7 @@ struct LiveEncodingPipelineTests {
         let fragments = PublishedFragments()
         let stopped = PipelineTestFlag()
         let pipeline = LiveEncodingPipeline(now: { 0 }, automaticWatchdog: false,
-                                            publish: { await fragments.append($0) }, streamStopped: { stopped.value })
+            publish: { await fragments.append($0) }, outputFeedback: { .init(uploadsStopped: stopped.value) })
         let file = PipelineRecordingFile()
         let writer = try RecordingAssetWriter(delegate: file, finalizationFlag: AssetWriterFinalizationFlag())
         try pipeline.start(preset: PipelineTestMedia.preset, stream: true, recording: writer)

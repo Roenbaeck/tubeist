@@ -134,6 +134,7 @@ struct YouTubeHLSStreamSinkTests {
         } else { await transport.releaseFirstRequest() }
         try await reports.waitForFirst()
         #expect(await sink.hasStoppedAcceptingSegments)
+        #expect(sink.latestEncoderFeedback.uploadsStopped)
         await #expect(throws: YouTubeHLSPackagingError.self) {
             try await sink.finish(timeout: successfulSinkShutdownTimeout)
         }
@@ -375,17 +376,17 @@ struct YouTubeHLSStreamSinkTests {
         try await transport.waitUntilRequested()
         await sink.enqueue(Fragment(sequence: 1, segment: Data(repeating: 0, count: 1_500_000),
                                     duration: 2, container: .mpegTransportStream))
-        #expect(await sink.metrics().videoBitrate == 6_000_000)
+        #expect(sink.latestEncoderFeedback.videoBitrate == 6_000_000)
         clock.transfer(3)
         let deadline = ContinuousClock.now.advanced(by: .seconds(5))
-        // Reading metrics does not evaluate the controller; only its watchdog can act.
-        while await sink.metrics().videoBitrate == 6_000_000, ContinuousClock.now < deadline {
+        // Reading the published snapshot never runs the bitrate controller.
+        while sink.latestEncoderFeedback.videoBitrate == 6_000_000, ContinuousClock.now < deadline {
             try await Task.sleep(for: .milliseconds(20))
         }
-        #expect(await sink.metrics().videoBitrate! < 6_000_000)
+        #expect(try #require(sink.latestEncoderFeedback.videoBitrate) < 6_000_000)
         #expect(await transport.media.isEmpty)
         await sink.cancel()
-        #expect(await sink.metrics().videoBitrate == nil)
+        #expect(sink.latestEncoderFeedback == .init())
     }
 
     @Test(arguments: [StreamBuffering.stayLive, .preserve15])

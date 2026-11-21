@@ -353,6 +353,10 @@ final class ContentPackager: NSObject, AVAssetWriterDelegate, Sendable {
         await Self.pipeline.captureState
     }
 
+    func beginCaptureMonitoring(reportFailure: @escaping @Sendable (any Error) async -> Void) async {
+        await Self.pipeline.beginCaptureMonitoring(reportFailure: reportFailure)
+    }
+
     func beginFinalization() async {
         await Self.pipeline.beginFinalization()
     }
@@ -377,7 +381,8 @@ final class ContentPackager: NSObject, AVAssetWriterDelegate, Sendable {
         try await Self.pipeline.start(preset: Settings.selectedPreset, stream: plan.routesEncodedFragments,
                                       recording: recordingWriter,
                                       recordsLocally: plan.recordsLocally,
-                                      allows422: Settings.prefers422Chroma, serviceName: serviceName)
+                                      allows422: Settings.prefers422Chroma, serviceName: serviceName,
+                                      waitForCapture: true)
         LOG("VideoToolbox and AAC encoders are now accepting sample buffers", level: .debug)
     }
 

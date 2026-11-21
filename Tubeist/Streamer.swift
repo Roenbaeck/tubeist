@@ -160,7 +160,7 @@ actor StreamingActor {
     private var youTubeCompletionTarget: YouTubeBroadcastCompletionTarget?
     private var youTubeHealthTarget: YouTubeHealthTarget?
     private var youTubeUploadFailure: String?
-    private var sessionID: UUID?
+    private(set) var sessionID: UUID?
 
     func setAppState(_ appState: AppState) {
         self.appState = appState
@@ -498,17 +498,18 @@ final class Streamer: Sendable {
         }
     }
 
-    func handleRuntimeFailure(_ error: Error) async {
-        guard await streamingActor.claimRuntimeFailure() else {
-            await streamingActor.presentAlert(error.localizedDescription)
-            return
-        }
-        LOG("Streaming pipeline failed: \(error.localizedDescription)", level: .error)
-        await streamingActor.setStreamHealth(.unusable)
-        do {
-            _ = try await endStream()
-            await streamingActor.fail(error)
-        } catch {
+    func handleRuntimeFailure(_ error: Error, sessionID: UUID? = nil) async {
+        let failedSessionID = if let sessionID { sessionID } else { await streamingActor.sessionID }
+        try? await commandQueue.run { [self] in
+            // Stop/Start may have run while the failure was being delivered.
+            guard await streamingActor.sessionID == failedSessionID else { return }
+            guard await streamingActor.claimRuntimeFailure() else {
+                if sessionID == nil { await streamingActor.presentAlert(error.localizedDescription) }
+                return
+            }
+            LOG("Streaming pipeline failed: \(error.localizedDescription)", level: .error)
+            await streamingActor.setStreamHealth(.unusable)
+            _ = try? await performStop(resumePreviewAfterStop: true, shutdownTimeout: 260)
             await streamingActor.fail(error)
         }
     }
@@ -605,6 +606,11 @@ final class Streamer: Sendable {
             try await CaptureDirector.shared.startOutput()
             outputStarted = true
             try await streamingActor.markLive()
+            // Packaging is prepared before the capture delegates can deliver
+            // to it. Start the watchdog only once media intake is enabled.
+            await ContentPackager.shared.beginCaptureMonitoring { [self] error in
+                await handleRuntimeFailure(error, sessionID: sessionID)
+            }
             if let restart = prepared.restart {
                 // Only once live: a Start that fails before this keeps the pick.
                 Settings.plannedStreamSelection = restart
@@ -635,6 +641,7 @@ final class Streamer: Sendable {
         guard await streamingActor.beginStopping() else {
             return .alreadyIdle
         }
+        await ContentPackager.shared.beginFinalization()
         let clock = ContinuousClock()
         let stoppedAt = clock.now
         let shutdownDeadline = stoppedAt.advanced(by: .seconds(max(1, shutdownTimeout)))
@@ -653,7 +660,6 @@ final class Streamer: Sendable {
         if healthTarget != nil {
             await shutdownMonitor.event("Stop requested; draining media; observing YouTube every 5 seconds", level: .info)
         }
-        await ContentPackager.shared.beginFinalization()
         let outputPlan = await streamingActor.activeOutputPlan()
         let monitor = await streamingActor.getMonitor()
 

@@ -39,6 +39,12 @@ import Foundation
         func captureTime(_ time: Double, video: Bool = false) -> Double {
             if scenario == "startup-audio-overlap" { return 100 + time + (video ? 0.005 : 0) }
             if scenario == "clock-reset", time >= 3 { return 10 + time - 3 }
+            if scenario == "audio-delivery-lag" {
+                // Both tracks keep delivering through a timestamp discontinuity.
+                // The audio mailbox delivers its samples behind the camera.
+                let capturedAt = time - (video ? 0 : 0.12)
+                return 100 + capturedAt + (capturedAt >= 3 ? 3 : 0)
+            }
             // Stabilization changes delivery latency, not the common capture clock.
             let videoDelay = scenario == "stabilization-changes" && video
                 ? (time >= 24 ? 0.6 : time >= 15 ? 1.2 : 0.0) : 0.0
@@ -99,6 +105,14 @@ import Foundation
                     throw MediaEncodingError.invalid("Capture did not recover after stabilization change at \(time)s")
                 }
             }
+            if scenario == "audio-delivery-lag" {
+                if (0.25..<3).contains(time), pipeline.captureState != .healthy {
+                    throw MediaEncodingError.invalid("Ordinary audio delivery lag incorrectly started recovery")
+                }
+                if time >= 4, pipeline.captureState != .healthy {
+                    throw MediaEncodingError.invalid("Capture did not recover with continuous audio arriving behind video at \(time)s")
+                }
+            }
             try await Task.sleep(for: .milliseconds(5))
         }
         if let audioPool {
@@ -115,7 +129,8 @@ import Foundation
         try await sink.finish(timeout: 20)
         try collector.save(to: folder.appendingPathComponent("recording.mp4"))
         let metrics = await sink.metrics()
-        if ["both-stall", "mono-recovery", "long-recovery", "audio-stall", "video-stall", "clock-reset", "stabilization-changes"].contains(scenario) {
+        if ["both-stall", "mono-recovery", "long-recovery", "audio-stall", "video-stall", "clock-reset",
+            "stabilization-changes", "audio-delivery-lag"].contains(scenario) {
             precondition(recoveryObserved, "Did not exercise coordinated capture recovery")
         }
         if scenario == "network-overflow" {
@@ -142,7 +157,7 @@ import Foundation
         let clock = ProbeClock()
         let captured = ProbeSessionFragments()
         let pipeline = LiveEncodingPipeline(now: { clock.read() }, automaticWatchdog: false,
-            publish: { await captured.append($0) }, streamStopped: { false })
+            publish: { await captured.append($0) }, outputFeedback: { .init() })
         let rate = 48_000.0
         let frameCount = 96
         for session in 0..<2 {
@@ -188,20 +203,40 @@ import Foundation
         let failures = ProbeFailures()
         let pipeline = LiveEncodingPipeline(now: { clock.read() },
                                             reportFailure: { await failures.record($0) })
-        try pipeline.start(preset: Preset(), stream: false, recording: nil)
+        try pipeline.start(preset: Preset(), stream: false, recording: nil, waitForCapture: true)
+        let captureStartedAt = 40.0
+        clock.set(captureStartedAt)
+        try await pipeline.checkCapture()
+        try await Task.sleep(for: .milliseconds(250))
+        let preparationReports = await failures.count
+        precondition(preparationReports == 0 && pipeline.captureState == .starting,
+                     "Output preparation started the capture timer before intake was enabled")
+        pipeline.beginCaptureMonitoring()
+        try await pipeline.checkCapture()
+        precondition(pipeline.captureState == .starting, "Preparation time carried over into capture monitoring")
         try await pipeline.appendVideo(videoSample(frame: 0, pts: 100))
         try await pipeline.appendAudio(retime(ProbeMediaFixtures.makeAudio(offset: 0, frames: 1024, rate: 48_000), to: 100))
-        clock.set(3)
+        // Simulate a delayed watchdog tick. The first observation must give
+        // capture a full recovery window.
+        let stalledAt = captureStartedAt + 35
+        clock.set(stalledAt)
         try await Task.sleep(for: .milliseconds(250))
         precondition(pipeline.captureState == .recovering, "Independent timer failed to detect a silent stall")
-        clock.set(3.1)
+        clock.set(stalledAt + 0.1)
         for frame in 0..<2 {
             try await pipeline.appendVideo(videoSample(frame: frame, pts: 200 + Double(frame) / 30))
             try await pipeline.appendAudio(retime(ProbeMediaFixtures.makeAudio(offset: frame * 1024, frames: 1024, rate: 48_000),
                                                  to: 200 + Double(frame * 1024) / 48_000))
         }
         precondition(pipeline.captureState == .healthy, "Capture did not recover")
-        clock.set(40)
+        clock.set(stalledAt + 4)
+        try await Task.sleep(for: .milliseconds(250))
+        precondition(pipeline.captureState == .recovering, "Watchdog did not restart after successful recovery")
+        clock.set(stalledAt + 33.9)
+        try await Task.sleep(for: .milliseconds(250))
+        let earlyReports = await failures.count
+        precondition(earlyReports == 0 && pipeline.captureState == .recovering, "Watchdog failed before the 30-second deadline")
+        clock.set(stalledAt + 34)
         try await Task.sleep(for: .milliseconds(250))
         let reported = await failures.count
         precondition(reported == 1, "Watchdog stopped across an encoder restart or reported a failure repeatedly")
@@ -214,14 +249,14 @@ import Foundation
         let finalReports = await failures.count
         precondition(finalReports == 1 && pipeline.captureState == .healthy)
         pipeline.beginFinalization()
-        clock.set(80)
+        clock.set(stalledAt + 80)
         try await pipeline.checkCapture()
         try await Task.sleep(for: .milliseconds(250))
         let stoppingReports = await failures.count
         precondition(stoppingReports == 1 && pipeline.captureState == nil,
                      "Intentional capture shutdown triggered the watchdog")
         try await pipeline.finish(deadline: ContinuousClock().now.advanced(by: .seconds(5)))
-        print("PASS: automatic watchdog detects total silence, survives recovery and is cancelled between sessions")
+        print("PASS: watchdog waits for capture readiness, gives late ticks the full recovery window, and stops between sessions")
     }
 
     static func videoSample(frame: Int, pts: Double) throws -> CMSampleBuffer {
