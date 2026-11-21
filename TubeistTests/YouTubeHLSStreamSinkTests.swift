@@ -270,6 +270,29 @@ struct YouTubeHLSStreamSinkTests {
                                transport: transport, sleeper: { _ in })
         #expect(try await sink.finish(timeout: successfulSinkShutdownTimeout) == false)
         #expect(await transport.requests().isEmpty)
+        #expect(await !sink.hasDeliveredMedia)
+    }
+
+    @Test(arguments: [HLSStreamEndingPolicy.automatic, .manualDiagnostic])
+    func deliveryIsReportedIndependentlyOfTheEndList(endingPolicy: HLSStreamEndingPolicy) async throws {
+        let transport = DirectSinkTransport()
+        let sink = YouTubeHLSStreamSink()
+        try await sink.prepare(endpoint: .manualPrimary(streamKey: "test"),
+                               sessionIdentifier: "delivery_\(endingPolicy)", userAgent: "Tubeist/Test",
+                               endingPolicy: endingPolicy, transport: transport, sleeper: { _ in })
+        #expect(await !sink.hasDeliveredMedia)
+        await sink.enqueue(Fragment(sequence: 0, segment: directSentinel(0), duration: 2, container: .mpegTransportStream))
+        try await waitForIdle(sink)
+        #expect(try await sink.finish(timeout: successfulSinkShutdownTimeout) == endingPolicy.automaticallyEndsBroadcast)
+        #expect(await sink.hasDeliveredMedia)
+
+        // The next session starts without the previous session's delivery.
+        try await sink.prepare(endpoint: .manualPrimary(streamKey: "test"),
+                               sessionIdentifier: "delivery_next", userAgent: "Tubeist/Test",
+                               endingPolicy: endingPolicy, transport: DirectSinkTransport(), sleeper: { _ in })
+        #expect(await !sink.hasDeliveredMedia)
+        #expect(try await sink.finish(timeout: successfulSinkShutdownTimeout) == false)
+        #expect(await !sink.hasDeliveredMedia)
     }
 
     @Test(arguments: [0, 3])

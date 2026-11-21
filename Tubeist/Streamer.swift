@@ -869,9 +869,14 @@ final class Streamer: Sendable {
             : .notRequested
         var endListAcknowledged = false
         do {
-            endListAcknowledged = try await EncodedOutputRouter.shared.finish(deadline: deadline)
+            let finish = try await EncodedOutputRouter.shared.finish(deadline: deadline)
+            endListAcknowledged = finish.endListAcknowledged
             if endListAcknowledged {
                 await shutdownMonitor.endListAcknowledged()
+            }
+            youTubeStatus = .youTubeUpload(requested: outputPlan?.streamsToYouTube == true, finish: finish)
+            if let message = youTubeStatus.failedMessage {
+                LOG("YouTube output shutdown: \(message)", level: .error)
             }
         } catch {
             if let reported = await streamingActor.reportedYouTubeUploadFailure() {

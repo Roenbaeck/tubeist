@@ -30,6 +30,14 @@ enum YouTubeHLSPackagingError: LocalizedError, CustomStringConvertible {
     var errorDescription: String? { description }
 }
 
+/// How the YouTube output ended. Delivery is tracked apart from ENDLIST:
+/// manual ending mode never sends one, and an empty session has none to send.
+struct YouTubeOutputFinish: Sendable, Equatable {
+    var endListAcknowledged = false
+    /// YouTube acknowledged at least one media segment of this session.
+    var deliveredMedia = false
+}
+
 struct YouTubeHLSPackagingMetrics: Sendable, Equatable {
     let networkMbps: Int
     let networkUtilization: Int
@@ -310,6 +318,10 @@ actor YouTubeHLSStreamSink {
         let clock = ContinuousClock()
         return try await finish(deadline: clock.now.advanced(by: .seconds(timeout)))
     }
+
+    /// Kept after `finish` until the next session is prepared. An empty session
+    /// finishes without error and without a playlist, so check this as well.
+    var hasDeliveredMedia: Bool { lastAcceptedMediaSequence != nil }
 
     @discardableResult
     func finish(deadline: ContinuousClock.Instant) async throws -> Bool {
@@ -831,14 +843,14 @@ actor EncodedOutputRouter {
     }
 
     @discardableResult
-    func finish(timeout: TimeInterval = 120) async throws -> Bool {
+    func finish(timeout: TimeInterval = 120) async throws -> YouTubeOutputFinish {
         let clock = ContinuousClock()
         let deadline = clock.now.advanced(by: .seconds(timeout))
         return try await finish(deadline: deadline)
     }
 
     @discardableResult
-    func finish(deadline: ContinuousClock.Instant) async throws -> Bool {
+    func finish(deadline: ContinuousClock.Instant) async throws -> YouTubeOutputFinish {
         let generation = routingGeneration
         let clock = ContinuousClock()
         while generation == routingGeneration,
@@ -853,17 +865,18 @@ actor EncodedOutputRouter {
             await cancel()
             throw YouTubeHLSPackagingError.shutdownTimedOut
         }
-        let endListAcknowledged: Bool
+        var result = YouTubeOutputFinish()
         switch mode {
         case .none:
-            endListAcknowledged = false
+            break
         case .direct:
-            endListAcknowledged = try await YouTubeHLSStreamSink.shared.finish(deadline: deadline)
+            result.endListAcknowledged = try await YouTubeHLSStreamSink.shared.finish(deadline: deadline)
+            result.deliveredMedia = await YouTubeHLSStreamSink.shared.hasDeliveredMedia
         }
         if generation == routingGeneration {
             mode = .none
         }
-        return endListAcknowledged
+        return result
     }
 
     func cancel() async {

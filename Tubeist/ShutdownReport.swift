@@ -13,6 +13,16 @@ enum ShutdownComponentStatus: Sendable, Equatable {
     var failedMessage: String? {
         if case .failed(let message) = self { message } else { nil }
     }
+
+    static let noYouTubeMediaDelivered = "No media segment reached YouTube before Stop"
+
+    /// The status of a YouTube upload that finished without error. A session
+    /// that delivered no media is not a successful stream, with or without an
+    /// ENDLIST, so the report must not say it completed.
+    static func youTubeUpload(requested: Bool, finish: YouTubeOutputFinish) -> ShutdownComponentStatus {
+        guard requested else { return .notRequested }
+        return finish.deliveredMedia ? .completed : .failed(noYouTubeMediaDelivered)
+    }
 }
 
 struct ContentPackagingShutdownReport: Sendable, Equatable {

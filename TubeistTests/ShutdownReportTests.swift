@@ -25,6 +25,29 @@ struct ShutdownReportTests {
         #expect(report.youTubeUpload == .completed)
     }
 
+    @Test func youTubeStopWithoutDeliveredMediaIsNotSuccessful() throws {
+        let empty = ShutdownComponentStatus.youTubeUpload(requested: true, finish: YouTubeOutputFinish())
+        #expect(empty == .failed(ShutdownComponentStatus.noYouTubeMediaDelivered))
+        // Manual ending mode never sends ENDLIST; delivery alone decides.
+        let manual = YouTubeOutputFinish(endListAcknowledged: false, deliveredMedia: true)
+        #expect(ShutdownComponentStatus.youTubeUpload(requested: true, finish: manual) == .completed)
+        let automatic = YouTubeOutputFinish(endListAcknowledged: true, deliveredMedia: true)
+        #expect(ShutdownComponentStatus.youTubeUpload(requested: true, finish: automatic) == .completed)
+        #expect(ShutdownComponentStatus.youTubeUpload(requested: false, finish: YouTubeOutputFinish()) == .notRequested)
+
+        let report = StreamStopResult(
+            outcome: .stopped,
+            captureIntake: .completed,
+            packaging: ContentPackagingShutdownReport(
+                mediaEncoding: .completed, fragmentDispatch: .completed, recording: .notRequested
+            ),
+            youTubeUpload: empty
+        )
+        #expect(!report.succeeded)
+        let description = try #require(StreamShutdownError(report: report).errorDescription)
+        #expect(description == "YouTube upload: No media segment reached YouTube before Stop")
+    }
+
     @Test func failurePreservesAllSinkResultsAndNeverLooksSuccessful() throws {
         let report = StreamStopResult(
             outcome: .stopped,

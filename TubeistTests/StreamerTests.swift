@@ -322,6 +322,30 @@ struct StreamerTests {
         #expect(app.activeAlert == nil)
     }
 
+    @Test(.timeLimit(.minutes(1))) @MainActor func streamOnlyStopWithoutDeliveredMediaReportsAFailure() async throws {
+        let app = AppState()
+        let actor = StreamingActor()
+        let streamer = Streamer(streamingActor: actor)
+        await streamer.setAppState(app)
+        try await actor.beginPreparing()
+        await actor.setOutputPlan(StreamOutputPlan(streamsToYouTube: true, recordsLocally: false))
+        try await actor.markLive()
+        // Nothing reached YouTube, as when Stop comes before the first microphone
+        // sample: the encoders and uploader finish cleanly with zero segments.
+        do {
+            _ = try await streamer.endStream(resumePreviewAfterStop: false, shutdownTimeout: 5)
+            Issue.record("A stream that delivered no media must not stop successfully")
+        } catch let error as StreamShutdownError {
+            #expect(error.report.outcome == .stopped)
+            #expect(error.report.youTubeUpload == .failed(ShutdownComponentStatus.noYouTubeMediaDelivered))
+        }
+        guard case .failed(let message) = app.streamSessionState else {
+            Issue.record("Expected a failed session, found \(app.streamSessionState)")
+            return
+        }
+        #expect(message.contains(ShutdownComponentStatus.noYouTubeMediaDelivered))
+    }
+
     @Test @MainActor func stopRequestedWhilePreparingPreventsLive() async throws {
         let app = AppState()
         let actor = StreamingActor()
