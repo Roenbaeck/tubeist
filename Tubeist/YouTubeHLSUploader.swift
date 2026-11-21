@@ -263,6 +263,7 @@ actor YouTubeHLSUploader {
     private let now: @Sendable () -> ContinuousClock.Instant
     private let keepRetrying: Bool
     let endingPolicy: HLSStreamEndingPolicy
+    nonisolated let playlistFilename: String
     private var playlist: HLSMediaPlaylist
     private var stopped = false
     private var uploadInProgress = false
@@ -314,7 +315,9 @@ actor YouTubeHLSUploader {
         self.keepRetrying = keepRetrying
         self.endingPolicy = endingPolicy
         self.monitorsNetworkChanges = monitorsNetworkChanges
-        self.playlist = try HLSMediaPlaylist(sessionIdentifier: sessionIdentifier)
+        let playlist = try HLSMediaPlaylist(sessionIdentifier: sessionIdentifier)
+        self.playlist = playlist
+        self.playlistFilename = playlist.playlistFilename
     }
 
     deinit { pathMonitor?.cancel() }

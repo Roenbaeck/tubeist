@@ -100,6 +100,7 @@ actor YouTubeHLSStreamSink {
     private var dropReportingTask: Task<Void, Never>?
 #endif
 
+    @discardableResult
     func prepare(
         endpoint: YouTubeHLSEndpoint,
         sessionIdentifier: String,
@@ -114,7 +115,7 @@ actor YouTubeHLSStreamSink {
         sleeper: @escaping YouTubeHLSUploader.Sleeper = { try await Task.sleep(for: $0) },
         uploadNow: @escaping @Sendable () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
         reportUploadsStopped: @escaping @Sendable (any Error) async -> Void = { _ in }
-    ) async throws {
+    ) async throws -> String {
         sessionGeneration &+= 1
         let generation = sessionGeneration
         let previousUploader = uploader
@@ -175,14 +176,16 @@ actor YouTubeHLSStreamSink {
             await uploadTransport.invalidate()
             throw YouTubeHLSPackagingError.notPrepared
         }
-        uploader = try YouTubeHLSUploader(
+        let preparedUploader = try YouTubeHLSUploader(
             endpoint: endpoint, sessionIdentifier: sessionIdentifier, userAgent: userAgent,
             transport: uploadTransport, retryPolicy: retryPolicy, keepRetrying: true,
             endingPolicy: endingPolicy, sleeper: sleeper
         )
+        uploader = preparedUploader
         isPrepared = true
         publishEncoderFeedback()
-        LOG("YouTube HLS output is prepared", level: .debug)
+        LOG("Prepared YouTube HLS output (playlist=\(preparedUploader.playlistFilename))", level: .info)
+        return preparedUploader.playlistFilename
     }
 
     /// Uploads cannot resume after a failure; the pipeline stops producing
@@ -768,6 +771,7 @@ actor EncodedOutputRouter {
         mode = .none
     }
 
+    @discardableResult
     func prepareYouTube(
         endpoint: YouTubeHLSEndpoint,
         sessionIdentifier: String,
@@ -775,12 +779,12 @@ actor EncodedOutputRouter {
         serviceName: String = MPEGTransportStreamMuxer.defaultServiceName,
         endingPolicy: HLSStreamEndingPolicy = .automatic,
         reportUploadsStopped: @escaping @Sendable (any Error) async -> Void = { _ in }
-    ) async throws {
+    ) async throws -> String {
         resetOrdering()
         let generation = routingGeneration
         mode = .none
         let buffering = Settings.streamBuffering
-        try await YouTubeHLSStreamSink.shared.prepare(
+        let playlistFilename = try await YouTubeHLSStreamSink.shared.prepare(
             endpoint: endpoint,
             sessionIdentifier: sessionIdentifier,
             userAgent: userAgent,
@@ -794,6 +798,7 @@ actor EncodedOutputRouter {
             throw YouTubeHLSPackagingError.notPrepared
         }
         mode = .direct
+        return playlistFilename
     }
 
     static func makeBitrateController(for preset: Preset = Settings.selectedPreset,

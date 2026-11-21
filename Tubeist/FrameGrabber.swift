@@ -120,11 +120,7 @@ private actor FrameTinkerer {
             Task { await Streamer.shared.setStreamHealth(.degraded) }
         }
     ) { sample in
-        do {
-            try await ContentPackager.shared.appendVideoSampleBuffer(sample.value)
-        } catch {
-            Task { await Streamer.shared.handleRuntimeFailure(error) }
-        }
+        await ContentPackager.shared.appendCapturedSample(sample, kind: .video)
     }
 
     nonisolated func resetEncodingDropCount() { encodingMailbox.resetDropCount() }
@@ -690,7 +686,7 @@ private actor FrameTinkerer {
                     }
                 }
             }
-            if await Streamer.shared.isStreaming() {
+            if wrappedSampleBuffer.sessionID != nil {
                 encodingMailbox.submit(wrappedSampleBuffer)
             }
             if OutputMonitorView.frameGate.isEnabled() {
@@ -794,8 +790,7 @@ final class FrameGrabber: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
     nonisolated func captureOutput(_ output: AVCaptureOutput,
                        didOutput sampleBuffer: CMSampleBuffer,
                        from connection: AVCaptureConnection) {
-        nonisolated(unsafe) let sendableSampleBuffer = sampleBuffer
-        frameMailbox.submit(SendableSampleBuffer(value: sendableSampleBuffer))
+        frameMailbox.submit(SendableSampleBuffer(capturing: sampleBuffer))
     }
 
     /// The capture system discarded a frame before delivering it, e.g. because

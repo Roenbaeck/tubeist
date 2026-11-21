@@ -28,6 +28,7 @@ final class LiveEncodingPipeline {
     private var liveness: CaptureLiveness?
     private var watchdog: Task<Void, Never>?
     private var lifecycleGeneration: UInt64 = 0
+    private var captureSessionID: UUID?
     private var timelineStartedAt: TimeInterval?
     private enum RecoveryDeadline {
         case initial(TimeInterval)
@@ -80,11 +81,12 @@ final class LiveEncodingPipeline {
     func start(preset: Preset, stream: Bool, recording: RecordingAssetWriter?,
                recordsLocally: Bool? = nil,
                allows422: Bool = true, serviceName: String = MPEGTransportStreamMuxer.defaultServiceName,
-               waitForCapture: Bool = false) throws {
+               waitForCapture: Bool = false, sessionID: UUID? = nil) throws {
         guard !isActive else { throw ContentPackagingError.alreadyEncoding }
         try HEVCEncoderConfiguration.validate(width: preset.width, height: preset.height,
             frameRate: preset.frameRate, bitrate: preset.videoBitrate, keyframeInterval: preset.keyframeInterval)
         self.preset = preset
+        captureSessionID = sessionID
         lifecycleGeneration &+= 1
         timelineStartedAt = nil
         // Defer hardware setup until the first actual camera buffer, so capture
@@ -145,8 +147,9 @@ final class LiveEncodingPipeline {
         }
     }
 
-    func appendVideo(_ sample: CMSampleBuffer) async throws {
-        guard isActive, !failed, let pixels = CMSampleBufferGetImageBuffer(sample) else { return }
+    func appendVideo(_ sample: CMSampleBuffer, sessionID: UUID? = nil) async throws {
+        guard isActive, !failed, sessionID == captureSessionID,
+              let pixels = CMSampleBufferGetImageBuffer(sample) else { return }
         let sourcePTS = CMSampleBufferGetPresentationTimeStamp(sample)
         guard sourcePTS.isNumeric else { throw CaptureContinuityError.invalidTiming }
         if recovering {
@@ -238,8 +241,8 @@ final class LiveEncodingPipeline {
         }
     }
 
-    func appendAudio(_ sample: CMSampleBuffer) async throws {
-        guard isActive, !failed else { return }
+    func appendAudio(_ sample: CMSampleBuffer, sessionID: UUID? = nil) async throws {
+        guard isActive, !failed, sessionID == captureSessionID else { return }
         guard CMSampleBufferGetPresentationTimeStamp(sample).isNumeric else { throw CaptureContinuityError.invalidTiming }
         if recovering {
             if try receiveRecovery(sample, video: false) { try await publishReadySegments() }
@@ -540,17 +543,30 @@ final class LiveEncodingPipeline {
             let end = CMTimeAdd(start, CMSampleBufferGetDuration(sample))
             return start <= videoPTS && end.isNumeric && end > videoPTS
         }) else { return false }
-        let alignedAudio = Array(recoveryAudio[matchingAudio...])
-        let audioLead = CMTimeSubtract(videoPTS, CMSampleBufferGetPresentationTimeStamp(alignedAudio[0])).seconds
+        let audioLead = CMTimeSubtract(videoPTS, recoveryAudio[matchingAudio].presentationTimeStamp).seconds
         let deliveryLag = String(format: "%.3f", CMTimeSubtract(audioPTS, latestRecoveryVideoPTS ?? videoPTS).seconds)
         // Both tracks move to the same new epoch. Keep enough decoding lead for
         // HEVC B frames and AAC priming, including after a backward clock reset.
         let resumeTime = max(time - (timelineStartedAt ?? liveness?.startedAt ?? time), lastOutputEnd + 0.5 + audioLead)
         let recoveryBasePTS = CMTimeSubtract(videoPTS, CMTime(seconds: resumeTime, preferredTimescale: 90_000))
-        basePTS = recoveryBasePTS
+        // An early PCM block may overlap the held frame yet be separated from
+        // newer audio by a second capture gap. Stage AAC before either output
+        // commits to this timeline. Use the encoder's actual gap/trim rules.
+        let resumedAudio = AACAudioEncoder(channels: preset.audioChannels, bitratePerChannel: preset.audioBitrate,
+                                          sampleRate: AUDIO_SAMPLE_RATE)
+        var packets: [CMSampleBuffer] = []
+        for index in matchingAudio..<recoveryAudio.count {
+            do {
+                packets += try resumedAudio.encode(recoveryAudio[index], basePTS: recoveryBasePTS)
+            } catch CaptureContinuityError.discontinuity {
+                recoveryAudio.removeFirst(index)
+                candidateAudioCount = recoveryAudio.count
+                return false
+            }
+        }
         try prepareVideoEncoder(for: pixels)
-        audioEncoder = AACAudioEncoder(channels: preset.audioChannels, bitratePerChannel: preset.audioBitrate,
-                                       sampleRate: AUDIO_SAMPLE_RATE)
+        basePTS = recoveryBasePTS
+        audioEncoder = resumedAudio
         // The new encoder timestamps already continue the shared timeline.
         // Preserve the transport's original timestamp shift and packet counters.
         nextBoundary = resumeTime
@@ -558,7 +574,9 @@ final class LiveEncodingPipeline {
         recording?.allowRecoveryGap(through: CMTime(seconds: resumeTime, preferredTimescale: 90_000))
         // Commit both tracks before any suspension. New capture or Stop can
         // interleave once the completed fragments are handed off.
-        for audio in alignedAudio { try encodeAudio(audio, basePTS: recoveryBasePTS) }
+        try consumeAudio(packets)
+        lastRealAudioEndPTS = resumedAudio.inputEndPTS
+        liveness?.receivedAudio(at: now())
         try submitRealVideo(pixels, at: CMTimeSubtract(videoPTS, recoveryBasePTS))
         recoveryDeadline = nil
         clearCandidates()
@@ -621,6 +639,7 @@ final class LiveEncodingPipeline {
             lastPixels = nil
             clearCandidates()
             liveness = nil
+            captureSessionID = nil
             isActive = false
         }
         var packagingFailure: (any Error)?

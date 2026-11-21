@@ -4,7 +4,7 @@
 //
 
 import Foundation
-import CoreMedia
+import AVFoundation
 import Testing
 @testable import Tubeist
 
@@ -195,6 +195,37 @@ struct StreamerTests {
         try await actor.markLive()
         await streamer.handleRuntimeFailure(CaptureContinuityError.stalled, sessionID: oldSessionID)
 
+        #expect(appState.streamSessionState == .live)
+        #expect(appState.activeAlert == nil)
+    }
+
+    @Test @MainActor func captureSamplesKeepTheirOwnerThroughStopAndRestart() async throws {
+        let actor = StreamingActor()
+        let streamer = Streamer(streamingActor: actor)
+        let appState = AppState()
+        await streamer.setAppState(appState)
+        let format = try #require(AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 2))
+        let pcm = try AACTestAudio.pcm(format, frames: 1024, pts: 100) { _, _ in 0 }
+        func capture() -> SendableSampleBuffer { SendableSampleBuffer(capturing: pcm, from: streamer) }
+
+        let first = UUID(), second = UUID()
+        try await actor.beginPreparing(sessionID: first)
+        let preview = capture()
+        #expect(preview.sessionID == nil)
+        try await actor.markLive()
+        let queued = capture()
+        #expect(await actor.beginStopping())
+        #expect(capture().sessionID == first)
+        await actor.closeMediaIntake()
+        #expect(capture().sessionID == nil)
+        await actor.completeStop()
+        try await actor.beginPreparing(sessionID: second)
+        try await actor.markLive()
+        #expect(capture().sessionID == second)
+        #expect(preview.sessionID == nil)
+        let failedOwner = try #require(queued.sessionID)
+        #expect(failedOwner == first)
+        await streamer.handleRuntimeFailure(CaptureContinuityError.invalidTiming, sessionID: failedOwner)
         #expect(appState.streamSessionState == .live)
         #expect(appState.activeAlert == nil)
     }

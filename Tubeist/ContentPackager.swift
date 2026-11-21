@@ -361,12 +361,12 @@ final class ContentPackager: NSObject, AVAssetWriterDelegate, Sendable {
         await Self.pipeline.beginFinalization()
     }
 
-    func beginPackaging(plan: StreamOutputPlan, serviceName: String, sessionID: UUID = UUID()) async throws {
+    func beginPackaging(plan: StreamOutputPlan, serviceName: String, sessionID: UUID, highlightSessionID: UUID) async throws {
         guard await !Self.pipeline.isActive else { throw ContentPackagingError.alreadyEncoding }
         recordingCallbacks.prepare(writerID: nil)
         await fragmentDispatcher.prepare(stream: false, record: plan.recordsLocally,
                                         highlightsEnabled: plan.highlightsEnabled)
-        await HighlightRecorder.shared.prepareForNewSession(sessionID: sessionID, enabled: plan.highlightsEnabled)
+        await HighlightRecorder.shared.prepareForNewSession(sessionID: highlightSessionID, enabled: plan.highlightsEnabled)
         let recordingWriter: RecordingAssetWriter?
         do { recordingWriter = plan.producesMP4Fragments ? try await makeRecordingWriter() : nil }
         catch {
@@ -382,7 +382,7 @@ final class ContentPackager: NSObject, AVAssetWriterDelegate, Sendable {
                                       recording: recordingWriter,
                                       recordsLocally: plan.recordsLocally,
                                       allows422: Settings.prefers422Chroma, serviceName: serviceName,
-                                      waitForCapture: true)
+                                      waitForCapture: true, sessionID: sessionID)
         LOG("VideoToolbox and AAC encoders are now accepting sample buffers", level: .debug)
     }
 
@@ -477,13 +477,18 @@ final class ContentPackager: NSObject, AVAssetWriterDelegate, Sendable {
         }
     }
     
-    func appendVideoSampleBuffer(_ sampleBuffer: CMSampleBuffer) async throws {
-        nonisolated(unsafe) let sendableSampleBuffer = sampleBuffer
-        try await Self.pipeline.appendVideo(sendableSampleBuffer)
-    }
-    func appendAudioSampleBuffer(_ sampleBuffer: CMSampleBuffer) async throws {
-        nonisolated(unsafe) let sendableSampleBuffer = sampleBuffer
-        try await Self.pipeline.appendAudio(sendableSampleBuffer)
+    @PipelineActor
+    func appendCapturedSample(_ sample: SendableSampleBuffer, kind: ISOBMFFTrackKind) async {
+        guard let sessionID = sample.sessionID else { return }
+        do {
+            switch kind {
+            case .audio: try await Self.pipeline.appendAudio(sample.value, sessionID: sessionID)
+            case .video: try await Self.pipeline.appendVideo(sample.value, sessionID: sessionID)
+            }
+        } catch {
+            // Stop drains this mailbox. Let it return before running shutdown.
+            Task { await Streamer.shared.handleRuntimeFailure(error, sessionID: sessionID) }
+        }
     }
     func assetWriter(_ writer: AVAssetWriter,
                      didOutputSegmentData segmentData: Data,

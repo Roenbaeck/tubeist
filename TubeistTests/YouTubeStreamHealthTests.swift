@@ -62,19 +62,22 @@ struct YouTubeStreamHealthTests {
         var logs: [(String, LogLevel)] = []
         var notices: [String] = []
         let monitor = YouTubeStreamHealthMonitor(now: { clock.now }, log: { logs.append(($0, $1)) })
-        let target = target()
+        let target = target(playlistFilename: "first.m3u8")
         monitor.configure(target)
-        let bad = report(health: "bad", severity: "error")
+        clock.now = start.addingTimeInterval(20)
+        let bad = report(health: "bad", timestamp: start.timeIntervalSince1970, severity: "error")
         await monitor.refresh(target: target, fetch: { _ in bad }, notice: { notices.append($0) })
-        let errors = logs.filter { $0.1 == .error }.count
-        #expect(errors == 2)
-        await monitor.refresh(target: target, fetch: { _ in bad }, notice: { notices.append($0) })
-        #expect(logs.filter { $0.1 == .error }.count == errors)
-        #expect(notices.count == 1)
+        let errors = logs.filter { $0.1 == .error }.map(\.0)
+        #expect(errors.count == 2)
+        #expect(errors.allSatisfy { $0.contains("[playlist=first.m3u8, YouTube health updated=2027-01-15T08:00:00Z]") })
+        let sameIssue = report(health: "bad", timestamp: start.timeIntervalSince1970 + 10, severity: "error")
+        await monitor.refresh(target: target, fetch: { _ in sameIssue }, notice: { notices.append($0) })
+        #expect(logs.filter { $0.1 == .error }.count == 2)
+        #expect(notices == ["YouTube reports a stream configuration error; see the log"])
         await monitor.refresh(target: target, fetch: { _ in report() }, notice: { notices.append($0) })
         #expect(monitor.assessment.kind == .good)
         #expect(logs.contains { $0.1 == .info && $0.0.contains("healthy") })
-        clock.now = start.addingTimeInterval(130)
+        clock.now = clock.now.addingTimeInterval(130)
         #expect(monitor.assessment.kind == .unknown)
     }
 
@@ -103,8 +106,9 @@ struct YouTubeStreamHealthTests {
     }
 
     @Test @MainActor func lateResponseCannotContaminateANewStream() async {
-        let monitor = YouTubeStreamHealthMonitor(log: { _, _ in })
-        let old = target()
+        var logs: [(String, LogLevel)] = []
+        let monitor = YouTubeStreamHealthMonitor(log: { logs.append(($0, $1)) })
+        let old = target(playlistFilename: "previous.m3u8")
         monitor.configure(old)
         var pending: CheckedContinuation<YouTubeIngestStatus, any Error>?
         let request = Task {
@@ -113,13 +117,17 @@ struct YouTubeStreamHealthTests {
             }, notice: { _ in Issue.record("Old session must not notify") })
         }
         while pending == nil { await Task.yield() }
-        let next = target() // Same stream key, different streaming session.
+        let next = target(playlistFilename: "next.m3u8") // Same stream key, different streaming session.
         monitor.configure(next)
-        await monitor.refresh(target: next, fetch: { _ in report() }, notice: { _ in })
+        await monitor.refresh(target: next, fetch: { _ in report(severity: "warning") }, notice: { _ in })
         pending?.resume(returning: report(health: "bad", severity: "error"))
         await request.value
         #expect(monitor.target == next)
-        #expect(monitor.assessment.kind == .good)
+        #expect(monitor.assessment.kind == .warning)
+        let warnings = logs.filter { $0.1 == .warning }.map(\.0)
+        #expect(warnings.count == 2)
+        #expect(warnings.allSatisfy { $0.contains("[playlist=next.m3u8, YouTube health updated=unavailable]") })
+        #expect(!logs.contains { $0.1 == .error })
     }
 
     @Test @MainActor func cancellationDoesNotCreateAWarning() async {
@@ -150,8 +158,8 @@ struct YouTubeStreamHealthTests {
         #expect(app.streamHealth == .pristine) // No OAuth/recording-only: retain local health.
     }
 
-    private func target() -> YouTubeHealthTarget {
-        .init(streamID: "stream", broadcastID: "broadcast", authorizationScope: "account")
+    private func target(playlistFilename: String? = nil) -> YouTubeHealthTarget {
+        .init(streamID: "stream", broadcastID: "broadcast", authorizationScope: "account", playlistFilename: playlistFilename)
     }
 }
 

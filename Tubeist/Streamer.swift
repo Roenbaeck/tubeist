@@ -151,10 +151,20 @@ enum YouTubeCompletionGrace {
     }
 }
 
+/// Capture delegates read this synchronously before a sample enters any mailbox.
+/// StreamingActor is the sole writer and keeps intake open through the Stop drain.
+private final class CaptureIntake: @unchecked Sendable {
+    private let lock = NSLock()
+    private var owner: UUID?
+    var sessionID: UUID? { lock.withLock { owner } }
+    func setSession(_ id: UUID?) { lock.withLock { owner = id } }
+}
+
 actor StreamingActor {
     private var appState: AppState?
     private var state: StreamSessionState = .idle
-    private var mediaIntakeActive = false
+    private let intake = CaptureIntake()
+    nonisolated var captureSessionID: UUID? { intake.sessionID }
     private var isHandlingRuntimeFailure = false
     private var outputPlan: StreamOutputPlan?
     private var youTubeCompletionTarget: YouTubeBroadcastCompletionTarget?
@@ -192,7 +202,6 @@ actor StreamingActor {
                 throw rejection
             }
             self.sessionID = sessionID
-            mediaIntakeActive = false
             outputPlan = nil
             youTubeCompletionTarget = nil
             youTubeHealthTarget = nil
@@ -206,7 +215,7 @@ actor StreamingActor {
         guard state == .preparing else {
             throw StreamSessionError.invalidTransition(from: state, to: .live)
         }
-        mediaIntakeActive = true
+        intake.setSession(sessionID)
         await transition(to: .live)
     }
 
@@ -285,12 +294,12 @@ actor StreamingActor {
     }
 
     func closeMediaIntake() {
-        mediaIntakeActive = false
+        intake.setSession(nil)
     }
 
     func completeStop() async {
         sessionID = nil
-        mediaIntakeActive = false
+        closeMediaIntake()
         isHandlingRuntimeFailure = false
         outputPlan = nil
         youTubeCompletionTarget = nil
@@ -301,7 +310,7 @@ actor StreamingActor {
 
     func fail(_ error: Error) async {
         sessionID = nil
-        mediaIntakeActive = false
+        closeMediaIntake()
         isHandlingRuntimeFailure = false
         outputPlan = nil
         youTubeCompletionTarget = nil
@@ -338,7 +347,7 @@ actor StreamingActor {
     }
 
     func isStreaming() async -> Bool {
-        mediaIntakeActive
+        captureSessionID != nil
     }
 
     func toggleBatterySaving() async {
@@ -400,6 +409,7 @@ actor StreamCommandQueue {
 final class Streamer: Sendable {
     public static let shared = Streamer()
     private let streamingActor: StreamingActor
+    var captureSessionID: UUID? { streamingActor.captureSessionID }
     private let commandQueue = StreamCommandQueue()
     init(streamingActor: StreamingActor = StreamingActor()) {
         self.streamingActor = streamingActor
@@ -463,7 +473,6 @@ final class Streamer: Sendable {
                   await !streamingActor.sessionState().ownsMediaPipeline else { return }
             await CaptureDirector.shared.stopOutput()
             await FrameGrabber.shared.terminateGrabbing()
-            await SoundGrabber.shared.terminateGrabbing()
             await CaptureDirector.shared.suspendSessions()
             LOG("Idle capture and preview suspended for Settings", level: .debug)
         }
@@ -474,7 +483,6 @@ final class Streamer: Sendable {
                   await !streamingActor.isStreaming() else { return }
             await CaptureDirector.shared.stopOutput()
             await FrameGrabber.shared.terminateGrabbing()
-            await SoundGrabber.shared.terminateGrabbing()
             await CaptureDirector.shared.suspendSessionsInBackground()
             LOG("Background capture and preview suspended", level: .debug)
         }
@@ -577,7 +585,6 @@ final class Streamer: Sendable {
         let sessionID = UUID()
         try await streamingActor.beginPreparing(sessionID: sessionID)
         var packagingStarted = false
-        var soundStarted = false
         var videoStarted = false
         var outputStarted = false
 
@@ -595,11 +602,10 @@ final class Streamer: Sendable {
             try await ContentPackager.shared.beginPackaging(
                 plan: outputPlan,
                 serviceName: prepared.serviceName,
-                sessionID: await streamingActor.activitySessionID() ?? sessionID
+                sessionID: sessionID, highlightSessionID: await streamingActor.activitySessionID() ?? sessionID
             )
             packagingStarted = true
-            await SoundGrabber.shared.commenceGrabbing()
-            soundStarted = true
+            await SoundGrabber.shared.resetDropCount()
             await FrameGrabber.shared.commenceGrabbing()
             videoStarted = true
             await FrameGrabber.shared.resetDroppedFrameCount()
@@ -621,9 +627,6 @@ final class Streamer: Sendable {
             }
             if videoStarted {
                 await FrameGrabber.shared.terminateGrabbing()
-            }
-            if soundStarted {
-                await SoundGrabber.shared.terminateGrabbing()
             }
             if packagingStarted {
                 _ = try? await ContentPackager.shared.endPackaging()
@@ -734,7 +737,6 @@ final class Streamer: Sendable {
         if !resumeOutputPreview {
             await FrameGrabber.shared.terminateGrabbing()
         }
-        await SoundGrabber.shared.terminateGrabbing()
         // Capture is no longer needed while uploads/YouTube completion drain.
         // The check is serialized with foreground session resumption.
         await CaptureDirector.shared.suspendSessionsInBackground()
@@ -908,6 +910,7 @@ final class Streamer: Sendable {
             throw StreamStartError.endingTestRequiresSignIn
         }
         let endpoint: YouTubeHLSEndpoint
+        let signedInPreparation: YouTubeStreamingPreparation?
         var restart: PlannedStreamSelection?
         if Settings.youtubeRefreshToken != nil {
             let service = await YouTubeService()
@@ -938,25 +941,28 @@ final class Streamer: Sendable {
             // Use the title resolved for this broadcast, including Settings
             // preferences, rather than an unrelated channel's saved template.
             serviceName = preparation.broadcast.title
-            await streamingActor.setYouTubeBroadcast(
-                id: preparation.broadcast.id,
-                status: preparation.broadcast.lifeCycleStatus,
-                completionTarget: preparation.completionTarget,
-                healthTarget: preparation.healthTarget
-            )
+            signedInPreparation = preparation
         } else {
             endpoint = try YouTubeHLSEndpoint.manualPrimary(streamKey: streamKey)
-            await streamingActor.setYouTubeBroadcast(id: nil, status: nil)
+            signedInPreparation = nil
         }
         let model = await MainActor.run { UIDevice.current.model.replacingOccurrences(of: " ", with: "_") }
         let userAgent = "Apple / \(model) / Tubeist-\(Bundle.main.appVersion ?? "unknown")"
-        try await EncodedOutputRouter.shared.prepareYouTube(
+        let playlistFilename = try await EncodedOutputRouter.shared.prepareYouTube(
             endpoint: endpoint,
             sessionIdentifier: streamID,
             userAgent: userAgent,
             serviceName: serviceName,
             endingPolicy: endingPolicy,
             reportUploadsStopped: { [self] in await handleYouTubeUploadFailure($0, sessionID: sessionID) }
+        )
+        var healthTarget = signedInPreparation?.healthTarget
+        healthTarget?.playlistFilename = playlistFilename
+        await streamingActor.setYouTubeBroadcast(
+            id: signedInPreparation?.broadcast.id,
+            status: signedInPreparation?.broadcast.lifeCycleStatus,
+            completionTarget: signedInPreparation?.completionTarget,
+            healthTarget: healthTarget
         )
         if endingPolicy == .manualDiagnostic {
             LOG("YouTube ending test: auto-stop disabled; no ENDLIST or automatic completion. End this broadcast manually in YouTube Studio.", level: .info)

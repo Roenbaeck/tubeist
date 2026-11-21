@@ -13,7 +13,9 @@ The scenarios cover:
 
 - Normal capture and local recording.
 - A second stream on the same pipeline after Stop and a simulated two-hour
-  idle interval, requiring fresh encoders, segment numbering and media timing.
+  idle interval. Queued audio and video from the first session and an idle
+  preview frame reach the second session before its own media. Both recordings
+  and both sets of uploaded segments must contain exactly their own frames.
 - Audio beginning before the first video frame, requiring a partial PCM block
   to be trimmed without relying on sample-size metadata.
 - Missing 200 ms of audio/video, duplicate samples and late samples.
@@ -25,6 +27,9 @@ The scenarios cover:
 - A 61-second loss first observed by a watchdog tick 37 seconds late. Capture
   must still recover, and the recording must keep the whole gap as silence.
 - A backward capture-clock reset while capture callbacks continue.
+- A three-second jump inside the buffered audio considered for recovery.
+  The pipeline must wait for a new match, then resume both outputs. Repeated
+  jumps with no usable match must still expire at the original deadline.
 - Repeated stabilization changes, including video arriving 1.2 seconds behind
   audio and then switching to a shorter delay on the same stream.
 - Audio delivered 120 ms behind video through a timestamp discontinuity.

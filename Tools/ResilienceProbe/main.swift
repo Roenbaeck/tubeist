@@ -11,6 +11,7 @@ import Foundation
         if scenario == "watchdog" {
             try await checkWatchdog()
             try await checkDelayedRecoveryDeadline()
+            try await checkDiscontinuousAudioDeadline()
             return
         }
         if scenario == "second-stream" { try await checkSecondStream(folder: folder); return }
@@ -74,12 +75,23 @@ import Foundation
                 return video && ((3..<6).contains(time) || (12..<15).contains(time) || (21..<24).contains(time))
             }
             guard time >= 3 && time < 6 else { return false }
-            return ["both-stall", "mono-recovery"].contains(scenario) || scenario == (video ? "video-stall" : "audio-stall")
+            return ["both-stall", "mono-recovery", "recovery-audio-gap"].contains(scenario) || scenario == (video ? "video-stall" : "audio-stall")
         }
 
         for frame in 0..<totalFrames {
             let time = Double(frame) / 30
             clock.set(time)
+            if scenario == "recovery-audio-gap", frame == 180 {
+                precondition(pipeline.captureState == .recovering)
+                // Audio initially overlaps the held frame, then jumps three
+                // seconds before the matcher can use the pair.
+                try await pipeline.appendVideo(videoSample(frame: frame, pts: 103))
+                try await pipeline.appendVideo(videoSample(frame: frame + 1, pts: 103 + 1.0 / 30))
+                let pcm = try ProbeMediaFixtures.makeAudio(offset: 0, frames: 1024, rate: rate)
+                try await pipeline.appendAudio(retime(pcm, to: 103))
+                try await pipeline.appendAudio(retime(pcm, to: 106))
+                precondition(pipeline.captureState == .recovering)
+            }
             while Double(audioOffset) / rate <= time {
                 let audioTime = Double(audioOffset) / rate
                 if !missing(audioTime, video: false) {
@@ -109,6 +121,9 @@ import Foundation
             let watchdogDelayed = scenario == "late-watchdog-recovery" && (3..<40).contains(time)
             if frame.isMultiple(of: 3), !watchdogDelayed { try await pipeline.checkCapture() }
             if pipeline.captureState == .recovering { recoveryObserved = true }
+            if scenario == "recovery-audio-gap", time >= 6.5 {
+                precondition(pipeline.captureState == .healthy)
+            }
             if scenario == "stabilization-changes", [9 * 30, 18 * 30, 27 * 30].contains(frame) {
                 guard pipeline.captureState == .healthy else {
                     throw MediaEncodingError.invalid("Capture did not recover after stabilization change at \(time)s")
@@ -145,7 +160,7 @@ import Foundation
         try collector.save(to: folder.appendingPathComponent("recording.mp4"))
         let metrics = await sink.metrics()
         if ["both-stall", "mono-recovery", "long-recovery", "audio-stall", "video-stall", "clock-reset",
-            "stabilization-changes", "audio-delivery-lag", "late-watchdog-recovery"].contains(scenario) {
+            "stabilization-changes", "audio-delivery-lag", "late-watchdog-recovery", "recovery-audio-gap"].contains(scenario) {
             precondition(recoveryObserved, "Did not exercise coordinated capture recovery")
         }
         if scenario == "network-overflow" {
@@ -175,6 +190,7 @@ import Foundation
             publish: { await captured.append($0) }, outputFeedback: { .init() })
         let rate = 48_000.0
         let frameCount = 96
+        var previousSessionID: UUID?
         for session in 0..<2 {
             let directory = folder.appendingPathComponent("session-\(session + 1)")
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -182,7 +198,17 @@ import Foundation
             clock.set(epoch)
             let collector = RecordingCollector()
             let writer = try RecordingAssetWriter(delegate: collector, finalizationFlag: AssetWriterFinalizationFlag())
-            try pipeline.start(preset: Preset(), stream: true, recording: writer)
+            let sessionID = UUID()
+            try pipeline.start(preset: Preset(), stream: true, recording: writer, sessionID: sessionID)
+            if let previousSessionID {
+                // Queued media and preview frames can reach the encoder after
+                // Stop's drain timed out and another session started.
+                let oldAudio = try ProbeMediaFixtures.makeAudio(offset: 0, frames: 1024, rate: rate)
+                let oldVideo = try videoSample(frame: 0, pts: 103)
+                try await pipeline.appendAudio(retime(oldAudio, to: 103), sessionID: previousSessionID)
+                try await pipeline.appendVideo(oldVideo, sessionID: previousSessionID)
+                try await pipeline.appendVideo(oldVideo)
+            }
             precondition(pipeline.captureState == .starting)
             var audioOffset = 0
             for frame in 0..<frameCount {
@@ -190,14 +216,15 @@ import Foundation
                 clock.set(epoch + time)
                 while Double(audioOffset) / rate <= time {
                     let audio = try ProbeMediaFixtures.makeAudio(offset: audioOffset, frames: 1024, rate: rate)
-                    try await pipeline.appendAudio(retime(audio, to: epoch + 100 + Double(audioOffset) / rate))
+                    try await pipeline.appendAudio(retime(audio, to: epoch + 100 + Double(audioOffset) / rate), sessionID: sessionID)
                     audioOffset += 1024
                 }
-                try await pipeline.appendVideo(videoSample(frame: frame, pts: epoch + 100 + time))
+                try await pipeline.appendVideo(videoSample(frame: frame, pts: epoch + 100 + time), sessionID: sessionID)
                 try await pipeline.checkCapture()
                 try await Task.sleep(for: .milliseconds(5))
             }
             try await pipeline.finish(deadline: ContinuousClock.now.advanced(by: .seconds(20)))
+            previousSessionID = sessionID
             precondition(!pipeline.isActive && pipeline.captureState == nil)
             let fragments = await captured.take()
             precondition(!fragments.isEmpty)
@@ -335,6 +362,37 @@ import Foundation
         precondition(pipeline.captureState == .failed)
         try await pipeline.finish(deadline: ContinuousClock.now.advanced(by: .seconds(5)))
         print("PASS: a delayed recovery deadline accepts either callback order and expires its single bounded recheck")
+    }
+
+    @PipelineActor static func checkDiscontinuousAudioDeadline() async throws {
+        let clock = ProbeClock()
+        let pipeline = LiveEncodingPipeline(now: { clock.read() }, automaticWatchdog: false)
+        try pipeline.start(preset: Preset(), stream: false, recording: nil)
+        let pcm = try ProbeMediaFixtures.makeAudio(offset: 0, frames: 1024, rate: 48_000)
+        try await pipeline.appendVideo(videoSample(frame: 0, pts: 100))
+        try await pipeline.appendAudio(retime(pcm, to: 100))
+        clock.set(3)
+        try await pipeline.checkCapture()
+        for tick in 1..<300 {
+            clock.set(3 + Double(tick) / 10)
+            if tick == 1 || tick == 298 {
+                let pts = 200 + Double(tick)
+                try await pipeline.appendVideo(videoSample(frame: 0, pts: pts))
+                try await pipeline.appendVideo(videoSample(frame: 1, pts: pts + 1.0 / 30))
+                try await pipeline.appendAudio(retime(pcm, to: pts))
+                try await pipeline.appendAudio(retime(pcm, to: pts + 3))
+            }
+            try await pipeline.checkCapture()
+            precondition(pipeline.captureState == .recovering)
+        }
+        clock.set(33)
+        do {
+            try await pipeline.checkCapture()
+            throw MediaEncodingError.invalid("Discontinuous recovery candidates restarted the deadline")
+        } catch CaptureContinuityError.stalled {}
+        precondition(pipeline.captureState == .failed)
+        try await pipeline.finish(deadline: ContinuousClock.now.advanced(by: .seconds(5)))
+        print("PASS: repeated gaps in candidate audio preserve the original recovery deadline")
     }
 
     static func videoSample(frame: Int, pts: Double) throws -> CMSampleBuffer {

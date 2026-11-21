@@ -7,6 +7,7 @@ struct YouTubeHealthTarget: Equatable, Sendable {
     let streamID: String
     let broadcastID: String
     let authorizationScope: String
+    var playlistFilename: String?
 }
 
 struct YouTubeIngestStatus: Decodable, Equatable, Sendable {
@@ -200,7 +201,7 @@ final class YouTubeStreamHealthMonitor {
             lastFailure = nil
             let timestamp = status.healthStatus?.lastUpdateTimeSeconds.map { String(format: "%.0f", $0) } ?? "unavailable"
             log("YouTube ingest: stream=\(status.streamStatus ?? "unknown"); health=\(status.healthStatus?.status ?? "unknown"); updated=\(timestamp); issues=\(status.healthStatus?.configurationIssues?.count ?? 0)", .debug)
-            publishAssessment(notice: notice)
+            publishAssessment(target: target, notice: notice)
         } catch {
             guard !Task.isCancelled, !YouTubeDiagnostics.isCancellation(error), self.target == target,
                   requestID == request else { return }
@@ -215,13 +216,19 @@ final class YouTubeStreamHealthMonitor {
         }
     }
 
-    private func publishAssessment(notice: (String) -> Void) {
+    private func publishAssessment(target: YouTubeHealthTarget, notice: (String) -> Void) {
         let current = assessment
         let issues = report?.healthStatus?.configurationIssues ?? []
         let signatures = Set(issues.map(\.diagnostic))
         let actionable = current.kind == .error || current.kind == .warning
+        let updated = report?.healthStatus?.lastUpdateTimeSeconds.flatMap { seconds -> String? in
+            guard (0...Date.distantFuture.timeIntervalSince1970).contains(seconds) else { return nil }
+            return Date(timeIntervalSince1970: seconds).ISO8601Format()
+        } ?? "unavailable"
+        let context = "[playlist=\(target.playlistFilename ?? "unavailable"), YouTube health updated=\(updated)]"
         if current != lastAssessment {
-            log(current.message, current.level)
+            let includeContext = current.level == .warning || current.level == .error
+            log(includeContext ? "\(current.message) \(context)" : current.message, current.level)
             if current.kind == .error || current.kind == .warning || current.kind == .unknown {
                 notice(current.message)
             }
@@ -231,7 +238,7 @@ final class YouTubeStreamHealthMonitor {
         for issue in issues where !lastIssues.contains(issue.diagnostic) || (actionable && !lastIssuesWereActionable) {
             let level: LogLevel = !actionable || issue.severity == "info" ? .debug
                 : issue.severity == "error" ? .error : .warning
-            log("YouTube configuration: \(issue.diagnostic)", level)
+            log("YouTube configuration: \(issue.diagnostic) \(context)", level)
         }
         // A stale issue logged at debug must be reported when it becomes current.
         lastIssues = signatures

@@ -14,6 +14,69 @@
 - Baseline: codex/direct-youtube-hls at e82bb7b
 - Supersedes: the completed direct-YouTube implementation plan in Git history
 
+## Capture lifecycle audit, 2026-11-21
+
+Audit baseline `eba1808`. The two high-priority fixes have local regression coverage.
+
+| Status | Priority | Finding | Verification |
+| --- | --- | --- | --- |
+| [x] | High | A second timestamp gap inside buffered recovery audio could throw a fatal error while both tracks were returning. The pipeline now stages AAC and discards candidates preceding that gap before committing either output. | The `recovery-audio-gap` probe injects a three-second jump, requires recovery with the next aligned pair, and decodes the MP4 and live segments. The watchdog probe checks that repeated gaps still expire at the original deadline. |
+| [x] | High | A delayed audio or video encoding error could stop the next stream. Samples now carry the session that accepted them through the capture and encoder queues. | The `second-stream` probe delivers stale audio, video and a preview frame to a restarted pipeline. `StreamerTests` delivers the previous session’s sample error after the next Start. |
+| [ ] | Medium | A Stop requested during preparation waits behind Start, which can still enter Live. | Hold Start at preflight, issue Stop through the public command queue, then release preflight. Require cleanup exactly once and no transition to Live. |
+| [ ] | Medium | Returning to the foreground while a background Stop drains can leave the camera stopped and the UI reporting ready. | Foreground the app during the upload drain, then finish Stop. Require the preview session to be running before readiness. |
+| [ ] | Medium | A stream-only Stop can report YouTube success when no media was delivered. | Stop after video starts but before the first microphone sample. Require the shutdown report to distinguish zero delivered segments from a successful stream, including manual ending mode. |
+| [ ] | Medium | Stale cached YouTube Live or Testing status can block the next Start on phone and Watch while idle. | End the previous broadcast remotely with Tubeist in the foreground. Require an idle refresh to unblock both controls once YouTube confirms the end. |
+| [ ] | Low | The health indicator can show pristine during capture startup, or silenced after a terminal failure. | Poll before both tracks are usable and again after a failure with empty buffers. Check the indicator against the session and capture states. |
+
+Local verification on November 21 passed all 22 scenarios in
+`Tools/ResilienceProbe/validate.sh` using Mac hardware HEVC and AAC encoding.
+The targeted iPhone simulator run passed 51 tests and skipped four that require
+hardware HEVC. Both runs used generated media.
+
+### Reported microphone interruption on 2.4.0 (build 43)
+
+At 10:17:58.992 iOS reported capture interruption reason 2, meaning the audio
+hardware was temporarily unavailable to Tubeist. The reason does not identify
+the client. [Apple’s definition of the interruption reason](https://developer.apple.com/documentation/avfoundation/avcapturesession/interruptionreason/audiodeviceinusebyanotherclient)
+
+Recovery began 1.951 seconds later and expired after 30.059 seconds.
+Tubeist counted 719 advancing video candidates and 521 advancing audio candidates.
+At timeout the last audio block began 63 ms behind the last video frame. The
+release matched audio only against the newest video frame. The journal records
+the final offset and aggregate counts, without individual sample durations or
+callback times. The YouTube duplicate-ingest warning came about 30 minutes later.
+
+An offline comparison used the same synthetic input on the tagged `v2.4.0`
+and the 2.4.1 merge `eba1808`. After a simulated capture pause, 24 fps video
+resumed with 2,760-frame PCM blocks at 48 kHz. Audio callbacks followed video
+with their start timestamps at least 63 ms behind. The schedule was chosen to
+match the journal counts and final offset. Version 2.4.0 reproduced the exact
+timeout line. Version 2.4.1 held a video frame long enough to match audio and
+recovered after three video and two audio candidates (93 ms on the probe clock).
+This supports the moving-frame explanation for the failed recovery. The phone’s
+individual sample timings and the identity of the interrupting client remain unknown.
+
+### Duplicate primary ingest report on the same phone
+
+The operator confirmed one channel user and one streaming phone. At 10:18:44
+YouTube confirmed completion of the interrupted broadcast, after acknowledging
+ENDLIST and reporting inactivity on two polls. At 10:48:20 Tubeist logged a
+YouTube stream-health response reporting duplicate primary ingest. The journal
+coalesces identical Start entries, so the start time of the intervening session
+is unavailable. The warning itself did not trigger a Stop.
+
+In 2.4.0, a fresh Start creates a new playlist filename. Capture recovery and
+upload retries keep the current playlist. Health polling queries the YouTube
+stream ID, which can span broadcasts using the same key. When YouTube supplies
+a health timestamp Tubeist checks its age. A reply without that timestamp can
+also surface a configuration error. The incident log cannot establish which
+playlists or connections YouTube counted, or whether its report was stale.
+Each prepared HLS output now logs its playlist filename at Info. Configuration
+warnings and errors include that filename and YouTube’s health-report time in
+UTC, or `unavailable` when the report has no usable timestamp. Match the filename
+to the preparation entry to identify the local session, even if it reused a
+stream key. The filename is safe to share in a journal export.
+
 ## Current verification status
 
 - The planned-streams feature (2026-10-28, branch `planned-streams`) lets

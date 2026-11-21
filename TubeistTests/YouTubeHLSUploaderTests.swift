@@ -387,6 +387,7 @@ struct YouTubeHLSUploaderTests {
         #expect(records.count == 4)
         #expect(records.map(\.method) == ["POST", "POST", "POST", "POST"])
         #expect(records[0].url.hasSuffix("file=tsHXlVdhmo_12NTFw52NfbA.m3u8"))
+        #expect(records[0].url.hasSuffix("file=\(uploader.playlistFilename)"))
         #expect(records[1].url.hasSuffix("file=tsHXlVdhmo_12NTFw52NfbA_0.ts"))
         #expect(records[2].url.hasSuffix("file=tsHXlVdhmo_12NTFw52NfbA.m3u8"))
         #expect(records[3].url.hasSuffix("file=tsHXlVdhmo_12NTFw52NfbA_1.ts"))

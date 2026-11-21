@@ -147,7 +147,7 @@ if result["scenario"] == "processing-pressure":
     assert not result["captureRecovery"], "Processing pressure triggered capture recovery"
     assert len(recorded) == result["deliveredVideoFrames"], "Skipped timestamps created duplicate catch-up work"
     assert uploaded == recorded, "Real frames were lost between encoding and upload"
-if result["scenario"] in ("short-gaps", "both-stall", "mono-recovery"):
+if result["scenario"] in ("short-gaps", "both-stall", "mono-recovery", "recovery-audio-gap"):
     pcm = subprocess.run(["ffmpeg", "-v", "error", "-i", str(recording), "-map", "0:a:0",
                           "-ac", "1", "-ar", "44100", "-f", "f32le", "-"],
                          check=True, capture_output=True).stdout

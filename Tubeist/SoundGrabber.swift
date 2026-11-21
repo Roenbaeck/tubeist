@@ -6,49 +6,11 @@
 //
 import AVFoundation
 
-private final class AudioCaptureIntake: @unchecked Sendable {
-    private let lock = NSLock()
-    private var enabled = false
-    func setEnabled(_ enabled: Bool) { lock.withLock { self.enabled = enabled } }
-    func isEnabled() -> Bool { lock.withLock { enabled } }
-}
-
-private actor SoundGrabbingActor {
-    private var grabbingSound: Bool = false
-    func start() {
-        grabbingSound = true
-    }
-    func stop() {
-        grabbingSound = false
-    }
-    func isActive() -> Bool {
-        grabbingSound
-    }
-
-    func process(_ wrappedSampleBuffer: SendableSampleBuffer) async {
-        guard grabbingSound, await Streamer.shared.isStreaming() else {
-            return
-        }
-        nonisolated(unsafe) let sampleBuffer = wrappedSampleBuffer.value
-        do {
-            try await ContentPackager.shared.appendAudioSampleBuffer(sampleBuffer)
-        } catch {
-            Task {
-                await Streamer.shared.handleRuntimeFailure(error)
-            }
-        }
-    }
-}
-
 final class SoundGrabber: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate, Sendable {
     @PipelineActor public static let shared = SoundGrabber()
-    private let soundGrabbing: SoundGrabbingActor
     private let soundMailbox: BoundedAsyncMailbox<SendableSampleBuffer>
-    private let intake = AudioCaptureIntake()
 
     override init() {
-        let soundGrabbing = SoundGrabbingActor()
-        self.soundGrabbing = soundGrabbing
         self.soundMailbox = BoundedAsyncMailbox(
             policy: CaptureBuffering.audioPolicy, timing: { $0.mailboxTiming },
             onDrop: { submission in
@@ -57,31 +19,13 @@ final class SoundGrabber: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate
                 Task { await Streamer.shared.setStreamHealth(.unusable) }
             }
         ) { sampleBuffer in
-            await soundGrabbing.process(sampleBuffer)
+            await ContentPackager.shared.appendCapturedSample(sampleBuffer, kind: .audio)
         }
         super.init()
     }
     
-    func commenceGrabbing() async {
-        if await !soundGrabbing.isActive() {
-            await soundGrabbing.start()
-            soundMailbox.resetDropCount()
-            intake.setEnabled(true)
-            LOG("Started grabbing sound", level: .debug)
-        }
-        else {
-            LOG("Sound grabbing already started", level: .debug)
-        }
-    }
-    func terminateGrabbing() async {
-        intake.setEnabled(false)
-        if await soundGrabbing.isActive() {
-            await soundGrabbing.stop()
-            LOG("Stopped grabbing sound", level: .debug)
-        }
-        else {
-            LOG("Sound grabbing already stopped", level: .debug)
-        }
+    func resetDropCount() {
+        soundMailbox.resetDropCount()
     }
     func drainSubmittedAudio() async {
         await soundMailbox.waitUntilIdle()
@@ -95,8 +39,8 @@ final class SoundGrabber: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate
                        from connection: AVCaptureConnection) {
         // Output preview also attaches the microphone delegate. It needs no
         // queued recording audio and must not report audio-overflow failures.
-        guard intake.isEnabled() else { return }
-        nonisolated(unsafe) let sendableSampleBuffer = sampleBuffer
-        soundMailbox.submit(SendableSampleBuffer(value: sendableSampleBuffer))
+        let sample = SendableSampleBuffer(capturing: sampleBuffer)
+        guard sample.sessionID != nil else { return }
+        soundMailbox.submit(sample)
     }
 }

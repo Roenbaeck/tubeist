@@ -1091,7 +1091,7 @@ private final class CaptureEventMonitor: @unchecked Sendable {
             queue: nil
         ) { notification in
             let reason = (notification.userInfo?[AVCaptureSessionInterruptionReasonKey] as? NSNumber)?.intValue
-            LOG("Camera session interrupted: \(Self.interruptionDescription(reason))", level: .warning)
+            LOG("Capture session interrupted: \(Self.interruptionDescription(reason))", level: .warning)
             Task {
                 await Streamer.shared.handleCaptureSessionInterruption(reason: reason)
             }
@@ -1101,7 +1101,7 @@ private final class CaptureEventMonitor: @unchecked Sendable {
             object: session,
             queue: nil
         ) { _ in
-            LOG("Camera session interruption ended", level: .info)
+            LOG("Capture session interruption ended", level: .info)
         })
         newObservers.append(center.addObserver(
             forName: AVCaptureDevice.wasDisconnectedNotification,
@@ -1147,7 +1147,7 @@ private final class CaptureEventMonitor: @unchecked Sendable {
         let description: String
         switch value {
         case 1: description = "camera unavailable in background"
-        case 2: description = "microphone in use by another client"
+        case 2: description = "audio hardware temporarily unavailable (in use by another client)"
         case 3: description = "camera in use by another client"
         case 4: description = "camera unavailable with multiple foreground apps"
         case 5: description = "camera unavailable due to system pressure"

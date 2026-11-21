@@ -14,10 +14,16 @@ enum CaptureBuffering {
 struct SendableSampleBuffer: @unchecked Sendable {
     let value: CMSampleBuffer
     let receivedAt: TimeInterval
+    let sessionID: UUID?
 
-    init(value: CMSampleBuffer, receivedAt: TimeInterval = ProcessInfo.processInfo.systemUptime) {
+    init(value: CMSampleBuffer, receivedAt: TimeInterval = ProcessInfo.processInfo.systemUptime, sessionID: UUID? = nil) {
         self.value = value
         self.receivedAt = receivedAt
+        self.sessionID = sessionID
+    }
+
+    init(capturing value: CMSampleBuffer, from streamer: Streamer = .shared) {
+        self.init(value: value, sessionID: streamer.captureSessionID)
     }
 
     var mailboxTiming: AsyncMailboxTiming {
