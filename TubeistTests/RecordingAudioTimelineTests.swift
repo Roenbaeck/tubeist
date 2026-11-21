@@ -48,4 +48,24 @@ struct RecordingAudioTimelineTests {
             try timeline.needsSilence(before: CMTime(seconds: 61, preferredTimescale: 44_100), packetDuration: duration)
         }
     }
+
+    @Test func captureRecoveryAuthorizesOnlyItsOwnLongGap() throws {
+        var timeline = RecordingAudioTimeline()
+        timeline.appended(pts: .zero, duration: duration)
+        // A late watchdog tick followed by a full recovery window.
+        let resume = CMTime(seconds: 67, preferredTimescale: 90_000)
+        timeline.allowRecoveryGap(through: resume)
+        #expect(try timeline.needsSilence(before: CMTimeSubtract(resume, duration), packetDuration: duration))
+        #expect(throws: (any Error).self) {
+            try timeline.needsSilence(before: CMTime(seconds: 130, preferredTimescale: 90_000), packetDuration: duration)
+        }
+        while try timeline.needsSilence(before: resume, packetDuration: duration) {
+            timeline.appended(pts: try #require(timeline.end), duration: duration)
+        }
+        timeline.appended(pts: resume, duration: duration)
+        // Later gaps are bounded again.
+        #expect(throws: (any Error).self) {
+            try timeline.needsSilence(before: CMTime(seconds: 128, preferredTimescale: 90_000), packetDuration: duration)
+        }
+    }
 }

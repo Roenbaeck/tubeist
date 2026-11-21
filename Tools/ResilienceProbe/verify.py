@@ -161,6 +161,19 @@ if result["scenario"] in ("short-gaps", "both-stall", "mono-recovery"):
     else:
         assert rms(5.4, 5.6) < 0.001, "The recording recovery gap did not decode as silence"
         assert rms(1.7, 1.8) > 0.1 and rms(7.4, 7.5) > 0.1, "Padding removed healthy audio"
+if result["scenario"] == "late-watchdog-recovery":
+    # A 61-second outage, first observed 37 seconds late, must stay in the
+    # recording as silence rather than ending it or collapsing the gap.
+    pcm = subprocess.run(["ffmpeg", "-v", "error", "-i", str(recording), "-map", "0:a:0",
+                          "-ac", "1", "-ar", "44100", "-f", "f32le", "-"],
+                         check=True, capture_output=True).stdout
+    samples = array.array("f", pcm)
+    def rms(start, end):
+        window = samples[int(start * 44100):int(end * 44100)]
+        assert window, ("The recording ends before", end)
+        return math.sqrt(sum(value * value for value in window) / len(window))
+    assert rms(30, 30.2) < 0.001 and rms(62, 62.2) < 0.001, "The late recovery gap did not decode as silence"
+    assert rms(1.7, 1.8) > 0.1 and rms(68, 68.1) > 0.1, "Padding removed healthy audio"
 if result["scenario"] == "network-overflow":
     assert len(uploaded) < len(recorded), "The overflow fixture did not discard live content"
     assert result["droppedSegments"] > 0

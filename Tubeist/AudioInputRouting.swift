@@ -54,13 +54,17 @@ private final class SystemAudioInputSession: AudioInputSession {
 
     func setPreferredInput(id: String?) throws {
         guard let id else {
-            try session.setPreferredInput(nil)
+            try measureCaptureConfiguration("Clear preferred microphone input") {
+                try session.setPreferredInput(nil)
+            }
             return
         }
         guard let port = session.availableInputs?.first(where: { $0.uid == id }) else {
             throw CaptureSetupError.noMicrophone
         }
-        try session.setPreferredInput(port)
+        try measureCaptureConfiguration("Set preferred microphone input") {
+            try session.setPreferredInput(port)
+        }
     }
 }
 

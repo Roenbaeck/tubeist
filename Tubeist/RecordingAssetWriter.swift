@@ -74,6 +74,14 @@ final class RecordingFileFailure: @unchecked Sendable {
 /// across repeated recoveries. The maximum error is half an AAC packet.
 struct RecordingAudioTimeline {
     private(set) var end: CMTime?
+    private var recoveryResume: CMTime?
+
+    /// Capture recovery resumes the shared timeline at elapsed wall time. A
+    /// late watchdog tick still gets a full recovery window, so that gap has
+    /// no fixed limit. Recovery derives it from the clock and authorizes it here.
+    mutating func allowRecoveryGap(through pts: CMTime) {
+        recoveryResume = recoveryResume.map { CMTimeMaximum($0, pts) } ?? pts
+    }
 
     func needsSilence(before pts: CMTime, packetDuration: CMTime) throws -> Bool {
         guard pts.isNumeric, packetDuration.isNumeric, packetDuration > .zero else {
@@ -81,10 +89,13 @@ struct RecordingAudioTimeline {
         }
         guard let end else { return false }
         let gap = CMTimeSubtract(pts, end)
-        // The capture watchdog fails after 30 seconds. Bound work even if a
-        // malformed timestamp somehow reaches the recording beyond recovery.
-        guard gap.seconds <= 60 else { throw MediaEncodingError.invalid("Recording audio gap exceeds 60 seconds") }
-        return gap > CMTimeMultiplyByRatio(packetDuration, multiplier: 1, divisor: 2)
+        let halfPacket = CMTimeMultiplyByRatio(packetDuration, multiplier: 1, divisor: 2)
+        let resumesRecovery = recoveryResume.map { CMTimeSubtract(pts, $0) <= halfPacket } ?? false
+        // Bound work if a malformed timestamp reaches the recording outside recovery.
+        guard resumesRecovery || gap.seconds <= 60 else {
+            throw MediaEncodingError.invalid("Recording audio gap exceeds 60 seconds")
+        }
+        return gap > halfPacket
     }
 
     mutating func appended(pts: CMTime, duration: CMTime) {
@@ -154,6 +165,11 @@ final class RecordingAssetWriter {
                 throw MediaEncodingError.invalid("Recording storage cannot keep up")
             }
         }
+    }
+
+    /// Capture recovery resumes both tracks at this point on the shared timeline.
+    func allowRecoveryGap(through pts: CMTime) {
+        audioTimeline.allowRecoveryGap(through: pts)
     }
 
     private func makeInput(_ type: AVMediaType, format: CMFormatDescription) -> AVAssetWriterInput {
