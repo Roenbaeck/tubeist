@@ -30,7 +30,8 @@ import Foundation
         let rate = 48_000.0
         let duration = scenario == "stop-boundary" ? 6 + 1.0 / 30
             : scenario == "network-preserve" ? 50.4
-            : scenario.hasPrefix("network-") ? 70.4 : scenario == "stabilization-changes" ? 33.4 : scenario == "long-recovery" ? 34.4 : 10.4
+            : scenario.hasPrefix("network-") || scenario == "late-watchdog-recovery" ? 70.4
+            : scenario == "stabilization-changes" ? 33.4 : scenario == "long-recovery" ? 34.4 : 10.4
         let totalFrames = Int(duration * 30)
         var audioOffset = 0
         var recoveryObserved = false
@@ -61,6 +62,7 @@ import Foundation
                 return video && !Int((time * 30).rounded()).isMultiple(of: 3)
             }
             if scenario == "long-recovery" { return (3..<30).contains(time) }
+            if scenario == "late-watchdog-recovery" { return (3..<64).contains(time) }
             if scenario == "short-gaps" { return time >= 2 && time < 2.2 }
             if scenario == "audio-pool-startup" { return video && time < 2.5 }
             if scenario == "audio-pool-recovery" { return video && (3..<8).contains(time) }
@@ -98,7 +100,10 @@ import Foundation
                     try await pipeline.appendVideo(videoSample(frame: frame - 3, pts: captureTime(time - 0.1)))
                 }
             }
-            if frame.isMultiple(of: 3) { try await pipeline.checkCapture() }
+            // A blocked actor or suspended process delays the first watchdog
+            // tick by 37 seconds; recovery then succeeds late in its window.
+            let watchdogDelayed = scenario == "late-watchdog-recovery" && (3..<40).contains(time)
+            if frame.isMultiple(of: 3), !watchdogDelayed { try await pipeline.checkCapture() }
             if pipeline.captureState == .recovering { recoveryObserved = true }
             if scenario == "stabilization-changes", [9 * 30, 18 * 30, 27 * 30].contains(frame) {
                 guard pipeline.captureState == .healthy else {
@@ -113,7 +118,13 @@ import Foundation
                     throw MediaEncodingError.invalid("Capture did not recover with continuous audio arriving behind video at \(time)s")
                 }
             }
+            if scenario == "late-watchdog-recovery", time >= 65, pipeline.captureState != .healthy {
+                throw MediaEncodingError.invalid("Capture did not recover after a late watchdog tick at \(time)s")
+            }
             try await Task.sleep(for: .milliseconds(5))
+        }
+        if let failure = pipeline.recordingFailure {
+            throw MediaEncodingError.invalid("The local recording stopped during the session: \(failure)")
         }
         if let audioPool {
             guard audioPool.exhaustionCount == 0, pipeline.captureState == .healthy else {
@@ -130,7 +141,7 @@ import Foundation
         try collector.save(to: folder.appendingPathComponent("recording.mp4"))
         let metrics = await sink.metrics()
         if ["both-stall", "mono-recovery", "long-recovery", "audio-stall", "video-stall", "clock-reset",
-            "stabilization-changes", "audio-delivery-lag"].contains(scenario) {
+            "stabilization-changes", "audio-delivery-lag", "late-watchdog-recovery"].contains(scenario) {
             precondition(recoveryObserved, "Did not exercise coordinated capture recovery")
         }
         if scenario == "network-overflow" {

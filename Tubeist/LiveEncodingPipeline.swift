@@ -526,6 +526,8 @@ final class LiveEncodingPipeline {
         // The new encoder timestamps already continue the shared timeline.
         // Preserve the transport's original timestamp shift and packet counters.
         nextBoundary = resumeTime
+        // The recording pads this gap with silence, however long the outage was.
+        recording?.allowRecoveryGap(through: CMTime(seconds: resumeTime, preferredTimescale: 90_000))
         // Commit both tracks before any suspension. New capture or Stop can
         // interleave once the completed fragments are handed off.
         for audio in alignedAudio { try encodeAudio(audio, basePTS: recoveryBasePTS) }

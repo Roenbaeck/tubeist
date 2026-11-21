@@ -22,6 +22,8 @@ The scenarios cover:
 - Three-second loss of both tracks, or either track independently, with mono
   and stereo recording coverage.
 - A 27-second loss followed by recovery, exercising bounded recording padding.
+- A 61-second loss first observed by a watchdog tick 37 seconds late. Capture
+  must still recover, and the recording must keep the whole gap as silence.
 - A backward capture-clock reset while capture callbacks continue.
 - Repeated stabilization changes, including video arriving 1.2 seconds behind
   audio and then switching to a shorter delay on the same stream.
