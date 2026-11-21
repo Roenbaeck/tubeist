@@ -29,8 +29,15 @@ final class LiveEncodingPipeline {
     private var watchdog: Task<Void, Never>?
     private var lifecycleGeneration: UInt64 = 0
     private var timelineStartedAt: TimeInterval?
-    private var recoveryStartedAt: TimeInterval?
-    private var recovering: Bool { recoveryStartedAt != nil }
+    private enum RecoveryDeadline {
+        case initial(TimeInterval)
+        case recheck(TimeInterval)
+
+        static let recheckDuration: TimeInterval = 2
+    }
+    private var recoveryDeadline: RecoveryDeadline?
+    private var recovering: Bool { recoveryDeadline != nil }
+    private var lastWatchdogCheck = 0.0
     private var candidateVideo: CMSampleBuffer?
     private var candidateVideoHeldSince = 0.0
     private var latestRecoveryVideoPTS: CMTime?
@@ -104,7 +111,7 @@ final class LiveEncodingPipeline {
         lastRealVideoPTS = nil
         lastRealAudioEndPTS = nil
         liveness = nil
-        recoveryStartedAt = nil
+        recoveryDeadline = nil
         clearCandidates()
         lastOutputEnd = 0
         pendingDiscontinuity = false
@@ -116,7 +123,8 @@ final class LiveEncodingPipeline {
 
     func beginCaptureMonitoring(reportFailure: (@Sendable (any Error) async -> Void)? = nil) {
         guard isActive, !failed, !finalizing, liveness == nil else { return }
-        liveness = CaptureLiveness(startedAt: now())
+        lastWatchdogCheck = now()
+        liveness = CaptureLiveness(startedAt: lastWatchdogCheck)
         if automaticWatchdog {
             let activeGeneration = lifecycleGeneration
             let report = reportFailure ?? self.reportFailure
@@ -381,18 +389,36 @@ final class LiveEncodingPipeline {
     func checkCapture() async throws {
         guard isActive, !failed, !finalizing, let liveness else { return }
         let time = now()
-        if let recoveryStartedAt {
-            if time - recoveryStartedAt >= 30 {
-                let separation: String
-                if let videoPTS = latestRecoveryVideoPTS, let audio = candidateAudio {
-                    separation = String(format: "%.3f s", CMTimeSubtract(
-                        CMSampleBufferGetPresentationTimeStamp(audio), videoPTS
-                    ).seconds)
-                } else { separation = "unavailable" }
-                LOG("Capture recovery timed out: \(candidateVideoCount) video and \(candidateAudioCount) audio candidates; latest audio minus video timestamp: \(separation)", level: .error)
-                throw CaptureContinuityError.stalled
+        let interval = time - lastWatchdogCheck
+        lastWatchdogCheck = time
+        // Normally checked every 100 ms. Report substantial gaps so the
+        // phone's Journal can correlate them with slow configuration calls.
+        let delayed = interval >= 0.5
+        if delayed {
+            LOG(String(format: "Capture watchdog went %.3f s between checks", interval), level: .warning)
+        }
+        if let recoveryDeadline {
+            // When the actor becomes available near or after the deadline,
+            // the timer can run ahead of queued capture. Give both tracks
+            // one short opportunity to align, even with stabilization delay.
+            let recheckUntil = time + RecoveryDeadline.recheckDuration
+            switch recoveryDeadline {
+            case .initial(let deadline) where delayed && recheckUntil > deadline:
+                self.recoveryDeadline = .recheck(recheckUntil)
+                LOG("Capture recovery allowing one final \(Int(RecoveryDeadline.recheckDuration)) s for sample delivery after the delayed watchdog check", level: .warning)
+                return
+            case .initial(let deadline), .recheck(let deadline):
+                guard time >= deadline else { return }
             }
-            return
+            let separation: String
+            if let videoPTS = latestRecoveryVideoPTS, let audio = candidateAudio {
+                separation = String(format: "%.3f s", CMTimeSubtract(
+                    CMSampleBufferGetPresentationTimeStamp(audio), videoPTS
+                ).seconds)
+            } else { separation = "unavailable" }
+            failed = true
+            LOG("Capture recovery timed out: \(candidateVideoCount) video and \(candidateAudioCount) audio candidates; latest audio minus video timestamp: \(separation)", level: .error)
+            throw CaptureContinuityError.stalled
         }
         switch liveness.state(at: time) {
         case .recovering, .failed:
@@ -438,7 +464,7 @@ final class LiveEncodingPipeline {
         pendingDiscontinuity = true
         // Start counting once the old encoders have drained and new samples
         // can actually be considered for recovery.
-        recoveryStartedAt = now()
+        recoveryDeadline = .initial(now() + 30)
         LOG("Capture recovery started (\(reason)); waiting for aligned camera and microphone samples", level: .warning)
         return fragments
     }
@@ -455,6 +481,8 @@ final class LiveEncodingPipeline {
     private func receiveRecovery(_ sample: CMSampleBuffer, video: Bool) throws -> Bool {
         guard !finalizing else { return false }
         let time = now()
+        // A second delayed tick cannot let late callbacks extend the recheck.
+        if case .recheck(let deadline) = recoveryDeadline, time >= deadline { return false }
         let freshness = 0.5
         let pts = CMSampleBufferGetPresentationTimeStamp(sample)
         let previousPTS = video ? latestRecoveryVideoPTS : candidateAudio?.presentationTimeStamp
@@ -532,7 +560,7 @@ final class LiveEncodingPipeline {
         // interleave once the completed fragments are handed off.
         for audio in alignedAudio { try encodeAudio(audio, basePTS: recoveryBasePTS) }
         try submitRealVideo(pixels, at: CMTimeSubtract(videoPTS, recoveryBasePTS))
-        recoveryStartedAt = nil
+        recoveryDeadline = nil
         clearCandidates()
         LOG("Camera and microphone recovered on a shared timeline; video delivery lag \(deliveryLag)s", level: .info)
         return true

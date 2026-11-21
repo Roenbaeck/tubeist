@@ -8,7 +8,11 @@ import Foundation
     }
 
     @PipelineActor static func run(folder: URL, scenario: String) async throws {
-        if scenario == "watchdog" { try await checkWatchdog(); return }
+        if scenario == "watchdog" {
+            try await checkWatchdog()
+            try await checkDelayedRecoveryDeadline()
+            return
+        }
         if scenario == "second-stream" { try await checkSecondStream(folder: folder); return }
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let clock = ProbeClock()
@@ -243,7 +247,11 @@ import Foundation
         clock.set(stalledAt + 4)
         try await Task.sleep(for: .milliseconds(250))
         precondition(pipeline.captureState == .recovering, "Watchdog did not restart after successful recovery")
-        clock.set(stalledAt + 33.9)
+        // A normally scheduled watchdog must still expire at exactly 30 s.
+        for tick in 275...299 {
+            clock.set(stalledAt + 4 + Double(tick) / 10)
+            try await pipeline.checkCapture()
+        }
         try await Task.sleep(for: .milliseconds(250))
         let earlyReports = await failures.count
         precondition(earlyReports == 0 && pipeline.captureState == .recovering, "Watchdog failed before the 30-second deadline")
@@ -259,6 +267,11 @@ import Foundation
         try await Task.sleep(for: .milliseconds(250))
         let finalReports = await failures.count
         precondition(finalReports == 1 && pipeline.captureState == .healthy)
+        clock.set(stalledAt + 38)
+        try await pipeline.checkCapture()
+        clock.set(stalledAt + 75)
+        try await pipeline.checkCapture()
+        precondition(pipeline.captureState == .recovering)
         pipeline.beginFinalization()
         clock.set(stalledAt + 80)
         try await pipeline.checkCapture()
@@ -268,6 +281,60 @@ import Foundation
                      "Intentional capture shutdown triggered the watchdog")
         try await pipeline.finish(deadline: ContinuousClock().now.advanced(by: .seconds(5)))
         print("PASS: watchdog waits for capture readiness, gives late ticks the full recovery window, and stops between sessions")
+    }
+
+    @PipelineActor static func checkDelayedRecoveryDeadline() async throws {
+        let clock = ProbeClock()
+        let pipeline = LiveEncodingPipeline(now: { clock.read() }, automaticWatchdog: false)
+        try pipeline.start(preset: Preset(), stream: false, recording: nil)
+
+        func deliverBothTracks() async throws {
+            let sourceTime = 100 + clock.read()
+            for frame in 0..<2 {
+                try await pipeline.appendVideo(videoSample(frame: frame, pts: sourceTime + Double(frame) / 30))
+                let sample = try ProbeMediaFixtures.makeAudio(offset: frame * 1024, frames: 1024, rate: 48_000)
+                try await pipeline.appendAudio(retime(sample, to: sourceTime + Double(frame * 1024) / 48_000))
+            }
+        }
+
+        try await deliverBothTracks()
+        // The actor resumes just after or just before the nominal deadline.
+        // Either the watchdog or the pending media can get the first turn.
+        for (elapsed, watchdogFirst) in [(35.0, true), (35.0, false), (29.9, true)] {
+            let recoveryStart = clock.read() + 3
+            clock.set(recoveryStart)
+            try await pipeline.checkCapture()
+            precondition(pipeline.captureState == .recovering)
+            clock.set(recoveryStart + elapsed)
+            if watchdogFirst { try await pipeline.checkCapture() }
+            clock.set(recoveryStart + elapsed + 0.2)
+            if watchdogFirst { try await pipeline.checkCapture() }
+            try await deliverBothTracks()
+            try await pipeline.checkCapture()
+            precondition(pipeline.captureState == .healthy, "Resumed samples lost the race with a delayed watchdog")
+        }
+
+        let recoveryStart = clock.read() + 3
+        clock.set(recoveryStart)
+        try await pipeline.checkCapture()
+        clock.set(recoveryStart + 36)
+        try await pipeline.checkCapture()
+        clock.set(recoveryStart + 37.9)
+        try await pipeline.appendVideo(videoSample(frame: 0, pts: 100 + clock.read()))
+        try await pipeline.checkCapture()
+        precondition(pipeline.captureState == .recovering)
+        clock.set(recoveryStart + 38)
+        // A second delayed check or media arriving at the final cutoff must
+        // not renew the grace or revive the expired session.
+        try await deliverBothTracks()
+        do {
+            try await pipeline.checkCapture()
+            throw MediaEncodingError.invalid("Delayed recovery exceeded its single two-second recheck")
+        } catch CaptureContinuityError.stalled {}
+        try await pipeline.checkCapture()
+        precondition(pipeline.captureState == .failed)
+        try await pipeline.finish(deadline: ContinuousClock.now.advanced(by: .seconds(5)))
+        print("PASS: a delayed recovery deadline accepts either callback order and expires its single bounded recheck")
     }
 
     static func videoSample(frame: Int, pts: Double) throws -> CMSampleBuffer {

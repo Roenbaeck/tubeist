@@ -53,9 +53,21 @@ Artifacts are retained in the printed temporary directory.
 
 The app allows 200 ms for delayed capture delivery, conceals missing media for up
 to two seconds, then waits for both tracks to deliver fresh, increasing timestamps
-before restarting the encoders on one shared timeline. Thirty seconds without
-recovery is a reported capture failure. Healthy samples retain their timestamps and
-original HLG pixel buffers; concealment only supplies missing content. Long recovery
+before restarting the encoders on one shared timeline. Recovery normally times
+out after 30 seconds. If at least 500 ms elapsed between watchdog checks and
+the deadline is less than two seconds away or has passed, the watchdog allows
+two seconds from that check for queued or newly arriving samples to align.
+It grants this once per recovery. The watchdog probe exercises both callback
+orders, a missing track, and the final cutoff.
+
+On a phone, enable Debug under Settings → Journal before reproducing a stall.
+Entries beginning with `Capture configuration` identify the operation and its
+elapsed time, including time spent waiting for a camera lock. Operations taking
+at least 100 ms and watchdog intervals of at least 500 ms appear as warnings.
+Use **Copy log** in the Journal to compare these with recovery start and timeout.
+
+Healthy samples retain their timestamps and original HLG pixel buffers.
+Concealment only supplies missing content. Long recovery
 may omit an incomplete live GOP, while retaining its encoded samples in the recording.
 
 Video processing and encoding overlap through bounded queues that preserve arrival order.

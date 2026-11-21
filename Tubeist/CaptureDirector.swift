@@ -14,6 +14,20 @@ import AVKit
 extension AVCaptureAudioChannel: @retroactive @unchecked Sendable {}
 #endif
 
+/// Measure the synchronous AVFoundation call, including time waiting for a device lock.
+func measureCaptureConfiguration<Result>(_ operation: String, _ body: () throws -> Result) rethrows -> Result {
+    let started = ProcessInfo.processInfo.systemUptime
+    defer {
+        let elapsed = ProcessInfo.processInfo.systemUptime - started
+        let slow = elapsed >= 0.1
+        if slow || Settings.journalDebug {
+            let duration = String(format: "%.1f ms", elapsed * 1_000)
+            LOG("Capture configuration: \(operation) took \(duration)", level: slow ? .warning : .debug)
+        }
+    }
+    return try body()
+}
+
 enum CaptureSetupError: LocalizedError, Equatable {
     case cameraPermissionDenied
     case microphonePermissionDenied
@@ -204,23 +218,32 @@ private class DeviceActor {
         }
 
         do {
-            let videoInput = try AVCaptureDeviceInput(device: videoDevice)
+            let videoInput = try measureCaptureConfiguration("Create camera input") {
+                try AVCaptureDeviceInput(device: videoDevice)
+            }
             let videoOutput = AVCaptureVideoDataOutput()
-            let audioInput = try AVCaptureDeviceInput(device: microphoneDevice)
+            let audioInput = try measureCaptureConfiguration("Create microphone input") {
+                try AVCaptureDeviceInput(device: microphoneDevice)
+            }
             let audioOutput = AVCaptureAudioDataOutput()
 
             videoOutput.alwaysDiscardsLateVideoFrames = true
 
             do {
-                try AVAudioSession.sharedInstance().setCategory(
-                    .playAndRecord,
-                    mode: .videoRecording,
-                    // HFP uses the same option bit as the older allowBluetooth
-                    // name and works on all iOS versions supported by Tubeist.
-                    options: [.mixWithOthers, .overrideMutedMicrophoneInterruption, .allowBluetoothHFP]
-                )
-                try AVAudioSession.sharedInstance().setPreferredSampleRate(AUDIO_SAMPLE_RATE)
-                try AVAudioSession.sharedInstance().setActive(true)
+                let audioSession = AVAudioSession.sharedInstance()
+                try measureCaptureConfiguration("Set microphone category and mode") {
+                    try audioSession.setCategory(
+                        .playAndRecord,
+                        mode: .videoRecording,
+                        // HFP uses the same option bit as the older allowBluetooth
+                        // name and works on all iOS versions supported by Tubeist.
+                        options: [.mixWithOthers, .overrideMutedMicrophoneInterruption, .allowBluetoothHFP]
+                    )
+                }
+                try measureCaptureConfiguration("Set preferred microphone sample rate") {
+                    try audioSession.setPreferredSampleRate(AUDIO_SAMPLE_RATE)
+                }
+                try measureCaptureConfiguration("Activate microphone session") { try audioSession.setActive(true) }
             } catch {
                 throw CaptureSetupError.audioSession(error.localizedDescription)
             }
@@ -261,11 +284,11 @@ private class DeviceActor {
                 // Adding the video input resets both frame-duration limits. Apply the
                 // format, HDR color space and cadence together on the attached device.
                 try videoDevice.applyCaptureFormat(format, frameRate: frameRate)
-                session.commitConfiguration()
+                session.commitTimedConfiguration()
             } catch {
                 for output in addedOutputs { session.removeOutput(output) }
                 for input in addedInputs { session.removeInput(input) }
-                session.commitConfiguration()
+                session.commitTimedConfiguration()
                 throw error
             }
 
@@ -399,7 +422,9 @@ private class DeviceActor {
         if let connection = videoOutput.connection(with: .video) {
             if connection.isVideoStabilizationSupported {
                 // Update the video stabilization mode on the connection.
-                connection.preferredVideoStabilizationMode = stabilization
+                measureCaptureConfiguration("Set camera stabilization") {
+                    connection.preferredVideoStabilizationMode = stabilization
+                }
             } else {
                 LOG("Video stabilization is not supported for this connection", level: .warning)
                 return false
@@ -415,9 +440,9 @@ private class DeviceActor {
         guard let device = videoDevice, device.uniqueID == deviceID,
               zoomFactor.isFinite else { return }
         do {
-            try device.lockForConfiguration()
-            defer { device.unlockForConfiguration() }
-            device.videoZoomFactor = zoomState(for: device).clamped(zoomFactor)
+            try device.withTimedConfigurationLock("Set camera zoom") {
+                device.videoZoomFactor = zoomState(for: device).clamped(zoomFactor)
+            }
         } catch {
             LOG("Failed to set zoom factor: \(error)", level: .error)
         }
@@ -516,12 +541,10 @@ private class DeviceActor {
               device.isFocusModeSupported(.autoFocus) else { return }
         
         do {
-            try device.lockForConfiguration()
-            
-            device.focusPointOfInterest = point
-            device.focusMode = .autoFocus
-            
-            device.unlockForConfiguration()
+            try device.withTimedConfigurationLock("Set camera focus point") {
+                device.focusPointOfInterest = point
+                device.focusMode = .autoFocus
+            }
         } catch {
             LOG("Focus configuration error: \(error.localizedDescription)", level: .error)
         }
@@ -532,9 +555,9 @@ private class DeviceActor {
         guard device.isFocusModeSupported(mode) else { return }
         
         do {
-            try device.lockForConfiguration()
-            device.focusMode = mode
-            device.unlockForConfiguration()
+            try device.withTimedConfigurationLock("Set camera autofocus") {
+                device.focusMode = mode
+            }
         } catch {
             LOG("Focus configuration error: \(error.localizedDescription)", level: .error)
         }
@@ -543,9 +566,9 @@ private class DeviceActor {
         guard let device = videoDevice, device.isFocusModeSupported(.locked) else { return }
         
         do {
-            try device.lockForConfiguration()
-            device.focusMode = .locked
-            device.unlockForConfiguration()
+            try device.withTimedConfigurationLock("Lock camera focus") {
+                device.focusMode = .locked
+            }
         } catch {
             LOG("Focus configuration error: \(error.localizedDescription)", level: .error)
         }
@@ -555,9 +578,9 @@ private class DeviceActor {
               device.isLockingFocusWithCustomLensPositionSupported, (0...1).contains(lensPosition) else { return }
         
         do {
-            try device.lockForConfiguration()
-            device.setFocusModeLocked(lensPosition: lensPosition)
-            device.unlockForConfiguration()
+            try device.withTimedConfigurationLock("Set camera lens position") {
+                device.setFocusModeLocked(lensPosition: lensPosition)
+            }
         } catch {
             LOG("Focus configuration error: \(error.localizedDescription)", level: .error)
         }
@@ -567,13 +590,12 @@ private class DeviceActor {
         guard let device = videoDevice else { return }
         
         do {
-            try device.lockForConfiguration()
-            if device.isExposurePointOfInterestSupported {
-                device.exposurePointOfInterest = point
-                device.exposureMode = .autoExpose
+            try device.withTimedConfigurationLock("Set camera exposure point") {
+                if device.isExposurePointOfInterestSupported {
+                    device.exposurePointOfInterest = point
+                    device.exposureMode = .autoExpose
+                }
             }
-            
-            device.unlockForConfiguration()
         } catch {
             LOG("Exposure configuration error: \(error.localizedDescription)", level: .error)
         }
@@ -582,9 +604,9 @@ private class DeviceActor {
         guard let device = videoDevice else { return }
         
         do {
-            try device.lockForConfiguration()
-            device.exposureMode = .continuousAutoExposure
-            device.unlockForConfiguration()
+            try device.withTimedConfigurationLock("Set camera autoexposure") {
+                device.exposureMode = .continuousAutoExposure
+            }
         } catch {
             LOG("Exposure configuration error: \(error.localizedDescription)", level: .error)
         }
@@ -593,9 +615,9 @@ private class DeviceActor {
         guard let device = videoDevice else { return }
         
         do {
-            try device.lockForConfiguration()
-            device.exposureMode = .locked
-            device.unlockForConfiguration()
+            try device.withTimedConfigurationLock("Lock camera exposure") {
+                device.exposureMode = .locked
+            }
         } catch {
             LOG("Exposure configuration error: \(error.localizedDescription)", level: .error)
         }
@@ -604,9 +626,9 @@ private class DeviceActor {
         guard let device = videoDevice else { return }
         
         do {
-            try device.lockForConfiguration()
-            device.setExposureTargetBias(bias)
-            device.unlockForConfiguration()
+            try device.withTimedConfigurationLock("Set camera exposure bias") {
+                device.setExposureTargetBias(bias)
+            }
         } catch {
             LOG("Exposure configuration error: \(error.localizedDescription)", level: .error)
         }
@@ -616,9 +638,9 @@ private class DeviceActor {
         guard let device = videoDevice else { return }
         
         do {
-            try device.lockForConfiguration()
-            device.whiteBalanceMode = .locked
-            device.unlockForConfiguration()
+            try device.withTimedConfigurationLock("Lock camera white balance") {
+                device.whiteBalanceMode = .locked
+            }
         } catch {
             LOG("White balance configuration error: \(error.localizedDescription)", level: .error)
         }
@@ -627,9 +649,9 @@ private class DeviceActor {
         guard let device = videoDevice else { return }
 
         do {
-            try device.lockForConfiguration()
-            device.whiteBalanceMode = .continuousAutoWhiteBalance
-            device.unlockForConfiguration()
+            try device.withTimedConfigurationLock("Set camera auto white balance") {
+                device.whiteBalanceMode = .continuousAutoWhiteBalance
+            }
         } catch {
             LOG("White balance configuration error: \(error.localizedDescription)", level: .error)
         }
@@ -712,15 +734,19 @@ private final class CaptureSessionDriver: CaptureSessionDriving {
     var isInterrupted: Bool { session.isInterrupted }
     func configure() async throws { try await CaptureDirector.shared.attachAll() }
     func startRunning() throws {
-        try AVAudioSession.sharedInstance().setActive(true)
-        session.startRunning()
+        try measureCaptureConfiguration("Activate microphone session") {
+            try AVAudioSession.sharedInstance().setActive(true)
+        }
+        measureCaptureConfiguration("Start capture session") { session.startRunning() }
         AudioInputRouter.shared.activate()
     }
     func stopRunning() {
         AudioInputRouter.shared.suspend()
-        session.stopRunning()
+        measureCaptureConfiguration("Stop capture session") { session.stopRunning() }
         do {
-            try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+            try measureCaptureConfiguration("Deactivate microphone session") {
+                try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+            }
         } catch {
             LOG("Could not release the audio session: \(error.localizedDescription)", level: .warning)
         }
@@ -857,7 +883,7 @@ final class CaptureDirector: NSObject, Sendable {
         for input in await CaptureDirector.session.inputs {
             await CaptureDirector.session.removeInput(input)
         }
-        await CaptureDirector.session.commitConfiguration()
+        await CaptureDirector.session.commitTimedConfiguration()
     }
     func attachAll() async throws {
         // set up video and audio session
@@ -1145,21 +1171,34 @@ struct CaptureFormatCandidate {
     let format: AVCaptureDevice.Format
 }
 
-// Extend AVCaptureDevice to include findFormat method
+private extension AVCaptureSession {
+    func commitTimedConfiguration() {
+        measureCaptureConfiguration("Commit capture session configuration") { commitConfiguration() }
+    }
+}
+
 extension AVCaptureDevice {
+    fileprivate func withTimedConfigurationLock(_ operation: String, configure: () -> Void) throws {
+        try measureCaptureConfiguration(operation) {
+            try lockForConfiguration()
+            defer { unlockForConfiguration() }
+            configure()
+        }
+    }
+
     func applyCaptureFormat(_ format: AVCaptureDevice.Format, frameRate: Double) throws {
         guard let range = format.videoSupportedFrameRateRanges.first(where: {
             $0.minFrameRate <= frameRate && frameRate <= $0.maxFrameRate
         }) else { throw CaptureSetupError.formatUnavailable }
         let requested = CMTime(seconds: 1 / frameRate, preferredTimescale: 600_000)
         let duration = min(max(requested, range.minFrameDuration), range.maxFrameDuration)
-        try lockForConfiguration()
-        defer { unlockForConfiguration() }
-        activeFormat = format
-        activeColorSpace = AV_COLOR_SPACE
-        if isAutoVideoFrameRateEnabled { isAutoVideoFrameRateEnabled = false }
-        activeVideoMinFrameDuration = duration
-        activeVideoMaxFrameDuration = duration
+        try withTimedConfigurationLock("Set camera format and frame rate") {
+            activeFormat = format
+            activeColorSpace = AV_COLOR_SPACE
+            if isAutoVideoFrameRateEnabled { isAutoVideoFrameRateEnabled = false }
+            activeVideoMinFrameDuration = duration
+            activeVideoMaxFrameDuration = duration
+        }
     }
 
     func findFormat(frameRate: Double) -> AVCaptureDevice.Format? {
