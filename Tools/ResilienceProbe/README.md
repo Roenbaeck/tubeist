@@ -147,6 +147,6 @@ also decodes the middle of a long recording gap to ensure that it is silence.
 The original three-second-stall recording fails this check by about 1.29 seconds;
 the fixed recording is within 11.1 ms in the same fixture. Repeated stabilization
 changes measured a maximum error of 6.94 ms, and the 27-second interruption
-measured 2.72 ms. All 21 scenarios pass, alongside twelve focused simulator
+measured 2.72 ms. All 22 scenarios pass, alongside twelve focused simulator
 tests and the iOS Release build. Physical-phone/YouTube acceptance
 remains separate from these real-framework offline checks.
