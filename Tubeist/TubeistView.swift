@@ -119,6 +119,7 @@ struct TubeistView: View {
     @State private var fading: Bool = false
     @State private var fadeTask: Task<Void, Never>?
     @State private var isYouTubeRefreshCoolingDown: Bool = false
+    @State private var isRecheckingPreviousYouTubeStream = false
 
     private var youtubeHealthPollingTarget: YouTubeHealthTarget? {
         appState.isStreamActive && !appState.soonGoingToBackground ? appState.youtubeHealth.target : nil
@@ -172,6 +173,44 @@ struct TubeistView: View {
         let factor = cameraZoom.clamped(initial * magnification)
         let deviceID = cameraZoom.deviceID
         Task { await CaptureDirector.shared.setZoomFactor(factor, deviceID: deviceID) }
+    }
+
+    /// The Start button while idle. The cached YouTube status can outlive the
+    /// previous broadcast, so recheck it with YouTube before refusing.
+    private func requestStart() {
+        guard !isRecheckingPreviousYouTubeStream else { return }
+        guard appState.isWaitingForPreviousYouTubeStream else {
+            startIfCaptureIsReady()
+            return
+        }
+        isRecheckingPreviousYouTubeStream = true
+        fade("Checking YouTube…")
+        let service = youtubeService
+        Task {
+            let active = await PreviousYouTubeStream.isStillActive(appState: appState) { broadcastID in
+                try await service.fetchBroadcastStatus(broadcastId: broadcastID)
+            }
+            isRecheckingPreviousYouTubeStream = false
+            // The session may have changed while YouTube answered.
+            guard !appState.isStreamSessionRunning else { return }
+            if active {
+                fade("YouTube is still finishing the previous stream")
+            } else {
+                startIfCaptureIsReady()
+            }
+        }
+    }
+
+    private func startIfCaptureIsReady() {
+        if isCameraReady && Settings.hasCameraPermission() && Settings.hasMicrophonePermission() {
+            startStreamNow()
+        }
+        else if !Settings.hasCameraPermission() || !Settings.hasMicrophonePermission() {
+            Settings.openSystemSettings()
+        }
+        else {
+            fade("The camera is not ready")
+        }
     }
 
     /// Starts a stream with a fresh stream ID. A key conflict opens the
@@ -400,6 +439,18 @@ struct TubeistView: View {
                   appState.youtubeBroadcastId == broadcastID else { return }
             appState.youtubeBroadcastId = result.id
             appState.youtubeStatus = result.status
+        } catch YouTubeError.noBroadcastFound {
+            // Not a transient failure: the saved key has no active or upcoming
+            // broadcast, so a cached live or testing status has ended. Keeping
+            // it would refuse Start until the app relaunches.
+            guard !Task.isCancelled,
+                  generation == youtubeStatusGeneration,
+                  service === youtubeService,
+                  appState.youtubeBroadcastStatusSource == source,
+                  appState.streamSessionState == sessionState,
+                  appState.youtubeBroadcastId == broadcastID else { return }
+            appState.youtubeBroadcastId = nil
+            appState.youtubeStatus = nil
         } catch {
             guard !Task.isCancelled, !YouTubeDiagnostics.isCancellation(error) else { return }
             LOG("YouTube \(logContext) status failed: \(error.localizedDescription)", level: .debug)
@@ -410,7 +461,10 @@ struct TubeistView: View {
     }
 
     func refreshYouTubeStatusFromIcon() async {
-        guard !Task.isCancelled, appState.isStreamActive, !isYouTubeRefreshCoolingDown else {
+        // Live, or idle with a status that may be stale. Start and Stop own
+        // the transitions in between.
+        guard !Task.isCancelled, !appState.streamSessionState.isTransitioning,
+              !isYouTubeRefreshCoolingDown else {
             return
         }
 
@@ -926,7 +980,7 @@ struct TubeistView: View {
                                     .opacity(isYouTubeRefreshCoolingDown ? 0.6 : 1)
                                 }
                                 .buttonStyle(.plain)
-                                .disabled(!appState.isStreamActive || isYouTubeRefreshCoolingDown)
+                                .disabled(appState.streamSessionState.isTransitioning || isYouTubeRefreshCoolingDown)
                                 .padding(.bottom, 10)
                                 .accessibilityLabel("YouTube status")
                                 .accessibilityValue(YouTubeBroadcast.label(for: ytStatus))
@@ -956,18 +1010,7 @@ struct TubeistView: View {
                                         }
                                     }
                                 case .idle, .failed:
-                                    if appState.isWaitingForPreviousYouTubeStream {
-                                        fade("YouTube is still finishing the previous stream")
-                                    }
-                                    else if isCameraReady && Settings.hasCameraPermission() && Settings.hasMicrophonePermission() {
-                                        startStreamNow()
-                                    }
-                                    else if !Settings.hasCameraPermission() || !Settings.hasMicrophonePermission() {
-                                        Settings.openSystemSettings()
-                                    }
-                                    else {
-                                        fade("The camera is not ready")
-                                    }
+                                    requestStart()
                                 case .stopping:
                                     break
                                 }

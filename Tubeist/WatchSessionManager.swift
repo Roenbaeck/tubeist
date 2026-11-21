@@ -28,12 +28,20 @@ final class WatchSessionManager: NSObject, WCSessionDelegate {
     private var lifecycleObservers: [NSObjectProtocol] = []
 
     private let startStream: (String) async throws -> Void
+    private let previousYouTubeStreamIsActive: @MainActor (AppState) async -> Bool
 
     init(isAppActive: @escaping @MainActor () -> Bool = {
         UIApplication.shared.applicationState == .active
-    }, startStream: @escaping (String) async throws -> Void = { try await Streamer.shared.startStream(streamID: $0) }) {
+    }, startStream: @escaping (String) async throws -> Void = { try await Streamer.shared.startStream(streamID: $0) },
+         previousYouTubeStreamIsActive: @escaping @MainActor (AppState) async -> Bool = { appState in
+        await PreviousYouTubeStream.isStillActive(appState: appState) { broadcastID in
+            try await YouTubeService(diagnostics: YouTubeDiagnostics().forStatusMonitoring())
+                .fetchBroadcastStatus(broadcastId: broadcastID)
+        }
+    }) {
         self.isAppActive = isAppActive
         self.startStream = startStream
+        self.previousYouTubeStreamIsActive = previousYouTubeStreamIsActive
         super.init()
     }
 
@@ -224,11 +232,12 @@ final class WatchSessionManager: NSObject, WCSessionDelegate {
         guard !appState.isSettingsPresented else {
             return .failure("Close Settings on your iPhone before starting")
         }
-        if appState.isWaitingForPreviousYouTubeStream {
-            return .failure("YouTube is still finishing the previous stream")
-        }
         guard isAppActive(), !appState.soonGoingToBackground, !appState.isAppInitialization else {
             return .failure("Open Tubeist on your iPhone before starting")
+        }
+        // The cached status can outlive the broadcast; recheck it before refusing.
+        if appState.isWaitingForPreviousYouTubeStream, await previousYouTubeStreamIsActive(appState) {
+            return .failure("YouTube is still finishing the previous stream")
         }
         let streamID = Streamer.makeStreamID()
         Task {

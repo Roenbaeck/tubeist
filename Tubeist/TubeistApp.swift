@@ -176,7 +176,7 @@ final class AppState {
     var youtubeStatus: String? = nil
     var youtubeBroadcastId: String? = nil
     var isWaitingForPreviousYouTubeStream: Bool {
-        Settings.stream && (youtubeStatus == "live" || youtubeStatus == "testing")
+        Settings.stream && PreviousYouTubeStream.blocksStart(youtubeStatus)
     }
     var youtubeBroadcastStatusSource: YouTubeBroadcastStatusSource? {
         switch streamSessionState {

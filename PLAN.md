@@ -16,8 +16,15 @@
 
 ## Capture lifecycle audit, 2026-11-21
 
-Audit baseline `eba1808`. The two high-priority fixes and the first three
-medium-priority fixes have local regression coverage.
+Audit baseline `eba1808`. The high- and medium-priority fixes have local
+regression coverage.
+
+YouTube API polling was reviewed on 2026-11-21 for any effect on streaming.
+Capture, encoding and upload never wait on the main actor, where status,
+health and viewer polling run. Uploads use their own URLSession, separate from
+the shared session used for API requests. Polled results only change what is
+displayed and the Start check above; none stops a stream or changes its
+bitrate. Polls back off after failures and do not overlap.
 
 | Status | Priority | Finding | Verification |
 | --- | --- | --- | --- |
@@ -26,7 +33,7 @@ medium-priority fixes have local regression coverage.
 | [x] | Medium | A Stop requested during preparation waits behind Start, which can still enter Live. Stop now marks the preparing session before it queues and cancels the YouTube preflight. Start checks the request before enabling capture output and again in the Live transition, then returns to idle without an alert. | `StreamerTests` holds Start in a cancellable preflight and in one that ignores cancellation, issues Stop through the public queue, and requires idle, no alert, no Live start time, and an already-idle Stop. A separate test requires `markLive` to reject a recorded request. |
 | [x] | Medium | Returning to the foreground while a background Stop drains can leave the camera stopped and the UI reporting ready. Foreground setup now restarts capture during Stop, without waiting behind the upload drain, before reporting the camera ready. | `StreamerTests` holds the command queue as a draining Stop and requires capture to restart immediately, while idle startup stays ordered behind other commands. `CaptureSessionRecoveryTests` covers restarting a suspended session. |
 | [x] | Medium | A stream-only Stop can report YouTube success when no media was delivered. The router now reports whether YouTube acknowledged any media segment, separately from ENDLIST, and Stop reports a YouTube upload with none as failed. | `StreamerTests` stops a live stream-only session that delivered nothing and requires a failed report and session. `YouTubeHLSStreamSinkTests` checks delivery in automatic and manual ending modes, and that it resets for the next session. `ShutdownReportTests` covers the status decision. |
-| [ ] | Medium | Stale cached YouTube Live or Testing status can block the next Start on phone and Watch while idle. | End the previous broadcast remotely with Tubeist in the foreground. Require an idle refresh to unblock both controls once YouTube confirms the end. |
+| [x] | Medium | Stale cached YouTube Live or Testing status can block the next Start on phone and Watch while idle. Start on the phone and Watch now rechecks that broadcast with YouTube, for at most three seconds, before refusing; a broadcast YouTube has ended no longer blocks, and an inconclusive recheck leaves the decision to Start's preflight, which still refuses an active broadcast. An idle refresh that finds no broadcast on the saved key clears the old status, and the YouTube icon can refresh it while idle. | `PreviousYouTubeStreamTests` covers a broadcast still on air, ended or missing, an unreachable or slow YouTube, and a status changed by another refresh. `WatchSessionManagerTests` requires the Watch Start to recheck before refusing. |
 | [ ] | Low | The health indicator can show pristine during capture startup, or silenced after a terminal failure. | Poll before both tracks are usable and again after a failure with empty buffers. Check the indicator against the session and capture states. |
 
 Local verification on November 21 passed all 22 scenarios in

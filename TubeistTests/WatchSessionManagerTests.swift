@@ -11,6 +11,12 @@ private func decode(_ reply: WatchCommandReply) -> (success: Bool, message: Stri
     (reply.success, reply.message)
 }
 
+@MainActor
+private final class RecheckCounter {
+    private(set) var count = 0
+    func increment() { count += 1 }
+}
+
 @Suite(.serialized)
 struct WatchSessionManagerTests {
     @Test @MainActor
@@ -112,6 +118,33 @@ struct WatchSessionManagerTests {
         let reply = await manager.handle(rawCommand: WatchCommand.start.rawValue)
         #expect(reply.success == !streaming)
         #expect(reply.message == (streaming ? "YouTube is still finishing the previous stream" : nil))
+    }
+
+    @Test(.timeLimit(.minutes(1)), arguments: [true, false]) @MainActor
+    func startRechecksACachedPreviousBroadcastBeforeRefusing(stillActive: Bool) async {
+        let defaults = UserDefaults.standard
+        let previousStream = defaults.object(forKey: "Stream")
+        defer { defaults.set(previousStream, forKey: "Stream") }
+        Settings.stream = true
+        let app = AppState()
+        app.isAppInitialization = false
+        app.youtubeStatus = "live"
+        app.youtubeBroadcastId = "previous"
+        let rechecks = RecheckCounter()
+        let starts = RecheckCounter()
+        let manager = WatchSessionManager(isAppActive: { true }, startStream: { _ in await starts.increment() },
+                                          previousYouTubeStreamIsActive: { _ in
+            rechecks.increment()
+            return stillActive
+        })
+        manager.appState = app
+        let reply = await manager.handle(rawCommand: WatchCommand.start.rawValue)
+        #expect(rechecks.count == 1)
+        #expect(reply.success == !stillActive)
+        #expect(reply.message == (stillActive ? "YouTube is still finishing the previous stream" : nil))
+        if reply.success {
+            while starts.count == 0 { await Task.yield() }
+        }
     }
 
     @Test @MainActor
