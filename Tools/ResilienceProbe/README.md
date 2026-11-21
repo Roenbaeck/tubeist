@@ -27,14 +27,20 @@ The scenarios cover:
 - A backward capture-clock reset while capture callbacks continue.
 - Repeated stabilization changes, including video arriving 1.2 seconds behind
   audio and then switching to a shorter delay on the same stream.
+- Audio delivered 120 ms behind video through a timestamp discontinuity.
+  Recovery must hold one video frame until matching audio arrives, and that
+  ordinary lag must not start recovery.
 - Startup and recovery with only 16 capture-owned audio buffers available;
   holding the originals must not starve the simulated microphone.
 - A network outage long enough to overflow the local segment queue.
 - Disk buffering preserving all 50 seconds of waiting footage through Stop,
   plus a 70-second outage that removes only the excess over the 60-second budget.
   Both cases verify decoded video, audio timing and temporary-file cleanup.
-- An independent watchdog detecting total silence, remaining active across
-  encoder recovery, reporting a terminal stall once, and stopping between sessions.
+- An independent watchdog that starts only once capture intake is enabled and
+  detects total silence. A late first tick still starts a full recovery window,
+  and a delayed check near the recovery deadline gets one bounded recheck. The
+  watchdog stays active across encoder recovery, reports a terminal stall once,
+  and stops between sessions.
 
 Every uploaded segment and MP4 recording is independently decoded with FFmpeg.
 The `stop-boundary` case freezes microphone input just before a GOP boundary
@@ -126,11 +132,16 @@ compressed bytes, and respects writer backpressure. It cannot enqueue seconds
 of PCM or run an encoder continuously. The YouTube path receives the original
 encoded samples and retains its existing discontinuity handling.
 
+A gap longer than 60 seconds ends the recording, so a malformed timestamp cannot
+cause unbounded padding. Capture recovery is the exception: it places the new
+epoch at elapsed wall time and authorizes the gap up to that point. A late
+watchdog tick can therefore lead to a longer outage that is still padded.
+
 The verifier checks packet payloads and timing in every media scenario, and
 also decodes the middle of a long recording gap to ensure that it is silence.
 The original three-second-stall recording fails this check by about 1.29 seconds;
 the fixed recording is within 11.1 ms in the same fixture. Repeated stabilization
 changes measured a maximum error of 6.94 ms, and the 27-second interruption
-measured 2.72 ms. All fifteen scenarios pass, alongside twelve focused simulator
+measured 2.72 ms. All 21 scenarios pass, alongside twelve focused simulator
 tests and the iOS Release build. Physical-phone/YouTube acceptance
 remains separate from these real-framework offline checks.
